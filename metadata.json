@@ -1,0 +1,6 @@
+{
+  "name": "Carte de Vulliens",
+  "description": "Carte interactive de la commune de Vulliens affichant les bâtiments et les frontières de la commune à l'aide des données d'OpenStreetMap.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

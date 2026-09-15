@@ -1,0 +1,2 @@
+#!/bin/bash
+sed -i 's/<span className="font-bold text-white text-xs hover:text-cyan-300">{c.name}<\/span>/<span className="font-bold text-white text-xs hover:text-cyan-300">{c.name}<\/span>\n                        {c.busyUntilMinute \&\& c.busyUntilMinute > gameTimeMinutes \&\& <span className="text-\[8px\] font-mono font-bold text-rose-300 bg-rose-950 px-1 py-0.5 rounded animate-pulse">{c.currentActionName || '"'"'Occupé'"'"'}<\/span>}/' src/App.tsx

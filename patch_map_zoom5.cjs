@@ -1,0 +1,10 @@
+const fs = require('fs');
+let app = fs.readFileSync('src/App.tsx', 'utf8');
+
+app = app.replace(
+  'minZoom={4}',
+  'minZoom={6}'
+);
+
+fs.writeFileSync('src/App.tsx', app);
+console.log("Map zoom patched to 6");

@@ -1,0 +1,42 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /cities/{cityId} {
+      allow read, write: if true;
+      match /features/{featureId} {
+        allow read, write: if true;
+      }
+      match /populationSlots/{slotId} {
+        allow read, write: if true;
+      }
+    }
+    match /gameSessions/{sessionId} {
+      allow read, write: if true;
+      match /players/{playerId} {
+        allow read, write: if true;
+      }
+      match /cityStates/{cityStateId} {
+        allow read, write: if true;
+      }
+      match /squads/{squadId} {
+        allow read, write: if true;
+      }
+    }
+    match /survivorCharacters/{charId} {
+      allow read, write: if true;
+    }
+    match /userProfiles/{userId} {
+      allow read, write: if true;
+    }
+    match /characterRoles/{roleId} {
+      allow read, write: if true;
+    }
+    match /gameItems/{itemId} {
+      allow read, write: if true;
+    }
+    match /gameConfig/{docId} {
+      allow read, write: if true;
+    }
+  }
+}

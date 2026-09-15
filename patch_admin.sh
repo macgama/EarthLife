@@ -1,0 +1,3 @@
+#!/bin/bash
+sed -i 's/activeTab === '"'"'sessions'"'"' ?/activeTab === '"'"'sessions'"'"' || activeTab === '"'"'rules'"'"' ?/g' src/components/AdminModal.tsx
+sed -i 's/<button onClick={() => setActiveTab('"'"'sessions'"'"')}/<button onClick={() => setActiveTab('"'"'sessions'"'"')} className={`flex items-center gap-2 px-3 py-2 border-b-2 transition-all ${activeTab === '"'"'sessions'"'"' ? '"'"'border-rose-500 text-rose-400 font-bold bg-slate-900/50'"'"' : '"'"'border-transparent text-slate-400 hover:text-slate-300 hover:bg-slate-800/50'"'"'}`}>\n                <Database className="w-4 h-4" />\n                Parties\n              <\/button>\n              <button onClick={() => setActiveTab('"'"'rules'"'"')}/g' src/components/AdminModal.tsx

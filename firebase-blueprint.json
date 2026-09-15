@@ -1,0 +1,158 @@
+{
+  "entities": {
+    "City": {
+      "title": "City",
+      "description": "Represents a city on the map, including its communal boundary and real-world geographical/demographic statistics",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name of the city"
+        },
+        "boundary": {
+          "type": "string",
+          "description": "JSON string of the boundary Feature"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Timestamp of creation"
+        },
+        "population": {
+          "type": "number",
+          "description": "Updated official population count"
+        },
+        "altitude": {
+          "type": "number",
+          "description": "Altitude / Elevation in meters"
+        },
+        "areaKm2": {
+          "type": "number",
+          "description": "Surface area in square kilometers"
+        },
+        "density": {
+          "type": "number",
+          "description": "Population density in inhabitants per km²"
+        },
+        "country": {
+          "type": "string",
+          "description": "Country name"
+        },
+        "region": {
+          "type": "string",
+          "description": "Region / Canton / State name"
+        },
+        "county": {
+          "type": "string",
+          "description": "County / District name"
+        },
+        "postalCode": {
+          "type": "string",
+          "description": "Postal code or list of postal codes"
+        },
+        "description": {
+          "type": "string",
+          "description": "Encyclopedic summary description of the city"
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Photo thumbnail or coat of arms URL"
+        },
+        "wikipediaUrl": {
+          "type": "string",
+          "description": "Link to Wikipedia page"
+        },
+        "website": {
+          "type": "string",
+          "description": "Official city website URL"
+        },
+        "wikidataId": {
+          "type": "string",
+          "description": "Wikidata entity identifier"
+        },
+        "lat": {
+          "type": "number",
+          "description": "Latitude coordinate"
+        },
+        "lon": {
+          "type": "number",
+          "description": "Longitude coordinate"
+        },
+        "status": {
+          "type": "string",
+          "description": "Import status (loading, ready, error)"
+        }
+      },
+      "required": ["name", "boundary", "createdAt"]
+    },
+    "MapFeature": {
+      "title": "Map Feature",
+      "description": "Represents a geographical feature (structure, poi, area, line)",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["structure", "poi", "area", "line"],
+          "description": "Type of the feature"
+        },
+        "data": {
+          "type": "string",
+          "description": "JSON string of the GeoJSON Feature"
+        }
+      },
+      "required": ["type", "data"]
+    },
+    "GameSession": {
+      "title": "Game Session",
+      "description": "Represents an active multiplayer game session",
+      "type": "object",
+      "properties": {
+        "hostUid": { "type": "string" },
+        "hostEmail": { "type": "string" },
+        "scenario": { "type": "string" },
+        "difficulty": { "type": "string" },
+        "infectedPercent": { "type": "number" },
+        "survivorsPercent": { "type": "number" },
+        "createdAt": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["hostUid", "scenario", "difficulty", "createdAt", "status"]
+    },
+    "PlayerProfile": {
+      "title": "Player Profile",
+      "description": "Represents a player in a game session with their 5 characters and HQ location",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "cityId": { "type": "string" },
+        "cityName": { "type": "string" },
+        "hqFeatureId": { "type": "string" },
+        "hqName": { "type": "string" },
+        "hqLat": { "type": "number" },
+        "hqLon": { "type": "number" },
+        "hqGeoJson": { "type": "string" },
+        "characters": { "type": "string" },
+        "joinedAt": { "type": "number" }
+      },
+      "required": ["uid", "cityId", "cityName", "hqFeatureId"]
+    }
+  },
+  "firestore": {
+    "cities": {
+      "schema": "City",
+      "description": "Cities available in the application"
+    },
+    "cities/{cityId}/features": {
+      "schema": "MapFeature",
+      "description": "Features belonging to a city"
+    },
+    "gameSessions": {
+      "schema": "GameSession",
+      "description": "Multiplayer game sessions"
+    },
+    "gameSessions/{sessionId}/players": {
+      "schema": "PlayerProfile",
+      "description": "Players participating in a game session"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "name": "boundary",
+    "query": "[out:json][timeout:25];\narea(3600000000 + relationId)->.searchArea;\n(rel(relationId););\nout body;\n>;\nout skel qt;"
+  },
+  {
+    "name": "lines",
+    "query": "[out:json][timeout:90][maxsize:1073741824];\narea(3600000000 + relationId)->.searchArea;\n(\n  way[\"highway\"](area.searchArea);\n  relation[\"highway\"](area.searchArea);\n  way[\"railway\"](area.searchArea);\n  relation[\"railway\"](area.searchArea);\n  way[\"waterway\"](area.searchArea);\n  relation[\"waterway\"](area.searchArea);\n);\nout body;\n>;\nout skel qt;"
+  },
+  {
+    "name": "areas",
+    "query": "[out:json][timeout:90][maxsize:1073741824];\narea(3600000000 + relationId)->.searchArea;\n(\n  way[\"landuse\"](area.searchArea);\n  relation[\"landuse\"](area.searchArea);\n  way[\"natural\"](area.searchArea);\n  relation[\"natural\"](area.searchArea);\n  way[\"leisure\"](area.searchArea);\n  relation[\"leisure\"](area.searchArea);\n  way[\"water\"](area.searchArea);\n  relation[\"water\"](area.searchArea);\n);\nout body;\n>;\nout skel qt;"
+  },
+  {
+    "name": "pois",
+    "query": "[out:json][timeout:90];\narea(3600000000 + relationId)->.searchArea;\n(\n  node[\"amenity\"](area.searchArea);\n  node[\"shop\"](area.searchArea);\n  node[\"tourism\"](area.searchArea);\n  node[\"historic\"](area.searchArea);\n  node[\"leisure\"](area.searchArea);\n  way[\"amenity\"](area.searchArea);\n  relation[\"amenity\"](area.searchArea);\n);\nout body;\n>;\nout skel qt;"
+  },
+  {
+    "name": "buildings",
+    "query": "[out:json][timeout:180][maxsize:1073741824];\narea(3600000000 + relationId)->.searchArea;\n(\n  way[\"building\"](area.searchArea);\n  relation[\"building\"](area.searchArea);\n);\nout body;\n>;\nout skel qt;"
+  }
+]
