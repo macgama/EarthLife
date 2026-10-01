@@ -1,9 +1,11 @@
 // Convertit le fixture Overpass de Lyon (Bellecour) en tuiles vectorielles z14 au schéma OpenMapTiles,
 // comme celles servies par OpenFreeMap : lyon-14-8411-5844.mvt et lyon-14-8412-5844.mvt (MVT brut, non gzippé).
 // Bellecour est près de la frontière entre les deux tuiles. Sortie déterministe.
-// Usage : node test/fixtures/make-mvt-fixture.mjs
-import { readFileSync, writeFileSync } from 'node:fs';
+// Usage : node test/fixtures/make-mvt-fixture.mjs [overpass-lyon.json]
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import geojsonvt from 'geojson-vt';
 import { makeProjection } from '../../src/geo.js';
 
@@ -15,7 +17,20 @@ const TILES = [[8411, 5844], [8412, 5844]];
 const VT_OPTIONS = { maxZoom: 14, extent: 4096, buffer: 64, indexMaxZoom: 14 };
 const LAYER_ORDER = ['water', 'waterway', 'landcover', 'landuse', 'transportation', 'building', 'transportation_name', 'poi'];
 
-const overpass = JSON.parse(readFileSync(new URL('./overpass-lyon.json', import.meta.url)));
+// Source : overpass-lyon.json a quitté le dépôt avec Overpass. S'il manque (et sans chemin en argument),
+// on relit sa dernière version dans l'historique git : sortie identique, octet pour octet.
+function readOverpass() {
+  if (process.argv[2]) return readFileSync(process.argv[2], 'utf8');
+  const local = new URL('./overpass-lyon.json', import.meta.url);
+  if (existsSync(local)) return readFileSync(local, 'utf8');
+  const git = (...args) => execFileSync('git', args, { cwd: fileURLToPath(new URL('.', import.meta.url)), encoding: 'utf8', maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
+  const last = git('rev-list', '-n', '1', 'HEAD', '--', 'overpass-lyon.json').trim();
+  if (!last) throw new Error('overpass-lyon.json introuvable (ni fichier, ni historique git) : donnez son chemin en argument');
+  // Dernier commit qui touche le fichier : sa suppression (on lit alors son parent) ou sa dernière version.
+  try { return git('show', `${last}:./overpass-lyon.json`); } catch { return git('show', `${last}^:./overpass-lyon.json`); }
+}
+
+const overpass = JSON.parse(readOverpass());
 const proj = makeProjection(45.7578, 4.832);
 
 // --- Compléments synthétiques (même format Overpass) pour couvrir tout le schéma ---
