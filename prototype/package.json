@@ -1,0 +1,14 @@
+{
+  "name": "earthlife-prototype",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Prototype 3D jouable d'EarthLife : vraies rues OpenStreetMap, vraie météo Open-Meteo, vraie heure.",
+  "scripts": {
+    "start": "npx --yes serve -l 5173 .",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "three": "0.170.0"
+  }
+}
