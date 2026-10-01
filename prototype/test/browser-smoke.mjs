@@ -38,7 +38,8 @@ async function newPage(device) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(`exception : ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`console : ${m.text().slice(0, 300)} ${m.location()?.url ?? ''}`.trim()); });
-  page.on('requestfailed', (r) => console.log(`requête en échec : ${r.url().slice(0, 160)} (${r.failure()?.errorText})`));
+  // Les tuiles de la carte annulées pendant un survol (ERR_ABORTED) sont normales.
+  page.on('requestfailed', (r) => { if (!/ERR_ABORTED/.test(r.failure()?.errorText)) console.log(`requête en échec : ${r.url().slice(0, 160)} (${r.failure()?.errorText})`); });
   return { ctx, page, errors };
 }
 
@@ -130,6 +131,12 @@ async function walk(page, seconds) {
   check(again, `rechargement (${Date.now() - t1} ms)`);
   // Les tuiles passent par le cache de l'appareil : rien n'est retéléchargé.
   check(tileRequests.length === 0, `aucune tuile retéléchargée au rechargement (${tileRequests.length})`);
+  // Sur téléphone, la carte du menu est libérée pendant la partie puis recréée au retour.
+  await page.tap('#quit').catch(() => {});
+  const mapBack = await page.waitForFunction(() => !document.getElementById('menu').classList.contains('hidden') && !document.getElementById('menu').classList.contains('map-loading') && !!document.querySelector('#picker-map canvas'), null, { timeout: 30000 }).then(() => true, () => false);
+  check(mapBack, 'carte du monde revenue au menu sur mobile');
+  await page.waitForTimeout(2000);
+  await page.screenshot({ path: path.join(out, 'mobile-2-menu.png') });
   check(errors.length === 0, `aucune erreur dans la console mobile${errors.length ? ` : ${errors.join(' | ')}` : ''}`);
   await ctx.close();
 }

@@ -49,6 +49,8 @@ try {
   renderer = createRenderer(canvas, { lowPower });
 } catch (err) {
   setLoading('Ton navigateur ne peut pas afficher la 3D (WebGL absent ou désactivé). Essaie Chrome, Firefox, Safari ou Edge à jour.');
+  $('loading').classList.add('fatal');
+  window.__earthlife = { error: err };
   throw err;
 }
 const scene = new THREE.Scene();
@@ -91,6 +93,7 @@ function toMenu() {
 }
 
 function setLoading(text) {
+  $('loading').classList.remove('fatal');
   $('loading').classList.toggle('hidden', !text);
   if (text) $('loading-text').textContent = text;
 }
@@ -610,3 +613,5 @@ $('time-mode').addEventListener('change', () => session && applyConditions());
 
 // Accès pour les tests automatisés.
 window.__earthlife = { get session() { return session; }, picker, renderer };
+// Chargement lent : le message « le jeu n'a pas pu se charger » (index.html) a pu s'afficher entre-temps.
+if ($('loading').classList.contains('fatal')) setLoading(null);

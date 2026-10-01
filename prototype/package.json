@@ -11,7 +11,7 @@
   "devDependencies": {
     "@mapbox/vector-tile": "^3.0.0",
     "geojson-vt": "^4.0.3",
-    "maplibre-gl": "^5.24.0",
+    "maplibre-gl": "^6.11.2",
     "pbf": "^5.1.2",
     "three": "0.170.0",
     "vt-pbf": "^3.1.3"

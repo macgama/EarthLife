@@ -1,8 +1,9 @@
 // Choix du point de départ sur la carte du monde : recherche, tap sur la carte, raccourcis, position.
 // MapLibre n'est chargé qu'à l'affichage du menu. Sans carte, la recherche et les raccourcis suffisent.
 
-const MAPLIBRE_JS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js';
-const MAPLIBRE_CSS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css';
+// MapLibre 6 : module ES (son worker est chargé depuis le même CDN). Les versions <= 6.4.0 ont une faille XSS connue.
+const MAPLIBRE_JS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.mjs';
+const MAPLIBRE_CSS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.css';
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 const PHOTON_URL = 'https://photon.komoot.io/api/';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/';
@@ -164,10 +165,9 @@ async function nominatimJson(path, params, signal) {
 }
 
 // ---------- Chargement de MapLibre ----------
-let maplibrePromise = null;
+let maplibrePromise = null, maplibreTries = 0;
 
 function loadMapLibre() {
-  if (window.maplibregl) return Promise.resolve(window.maplibregl);
   if (!maplibrePromise) {
     const css = new Promise((resolve) => {
       let link = document.querySelector(`link[href="${MAPLIBRE_CSS}"]`);
@@ -183,16 +183,11 @@ function loadMapLibre() {
       link.addEventListener('error', resolve, { once: true });
       setTimeout(resolve, 8000);
     });
-    const js = new Promise((resolve, reject) => {
-      let script = document.querySelector(`script[src="${MAPLIBRE_JS}"]`);
-      if (!script) {
-        script = document.createElement('script');
-        script.src = MAPLIBRE_JS;
-        script.async = true;
-        document.head.append(script);
-      }
-      script.addEventListener('load', () => (window.maplibregl ? resolve(window.maplibregl) : reject(new Error('MapLibre absent'))), { once: true });
-      script.addEventListener('error', () => { script.remove(); reject(new Error('MapLibre injoignable')); }, { once: true });
+    // Un import raté reste en mémoire dans certains navigateurs : on change l'adresse pour réessayer.
+    maplibreTries += 1;
+    const js = import(maplibreTries > 1 ? `${MAPLIBRE_JS}?essai=${maplibreTries}` : MAPLIBRE_JS).then((gl) => {
+      if (typeof gl.Map !== 'function') throw new Error('MapLibre absent');
+      return gl;
     });
     maplibrePromise = Promise.all([js, css]).then(([gl]) => gl);
     maplibrePromise.catch(() => { maplibrePromise = null; });
@@ -637,6 +632,19 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     setNote('');
   }
 
+  // Sur téléphone et tablette, la carte est détruite pendant la partie : deux contextes WebGL pèsent trop lourd.
+  // Elle est recréée au retour au menu (style et tuiles viennent alors du cache du navigateur).
+  function releaseMap() {
+    mapAttempt += 1;
+    clearTimeout(mapTimer);
+    try { map?.remove(); } catch { /* déjà détruite */ }
+    map = null;
+    marker = null;
+    markerOnMap = false;
+    mapState = 'idle';
+    root.classList.remove('map-loading');
+  }
+
   function mapReady() {
     if (mapState === 'ready' || !map) return;
     clearTimeout(mapTimer);
@@ -727,6 +735,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
       toggleHelp(false);
       stopSpin();
       map?.stop();
+      if (!finePointer.matches && mapState !== 'failed') releaseMap();
     },
     resize() {
       map?.resize();
