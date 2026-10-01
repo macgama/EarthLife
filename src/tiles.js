@@ -170,6 +170,14 @@ function centroid(ring) {
   return { x: cx / (3 * a), z: cz / (3 * a) };
 }
 
+// Couleur de façade OSM (building:colour) : « af9e82 » sans dièse dans les tuiles, ou un nom (« white »).
+export function cssColour(v) {
+  if (typeof v !== 'string') return null;
+  const t = v.trim().toLowerCase();
+  if (/^#?([0-9a-f]{3}|[0-9a-f]{6})$/.test(t)) return t.startsWith('#') ? t : `#${t}`;
+  return /^[a-z]+$/.test(t) ? t : null;
+}
+
 function buildingHeight(props, seed) {
   const h = Number(props.render_height);
   // OpenMapTiles met 5 m quand OSM ne donne ni hauteur ni étages : on varie un peu pour éviter un village plat.
@@ -234,7 +242,7 @@ export function tileFeatures(layers, tx, ty, z, origin) {
         out.buildings.push({
           id, rings, cx: c.x, cz: c.z, area,
           height: buildingHeight(props, seed), minHeight,
-          colour: typeof props.colour === 'string' ? props.colour : null,
+          colour: cssColour(props.colour),
           bounds: boundsOf([rings[0]]),
         });
       }
