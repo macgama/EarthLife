@@ -76,7 +76,8 @@ select { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(
 .suggestion[aria-selected="true"], .suggestion:not(.info):hover { background: rgba(255, 181, 71, .14); }
 .suggestion.info { cursor: default; color: var(--muted); font-size: 14px; line-height: 1.35; }
 .sheet { display: flex; flex-direction: column; gap: 10px; max-height: 62%; overflow-y: auto; overscroll-behavior: contain; padding: 14px max(12px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); background: var(--panel-solid); border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; box-shadow: 0 -10px 30px rgba(0, 0, 0, .4); }
-.quick { display: flex; flex: none; gap: 8px; overflow-x: auto; scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
+/* Marge de 4 px : le défilement horizontal rognerait sinon le contour de focus des puces. */
+.quick { display: flex; flex: none; gap: 8px; padding: 4px; margin: -4px; overflow-x: auto; scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
 .quick::-webkit-scrollbar { display: none; }
 .pick-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255, 255, 255, .06); color: var(--text); font-size: 15px; font-weight: 500; white-space: nowrap; cursor: pointer; }
 .pick-chip:hover { border-color: rgba(255, 255, 255, .32); }
@@ -104,7 +105,8 @@ select { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(
 /* Téléphone : recherche en haut, panneau en bas ; pendant la saisie le panneau s'efface. */
 @media (max-width: 759px) {
   #menu.searching .sheet, #menu.has-suggestions .sheet { display: none; }
-  #place-suggestions { max-height: calc(100vh - 150px); max-height: calc(100dvh - 150px); }
+  /* --vv-h : hauteur visible au-dessus du clavier virtuel (src/picker.js). */
+  #place-suggestions { max-height: calc(100vh - 150px); max-height: calc(var(--vv-h, 100dvh) - 150px); }
 }
 /* Ordinateur et tablette : carte latérale à gauche, globe à droite. */
 @media (min-width: 760px) {
@@ -135,6 +137,7 @@ select { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(
 .spinner { width: 42px; height: 42px; border-radius: 50%; border: 4px solid var(--line); border-top-color: var(--accent); margin: 0 auto 16px; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 #loading-text { color: var(--muted); max-width: 340px; line-height: 1.4; }
+#loading.fatal .spinner { display: none; }
 
 /* Interface en jeu */
 #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }
@@ -346,5 +349,22 @@ body.touch #controls { display: block; }
 </div>
 
 <script type="module" src="./src/main.js"></script>
+<script>
+  // Navigateur trop ancien, ou jeu impossible à télécharger : on le dit au lieu d'afficher un menu inerte.
+  (function () {
+    function fatal(text) {
+      if (window.__earthlife) return;
+      var box = document.getElementById('loading');
+      box.classList.remove('hidden');
+      box.classList.add('fatal');
+      document.getElementById('loading-text').textContent = text;
+    }
+    if (!(window.HTMLScriptElement && HTMLScriptElement.supports && HTMLScriptElement.supports('importmap'))) {
+      fatal('Ce navigateur est trop ancien pour EarthLife. Mets-le à jour (Safari 16.4, Chrome 89, Firefox 108 ou plus récent).');
+    } else {
+      setTimeout(function () { fatal('Le jeu n’a pas pu se charger. Vérifie ta connexion, puis recharge la page.'); }, 30000);
+    }
+  })();
+</script>
 </body>
 </html>

@@ -127,7 +127,7 @@ function readString(r, end) {
     }
     if (s !== null) return s;
   }
-  if (!utf8) utf8 = new TextDecoder('utf-8');
+  if (!utf8) utf8 = new TextDecoder('utf-8', { ignoreBOM: true }); // garde un U+FEFF en tête de chaîne
   return utf8.decode(buf.subarray(start, end));
 }
 

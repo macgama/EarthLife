@@ -1,8 +1,9 @@
 // Choix du point de départ sur la carte du monde : recherche, tap sur la carte, raccourcis, position.
 // MapLibre n'est chargé qu'à l'affichage du menu. Sans carte, la recherche et les raccourcis suffisent.
 
-const MAPLIBRE_JS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js';
-const MAPLIBRE_CSS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css';
+// MapLibre 6 : module ES (son worker est chargé depuis le même CDN). Les versions <= 6.4.0 ont une faille XSS connue.
+const MAPLIBRE_JS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.mjs';
+const MAPLIBRE_CSS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.css';
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 const PHOTON_URL = 'https://photon.komoot.io/api/';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/';
@@ -14,6 +15,7 @@ const MAP_TIMEOUT_MS = 20000;
 const SUGGEST_DELAY_MS = 350;
 const SUGGEST_MIN_CHARS = 3;
 const NOMINATIM_GAP_MS = 1000; // règle d'usage de Nominatim : une requête par seconde au plus
+const MAX_LAT = 85; // au-delà, plus de tuiles Web Mercator (main.js refuse aussi ces latitudes)
 const SIDE_LAYOUT = '(min-width: 760px)';
 const DEFAULT_NAME = 'Point sur la carte';
 const MAP_LOCALE = {
@@ -34,13 +36,14 @@ const clean = (s) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : ''
 const round6 = (v) => Math.round(v * 1e6) / 1e6;
 const num = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN);
 
-// Valide un lieu et le ramène à { lat, lon, name, area } (longitude repliée entre -180 et 180).
+// Valide un lieu et le ramène à { lat, lon, name, area } (longitude repliée entre -180 et 180,
+// latitude ramenée à ±85° : près des pôles il n'y a ni tuiles ni projection locale utilisable).
 export function normalizePlace(p) {
   if (!p || typeof p !== 'object') return null;
   const lat = num(p.lat), lon = num(p.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90) return null;
   const wrapped = ((((lon + 180) % 360) + 360) % 360) - 180;
-  return { lat: round6(lat), lon: round6(wrapped), name: clean(p.name).slice(0, 120) || DEFAULT_NAME, area: clean(p.area).slice(0, 160) };
+  return { lat: round6(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat))), lon: round6(wrapped), name: clean(p.name).slice(0, 120) || DEFAULT_NAME, area: clean(p.area).slice(0, 160) };
 }
 
 // Morceaux d'adresse uniques, sans répéter le nom du lieu.
@@ -162,10 +165,9 @@ async function nominatimJson(path, params, signal) {
 }
 
 // ---------- Chargement de MapLibre ----------
-let maplibrePromise = null;
+let maplibrePromise = null, maplibreTries = 0;
 
 function loadMapLibre() {
-  if (window.maplibregl) return Promise.resolve(window.maplibregl);
   if (!maplibrePromise) {
     const css = new Promise((resolve) => {
       let link = document.querySelector(`link[href="${MAPLIBRE_CSS}"]`);
@@ -181,16 +183,11 @@ function loadMapLibre() {
       link.addEventListener('error', resolve, { once: true });
       setTimeout(resolve, 8000);
     });
-    const js = new Promise((resolve, reject) => {
-      let script = document.querySelector(`script[src="${MAPLIBRE_JS}"]`);
-      if (!script) {
-        script = document.createElement('script');
-        script.src = MAPLIBRE_JS;
-        script.async = true;
-        document.head.append(script);
-      }
-      script.addEventListener('load', () => (window.maplibregl ? resolve(window.maplibregl) : reject(new Error('MapLibre absent'))), { once: true });
-      script.addEventListener('error', () => { script.remove(); reject(new Error('MapLibre injoignable')); }, { once: true });
+    // Un import raté reste en mémoire dans certains navigateurs : on change l'adresse pour réessayer.
+    maplibreTries += 1;
+    const js = import(maplibreTries > 1 ? `${MAPLIBRE_JS}?essai=${maplibreTries}` : MAPLIBRE_JS).then((gl) => {
+      if (typeof gl.Map !== 'function') throw new Error('MapLibre absent');
+      return gl;
     });
     maplibrePromise = Promise.all([js, css]).then(([gl]) => gl);
     maplibrePromise.catch(() => { maplibrePromise = null; });
@@ -237,7 +234,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
   let visible = false;
   let map = null, gl = null, marker = null, markerOnMap = false;
   let mapState = 'idle'; // idle | loading | ready | failed
-  let mapTimer = 0, mapErrors = 0;
+  let mapTimer = 0, mapErrors = 0, mapAttempt = 0;
   let spinning = false, ignoreClick = false;
   let items = [], active = -1, debounce = 0;
   let suggestCtrl = null, searchCtrl = null, reverseCtrl = null;
@@ -267,6 +264,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     const place = normalizePlace(raw);
     if (!place) return;
     token += 1;
+    cancelSearch();
     reverseCtrl?.abort();
     current = place;
     save(place);
@@ -324,6 +322,13 @@ export function createPicker({ root, cities = [], onChange } = {}) {
   }
 
   // ----- Recherche : Photon pour les suggestions, Nominatim sur validation -----
+  // Annule la recherche en cours : une réponse en retard n'écrase pas un lieu choisi autrement.
+  function cancelSearch() {
+    clearTimeout(debounce);
+    suggestCtrl?.abort();
+    searchCtrl?.abort();
+  }
+
   function openList(entries, info = '') {
     items = entries;
     active = -1;
@@ -445,7 +450,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
       e.preventDefault();
       highlight(e.key === 'ArrowDown' ? (active + 1) % n : (active <= 0 ? n - 1 : active - 1));
     } else if (e.key === 'Escape') {
-      if (!list.hidden) { e.preventDefault(); closeList(); }
+      if (!list.hidden) { e.preventDefault(); cancelSearch(); closeList(); }
       else if (input.value) { e.preventDefault(); input.value = ''; if (clearBtn) clearBtn.hidden = true; }
     }
   });
@@ -490,8 +495,10 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     locateBtn.setAttribute('aria-busy', 'true');
     setNote('Recherche de ta position…');
     const done = () => { locateBtn.disabled = false; locateBtn.removeAttribute('aria-busy'); };
+    const t = token;
     navigator.geolocation.getCurrentPosition((pos) => {
       done();
+      if (t !== token) return; // un autre lieu a été choisi pendant l'attente
       const { latitude: lat, longitude: lon } = pos.coords;
       closeList();
       choose({ lat, lon, name: 'Ma position', area: coordLabel(lat, lon) }, { zoom: PLACE_ZOOM, reverse: true });
@@ -553,6 +560,13 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     layoutFrame = requestAnimationFrame(() => { if (visible) updateLayout(); });
   };
   window.addEventListener('resize', onWindowResize);
+  // Clavier virtuel : il recouvre le bas de l'écran sans changer sa taille ; les suggestions restent au-dessus.
+  const vv = window.visualViewport;
+  if (vv) {
+    const onViewport = () => root.style.setProperty('--vv-h', `${Math.round(vv.height)}px`);
+    vv.addEventListener('resize', onViewport);
+    onViewport();
+  }
   if (typeof ResizeObserver === 'function') {
     // Les crédits de la carte restent au-dessus du panneau du bas, sans déplacer la carte.
     const ro = new ResizeObserver(() => { if (visible) updateLayout({ padding: false }); });
@@ -618,6 +632,19 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     setNote('');
   }
 
+  // Sur téléphone et tablette, la carte est détruite pendant la partie : deux contextes WebGL pèsent trop lourd.
+  // Elle est recréée au retour au menu (style et tuiles viennent alors du cache du navigateur).
+  function releaseMap() {
+    mapAttempt += 1;
+    clearTimeout(mapTimer);
+    try { map?.remove(); } catch { /* déjà détruite */ }
+    map = null;
+    marker = null;
+    markerOnMap = false;
+    mapState = 'idle';
+    root.classList.remove('map-loading');
+  }
+
   function mapReady() {
     if (mapState === 'ready' || !map) return;
     clearTimeout(mapTimer);
@@ -636,13 +663,15 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     mapErrors = 0;
     root.classList.add('map-loading');
     mapTimer = setTimeout(() => { if (mapState === 'loading') failMap(new Error('délai dépassé')); }, MAP_TIMEOUT_MS);
+    // Un essai abandonné (délai dépassé) ne doit pas créer une seconde carte quand MapLibre finit par arriver.
+    const attempt = ++mapAttempt;
     try {
       gl = await loadMapLibre();
     } catch (err) {
-      failMap(err);
+      if (attempt === mapAttempt) failMap(err);
       return;
     }
-    if (mapState !== 'loading') return;
+    if (mapState !== 'loading' || attempt !== mapAttempt) return;
     const m = measure();
     try {
       map = new gl.Map({
@@ -706,6 +735,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
       toggleHelp(false);
       stopSpin();
       map?.stop();
+      if (!finePointer.matches && mapState !== 'failed') releaseMap();
     },
     resize() {
       map?.resize();
