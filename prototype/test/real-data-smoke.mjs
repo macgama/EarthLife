@@ -18,7 +18,7 @@ for (const id of ids) {
   const report = { city: city.name };
   try {
     let t = performance.now();
-    const osm = await fetchOsm(city.lat, city.lon, RADIUS, {});
+    const osm = await fetchOsm(city.lat, city.lon, RADIUS, { onStatus: (m) => { report.overpass = m; } });
     report.overpassSeconds = +((performance.now() - t) / 1000).toFixed(1);
     report.elements = osm.elements.length;
     report.jsonMB = +(JSON.stringify(osm).length / 1e6).toFixed(1);

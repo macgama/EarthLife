@@ -1,10 +1,15 @@
 // Chargement des vraies cartes OpenStreetMap (API Overpass) et conversion en géométrie de jeu.
 import { bboxAround, makeProjection, polygonArea } from './geo.js';
 
+// Serveurs Overpass publics, essayés dans l'ordre : le premier est souvent saturé (erreur 429).
 export const OVERPASS_SERVERS = [
   'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
+const OSM_CACHE = 'earthlife-osm-v1';
+const OSM_CACHE_MS = 7 * 24 * 3600 * 1000;
 
 export function overpassQuery(bbox) {
   const b = `${bbox.south.toFixed(5)},${bbox.west.toFixed(5)},${bbox.north.toFixed(5)},${bbox.east.toFixed(5)}`;
@@ -27,25 +32,82 @@ export function overpassQuery(bbox) {
 out geom qt;`;
 }
 
-export async function fetchOsm(lat, lon, radius, { signal, onStatus } = {}) {
+// Les rues changent peu : on garde la réponse une semaine dans le cache du navigateur,
+// ce qui rend le rechargement instantané et ménage les serveurs gratuits.
+function cacheKey(lat, lon, radius) {
+  const base = globalThis.location?.href ?? 'https://earthlife.local/';
+  return new URL(`__osm/${lat.toFixed(4)}_${lon.toFixed(4)}_${radius}.json`, base).href;
+}
+
+async function readCache(key) {
+  try {
+    if (!globalThis.caches) return null;
+    const res = await (await caches.open(OSM_CACHE)).match(key);
+    if (!res) return null;
+    const saved = Number(res.headers.get('x-saved-at'));
+    if (!(Date.now() - saved < OSM_CACHE_MS)) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function writeCache(key, text) {
+  try {
+    if (!globalThis.caches) return;
+    const headers = { 'Content-Type': 'application/json', 'x-saved-at': String(Date.now()) };
+    await (await caches.open(OSM_CACHE)).put(key, new Response(text, { headers }));
+  } catch {
+    // Cache plein ou indisponible (navigation privée) : on s'en passe.
+  }
+}
+
+function pause(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason ?? new Error('Annulé')); }, { once: true });
+  });
+}
+
+export async function fetchOsm(lat, lon, radius, { signal, onStatus, servers = OVERPASS_SERVERS, rounds = 2 } = {}) {
+  const key = cacheKey(lat, lon, radius);
+  const cached = await readCache(key);
+  if (cached?.elements?.length) {
+    onStatus?.('Rues chargées depuis le cache');
+    return cached;
+  }
   const body = 'data=' + encodeURIComponent(overpassQuery(bboxAround(lat, lon, radius)));
   let lastError;
-  for (const url of OVERPASS_SERVERS) {
-    try {
-      onStatus?.(`Téléchargement des rues depuis ${new URL(url).host}…`);
-      const res = await fetch(url, {
-        method: 'POST',
-        body,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        signal,
-      });
-      if (!res.ok) throw new Error(`Overpass a répondu ${res.status}`);
-      const json = await res.json();
-      if (!json.elements?.length) throw new Error('Aucune donnée OpenStreetMap pour cette zone');
-      return json;
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      lastError = err;
+  for (let round = 0; round < rounds; round++) {
+    if (round > 0) {
+      onStatus?.('Serveurs de cartes saturés, nouvel essai…');
+      await pause(3000 * round, signal);
+    }
+    for (const url of servers) {
+      try {
+        onStatus?.(`Téléchargement des rues depuis ${new URL(url).host}…`);
+        const res = await fetch(url, {
+          method: 'POST',
+          body,
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          signal,
+        });
+        if (!res.ok) throw new Error(`Overpass a répondu ${res.status}`);
+        const text = await res.text();
+        const json = JSON.parse(text);
+        if (json.remark && !json.elements?.length) throw new Error(`Overpass : ${json.remark}`);
+        if (!json.elements?.length) {
+          // Réponse valide mais vide (en pleine mer par exemple) : inutile d'insister.
+          const empty = new Error('Aucune donnée OpenStreetMap pour cette zone');
+          empty.final = true;
+          throw empty;
+        }
+        await writeCache(key, text);
+        return json;
+      } catch (err) {
+        if (signal?.aborted || err.final) throw err;
+        lastError = err;
+      }
     }
   }
   throw lastError ?? new Error('Overpass injoignable');

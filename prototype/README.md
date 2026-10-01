@@ -6,7 +6,13 @@ Jeux de référence donnés par Gaël : As One We Survive, Project Zomboid, Don'
 
 Le document de game design qui fixe ce périmètre : https://claude.ai/code/artifact/d5aa4bea-d219-46a8-8e94-1766864dadeb
 
-## Lancer
+## Jouer en ligne
+
+Chaque modification poussée sur la branche du prototype est testée puis publiée sur la branche `gh-pages` par `.github/workflows/prototype.yml`. Une fois GitHub Pages activé (Settings, Pages, « Deploy from a branch », branche `gh-pages`, dossier `/ (root)`), le jeu est jouable à l'adresse https://macgama.github.io/EarthLife/.
+
+Les rues téléchargées sont gardées une semaine dans le cache du navigateur. Si tous les serveurs Overpass sont saturés, le jeu bascule sur une ville générée et le dit dans le panneau des conditions.
+
+## Lancer sur sa machine
 
 Aucune compilation. Il suffit de servir le dossier en HTTP :
 
