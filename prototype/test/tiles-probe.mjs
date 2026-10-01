@@ -1,7 +1,7 @@
 // Sonde les tuiles vectorielles OpenFreeMap et les services de recherche de lieux depuis la CI
 // (le bac à sable de développement n'a pas accès à Internet). Informatif : n'échoue jamais.
 import { VectorTile } from '@mapbox/vector-tile';
-import Pbf from 'pbf';
+import { PbfReader } from 'pbf';
 
 const ORIGIN = 'https://macgama.github.io';
 const out = (label, data) => console.log(label, JSON.stringify(data));
@@ -68,7 +68,7 @@ async function probeTile(template, label, lat, lon, z = 14) {
       cors: res.headers.get('access-control-allow-origin'), cache: res.headers.get('cache-control'),
     };
     if (!res.ok) return out('tile', info);
-    const tile = new VectorTile(new Pbf(buf));
+    const tile = new VectorTile(new PbfReader(buf));
     out('tile', info);
     out(`layers-${label}`, summarize(tile));
   } catch (err) {
