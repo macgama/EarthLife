@@ -1,68 +1,55 @@
 // Quête de livraison A vers B : aller chercher des médicaments et les apporter, avant la limite de temps.
-import { nearestFree, walkDistances } from './collision.js';
+// Le monde se charge au fil de la marche : les distances sont estimées à vol d'oiseau, avec un détour moyen.
 
-const PICKUP_PREFS = ['pharmacy', 'supermarket', 'convenience', 'hardware', 'clinic'];
+const PICKUP_PREFS = ['pharmacy', 'supermarket', 'convenience', 'hardware', 'clinic', 'outdoor', 'doctors', 'food', 'clothes'];
 const DROPOFF_PREFS = ['hospital', 'clinic', 'fire_station', 'police', 'townhall', 'school', 'station'];
+const DETOUR = 1.3; // rues réelles : environ 30 % de plus que la ligne droite
 
 const ITEMS = {
   pharmacy: 'une caisse de médicaments',
   supermarket: 'des vivres',
   convenience: 'des vivres',
+  food: 'des vivres',
   hardware: 'une radio et des piles',
+  outdoor: 'du matériel de survie',
+  clothes: 'des vêtements chauds',
   clinic: 'une trousse de soins',
+  doctors: 'une trousse de soins',
 };
 
-// Choisit un point A et un point B réels, atteignables à pied, à une distance jouable.
-export function planDelivery(world, grid, start, { minLeg = 150, maxLeg = 650, rand = Math.random } = {}) {
-  const fromStart = walkDistances(grid, start);
-  const candidates = world.pois
-    .map((p) => ({ ...p, spot: nearestFree(grid, p.x, p.z, 40) }))
-    .filter((p) => p.spot && Number.isFinite(fromStart.at(p.spot.x, p.spot.z)));
-
+// Choisit un point A et un point B réels à une distance jouable du départ.
+export function planDelivery(pois, start, { minLeg = 150, maxLeg = 650, rand = Math.random } = {}) {
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z) * DETOUR;
   const rank = (prefs, kind) => {
     const i = prefs.indexOf(kind);
     return i === -1 ? prefs.length : i;
   };
-
+  const candidates = pois.filter((p) => p.kind !== 'subway_entrance');
   const pickups = candidates
-    .filter((p) => {
-      const d = fromStart.at(p.spot.x, p.spot.z);
-      return d >= minLeg * 0.5 && d <= maxLeg;
-    })
+    .filter((p) => rank(PICKUP_PREFS, p.kind) < PICKUP_PREFS.length)
+    .filter((p) => { const d = dist(start, p); return d >= minLeg * 0.5 && d <= maxLeg; })
     .sort((a, b) => rank(PICKUP_PREFS, a.kind) - rank(PICKUP_PREFS, b.kind) || rand() - 0.5);
 
-  for (const pickup of pickups.slice(0, 6)) {
-    const fromPickup = walkDistances(grid, pickup.spot);
+  for (const pickup of pickups.slice(0, 8)) {
     const dropoffs = candidates
-      .filter((p) => p.id !== pickup.id)
-      .map((p) => ({ ...p, leg: fromPickup.at(p.spot.x, p.spot.z) }))
+      .filter((p) => p.id !== pickup.id && (p.building === undefined || p.building < 0 || p.building !== pickup.building))
+      .map((p) => ({ ...p, leg: dist(pickup, p) }))
       .filter((p) => p.leg >= minLeg && p.leg <= maxLeg * 1.4)
       .sort((a, b) => rank(DROPOFF_PREFS, a.kind) - rank(DROPOFF_PREFS, b.kind) || rand() - 0.5);
-    if (dropoffs.length) {
-      return makeQuest(pickup, dropoffs[0], fromStart.at(pickup.spot.x, pickup.spot.z), dropoffs[0].leg);
-    }
+    if (dropoffs.length) return makeQuest(pickup, dropoffs[0], dist(start, pickup), dropoffs[0].leg);
   }
 
-  // Pas assez de lieux réels atteignables : on place des points génériques sur des cases libres.
-  const a = spotAtDistance(grid, fromStart, start, 250, rand);
-  if (!a) return null;
-  const fromA = walkDistances(grid, a);
-  const b = spotAtDistance(grid, fromA, a, 300, rand);
-  if (!b) return null;
+  // Pas assez de lieux réels (campagne, petit village) : points génériques, recalés sur une case libre
+  // quand leur morceau de monde est chargé.
+  const ang = rand() * Math.PI * 2;
+  const a = { x: start.x + Math.cos(ang) * 250, z: start.z + Math.sin(ang) * 250 };
+  const ang2 = ang + (rand() - 0.5) * 2.2;
+  const b = { x: a.x + Math.cos(ang2) * 300, z: a.z + Math.sin(ang2) * 300 };
   return makeQuest(
-    { id: 'gen-a', kind: 'pharmacy', label: 'Pharmacie', name: 'Pharmacie abandonnée', spot: a },
-    { id: 'gen-b', kind: 'hospital', label: 'Abri', name: 'Abri des survivants', spot: b },
-    fromStart.at(a.x, a.z), fromA.at(b.x, b.z),
+    { id: 'gen-a', kind: 'pharmacy', label: 'Pharmacie', name: 'Pharmacie abandonnée', x: a.x, z: a.z, building: -1, generic: true },
+    { id: 'gen-b', kind: 'hospital', label: 'Abri', name: 'Abri des survivants', x: b.x, z: b.z, building: -1, generic: true },
+    dist(start, a), dist(a, b),
   );
-}
-
-function spotAtDistance(grid, field, from, target, rand) {
-  for (let tries = 0; tries < 400; tries++) {
-    const ang = rand() * Math.PI * 2, r = target * (0.6 + rand() * 0.8);
-    const s = nearestFree(grid, from.x + Math.cos(ang) * r, from.z + Math.sin(ang) * r, 20);
-    if (s && Number.isFinite(field.at(s.x, s.z)) && field.at(s.x, s.z) > target * 0.5) return s;
-  }
-  return null;
 }
 
 function makeQuest(pickup, dropoff, legA, legB) {
@@ -70,8 +57,8 @@ function makeQuest(pickup, dropoff, legA, legB) {
   const walk = legA + legB;
   const timeLimit = Math.round(Math.max(90, (walk / 6) * 1.8 + 30));
   return {
-    pickup: { ...pickup, x: pickup.spot.x, z: pickup.spot.z },
-    dropoff: { ...dropoff, x: dropoff.spot.x, z: dropoff.spot.z },
+    pickup: { ...pickup, x: pickup.x, z: pickup.z, snapped: !pickup.generic },
+    dropoff: { ...dropoff, x: dropoff.x, z: dropoff.z, snapped: !dropoff.generic },
     item: ITEMS[pickup.kind] ?? 'une caisse de médicaments',
     walkDistance: Math.round(walk),
     timeLimit,
@@ -84,14 +71,14 @@ export function questText(q) {
   return `Récupère ${q.item} ${placeWith('à', q.pickup)}, puis livre ta cargaison ${placeWith('à', q.dropoff)}.`;
 }
 
-const FEMININE = new Set(['Pharmacie', 'Gare', 'Mairie', 'Caserne de pompiers', 'Clinique', 'Bouche de métro', 'Station-service', 'Épicerie', 'Quincaillerie']);
+const FEMININE = new Set(['Pharmacie', 'Gare', 'Mairie', 'Caserne de pompiers', 'Clinique', 'Bouche de métro', 'Station-service', 'Épicerie', 'Quincaillerie', 'Banque']);
 
 // « à la pharmacie », « au supermarché », « à l'hôpital », avec le nom réel quand OSM le donne.
 export function placeWith(prep, place) {
   const label = place.label.toLowerCase();
   const article = (word) => (/^[aeiouyéèh]/i.test(word) ? `${prep} l'` : FEMININE.has(place.label) ? `${prep} la ` : prep === 'à' ? 'au ' : `${prep} le `);
-  // Nom réel qui contient déjà le type (« Pharmacie Bellecour ») : on ne le répète pas.
-  if (place.name && place.name !== place.label && place.name.toLowerCase().includes(label)) {
+  // Nom réel qui commence déjà par le type (« Pharmacie Bellecour ») : on ne le répète pas.
+  if (place.name && place.name !== place.label && place.name.toLowerCase().startsWith(label)) {
     return `${article(place.name)}${place.name}`.trim();
   }
   let head;
@@ -101,7 +88,8 @@ export function placeWith(prep, place) {
   return place.name && place.name !== place.label ? `${head} « ${place.name} »` : head;
 }
 
-export function updateQuest(q, player, dt, reach = 6) {
+// `touching` : indice du bâtiment contre lequel se tient le joueur (un grand hôpital compte dès sa façade).
+export function updateQuest(q, player, dt, { reach = 6, touching = null } = {}) {
   if (q.stage === 'done' || q.stage === 'failed') return null;
   q.elapsed += dt;
   if (q.elapsed >= q.timeLimit) {
@@ -109,7 +97,8 @@ export function updateQuest(q, player, dt, reach = 6) {
     return 'timeout';
   }
   const target = q.stage === 'toPickup' ? q.pickup : q.dropoff;
-  if (Math.hypot(player.x - target.x, player.z - target.z) <= reach) {
+  const atBuilding = touching !== null && touching !== undefined && target.building >= 0 && touching === target.building;
+  if (atBuilding || Math.hypot(player.x - target.x, player.z - target.z) <= reach) {
     if (q.stage === 'toPickup') {
       q.stage = 'toDropoff';
       return 'picked';

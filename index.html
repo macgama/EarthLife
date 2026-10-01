@@ -25,20 +25,104 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .hidden { display: none !important; }
 
-/* Écran d'accueil */
-#menu { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; background: radial-gradient(circle at 30% 20%, #23324d, #0b0f18 70%); z-index: 20; overflow-y: auto; }
 .card { width: min(460px, 100%); background: var(--panel-solid); border: 1px solid var(--line); border-radius: 16px; padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
 .card h1, #end h2, #conditions .place, #quest .stage, .primary { font-family: 'Chakra Petch', 'Barlow', system-ui, sans-serif; }
-.card h1 { margin: 0; font-size: 34px; letter-spacing: -0.02em; }
-.card h1 span { color: var(--accent); }
-.card p.lead { margin: 6px 0 20px; color: var(--muted); line-height: 1.45; font-size: 15px; }
-label.field { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 select, button { font: inherit; }
 select { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: #0d1320; color: var(--text); font-size: 16px; }
 .primary { width: 100%; margin-top: 22px; padding: 14px; border: 0; border-radius: 12px; background: var(--accent); color: #1b1300; font-weight: 700; font-size: 17px; cursor: pointer; }
 .primary:active { transform: translateY(1px); }
 .help { margin-top: 16px; font-size: 13px; color: var(--muted); line-height: 1.5; }
 .help b { color: var(--text); font-weight: 600; }
+
+/* Écran d'accueil : choix du lieu de départ sur la carte du monde (src/picker.js) */
+#menu { position: fixed; inset: 0; z-index: 20; overflow: hidden; background: radial-gradient(circle at 62% 45%, #23324d, #0b0f18 70%); --sheet-h: 0px; }
+#menu [hidden] { display: none !important; }
+#menu :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#picker-map { position: absolute; inset: 0; background: radial-gradient(circle at 62% 45%, #1c2940, #06090f 72%); }
+#menu.no-map #picker-map { display: none; }
+.map-fallback { display: none; position: absolute; inset: var(--map-top, 0px) 0 var(--sheet-h, 0px) var(--map-left, 0px); place-items: center; color: rgba(255, 255, 255, .13); pointer-events: none; }
+.map-fallback svg { width: min(52vmin, 280px); height: auto; }
+#menu.no-map .map-fallback { display: grid; }
+#menu.help-open::after { content: ''; position: absolute; inset: 0; z-index: 4; background: rgba(6, 9, 15, .6); }
+#picker-map .maplibregl-ctrl-bottom-right, #picker-map .maplibregl-ctrl-bottom-left { bottom: var(--sheet-h); }
+#picker-map .maplibregl-ctrl-attrib { font-size: 11px; }
+.start-marker { filter: drop-shadow(0 3px 4px rgba(0, 0, 0, .5)); }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.menu-ui { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; }
+.menu-ui > * { pointer-events: auto; }
+.menu-top { padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 12px max(12px, env(safe-area-inset-left)); background: var(--panel-solid); border-bottom: 1px solid var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+.brand-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.brand-row h1 { margin: 0; font-family: 'Chakra Petch', 'Barlow', system-ui, sans-serif; font-size: 24px; line-height: 1; letter-spacing: -0.02em; }
+.brand-row h1 span { color: var(--accent); }
+.text-button { min-height: 44px; padding: 0 4px; border: 0; background: none; color: var(--muted); font-size: 14px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.text-button:hover { color: var(--text); }
+.menu-top .lead { display: none; margin: 6px 0 14px; color: var(--muted); font-size: 14.5px; line-height: 1.45; }
+.search-box { display: flex; align-items: center; margin-top: 4px; background: #0d1320; border: 1px solid var(--line); border-radius: 12px; }
+.search-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255, 181, 71, .18); }
+.search-box > svg { flex: none; margin-left: 12px; color: var(--muted); }
+#place-search { flex: 1; min-width: 0; height: 48px; padding: 0 4px 0 10px; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; font-size: 16px; -webkit-user-select: text; user-select: text; -webkit-appearance: none; appearance: none; }
+#place-search::placeholder { color: #7d889c; }
+#place-search:focus-visible { outline: none; }
+#place-search::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+.icon-button { flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 10px; background: none; color: var(--muted); cursor: pointer; }
+.icon-button:hover { color: var(--text); }
+.search-go { margin-right: 2px; color: var(--accent); }
+#place-suggestions { list-style: none; margin: 8px 0 0; padding: 4px; max-height: min(60vh, 380px); overflow-y: auto; overscroll-behavior: contain; background: #0d1320; border: 1px solid var(--line); border-radius: 12px; }
+.suggestion { display: flex; flex-direction: column; justify-content: center; min-height: 52px; padding: 7px 12px; border-radius: 8px; cursor: pointer; }
+.suggestion + .suggestion { margin-top: 2px; }
+.s-name, .s-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s-name { font-size: 16px; font-weight: 600; }
+.s-detail { margin-top: 1px; font-size: 13px; color: var(--muted); }
+.suggestion[aria-selected="true"], .suggestion:not(.info):hover { background: rgba(255, 181, 71, .14); }
+.suggestion.info { cursor: default; color: var(--muted); font-size: 14px; line-height: 1.35; }
+.sheet { display: flex; flex-direction: column; gap: 10px; max-height: 62%; overflow-y: auto; overscroll-behavior: contain; padding: 14px max(12px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); background: var(--panel-solid); border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; box-shadow: 0 -10px 30px rgba(0, 0, 0, .4); }
+.quick { display: flex; flex: none; gap: 8px; overflow-x: auto; scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
+.quick::-webkit-scrollbar { display: none; }
+.pick-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255, 255, 255, .06); color: var(--text); font-size: 15px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.pick-chip:hover { border-color: rgba(255, 255, 255, .32); }
+.pick-chip[aria-pressed="true"] { border-color: var(--accent); background: rgba(255, 181, 71, .16); color: #ffd28c; }
+.pick-chip.locate { border-color: rgba(95, 183, 255, .55); color: #c4e4ff; }
+.pick-chip:disabled { opacity: .6; cursor: progress; }
+.place-line { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+#place-name { font-family: 'Chakra Petch', 'Barlow', system-ui, sans-serif; font-size: 18px; font-weight: 700; color: var(--text); }
+#place-area:not(:empty)::before { content: '· '; }
+.place-line .place-empty { display: none; }
+.place-line.empty > :not(.place-empty) { display: none; }
+.place-line.empty .place-empty { display: inline; }
+.picker-note { margin: -4px 0 0; color: var(--muted); font-size: 13px; line-height: 1.35; }
+.picker-note:empty { display: none; }
+.picker-note.warn { color: var(--accent); }
+.options { display: grid; gap: 8px; }
+.opt { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.opt select { min-height: 44px; padding: 9px 10px; }
+#menu .primary { margin-top: 2px; }
+#menu .primary:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+#help { position: absolute; z-index: 5; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(460px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; margin: 0; padding: 14px 20px 20px; background: var(--panel-solid); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 20px 60px rgba(0, 0, 0, .55); font-size: 14px; }
+.help-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.help-head h2 { margin: 0; color: var(--text); font-family: 'Chakra Petch', 'Barlow', system-ui, sans-serif; font-size: 20px; }
+.help-head .icon-button { margin-right: -10px; }
+/* Téléphone : recherche en haut, panneau en bas ; pendant la saisie le panneau s'efface. */
+@media (max-width: 759px) {
+  #menu.searching .sheet, #menu.has-suggestions .sheet { display: none; }
+  #place-suggestions { max-height: calc(100vh - 150px); max-height: calc(100dvh - 150px); }
+}
+/* Ordinateur et tablette : carte latérale à gauche, globe à droite. */
+@media (min-width: 760px) {
+  .menu-ui { inset: 16px auto auto 16px; width: 400px; max-height: calc(100% - 32px); justify-content: flex-start; overflow-y: auto; overscroll-behavior: contain; background: var(--panel-solid); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 20px 60px rgba(0, 0, 0, .45); pointer-events: auto; }
+  .menu-top { padding: 18px 20px 2px; background: none; border: 0; box-shadow: none; }
+  .brand-row h1 { font-size: 32px; }
+  .menu-top .lead { display: block; }
+  .sheet { max-height: none; overflow: visible; padding: 14px 20px 20px; background: none; border: 0; border-radius: 0; box-shadow: none; }
+  .quick { flex-wrap: wrap; overflow: visible; -webkit-mask-image: none; mask-image: none; }
+  .pick-chip { min-height: 36px; padding: 0 12px; font-size: 14.5px; }
+  .suggestion { min-height: 46px; }
+  /* Les suggestions recouvrent la carte latérale au lieu de la pousser. */
+  #place-form { position: relative; }
+  #place-suggestions { position: absolute; z-index: 3; top: 100%; left: 0; right: 0; box-shadow: 0 18px 40px rgba(0, 0, 0, .5); }
+}
+@media (min-width: 760px) and (pointer: coarse) {
+  .pick-chip { min-height: 44px; }
+}
 
 /* Chargement */
 #loading { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(8, 11, 18, .88); z-index: 30; padding: 16px; text-align: center; }
@@ -135,32 +219,64 @@ body.touch #controls { display: block; }
 <canvas id="view"></canvas>
 
 <div id="menu">
-  <div class="card">
-    <h1>Earth<span>Life</span></h1>
-    <p class="lead">Prototype jouable. Les rues viennent d'OpenStreetMap, la météo et l'heure sont celles de la ville en ce moment même.</p>
-    <label class="field" for="city">Ville de départ</label>
-    <select id="city"></select>
-    <label class="field" for="weather-mode">Météo</label>
-    <select id="weather-mode">
-      <option value="live">Météo réelle en direct</option>
-      <option value="clear">Forcer : ciel dégagé</option>
-      <option value="rain">Forcer : pluie</option>
-      <option value="storm">Forcer : orage</option>
-      <option value="snow">Forcer : neige</option>
-      <option value="fog">Forcer : brouillard</option>
-    </select>
-    <label class="field" for="time-mode">Heure</label>
-    <select id="time-mode">
-      <option value="live">Heure réelle de la ville</option>
-      <option value="day">Forcer : midi</option>
-      <option value="night">Forcer : nuit</option>
-    </select>
-    <button class="primary" id="play">Jouer</button>
-    <div class="help">
-      <b>Survivre :</b> surveille ta faim, ta soif et ta température, qui suit la vraie météo. Fouille les vrais bâtiments : une pharmacie donne des médicaments, un supermarché de quoi manger.<br>
-      <b>Ordinateur :</b> ZQSD ou flèches pour bouger, Maj pour courir, Espace ou clic pour frapper, E pour fouiller, 1 à 4 pour manger, boire, se soigner, se réchauffer, glisser la souris pour tourner la caméra.<br>
-      <b>Mobile :</b> pouce gauche pour bouger, glisser à droite pour la caméra, boutons à l'écran pour le reste.
+  <!-- Carte du monde : le joueur choisit son départ n'importe où sur Terre (src/picker.js). -->
+  <div id="picker-map" role="region" aria-label="Carte du monde : touche un endroit pour y commencer"></div>
+  <div class="map-fallback" aria-hidden="true"><svg viewBox="0 0 100 100"><g fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="50" cy="50" r="46"/><ellipse cx="50" cy="50" rx="18" ry="46"/><ellipse cx="50" cy="50" rx="34" ry="46"/><path d="M50 4v92M4 50h92M8.6 30h82.8M8.6 70h82.8"/></g></svg></div>
+  <div class="menu-ui">
+    <div class="menu-top">
+      <div class="brand-row">
+        <h1>Earth<span>Life</span></h1>
+        <button type="button" class="text-button" id="help-toggle" aria-expanded="false" aria-controls="help">Comment jouer ?</button>
+      </div>
+      <p class="lead">Choisis ton point de départ n'importe où sur Terre : une ville, un village, ou touche simplement la carte. Les rues viennent d'OpenStreetMap, la météo et l'heure sont celles du lieu en ce moment même.</p>
+      <form id="place-form" role="search" autocomplete="off">
+        <label class="sr-only" for="place-search">Chercher un lieu de départ</label>
+        <div class="search-box">
+          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          <input id="place-search" type="search" placeholder="Ville, village ou adresse…" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="place-suggestions" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <button type="button" class="icon-button" id="place-clear" aria-label="Effacer la recherche" hidden><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+          <button type="submit" class="icon-button search-go" aria-label="Chercher"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        </div>
+        <ul id="place-suggestions" role="listbox" aria-label="Lieux trouvés" hidden></ul>
+      </form>
     </div>
+    <section class="sheet" aria-label="Lieu de départ et réglages">
+      <div class="quick" id="quick" role="group" aria-label="Raccourcis">
+        <button type="button" class="pick-chip locate" id="locate"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Autour de moi</button>
+      </div>
+      <p class="place-line empty" id="place-line" aria-live="polite"><span class="place-empty">Touche la carte ou cherche un lieu pour choisir ton départ.</span><span class="place-label">Départ :</span> <strong id="place-name"></strong> <span id="place-area"></span></p>
+      <p class="picker-note" id="picker-note" role="status" aria-live="polite"></p>
+      <div class="options">
+        <label class="opt"><span>Météo</span>
+          <select id="weather-mode">
+            <option value="live">Météo réelle en direct</option>
+            <option value="clear">Forcer : ciel dégagé</option>
+            <option value="rain">Forcer : pluie</option>
+            <option value="storm">Forcer : orage</option>
+            <option value="snow">Forcer : neige</option>
+            <option value="fog">Forcer : brouillard</option>
+          </select>
+        </label>
+        <label class="opt"><span>Heure</span>
+          <select id="time-mode">
+            <option value="live">Heure réelle du lieu</option>
+            <option value="day">Forcer : midi</option>
+            <option value="night">Forcer : nuit</option>
+          </select>
+        </label>
+      </div>
+      <button class="primary" id="play" disabled>Jouer ici</button>
+    </section>
+  </div>
+  <div id="help" class="help" role="dialog" aria-labelledby="help-title" hidden>
+    <div class="help-head">
+      <h2 id="help-title">Comment jouer</h2>
+      <button type="button" class="icon-button" id="help-close" aria-label="Fermer l'aide"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+    </div>
+    <b>Choisir son départ :</b> cherche une ville, un village ou une adresse, touche la carte, ou prends un raccourci. Les rues et les bâtiments du lieu sont ceux d'OpenStreetMap.<br>
+    <b>Survivre :</b> surveille ta faim, ta soif et ta température, qui suit la vraie météo. Fouille les vrais bâtiments : une pharmacie donne des médicaments, un supermarché de quoi manger.<br>
+    <b>Ordinateur :</b> ZQSD ou flèches pour bouger, Maj pour courir, Espace ou clic pour frapper, E pour fouiller, 1 à 4 pour manger, boire, se soigner, se réchauffer, glisser la souris pour tourner la caméra.<br>
+    <b>Mobile :</b> pouce gauche pour bouger, glisser à droite pour la caméra, boutons à l'écran pour le reste.
   </div>
 </div>
 
