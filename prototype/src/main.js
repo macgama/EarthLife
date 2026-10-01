@@ -4,8 +4,9 @@ import { CITIES } from './cities.js';
 import { fetchOsm, buildWorldData, proceduralWorld } from './osm.js';
 import { fetchWeather, forcedWeather, gameplayModifiers } from './weather.js';
 import { sunPosition, localTimeLabel } from './sun.js';
-import { buildGrid, isFree, nearestFree, getAt, BUILDING } from './collision.js';
-import { createRenderer, buildCity, makeCharacterGeometry, makeBeacon } from './scene.js';
+import { buildGrid, isFree, nearestFree, getAt, BUILDING, buildingNear, buildingAt } from './collision.js';
+import { createSurvivor, updateSurvivor, rollLoot, addLoot, lootLabel, useBest, count, lootKind, ITEMS } from './survival.js';
+import { createRenderer, buildCity, makeCharacterGeometry, makeBeacon, cutaway } from './scene.js';
 import { createAtmosphere } from './atmosphere.js';
 import { createInput } from './input.js';
 import { createPlayer, createZombieDirector, updatePlayer, playerAttack, urbanDensity, targetZombieCount, ZOMBIE_TYPES, normalizeAngle } from './game.js';
@@ -15,6 +16,7 @@ const RADIUS = 700;
 const WEATHER_REFRESH_MS = 15 * 60 * 1000;
 const $ = (id) => document.getElementById(id);
 const lowPower = window.matchMedia('(pointer: coarse)').matches || Math.min(window.innerWidth, window.innerHeight) < 600;
+if (window.matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
 
 // ---------- Menu ----------
 const citySelect = $('city');
@@ -31,9 +33,13 @@ if (params.get('time')) $('time-mode').value = params.get('time');
 const canvas = $('view');
 const renderer = createRenderer(canvas, { lowPower });
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(60, 1, 0.3, 1500);
+const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000);
+// Caméra isométrique, comme Project Zomboid, Dysmantle ou HumanitZ.
+const CAM = { dist: 28, pitch: 1.0, minPitch: 0.6, maxPitch: 1.35, steep: 1.3 };
+const SEARCH_TIME = 2.2;
+const BUILDING_LABELS = { house: 'Habitation', retail: 'Commerce', commercial: 'Bureaux', industrial: 'Entrepôt', school: 'École', station: 'Gare', pharmacy: 'Pharmacie', clinic: 'Clinique', hospital: 'Hôpital', supermarket: 'Supermarché', convenience: 'Épicerie', hardware: 'Quincaillerie', police: 'Commissariat', fire_station: 'Caserne de pompiers' };
 const atmosphere = createAtmosphere(scene, { lowPower });
-const input = createInput(canvas, { stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), autoRun: true });
+const input = createInput(canvas, { stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'), useButtons: [...document.querySelectorAll('#inventory .chip')], autoRun: true });
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -156,6 +162,12 @@ function buildSession(city, world, liveWeather) {
   playerMesh.add(body, batPivot, pack);
   root.add(playerMesh);
 
+  // Le butin d'un bâtiment dépend du lieu réel qu'il abrite (pharmacie, supermarché…) ou de son type OSM.
+  for (const b of world.buildings) b.loot = lootKind(b.kind);
+  for (const poi of world.pois) {
+    const k = buildingAt(grid, poi.x, poi.z) ?? buildingNear(grid, poi.x, poi.z, 8);
+    if (k !== null) { world.buildings[k].loot = lootKind(poi.kind); world.buildings[k].name = poi.name; }
+  }
   const start = nearestFree(grid, 0, 0, 250, 4) ?? nearestFree(grid, 0, 0, 250) ?? { x: 0, z: 0 };
   const beacon = makeBeacon(0xffd34d);
   root.add(beacon);
@@ -165,7 +177,7 @@ function buildSession(city, world, liveWeather) {
     city, world, grid, root, liveWeather, start,
     player: null, director: null, quest: null, mods: null, weather: null,
     meshes: new Map(), playerMesh, batPivot, pack, beacon, playerMat,
-    cameraYaw: 0, cameraPitch: 0.6, paused: false, ended: false,
+    cameraYaw: Math.PI / 4, cameraPitch: CAM.pitch, paused: false, ended: false,
     lastHud: 0, toastTimer: 0, isNight: false, lightningNotice: 0,
   };
   atmosphere.state.onLightning = () => {
@@ -200,11 +212,15 @@ function newQuest() {
   for (const m of s.meshes.values()) s.root.remove(m);
   s.meshes.clear();
   s.player = createPlayer(s.start);
+  s.survivor = createSurvivor();
+  s.searched = new Set();
+  s.search = null;
+  s.deathCause = null;
   s.director = createZombieDirector(s.grid);
   s.quest = planDelivery(s.world, s.grid, s.start);
   s.ended = false;
   s.paused = false;
-  s.cameraYaw = s.quest ? Math.atan2(s.quest.pickup.x - s.start.x, s.quest.pickup.z - s.start.z) : 0;
+  s.cameraYaw = Math.PI / 4;
   s.player.yaw = s.cameraYaw;
   if (s.quest) toast('Nouvelle quête : suis la flèche orange', 3.5);
   else toast('Aucune quête possible ici : explore et survis', 4);
@@ -222,10 +238,31 @@ renderer.setAnimationLoop(() => {
 
   if (!s.paused && !s.ended && s.player) {
     s.cameraYaw += inp.cameraYawDelta;
-    s.cameraPitch = Math.min(1.2, Math.max(0.15, s.cameraPitch + inp.cameraPitchDelta));
-    updatePlayer(s.player, s.grid, inp, s.cameraYaw, s.mods, dt);
+    s.cameraPitch = Math.min(CAM.maxPitch, Math.max(CAM.minPitch, s.cameraPitch + inp.cameraPitchDelta));
+    // Besoins vitaux : la température du corps suit la vraie météo.
+    const w = s.weather;
+    const sheltered = buildingNear(s.grid, s.player.x, s.player.z, 1.0) !== null;
+    const effects = updateSurvivor(s.survivor, {
+      feelsLike: w.feelsLike ?? w.temperature, raining: w.kind === 'rain' || w.kind === 'storm', snowing: w.kind === 'snow',
+      sheltered, running: s.player.running, windKmh: w.windKmh,
+    }, dt);
+    s.effects = effects;
+    if (effects.damage) {
+      s.player.health = Math.max(0, s.player.health - effects.damage);
+      s.deathCause = effects.hypothermia ? 'Hypothermie : le froid réel a eu raison de toi.' : effects.dehydrated ? 'Déshydratation.' : 'Tu es mort de faim.';
+    }
+    const mods = effects.hypothermia ? { ...s.mods, moveSpeed: s.mods.moveSpeed * 0.85 } : s.mods;
+    if (effects.hyperthermia) mods.staminaDrain = (mods.staminaDrain ?? 1) * 1.6;
+    if (inp.use) {
+      const used = useBest(s.survivor, inp.use, s.player);
+      toast(used ? `${ITEMS[used].name} utilisé` : 'Rien dans ton sac pour ça', 1.5);
+    }
+    const before = { x: s.player.x, z: s.player.z };
+    updatePlayer(s.player, s.grid, s.search ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
+    updateSearch(s, inp, dt, before);
     if (inp.attack) {
-      const hits = playerAttack(s.player, s.director.zombies, s.grid);
+      const hits = playerAttack(s.player, s.director.zombies, s.grid, s.survivor.weapon ? 75 : 50);
+      s.search = null;
       if (hits.some((z) => z.dead)) toast('Zombie à terre', 1);
     }
     const density = urbanDensity(s.grid, s.player.x, s.player.z);
@@ -235,6 +272,8 @@ renderer.setAnimationLoop(() => {
       s.spottedRecently = 4;
     }
     s.spottedRecently = Math.max(0, (s.spottedRecently ?? 0) - dt);
+    if (events.some((e) => e.type === 'bitten')) { s.lastBite = 3; s.search = null; }
+    s.lastBite = Math.max(0, (s.lastBite ?? 0) - dt);
 
     if (s.quest) {
       const ev = updateQuest(s.quest, s.player, dt);
@@ -245,7 +284,7 @@ renderer.setAnimationLoop(() => {
       } else if (ev === 'delivered') endGame(true);
       else if (ev === 'timeout') endGame(false, 'Trop tard : le temps est écoulé.');
     }
-    if (s.player.health <= 0) endGame(false, 'Les zombies ont eu raison de toi.');
+    if (s.player.health <= 0) endGame(false, s.deathCause && !s.lastBite ? s.deathCause : 'Les zombies ont eu raison de toi.');
 
     if (s.liveWeather.source === 'live' && Date.now() - s.liveWeather.fetchedAt > WEATHER_REFRESH_MS && !s.refreshing) {
       s.refreshing = true;
@@ -265,6 +304,35 @@ renderer.setAnimationLoop(() => {
   atmosphere.endFrame();
   updateHud(s, dt);
 });
+
+// Fouille d'un vrai bâtiment : rester sur place quelques secondes, en faisant du bruit.
+function updateSearch(s, inp, dt, before) {
+  const p = s.player;
+  const near = buildingNear(s.grid, p.x, p.z, 1.6);
+  s.nearBuilding = near !== null && !s.searched.has(near) ? near : null;
+  if (inp.interact && s.nearBuilding !== null && !s.search) {
+    s.search = { building: s.nearBuilding, t: 0 };
+  }
+  if (!s.search) return;
+  const moved = Math.hypot(inp.move.x, inp.move.y) > 0.3;
+  if (moved || Math.hypot(p.x - before.x, p.z - before.z) > 0.5) { s.search = null; return; }
+  s.search.t += dt;
+  // Le bruit de la fouille attire les zombies proches (Project Zomboid).
+  if (Math.floor(s.search.t * 2) !== Math.floor((s.search.t - dt) * 2)) s.director.alertAll(p, 14 * s.mods.hearing);
+  if (s.search.t >= SEARCH_TIME) {
+    const b = s.world.buildings[s.search.building];
+    s.searched.add(s.search.building);
+    const found = rollLoot(b.loot);
+    addLoot(s.survivor, found);
+    toast(`${buildingTitle(b)} : ${lootLabel(found)}`, 3);
+    s.search = null;
+    s.nearBuilding = null;
+  }
+}
+
+function buildingTitle(b) {
+  return b.name ?? BUILDING_LABELS[b.loot] ?? 'Bâtiment';
+}
 
 function syncScene(s, dt) {
   const p = s.player;
@@ -310,20 +378,9 @@ function syncScene(s, dt) {
     s.beacon.userData.ring.scale.setScalar(1 + Math.sin(performance.now() / 300) * 0.1);
   }
 
-  // Caméra à la troisième personne.
-  // Un bâtiment entre la caméra et le joueur : la caméra passe au-dessus, puis se rapproche si besoin.
-  const blockedAt = (pitch) => {
-    const hx = -Math.sin(s.cameraYaw) * Math.cos(pitch), hz = -Math.cos(s.cameraYaw) * Math.cos(pitch);
-    for (let t = 1; t <= 13; t += 0.5) if (getAt(s.grid, p.x + hx * t, p.z + hz * t) === BUILDING) return t;
-    return null;
-  };
-  const steep = Math.max(s.cameraPitch, 1.15);
-  const pitchGoal = blockedAt(s.cameraPitch) === null ? s.cameraPitch : steep;
-  const hit = blockedAt(pitchGoal);
-  const distGoal = hit === null ? 13 : Math.max(4, hit - 0.8);
-  const k = Math.min(1, dt * 6);
-  s.camPitchEff = s.camPitchEff === undefined ? pitchGoal : s.camPitchEff + (pitchGoal - s.camPitchEff) * k;
-  s.cameraDist = s.cameraDist === undefined ? distGoal : s.cameraDist + (distGoal - s.cameraDist) * k;
+  // Caméra isométrique fixe ; les murs qui cachent le joueur sont découpés par le shader des bâtiments.
+  s.cameraDist = CAM.dist;
+  s.camPitchEff = s.cameraPitch;
   const d = s.cameraDist, pitch = s.camPitchEff;
   camera.position.set(
     p.x - Math.sin(s.cameraYaw) * Math.cos(pitch) * d,
@@ -331,6 +388,8 @@ function syncScene(s, dt) {
     p.z - Math.cos(s.cameraYaw) * Math.cos(pitch) * d,
   );
   camera.lookAt(p.x, 1.6, p.z);
+  cutaway.player.value.set(p.x, 1.2, p.z);
+  cutaway.camera.value.copy(camera.position);
 }
 
 // ---------- Interface ----------
@@ -387,6 +446,27 @@ function updateHud(s, dt) {
   $('health').firstElementChild.style.width = `${p.health}%`;
   $('stamina').firstElementChild.style.width = `${p.stamina}%`;
   $('kills').textContent = `Zombies à terre : ${p.kills}`;
+  const sv = s.survivor;
+  $('food').firstElementChild.style.width = `${sv.food}%`;
+  $('water').firstElementChild.style.width = `${sv.water}%`;
+  const body = $('body');
+  const state = sv.bodyTemp < 35 ? ' · hypothermie' : sv.bodyTemp < 36.2 ? ' · tu as froid' : sv.bodyTemp > 38.5 ? ' · coup de chaud' : '';
+  body.textContent = `Corps ${sv.bodyTemp.toFixed(1).replace('.', ',')} °C${state}${sv.wet > 0.5 ? ' · trempé' : ''}`;
+  body.className = sv.bodyTemp < 36.2 ? 'cold' : sv.bodyTemp > 38.2 ? 'hot' : '';
+  for (const [action, label] of [['eat', 'Manger'], ['drink', 'Boire'], ['heal', 'Soigner'], ['warm', 'Chauffer']]) {
+    const n = count(sv, action);
+    const el = $(`use-${action}`);
+    el.textContent = `${label} (${n})`;
+    el.disabled = n === 0;
+  }
+  $('gear').textContent = [sv.coat ? 'Manteau chaud' : 'Veste légère', sv.weapon ? 'batte cloutée' : 'batte'].join(' · ');
+  const searchBtn = $('search');
+  const spot = s.search?.building ?? s.nearBuilding;
+  searchBtn.classList.toggle('hidden', spot === null || spot === undefined || s.ended);
+  if (spot !== null && spot !== undefined) {
+    $('search-label').textContent = s.search ? `Fouille… ${buildingTitle(s.world.buildings[spot])}` : `Fouiller : ${buildingTitle(s.world.buildings[spot])}${input.state.touch || lowPower ? '' : ' (E)'}`;
+    $('search-progress').style.width = s.search ? `${(s.search.t / SEARCH_TIME) * 100}%` : '0';
+  }
   if (target) {
     const dist = Math.hypot(target.x - p.x, target.z - p.z);
     $('quest-dist').textContent = `${Math.round(dist)} m`;
@@ -424,6 +504,7 @@ function endGame(won, reason) {
     $('end-score').textContent = `${score} points`;
   } else {
     lines.push(reason);
+    lines.push(`Tu as tenu ${Math.round(s.quest?.elapsed ?? 0)} s et fouillé ${s.searched.size} bâtiment${s.searched.size > 1 ? 's' : ''}.`);
     lines.push(`Conditions : ${conditions}.`);
     $('end-score').textContent = '';
   }

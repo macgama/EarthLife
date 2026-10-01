@@ -111,10 +111,40 @@ function buildingsMesh(buildings) {
   if (!geos.length) return null;
   const merged = mergeGeometries(geos);
   geos.forEach((g) => g.dispose());
-  const mesh = new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }));
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  addCutaway(material);
+  const mesh = new THREE.Mesh(merged, material);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
+}
+
+// Vue isométrique : les murs entre la caméra et le joueur sont découpés pour qu'il reste visible.
+export const cutaway = {
+  player: { value: new THREE.Vector3() },
+  camera: { value: new THREE.Vector3() },
+  radius: { value: 5.5 },
+};
+
+function addCutaway(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uCutPlayer = cutaway.player;
+    shader.uniforms.uCutCamera = cutaway.camera;
+    shader.uniforms.uCutRadius = cutaway.radius;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvCutWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;\nuniform vec3 uCutPlayer;\nuniform vec3 uCutCamera;\nuniform float uCutRadius;')
+      .replace('void main() {', `void main() {
+  vec3 cutDir = uCutPlayer - uCutCamera;
+  float cutLen = length(cutDir);
+  float cutT = dot(vCutWorld - uCutCamera, cutDir) / (cutLen * cutLen);
+  if (cutT > 0.0 && cutT < 0.96) {
+    vec3 cutClosest = uCutCamera + cutDir * cutT;
+    if (distance(vCutWorld, cutClosest) < uCutRadius * (0.35 + 0.65 * cutT)) discard;
+  }`);
+  };
 }
 
 function treesMesh(parks, grid, isFree) {

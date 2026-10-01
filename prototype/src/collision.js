@@ -22,7 +22,7 @@ export function isFree(grid, x, z) {
 }
 
 // Remplit un polygone par balayage de lignes.
-export function fillPolygon(grid, points, value) {
+export function fillPolygon(grid, points, value, ownerId = 0) {
   let zMin = Infinity, zMax = -Infinity;
   for (const p of points) { zMin = Math.min(zMin, p.z); zMax = Math.max(zMax, p.z); }
   const j0 = Math.max(0, Math.floor((zMin + grid.radius) / grid.cell));
@@ -39,7 +39,10 @@ export function fillPolygon(grid, points, value) {
     for (let k = 0; k + 1 < xs.length; k += 2) {
       const i0 = Math.max(0, Math.ceil((xs[k] + grid.radius) / grid.cell - 0.5));
       const i1 = Math.min(grid.size - 1, Math.floor((xs[k + 1] + grid.radius) / grid.cell - 0.5));
-      for (let i = i0; i <= i1; i++) grid.data[j * grid.size + i] = value;
+      for (let i = i0; i <= i1; i++) {
+        grid.data[j * grid.size + i] = value;
+        if (ownerId) grid.owner[j * grid.size + i] = ownerId;
+      }
     }
   }
 }
@@ -74,7 +77,8 @@ export function buildGrid(world) {
   for (const w of world.waterLines) strokeLine(grid, w.points, w.width, WATER);
   // Les routes au-dessus de l'eau sont des ponts : on peut les traverser.
   for (const r of world.roads) strokeLine(grid, r.points, r.width, FREE, WATER);
-  for (const b of world.buildings) fillPolygon(grid, b.points, BUILDING);
+  grid.owner = new Int32Array(grid.size * grid.size);
+  world.buildings.forEach((b, k) => fillPolygon(grid, b.points, BUILDING, k + 1));
   return grid;
 }
 
@@ -144,4 +148,29 @@ export function walkDistances(grid, from, step = 2) {
       return dist[j * n + i];
     },
   };
+}
+
+// Bâtiment touché par le joueur (dans un rayon `reach`), ou null. Renvoie son indice dans world.buildings.
+export function buildingNear(grid, x, z, reach = 2) {
+  if (!grid.owner) return null;
+  let best = null, bestD = Infinity;
+  for (let dz = -reach; dz <= reach; dz += 0.5) {
+    for (let dx = -reach; dx <= reach; dx += 0.5) {
+      const d = dx * dx + dz * dz;
+      if (d > reach * reach || d >= bestD) continue;
+      const { i, j } = cellOf(grid, x + dx, z + dz);
+      if (i < 0 || j < 0 || i >= grid.size || j >= grid.size) continue;
+      const o = grid.owner[j * grid.size + i];
+      if (o) { best = o - 1; bestD = d; }
+    }
+  }
+  return best;
+}
+
+export function buildingAt(grid, x, z) {
+  if (!grid.owner) return null;
+  const { i, j } = cellOf(grid, x, z);
+  if (i < 0 || j < 0 || i >= grid.size || j >= grid.size) return null;
+  const o = grid.owner[j * grid.size + i];
+  return o ? o - 1 : null;
 }

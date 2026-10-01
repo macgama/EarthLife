@@ -189,7 +189,7 @@ export function updatePlayer(player, grid, input, cameraYaw, mods, dt) {
 }
 
 // Attaque au corps à corps : vise automatiquement le zombie le plus proche devant soi.
-export function playerAttack(player, zombies, grid) {
+export function playerAttack(player, zombies, grid, damage = ATTACK.damage) {
   if (player.attackTimer > 0) return [];
   player.attackTimer = ATTACK.cooldown;
   player.swing = 0.25;
@@ -204,7 +204,7 @@ export function playerAttack(player, zombies, grid) {
     if (d > ATTACK.range) continue;
     const diff = Math.abs(normalizeAngle(Math.atan2(z.x - player.x, z.z - player.z) - player.yaw));
     if (diff > ATTACK.arc) continue;
-    z.health -= ATTACK.damage;
+    z.health -= damage;
     z.hit = 0.25;
     z.state = 'chase';
     const kx = z.x + ((z.x - player.x) / (d || 1)) * ATTACK.knockback, kz = z.z + ((z.z - player.z) / (d || 1)) * ATTACK.knockback;

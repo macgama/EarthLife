@@ -49,7 +49,8 @@ select { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(
 /* Interface en jeu */
 #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }
 .pill { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-#conditions { position: absolute; top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); max-width: min(360px, 52vw); font-size: 13px; line-height: 1.35; }
+#leftcol { position: absolute; top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); width: min(380px, calc(100vw - 250px)); display: flex; flex-direction: column; gap: 8px; }
+#conditions { font-size: 13px; line-height: 1.35; }
 #conditions .place { font-weight: 700; font-size: 15px; }
 #conditions .data { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
 #conditions .live { color: var(--good); }
@@ -61,16 +62,27 @@ select { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(
 .bar > i { display: block; height: 100%; width: 100%; transition: width .15s; }
 #health > i { background: var(--danger); }
 #stamina > i { background: var(--stamina); }
+#food > i { background: #e0a050; }
+#water > i { background: #4fc3d9; }
+#body { font-weight: 600; margin-bottom: 2px; }
+#body.cold { color: #8fc8ff; }
+#body.hot { color: #ff9a6a; }
+#inventory { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 6px; pointer-events: auto; }
+.chip { font: inherit; font-size: 11.5px; padding: 5px 2px; white-space: nowrap; border-radius: 8px; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--text); cursor: pointer; touch-action: none; }
+.chip:disabled { opacity: .4; cursor: default; }
+#gear { color: var(--muted); margin-top: 4px; }
+#search { position: absolute; left: 50%; bottom: max(150px, calc(env(safe-area-inset-bottom) + 150px)); transform: translateX(-50%); pointer-events: auto; font: inherit; font-weight: 700; font-size: 15px; padding: 12px 18px; border-radius: 12px; border: 2px solid var(--accent); background: rgba(14,20,32,.85); color: var(--text); cursor: pointer; overflow: hidden; max-width: calc(100vw - 32px); touch-action: none; white-space: nowrap; text-overflow: ellipsis; }
+#search i { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--accent); width: 0; }
 #kills { color: var(--muted); }
-#quest { position: absolute; left: 50%; transform: translateX(-50%); top: max(10px, env(safe-area-inset-top)); width: min(420px, calc(100vw - 20px)); text-align: center; font-size: 13.5px; line-height: 1.35; }
+#quest { font-size: 13.5px; line-height: 1.35; }
 #quest .stage { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
-#quest .meta { display: flex; justify-content: center; gap: 14px; margin-top: 4px; font-weight: 600; }
+#quest .meta { display: flex; gap: 14px; margin-top: 4px; font-weight: 600; }
 #quest .timer.low { color: var(--danger); }
 #compass { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
 #compass .arrow { position: absolute; left: -16px; top: -16px; width: 32px; height: 32px; transform-origin: 16px 16px; }
 #toast { position: absolute; left: 50%; bottom: 130px; transform: translateX(-50%); font-weight: 700; font-size: 16px; text-align: center; max-width: calc(100vw - 32px); transition: opacity .3s; }
 #hurt { position: absolute; inset: 0; box-shadow: inset 0 0 120px rgba(255, 30, 30, .7); opacity: 0; transition: opacity .15s; }
-#topbuttons { position: absolute; right: max(10px, env(safe-area-inset-right)); top: calc(max(10px, env(safe-area-inset-top)) + 100px); display: flex; gap: 6px; pointer-events: auto; }
+#topbuttons { position: absolute; right: max(10px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); display: flex; gap: 6px; pointer-events: auto; }
 .small { pointer-events: auto; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; font-size: 12.5px; cursor: pointer; }
 
 /* Commandes tactiles */
@@ -95,14 +107,19 @@ body.touch #controls { display: block; }
 .secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
 
 @media (max-width: 640px) {
-  #conditions { max-width: calc(100vw - 190px); font-size: 12px; }
+  #leftcol { width: calc(100vw - 204px); gap: 6px; }
+  #conditions { font-size: 12px; padding: 6px 10px; }
   #conditions .place { font-size: 13.5px; }
   #mods, #conditions .data { display: none; }
   body.show-mods #mods, body.show-mods #conditions .data { display: block; }
-  #vitals { width: 160px; }
-  #topbuttons { top: calc(max(10px, env(safe-area-inset-top)) + 96px); }
-  #quest { top: calc(max(10px, env(safe-area-inset-top)) + 136px); width: calc(100vw - 20px); font-size: 12.5px; padding: 6px 10px; }
-  #toast { bottom: 140px; font-size: 14px; }
+  #vitals { width: 170px; font-size: 11px; padding: 6px 8px; }
+  .chip { font-size: 11px; }
+  #search { font-size: 14px; padding: 10px 14px; max-width: calc(100vw - 120px); }
+  #topbuttons { top: auto; bottom: max(160px, calc(env(safe-area-inset-bottom) + 160px)); right: max(10px, env(safe-area-inset-right)); flex-direction: column; }
+  #quest { font-size: 12px; padding: 6px 10px; }
+  #toast { bottom: 200px; font-size: 14px; }
+  #vitals .bar { height: 6px; margin: 2px 0 4px; }
+  #search { bottom: 130px; }
   .card { padding: 20px; }
   .card h1 { font-size: 28px; }
 }
@@ -140,8 +157,9 @@ body.touch #controls { display: block; }
     </select>
     <button class="primary" id="play">Jouer</button>
     <div class="help">
-      <b>Ordinateur :</b> ZQSD ou flèches pour bouger, Maj pour courir, Espace ou clic pour frapper, glisser la souris pour tourner la caméra.<br>
-      <b>Mobile :</b> pouce gauche pour bouger, glisser à droite pour la caméra, boutons Frapper et Courir.
+      <b>Survivre :</b> surveille ta faim, ta soif et ta température, qui suit la vraie météo. Fouille les vrais bâtiments : une pharmacie donne des médicaments, un supermarché de quoi manger.<br>
+      <b>Ordinateur :</b> ZQSD ou flèches pour bouger, Maj pour courir, Espace ou clic pour frapper, E pour fouiller, 1 à 4 pour manger, boire, se soigner, se réchauffer, glisser la souris pour tourner la caméra.<br>
+      <b>Mobile :</b> pouce gauche pour bouger, glisser à droite pour la caméra, boutons à l'écran pour le reste.
     </div>
   </div>
 </div>
@@ -149,6 +167,7 @@ body.touch #controls { display: block; }
 <div id="loading" class="hidden"><div><div class="spinner"></div><div id="loading-text">Chargement…</div></div></div>
 
 <div id="hud" class="hidden">
+  <div id="leftcol">
   <div id="conditions" class="pill">
     <div class="place" id="place"></div>
     <div id="weather-line"></div>
@@ -160,10 +179,21 @@ body.touch #controls { display: block; }
     <div id="quest-text"></div>
     <div class="meta"><span id="quest-dist"></span><span class="timer" id="quest-timer"></span></div>
   </div>
+  </div>
   <div id="vitals" class="pill">
     Santé<div class="bar" id="health"><i></i></div>
     Endurance<div class="bar" id="stamina"><i></i></div>
+    Faim<div class="bar" id="food"><i></i></div>
+    Soif<div class="bar" id="water"><i></i></div>
+    <div id="body"></div>
     <div id="kills"></div>
+    <div id="inventory">
+      <button class="chip" data-use="eat" id="use-eat">Manger</button>
+      <button class="chip" data-use="drink" id="use-drink">Boire</button>
+      <button class="chip" data-use="heal" id="use-heal">Soigner</button>
+      <button class="chip" data-use="warm" id="use-warm">Chauffer</button>
+    </div>
+    <div id="gear"></div>
   </div>
   <div id="topbuttons">
     <button class="small" id="mods-toggle">Effets</button>
@@ -178,6 +208,7 @@ body.touch #controls { display: block; }
     <div class="round" id="run">Courir</div>
     <div class="round" id="attack">Frapper</div>
   </div>
+  <button id="search" class="hidden"><span id="search-label">Fouiller</span><i id="search-progress"></i></button>
 </div>
 
 <div id="end" class="hidden">

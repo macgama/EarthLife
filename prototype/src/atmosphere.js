@@ -41,7 +41,7 @@ export function createAtmosphere(scene, { lowPower }) {
   snow.visible = false;
   scene.add(snow);
 
-  const box = 40, heightBox = 30;
+  const box = 40, heightBox = 18;
   const seedParticles = (arr, stride) => {
     for (let i = 0; i < arr.length; i += stride) {
       arr[i] = (Math.random() - 0.5) * box * 2;

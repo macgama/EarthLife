@@ -6,6 +6,8 @@ export function createInput(canvas, ui) {
     move: { x: 0, y: 0 },   // x = droite, y = avant, dans [-1, 1]
     run: false,
     attack: false,          // vrai pendant une image après un appui
+    interact: false,        // fouiller
+    use: null,              // 'eat' | 'drink' | 'heal' | 'warm'
     cameraYawDelta: 0,
     cameraPitchDelta: 0,
     touch: false,
@@ -15,6 +17,9 @@ export function createInput(canvas, ui) {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
     keys.add(e.code);
     if (e.code === 'Space') { state.attack = true; e.preventDefault(); }
+    if (e.code === 'KeyE') state.interact = true;
+    const uses = { Digit1: 'eat', Digit2: 'drink', Digit3: 'heal', Digit4: 'warm' };
+    if (uses[e.code]) state.use = uses[e.code];
   };
   const up = (e) => keys.delete(e.code);
   window.addEventListener('keydown', down);
@@ -104,6 +109,10 @@ export function createInput(canvas, ui) {
   };
   press(ui.attackButton, (on) => { if (on) state.attack = true; });
   press(ui.runButton, (on) => { runHeld = on; ui.runButton.classList.toggle('on', on); });
+  ui.searchButton.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); state.interact = true; });
+  for (const el of ui.useButtons) {
+    el.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); state.use = el.dataset.use; });
+  }
 
   function poll() {
     if (!stick) {
@@ -121,6 +130,8 @@ export function createInput(canvas, ui) {
 
   function consume() {
     state.attack = false;
+    state.interact = false;
+    state.use = null;
     state.cameraYawDelta = 0;
     state.cameraPitchDelta = 0;
   }

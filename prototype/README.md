@@ -1,6 +1,8 @@
 # Prototype jouable d'EarthLife
 
-Survie zombie en 3D stylisée dans les vraies rues d'une ville (OpenStreetMap), sous la vraie météo du moment (Open-Meteo) et à l'heure réelle du lieu (position du soleil calculée). Une quête de livraison A vers B relie deux lieux réels : par exemple une pharmacie et un hôpital.
+Survie zombie en 3D stylisée, vue isométrique, dans les vraies rues d'une ville (OpenStreetMap), sous la vraie météo du moment (Open-Meteo) et à l'heure réelle du lieu (position du soleil calculée). Le joueur gère sa faim, sa soif et la température de son corps, qui suit la vraie météo, et fouille les vrais bâtiments : une pharmacie donne des médicaments, un supermarché de quoi manger. Une quête de livraison A vers B relie deux lieux réels.
+
+Jeux de référence donnés par Gaël : As One We Survive, Project Zomboid, Don't Starve Together, Dysmantle, V Rising, HumanitZ, The Wild Eight, The Flame in the Flood, How to Survive 2, Lens Island. Ce que le jeu en retient est détaillé dans le document de game design.
 
 Le document de game design qui fixe ce périmètre : https://claude.ai/code/artifact/d5aa4bea-d219-46a8-8e94-1766864dadeb
 
@@ -26,6 +28,8 @@ Paramètres d'adresse utiles pour tester : `?city=lyon&weather=rain&time=night&a
 | Courir | Maj | Bouton Courir, ou joystick poussé au bout |
 | Frapper | Espace ou clic | Bouton Frapper |
 | Caméra | Glisser la souris, J et L | Glisser à droite de l'écran |
+| Fouiller un bâtiment | E, contre un mur | Bouton Fouiller |
+| Manger, boire, se soigner, se réchauffer | 1, 2, 3, 4 | Boutons du sac |
 
 ## Données réelles et effets
 
@@ -55,5 +59,6 @@ Les tests utilisent des réponses Overpass et Open-Meteo synthétiques au format
 - `src/collision.js` : grille d'occupation (murs, eau, ponts), distances à pied
 - `src/quest.js` : choix des lieux A et B, déroulé de la quête
 - `src/game.js` : joueur, zombies, combat
+- `src/survival.js` : faim, soif, température du corps, butin selon le type de lieu, inventaire
 - `src/scene.js`, `src/atmosphere.js` : rendu Three.js, ciel, pluie, neige, éclairs
 - `src/input.js` : clavier, souris, joystick tactile
