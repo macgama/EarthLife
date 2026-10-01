@@ -43,6 +43,29 @@ jobs:
       - run: npm ci
       - run: node test/real-data-smoke.mjs lyon paris tokyo newyork reykjavik perouges
 
+  browser:
+    # Vrai navigateur et vrais services (carte, recherche, tuiles, météo) : informe sans bloquer la publication.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm install --no-save playwright@1
+      - run: npx playwright install --with-deps chromium
+      - run: node test/browser-smoke.mjs browser-shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: captures-navigateur
+          path: prototype/browser-shots
+          retention-days: 14
+
   deploy:
     needs: test
     if: github.event_name != 'pull_request'

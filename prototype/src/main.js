@@ -44,7 +44,13 @@ function placeFromParams(p) {
 
 // ---------- Rendu ----------
 const canvas = $('view');
-const renderer = createRenderer(canvas, { lowPower });
+let renderer;
+try {
+  renderer = createRenderer(canvas, { lowPower });
+} catch (err) {
+  setLoading('Ton navigateur ne peut pas afficher la 3D (WebGL absent ou désactivé). Essaie Chrome, Firefox, Safari ou Edge à jour.');
+  throw err;
+}
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000);
 // Caméra isométrique, comme Project Zomboid, Dysmantle ou HumanitZ.

@@ -103,13 +103,11 @@ export function buildingsGeometry(buildings) {
   const col = [];
   const c = new THREE.Color();
   const r = new THREE.Color();
+  const cream = new THREE.Color(0xf2ece2);
   for (const b of buildings) {
-    if (b.colour) {
-      try { c.set(b.colour); } catch { c.setHex(PALETTE.buildings[hash(b.id) % PALETTE.buildings.length]); }
-      c.lerp(new THREE.Color(0xf2ece2), 0.35);
-    } else {
-      c.setHex(PALETTE.buildings[hash(b.id) % PALETTE.buildings.length]);
-    }
+    // Couleur réelle de la façade quand OSM la donne (un nom inconnu laisse la couleur de la palette).
+    c.setHex(PALETTE.buildings[hash(b.id) % PALETTE.buildings.length]);
+    if (b.colour) c.setStyle(b.colour, THREE.SRGBColorSpace).lerp(cream, 0.35);
     const h = b.height, y0 = b.minHeight ?? 0;
     const wall = [c.r, c.g, c.b];
     r.setHex(PALETTE.roofs[(hash(b.id) >>> 8) % PALETTE.roofs.length]);
