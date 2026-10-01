@@ -80,9 +80,10 @@ function readVarintHigh(r, lo, pos, signed) {
   return (hi >>> 0) * TWO_32 + lo;
 }
 
-// Zigzag 64 bits (sint64) : exact jusqu'à 2^53, approché au-delà.
-function zigzag64(n) {
-  return n % 2 === 1 ? -(n + 1) / 2 : n / 2;
+// Zigzag 64 bits (sint64) : exact tant que |valeur| <= 2^52, approché au-delà. Le signe (bit bas) est lu sur le
+// premier octet : au-delà de 2^53 le double est toujours pair et n % 2 donnerait un signe faux.
+function zigzag64(n, odd) {
+  return odd ? -(n + 1) / 2 : n / 2;
 }
 
 // Lit la longueur d'un champ délimité et renvoie sa fin, en vérifiant qu'elle reste dans le parent.
@@ -147,7 +148,7 @@ function readValue(r, end) {
         value = getView(r).getFloat64(r.pos, true); r.pos += 8; break;
       case 32: value = readVarint(r, true); break;
       case 40: value = readVarint(r, false); break;
-      case 48: value = zigzag64(readVarint(r, false)); break;
+      case 48: { const odd = r.buf[r.pos] & 1; value = zigzag64(readVarint(r, false), odd); break; }
       case 56: value = readVarint(r, false) !== 0; break;
       default: skip(r, tag, end);
     }
