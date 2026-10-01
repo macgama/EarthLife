@@ -109,7 +109,8 @@ export function createInput(canvas, ui) {
     el.addEventListener('pointerleave', () => fn(false));
     el.addEventListener('pointercancel', () => fn(false));
   };
-  press(ui.attackButton, (on) => { if (on) state.attack = true; });
+  // .on : bouton enfoncé (le CSS le rétrécit et allume son halo).
+  press(ui.attackButton, (on) => { if (on) state.attack = true; ui.attackButton.classList.toggle('on', on); });
   press(ui.runButton, (on) => { runHeld = on; ui.runButton.classList.toggle('on', on); });
   ui.searchButton.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); state.interact = true; });
   for (const el of ui.useButtons) {
