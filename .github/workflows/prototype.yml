@@ -43,6 +43,21 @@ jobs:
       - run: npm ci
       - run: node test/real-data-smoke.mjs lyon paris tokyo newyork reykjavik
 
+  tiles-probe:
+    # Sonde les tuiles vectorielles OpenFreeMap et la recherche de lieux (informatif).
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: node test/tiles-probe.mjs
+
   deploy:
     needs: test
     if: github.event_name != 'pull_request'

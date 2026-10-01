@@ -9,6 +9,8 @@
     "test": "node --test test/*.test.js"
   },
   "devDependencies": {
+    "@mapbox/vector-tile": "^3.0.0",
+    "pbf": "^5.1.2",
     "three": "0.170.0"
   }
 }
