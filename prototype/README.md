@@ -60,7 +60,7 @@ Paramètres d'adresse utiles pour tester :
 
 Le menu permet de forcer une météo ou la nuit pour tester.
 
-Crédits : © les contributeurs d'OpenStreetMap (licence ODbL), tuiles OpenFreeMap au schéma OpenMapTiles, météo Open-Meteo (CC BY 4.0), recherche Photon (Komoot) et Nominatim, carte du menu MapLibre GL.
+Crédits : © les contributeurs d'OpenStreetMap (licence ODbL), tuiles OpenFreeMap au schéma OpenMapTiles, météo Open-Meteo (CC BY 4.0), recherche Photon (Komoot) et Nominatim, carte du menu MapLibre GL, polices Chakra Petch et Barlow Semi Condensed (SIL Open Font License, paquets Fontsource).
 
 ## Tests
 
@@ -84,5 +84,8 @@ Les tests utilisent deux tuiles synthétiques au format OpenFreeMap autour de la
 - `src/quest.js` : choix des lieux A et B, déroulé de la quête
 - `src/game.js` : joueur, zombies, combat
 - `src/survival.js` : faim, soif, température du corps, butin selon le type de lieu, inventaire
-- `src/scene.js`, `src/atmosphere.js` : rendu Three.js, façades et fenêtres, ciel, pluie, neige, éclairs
+- `src/scene.js`, `src/atmosphere.js` : rendu Three.js, façades et fenêtres, balise de quête, ciel, pluie, neige, éclairs
+- `src/characters.js` : joueur et zombies low-poly animés (un seul appel de dessin pour tous les zombies), ombres de contact
+- `src/icons.js` : icônes de l'interface (SVG au trait, `data-icon` dans la page)
 - `src/input.js` : clavier, souris, joystick tactile
+- `assets/fonts/` : polices Chakra Petch et Barlow Semi Condensed auto-hébergées (licence OFL)

@@ -4,217 +4,727 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>EarthLife</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+/* Polices auto-hébergées : paquets @fontsource (sous-ensemble latin, licence OFL dans assets/fonts). */
+@font-face { font-family: 'Chakra Petch'; font-style: normal; font-weight: 600; font-display: swap; src: url('assets/fonts/chakra-petch-latin-600-normal.woff2') format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'Chakra Petch'; font-style: normal; font-weight: 700; font-display: swap; src: url('assets/fonts/chakra-petch-latin-700-normal.woff2') format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'Barlow Semi Condensed'; font-style: normal; font-weight: 400; font-display: swap; src: url('assets/fonts/barlow-semi-condensed-latin-400-normal.woff2') format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'Barlow Semi Condensed'; font-style: normal; font-weight: 500; font-display: swap; src: url('assets/fonts/barlow-semi-condensed-latin-500-normal.woff2') format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'Barlow Semi Condensed'; font-style: normal; font-weight: 600; font-display: swap; src: url('assets/fonts/barlow-semi-condensed-latin-600-normal.woff2') format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: 'Barlow Semi Condensed'; font-style: normal; font-weight: 700; font-display: swap; src: url('assets/fonts/barlow-semi-condensed-latin-700-normal.woff2') format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+/* Jetons de design « survie tactique » (valeurs et règles d'usage : guide de style de l'interface). */
 :root {
-  --bg: #0e1420;
-  --panel: rgba(14, 20, 32, 0.78);
-  --panel-solid: #141c2b;
-  --line: rgba(255, 255, 255, 0.14);
-  --text: #f3f5f8;
-  --muted: #a8b3c4;
-  --accent: #ffb547;
-  --good: #5fd18b;
-  --danger: #ff5d5d;
-  --stamina: #5fb7ff;
+  /* Fonds et panneaux */
+  --c-bg: #0a0d10;
+  --c-bg-2: #10151a;
+  --c-panel: rgba(13, 17, 21, .88);
+  --c-panel-strong: rgba(13, 17, 21, .95);
+  --c-panel-solid: #12171c;
+  --c-panel-raised: #1a2128;
+  --c-field: #0b0f13;
+  --c-scrim: rgba(5, 7, 9, .72);
+  /* Contours */
+  --c-line: rgba(255, 255, 255, .12);
+  --c-line-strong: rgba(255, 255, 255, .26);
+  /* Texte */
+  --c-text: #eef1f3;
+  --c-text-2: #aab4bd;
+  --c-text-3: #86929c;
+  /* Accent orange signal et états */
+  --c-accent: #ff7f1f;
+  --c-accent-hover: #ff9a4a;
+  --c-accent-press: #e66a0d;
+  --c-accent-soft: rgba(255, 127, 31, .16);
+  --c-accent-line: rgba(255, 127, 31, .55);
+  --c-on-accent: #170b00;
+  --c-danger: #ff5c5c;
+  --c-danger-soft: rgba(255, 92, 92, .18);
+  --c-warn: #ffc23d;
+  --c-success: #3fd08f;
+  --c-success-soft: rgba(63, 208, 143, .16);
+  /* Besoins vitaux : jauges, icônes, alertes */
+  --c-health: #f2555d;
+  --c-stamina: #a3e05a;
+  --c-hunger: #e8b04a;
+  --c-thirst: #3fb6f2;
+  --c-cold: #8fd0ff;
+  --c-heat: #ff7347;
+  --c-gauge-track: rgba(255, 255, 255, .10);
+  /* Opacités */
+  --o-disabled: .38;
+  --o-dim: .64;
+  /* Rayons : coins nets */
+  --r-xs: 2px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-pill: 999px;
+  --chamfer: 10px;
+  /* Ombres et halos */
+  --sh-1: 0 2px 8px rgba(0, 0, 0, .35);
+  --sh-2: 0 10px 28px rgba(0, 0, 0, .45);
+  --sh-3: 0 22px 60px rgba(0, 0, 0, .6);
+  --sh-text: 0 1px 2px rgba(0, 0, 0, .85), 0 0 10px rgba(0, 0, 0, .45);
+  --glow-accent: 0 0 0 1px var(--c-accent), 0 0 18px rgba(255, 127, 31, .35);
+  --glow-danger: 0 0 0 1px var(--c-danger), 0 0 18px rgba(255, 92, 92, .4);
+  /* Espacements : pas de 4 px */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  /* Bords du HUD, encoches comprises */
+  --hud-edge: 10px;
+  --hud-t: max(var(--hud-edge), env(safe-area-inset-top, 0px));
+  --hud-r: max(var(--hud-edge), env(safe-area-inset-right, 0px));
+  --hud-b: max(var(--hud-edge), env(safe-area-inset-bottom, 0px));
+  --hud-l: max(var(--hud-edge), env(safe-area-inset-left, 0px));
+  /* Typographie : titres et étiquettes, puis texte et chiffres */
+  --font-display: 'Chakra Petch', 'Barlow Semi Condensed', system-ui, sans-serif;
+  --font-text: 'Barlow Semi Condensed', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --fs-2xs: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 34px;
+  --fs-display: clamp(30px, 7vw, 44px);
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --lh-tight: 1.1;
+  --lh-snug: 1.3;
+  --lh-body: 1.45;
+  --ls-label: .12em;
+  --ls-button: .08em;
+  --ls-title: .02em;
+  /* Cibles tactiles et icônes */
+  --touch: 44px;
+  --btn-attack: 84px;
+  --btn-run: 64px;
+  --btn-item: 48px;
+  --icon-sm: 16px;
+  --icon-md: 20px;
+  --icon-lg: 24px;
+  /* Jauges segmentées : 10 segments de 10 % */
+  --gauge-h: 8px;
+  --gauge-h-compact: 6px;
+  --gauge-gap: 2px;
+  --gauge-mask: repeating-linear-gradient(90deg, #000 0 calc(10% - var(--gauge-gap)), transparent 0 10%);
+  /* Mouvement */
+  --t-fast: 120ms;
+  --t-base: 200ms;
+  --t-slow: 320ms;
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-std: cubic-bezier(.4, 0, .2, 1);
+  /* Plans */
+  --z-hud: 10;
+  --z-menu: 20;
+  --z-end: 25;
+  --z-loading: 30;
   color-scheme: dark;
+  /* Chasse exacte des polices aux petites tailles (sinon Chrome sous Linux arrondit et écarte les lettres). */
+  text-rendering: geometricPrecision;
 }
+/* Composants communs : icônes, étiquettes, chiffres, touches de clavier. */
+.icon { width: var(--icon-sm); height: var(--icon-sm); flex: none; vertical-align: -3px; }
+.label { font-family: var(--font-display); font-size: var(--fs-2xs); font-weight: var(--fw-semibold); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--c-text-2); }
+.num { font-family: var(--font-text); font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; }
+kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border: 1px solid var(--c-line-strong); border-bottom-width: 2px; border-radius: var(--r-xs); font: var(--fw-semibold) 11px/1 var(--font-display); color: var(--c-text); }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: 'Barlow', system-ui, sans-serif; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--c-bg); color: var(--c-text); font-family: var(--font-text); -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
 canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .hidden { display: none !important; }
 
-.card { width: min(460px, 100%); background: var(--panel-solid); border: 1px solid var(--line); border-radius: 16px; padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
-.card h1, #end h2, #conditions .place, #quest .stage, .primary { font-family: 'Chakra Petch', 'Barlow', system-ui, sans-serif; }
 select, button { font: inherit; }
-select { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: #0d1320; color: var(--text); font-size: 16px; }
-.primary { width: 100%; margin-top: 22px; padding: 14px; border: 0; border-radius: 12px; background: var(--accent); color: #1b1300; font-weight: 700; font-size: 17px; cursor: pointer; }
-.primary:active { transform: translateY(1px); }
-.help { margin-top: 16px; font-size: 13px; color: var(--muted); line-height: 1.5; }
-.help b { color: var(--text); font-weight: 600; }
+
+/* ---------- Écrans : menu, aide, chargement, fin (guide de style § 4.4, 4.5 et 4.11 à 4.14) ---------- */
+/* Repère d'angle orange (signature des panneaux) et quadrillage tactique des fonds d'écran. */
+#menu, #loading, #end {
+  --corner: linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 12px 2px no-repeat border-box, linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 2px 12px no-repeat border-box;
+  --grid: repeating-linear-gradient(0deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 32px), repeating-linear-gradient(90deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 32px);
+  font-family: var(--font-text);
+  color: var(--c-text);
+}
+.logo { margin: 0; font: var(--fw-bold) var(--fs-2xl) / 1 var(--font-display); letter-spacing: var(--ls-title); text-transform: uppercase; white-space: nowrap; color: var(--c-text); }
+.logo span { color: var(--c-accent); }
+.btn-icon { display: inline-flex; flex: none; }
+.btn-icon .icon { width: var(--icon-md); height: var(--icon-md); }
+
+/* Bouton principal : accent plein, coins coupés dessinés par le fond (pas de clip-path, qui rognerait le focus). */
+.primary {
+  --btn-bg: var(--c-accent);
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
+  min-height: 48px; padding: 0 var(--sp-5); border: 0; border-radius: 0;
+  background:
+    linear-gradient(135deg, transparent calc(var(--chamfer) * .7071), var(--btn-bg) 0) left / 51% 100% no-repeat,
+    linear-gradient(-45deg, transparent calc(var(--chamfer) * .7071), var(--btn-bg) 0) right / 51% 100% no-repeat;
+  color: var(--c-on-accent);
+  font: var(--fw-bold) var(--fs-lg) / 1 var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase;
+  cursor: pointer; transition: transform var(--t-fast) var(--ease-std);
+}
+@media (hover: hover) { .primary:hover:not(:disabled) { --btn-bg: var(--c-accent-hover); } }
+.primary:active:not(:disabled) { --btn-bg: var(--c-accent-press); transform: translateY(1px); }
+.primary:disabled { opacity: var(--o-disabled); cursor: not-allowed; }
+.primary:focus-visible, #menu .primary:focus-visible { outline: 2px solid var(--c-text); outline-offset: 3px; }
+/* Bouton secondaire : contour seul, sans coins coupés. */
+.primary.secondary, .secondary { background: transparent; border: 1px solid var(--c-line-strong); border-radius: var(--r-sm); color: var(--c-text); font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
+@media (hover: hover) { .primary.secondary:hover, .secondary:hover { background: rgba(255, 255, 255, .06); border-color: var(--c-text-2); } }
+.primary.secondary:active, .secondary:active { background: rgba(255, 255, 255, .10); }
 
 /* Écran d'accueil : choix du lieu de départ sur la carte du monde (src/picker.js) */
-#menu { position: fixed; inset: 0; z-index: 20; overflow: hidden; background: radial-gradient(circle at 62% 45%, #23324d, #0b0f18 70%); --sheet-h: 0px; }
+#menu { position: fixed; inset: 0; z-index: var(--z-menu); overflow: hidden; background: var(--grid), radial-gradient(circle at 62% 45%, var(--c-bg-2), var(--c-bg) 72%); --sheet-h: 0px; }
 #menu [hidden] { display: none !important; }
-#menu :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-#picker-map { position: absolute; inset: 0; background: radial-gradient(circle at 62% 45%, #1c2940, #06090f 72%); }
+#menu :focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+#picker-map { position: absolute; inset: 0; }
 #menu.no-map #picker-map { display: none; }
-.map-fallback { display: none; position: absolute; inset: var(--map-top, 0px) 0 var(--sheet-h, 0px) var(--map-left, 0px); place-items: center; color: rgba(255, 255, 255, .13); pointer-events: none; }
+.map-fallback { display: none; position: absolute; inset: var(--map-top, 0px) 0 var(--sheet-h, 0px) var(--map-left, 0px); place-items: center; color: var(--c-line-strong); pointer-events: none; }
 .map-fallback svg { width: min(52vmin, 280px); height: auto; }
 #menu.no-map .map-fallback { display: grid; }
-#menu.help-open::after { content: ''; position: absolute; inset: 0; z-index: 4; background: rgba(6, 9, 15, .6); }
+#menu.help-open::after { content: ''; position: absolute; inset: 0; z-index: 4; background: var(--c-scrim); animation: screen-fade var(--t-base) var(--ease-out); }
 #picker-map .maplibregl-ctrl-bottom-right, #picker-map .maplibregl-ctrl-bottom-left { bottom: var(--sheet-h); }
-#picker-map .maplibregl-ctrl-attrib { font-size: 11px; }
-.start-marker { filter: drop-shadow(0 3px 4px rgba(0, 0, 0, .5)); }
+#picker-map .maplibregl-ctrl-attrib { font-size: var(--fs-2xs); }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .menu-ui { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; }
 .menu-ui > * { pointer-events: auto; }
-.menu-top { padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 12px max(12px, env(safe-area-inset-left)); background: var(--panel-solid); border-bottom: 1px solid var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
-.brand-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.brand-row h1 { margin: 0; font-family: 'Chakra Petch', 'Barlow', system-ui, sans-serif; font-size: 24px; line-height: 1; letter-spacing: -0.02em; }
-.brand-row h1 span { color: var(--accent); }
-.text-button { min-height: 44px; padding: 0 4px; border: 0; background: none; color: var(--muted); font-size: 14px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
-.text-button:hover { color: var(--text); }
-.menu-top .lead { display: none; margin: 6px 0 14px; color: var(--muted); font-size: 14.5px; line-height: 1.45; }
-.search-box { display: flex; align-items: center; margin-top: 4px; background: #0d1320; border: 1px solid var(--line); border-radius: 12px; }
-.search-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(255, 181, 71, .18); }
-.search-box > svg { flex: none; margin-left: 12px; color: var(--muted); }
-#place-search { flex: 1; min-width: 0; height: 48px; padding: 0 4px 0 10px; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; font-size: 16px; -webkit-user-select: text; user-select: text; -webkit-appearance: none; appearance: none; }
-#place-search::placeholder { color: #7d889c; }
+.menu-top { padding: max(var(--sp-2), env(safe-area-inset-top)) max(var(--sp-3), env(safe-area-inset-right)) var(--sp-3) max(var(--sp-3), env(safe-area-inset-left)); background: var(--c-panel-solid); border-bottom: 1px solid var(--c-line); box-shadow: var(--sh-2); }
+.brand-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); min-height: var(--touch); }
+.brand-tag { display: none; margin: 2px 0 0; }
+/* « Comment jouer ? » : bouton texte en étiquette, icône d'aide en accent. */
+#menu .text-button { display: inline-flex; flex: none; align-items: center; gap: 6px; min-height: var(--touch); padding: 0 var(--sp-2); margin-right: calc(-1 * var(--sp-2)); border: 0; border-radius: var(--r-sm); background: none; color: var(--c-text-2); cursor: pointer; }
+#menu .text-button .icon { width: var(--icon-md); height: var(--icon-md); color: var(--c-accent); }
+@media (hover: hover) { #menu .text-button:hover { color: var(--c-text); background: rgba(255, 255, 255, .06); } }
+.menu-top .lead { display: none; margin: var(--sp-3) 0 var(--sp-4); color: var(--c-text-2); font-size: var(--fs-md); line-height: var(--lh-body); }
+.search-box { display: flex; align-items: center; margin-top: var(--sp-1); background: var(--c-field); border: 1px solid var(--c-line); border-radius: var(--r-sm); }
+.search-box:focus-within { border-color: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-soft); }
+.search-icon { display: inline-flex; flex: none; margin-left: var(--sp-3); color: var(--c-text-2); }
+.search-icon .icon { width: var(--icon-md); height: var(--icon-md); }
+/* 16 px : en dessous, iOS zoome sur le champ à la saisie. */
+#place-search { flex: 1; min-width: 0; height: 48px; padding: 0 var(--sp-1) 0 10px; border: 0; outline: none; background: transparent; color: var(--c-text); font: var(--fw-medium) 16px / 1.2 var(--font-text); -webkit-user-select: text; user-select: text; -webkit-appearance: none; appearance: none; }
+#place-search::placeholder { color: var(--c-text-3); }
 #place-search:focus-visible { outline: none; }
 #place-search::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
-.icon-button { flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 10px; background: none; color: var(--muted); cursor: pointer; }
-.icon-button:hover { color: var(--text); }
-.search-go { margin-right: 2px; color: var(--accent); }
-#place-suggestions { list-style: none; margin: 8px 0 0; padding: 4px; max-height: min(60vh, 380px); overflow-y: auto; overscroll-behavior: contain; background: #0d1320; border: 1px solid var(--line); border-radius: 12px; }
-.suggestion { display: flex; flex-direction: column; justify-content: center; min-height: 52px; padding: 7px 12px; border-radius: 8px; cursor: pointer; }
+#menu .icon-button { flex: none; display: grid; place-items: center; width: var(--touch); height: var(--touch); padding: 0; border: 0; border-radius: var(--r-sm); background: none; color: var(--c-text-2); cursor: pointer; }
+#menu .icon-button .icon { width: var(--icon-md); height: var(--icon-md); }
+@media (hover: hover) { #menu .icon-button:hover { color: var(--c-text); } }
+#menu .search-go { margin-right: 2px; color: var(--c-accent); }
+#place-suggestions { list-style: none; margin: var(--sp-2) 0 0; padding: var(--sp-1); max-height: min(60vh, 380px); overflow-y: auto; overscroll-behavior: contain; background: var(--c-field); border: 1px solid var(--c-line); border-radius: var(--r-sm); }
+.suggestion { display: flex; flex-direction: column; justify-content: center; min-height: 52px; padding: 7px var(--sp-3); border-radius: var(--r-xs); cursor: pointer; }
 .suggestion + .suggestion { margin-top: 2px; }
 .s-name, .s-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.s-name { font-size: 16px; font-weight: 600; }
-.s-detail { margin-top: 1px; font-size: 13px; color: var(--muted); }
-.suggestion[aria-selected="true"], .suggestion:not(.info):hover { background: rgba(255, 181, 71, .14); }
-.suggestion.info { cursor: default; color: var(--muted); font-size: 14px; line-height: 1.35; }
-.sheet { display: flex; flex-direction: column; gap: 10px; max-height: 62%; overflow-y: auto; overscroll-behavior: contain; padding: 14px max(12px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); background: var(--panel-solid); border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; box-shadow: 0 -10px 30px rgba(0, 0, 0, .4); }
+.s-name { font-size: var(--fs-md); font-weight: var(--fw-semibold); }
+.s-detail { margin-top: 1px; font-size: var(--fs-sm); color: var(--c-text-2); }
+@media (hover: hover) { .suggestion:not(.info):hover { background: var(--c-panel-raised); } }
+.suggestion[aria-selected="true"] { background: var(--c-accent-soft); box-shadow: inset 2px 0 0 var(--c-accent); }
+.suggestion.info { cursor: default; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+.sheet { display: flex; flex-direction: column; gap: var(--sp-3); max-height: 62%; overflow-y: auto; overscroll-behavior: contain; padding: var(--sp-3) max(var(--sp-3), env(safe-area-inset-right)) max(var(--sp-3), env(safe-area-inset-bottom)) max(var(--sp-3), env(safe-area-inset-left)); background: var(--c-panel-solid); border-top: 1px solid var(--c-line); border-radius: var(--r-lg) var(--r-lg) 0 0; box-shadow: 0 -10px 28px rgba(0, 0, 0, .45); }
+/* Titre de rubrique : étiquette suivie d'un filet (ordinateur seulement). */
+.sheet-label { display: none; align-items: center; gap: var(--sp-2); margin: 0 0 calc(-1 * var(--sp-1)); }
+.sheet-label::after { content: ''; flex: 1; height: 1px; background: var(--c-line); }
 /* Marge de 4 px : le défilement horizontal rognerait sinon le contour de focus des puces. */
-.quick { display: flex; flex: none; gap: 8px; padding: 4px; margin: -4px; overflow-x: auto; scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
+.quick { display: flex; flex: none; gap: var(--sp-2); padding: var(--sp-1); margin: calc(-1 * var(--sp-1)); overflow-x: auto; scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
 .quick::-webkit-scrollbar { display: none; }
-.pick-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255, 255, 255, .06); color: var(--text); font-size: 15px; font-weight: 500; white-space: nowrap; cursor: pointer; }
-.pick-chip:hover { border-color: rgba(255, 255, 255, .32); }
-.pick-chip[aria-pressed="true"] { border-color: var(--accent); background: rgba(255, 181, 71, .16); color: #ffd28c; }
-.pick-chip.locate { border-color: rgba(95, 183, 255, .55); color: #c4e4ff; }
-.pick-chip:disabled { opacity: .6; cursor: progress; }
-.place-line { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-#place-name { font-family: 'Chakra Petch', 'Barlow', system-ui, sans-serif; font-size: 18px; font-weight: 700; color: var(--text); }
-#place-area:not(:empty)::before { content: '· '; }
+.pick-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: var(--touch); padding: 0 14px; border: 1px solid var(--c-line); border-radius: var(--r-sm); background: rgba(255, 255, 255, .04); color: var(--c-text); font: var(--fw-semibold) var(--fs-md) / 1 var(--font-text); white-space: nowrap; cursor: pointer; transition: transform var(--t-fast) var(--ease-std); }
+@media (hover: hover) { .pick-chip:hover { border-color: var(--c-line-strong); background: var(--c-panel-raised); } }
+.pick-chip:active { transform: scale(.96); }
+.pick-chip[aria-pressed="true"] { border-color: var(--c-accent); background: var(--c-accent-soft); color: var(--c-text); }
+.pick-chip.locate .icon { color: var(--c-thirst); }
+.pick-chip:disabled { opacity: var(--o-dim); cursor: progress; }
+/* Lieu choisi : carte à icône, étiquette au-dessus, nom et région sur deux lignes au plus. */
+.place-card { display: grid; grid-template-columns: var(--icon-md) 1fr; align-items: center; column-gap: var(--sp-3); padding: var(--sp-2) var(--sp-3); background: var(--c-bg-2); border: 1px solid var(--c-line); border-radius: var(--r-sm); }
+.place-ico { display: inline-flex; color: var(--c-accent); }
+.place-ico .icon { width: var(--icon-md); height: var(--icon-md); }
+.place-card:has(.place-line.empty) .place-ico { color: var(--c-text-3); }
+.place-body { min-width: 0; }
+.place-title { display: block; margin-bottom: 2px; }
+.place-line { margin: 0; color: var(--c-text-2); font-size: var(--fs-md); line-height: var(--lh-snug); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+#place-name { font-family: var(--font-display); font-weight: var(--fw-semibold); letter-spacing: var(--ls-title); color: var(--c-text); }
+#place-area:not(:empty)::before { content: '· '; color: var(--c-text-3); }
 .place-line .place-empty { display: none; }
 .place-line.empty > :not(.place-empty) { display: none; }
 .place-line.empty .place-empty { display: inline; }
-.picker-note { margin: -4px 0 0; color: var(--muted); font-size: 13px; line-height: 1.35; }
+.picker-note { margin: calc(-1 * var(--sp-1)) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
 .picker-note:empty { display: none; }
-.picker-note.warn { color: var(--accent); }
-.options { display: grid; gap: 8px; }
-.opt { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
-.opt select { min-height: 44px; padding: 9px 10px; }
-#menu .primary { margin-top: 2px; }
-#menu .primary:disabled { opacity: .45; cursor: not-allowed; transform: none; }
-#help { position: absolute; z-index: 5; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(460px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; margin: 0; padding: 14px 20px 20px; background: var(--panel-solid); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 20px 60px rgba(0, 0, 0, .55); font-size: 14px; }
-.help-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
-.help-head h2 { margin: 0; color: var(--text); font-family: 'Chakra Petch', 'Barlow', system-ui, sans-serif; font-size: 20px; }
+.picker-note.warn { padding-left: 10px; border-left: 2px solid var(--c-warn); color: var(--c-warn); }
+/* Réglages météo et heure : listes sans flèche native, chevron dessiné en CSS. */
+.options { display: grid; gap: var(--sp-2); }
+.opt { position: relative; display: grid; grid-template-columns: 76px 1fr; align-items: center; gap: var(--sp-2); }
+.opt-name { display: inline-flex; align-items: center; gap: 6px; }
+.opt::after { content: ''; position: absolute; right: 16px; top: 50%; width: 7px; height: 7px; margin-top: -6px; border-right: 2px solid var(--c-text-2); border-bottom: 2px solid var(--c-text-2); transform: rotate(45deg); pointer-events: none; }
+#menu select { width: 100%; min-height: var(--touch); padding: 0 40px 0 var(--sp-3); border: 1px solid var(--c-line); border-radius: var(--r-sm); background: var(--c-field); color: var(--c-text); font: var(--fw-medium) 16px / 1.2 var(--font-text); text-overflow: ellipsis; -webkit-appearance: none; appearance: none; cursor: pointer; }
+@media (hover: hover) { #menu select:hover { border-color: var(--c-line-strong); } }
+#menu select:focus-visible { border-color: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-soft); }
+#menu #play { width: 100%; min-height: 52px; margin-top: 2px; }
+/* Aide : carte modale à sections illustrées, commandes au clavier ou au doigt selon l'appareil. */
+#help { position: absolute; z-index: 5; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(460px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: var(--sp-2) var(--sp-5) var(--sp-5); background: var(--corner), var(--c-panel-solid); border: 1px solid var(--c-line); border-radius: var(--r-xs) var(--r-md) var(--r-md); box-shadow: var(--sh-3); color: var(--c-text-2); font-size: var(--fs-md); line-height: var(--lh-body); animation: help-in var(--t-slow) var(--ease-out); }
+.help-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); margin-bottom: var(--sp-3); padding-bottom: var(--sp-1); border-bottom: 1px solid var(--c-line); }
+.help-head h2 { margin: 0; color: var(--c-text); font: var(--fw-bold) var(--fs-xl) / var(--lh-tight) var(--font-display); letter-spacing: var(--ls-title); text-transform: uppercase; }
 .help-head .icon-button { margin-right: -10px; }
+.help-sec + .help-sec { margin-top: var(--sp-4); }
+.help-sec h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 var(--sp-1); color: var(--c-text); }
+.help-sec h3 .icon { color: var(--c-accent); }
+.help-sec p { margin: 0; }
+#help b { color: var(--c-text); font-weight: var(--fw-semibold); }
+.keys { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px var(--sp-3); margin: var(--sp-2) 0 0; }
+.keys dt { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; color: var(--c-text-2); font-size: var(--fs-sm); }
+.keys dd { margin: 0; color: var(--c-text); }
+.touch-list { display: grid; gap: var(--sp-2); margin: var(--sp-2) 0 0; padding: 0; list-style: none; }
+.touch-list li { display: grid; grid-template-columns: var(--icon-md) 1fr; align-items: center; column-gap: 10px; }
+.touch-list .icon { width: var(--icon-md); height: var(--icon-md); color: var(--c-text); }
+@media (pointer: coarse) { .help-keys { display: none; } }
+@media (pointer: fine) { .help-touch { display: none; } }
 /* Téléphone : recherche en haut, panneau en bas ; pendant la saisie le panneau s'efface. */
 @media (max-width: 759px) {
   #menu.searching .sheet, #menu.has-suggestions .sheet { display: none; }
   /* --vv-h : hauteur visible au-dessus du clavier virtuel (src/picker.js). */
   #place-suggestions { max-height: calc(100vh - 150px); max-height: calc(var(--vv-h, 100dvh) - 150px); }
+  #menu #play { font-size: var(--fs-md); }
+}
+@media (max-width: 359px) {
+  #menu .logo { font-size: var(--fs-xl); }
+}
+/* Petit téléphone (320 × 568) : panneau du bas resserré pour garder la carte visible. */
+@media (max-width: 759px) and (max-height: 600px) {
+  .sheet { gap: var(--sp-2); }
+  .place-title { display: none; }
 }
 /* Ordinateur et tablette : carte latérale à gauche, globe à droite. */
 @media (min-width: 760px) {
-  .menu-ui { inset: 16px auto auto 16px; width: 400px; max-height: calc(100% - 32px); justify-content: flex-start; overflow-y: auto; overscroll-behavior: contain; background: var(--panel-solid); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 20px 60px rgba(0, 0, 0, .45); pointer-events: auto; }
-  .menu-top { padding: 18px 20px 2px; background: none; border: 0; box-shadow: none; }
-  .brand-row h1 { font-size: 32px; }
+  .menu-ui { inset: var(--sp-4) auto auto var(--sp-4); width: 400px; max-height: calc(100% - 2 * var(--sp-4)); justify-content: flex-start; overflow-y: auto; overscroll-behavior: contain; background: var(--corner), var(--c-panel-solid); border: 1px solid var(--c-line); border-radius: var(--r-xs) var(--r-md) var(--r-md); box-shadow: var(--sh-3); pointer-events: auto; }
+  .menu-top { padding: var(--sp-5) var(--sp-5) 2px; background: none; border: 0; box-shadow: none; }
+  #menu .logo { font-size: var(--fs-3xl); }
+  .brand-tag { display: block; }
   .menu-top .lead { display: block; }
-  .sheet { max-height: none; overflow: visible; padding: 14px 20px 20px; background: none; border: 0; border-radius: 0; box-shadow: none; }
+  .sheet { max-height: none; overflow: visible; padding: var(--sp-4) var(--sp-5) var(--sp-5); background: none; border: 0; border-radius: 0; box-shadow: none; }
+  .sheet-label { display: flex; }
   .quick { flex-wrap: wrap; overflow: visible; -webkit-mask-image: none; mask-image: none; }
-  .pick-chip { min-height: 36px; padding: 0 12px; font-size: 14.5px; }
+  .pick-chip { min-height: 36px; padding: 0 var(--sp-3); }
   .suggestion { min-height: 46px; }
   /* Les suggestions recouvrent la carte latérale au lieu de la pousser. */
   #place-form { position: relative; }
-  #place-suggestions { position: absolute; z-index: 3; top: 100%; left: 0; right: 0; box-shadow: 0 18px 40px rgba(0, 0, 0, .5); }
+  #place-suggestions { position: absolute; z-index: 3; top: 100%; left: 0; right: 0; box-shadow: var(--sh-2); }
 }
 @media (min-width: 760px) and (pointer: coarse) {
-  .pick-chip { min-height: 44px; }
+  .pick-chip { min-height: var(--touch); }
 }
-/* Téléphone à l'horizontale : carte latérale plus courte, raccourcis sur une ligne. */
+/* Téléphone à l'horizontale : carte latérale plus large et plus courte, raccourcis sur une ligne,
+   météo et heure côte à côte (leurs étiquettes restent lues par les lecteurs d'écran) : « Jouer ici » tient sans défiler. */
 @media (min-width: 760px) and (max-height: 560px) {
-  .menu-top .lead { display: none; }
-  .brand-row h1 { font-size: 26px; }
+  .menu-top .lead, .brand-tag, .sheet-label, .place-title { display: none; }
+  #menu .logo { font-size: var(--fs-2xl); }
+  .menu-ui { width: 460px; }
+  .menu-top { padding-top: var(--sp-3); }
+  .sheet { gap: var(--sp-2); padding-top: var(--sp-3); padding-bottom: var(--sp-3); }
   .quick { flex-wrap: nowrap; overflow-x: auto; -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
+  .options { grid-template-columns: 1fr 1fr; }
+  .opt { grid-template-columns: 1fr; }
+  .opt-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #menu #play { min-height: 48px; }
 }
 
-/* Chargement */
-#loading { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(8, 11, 18, .88); z-index: 30; padding: 16px; text-align: center; }
-.spinner { width: 42px; height: 42px; border-radius: 50%; border: 4px solid var(--line); border-top-color: var(--accent); margin: 0 auto 16px; animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-#loading-text { color: var(--muted); max-width: 340px; line-height: 1.4; }
-#loading.fatal .spinner { display: none; }
+/* Chargement : logo, journal des étapes, jauge animée, conseil de survie.
+   .fatal : message bloquant (aussi posé sans JavaScript par le script en fin de page) ; .notice : message bref sur le menu. */
+#loading { position: fixed; inset: 0; z-index: var(--z-loading); display: grid; overflow-y: auto; padding: max(var(--sp-4), env(safe-area-inset-top)) max(var(--sp-4), env(safe-area-inset-right)) max(var(--sp-4), env(safe-area-inset-bottom)) max(var(--sp-4), env(safe-area-inset-left)); text-align: center; background: radial-gradient(ellipse at 50% 45%, transparent 40%, var(--c-scrim)), var(--grid), var(--c-bg); }
+.load-box { display: grid; justify-items: center; width: min(380px, 100%); margin: auto; animation: screen-fade var(--t-slow) var(--ease-out); }
+.load-box .logo { font-size: var(--fs-display); }
+.load-tag { margin: var(--sp-2) 0 var(--sp-6); }
+.load-panel { display: grid; gap: var(--sp-2); width: 100%; padding: var(--sp-4); text-align: left; background: var(--corner), var(--c-panel); border: 1px solid var(--c-line); border-radius: var(--r-xs); box-shadow: var(--sh-1); }
+.load-kicker { margin: 0 0 var(--sp-1); color: var(--c-accent); }
+.load-steps { display: grid; gap: var(--sp-1); margin: 0; padding: 0; list-style: none; color: var(--c-text-3); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+.load-steps:empty { display: none; }
+.load-steps li { display: flex; align-items: center; gap: var(--sp-2); }
+.load-steps .icon { color: var(--c-success); }
+#loading-text { color: var(--c-text); font-size: var(--fs-md); font-weight: var(--fw-medium); line-height: var(--lh-snug); }
+/* Indicateur : un segment éclairé (et sa traîne) parcourt une jauge de 10 segments ; seule la translation s'anime. */
+.load-gauge { position: relative; height: var(--gauge-h); margin-top: var(--sp-1); overflow: hidden; background: var(--c-gauge-track); -webkit-mask: var(--gauge-mask); mask: var(--gauge-mask); }
+.load-gauge i { position: absolute; top: 0; bottom: 0; left: 0; width: 30%; background: linear-gradient(90deg, var(--c-accent-soft) 0 33.33%, var(--c-accent-line) 0 66.66%, var(--c-accent) 0); transform: translateX(-100%); animation: load-scan 1.2s steps(13, end) infinite; will-change: transform; }
+.load-tip { width: 100%; margin-top: var(--sp-5); padding-top: var(--sp-3); border-top: 1px solid var(--c-line); text-align: left; }
+.load-tip .label { display: flex; align-items: center; gap: 6px; margin: 0; }
+.load-tip .label .icon { color: var(--c-accent); }
+#loading-tip { margin: var(--sp-1) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+.load-alert { display: none; width: 32px; height: 32px; color: var(--c-warn); }
+#loading.fatal .load-alert, #loading.notice .load-alert { display: block; }
+#loading.fatal .load-panel, #loading.notice .load-panel { justify-items: center; gap: var(--sp-3); text-align: center; box-shadow: var(--sh-1), inset 0 3px 0 var(--c-warn); }
+#loading.fatal :is(.load-kicker, .load-steps, .load-gauge, .load-tip), #loading.notice :is(.load-kicker, .load-steps, .load-gauge, .load-tip, .logo, .load-tag) { display: none; }
+#loading.notice { background: var(--c-scrim); }
+@media (max-height: 500px) and (orientation: landscape) {
+  .load-tag { margin-bottom: var(--sp-3); }
+  .load-tip { margin-top: var(--sp-3); }
+}
+@keyframes load-scan { to { transform: translateX(333.33%); } }
+@keyframes screen-fade { from { opacity: 0; } }
+@keyframes screen-rise { from { opacity: 0; transform: translateY(12px); } }
+@keyframes help-in { from { opacity: 0; transform: translate(-50%, calc(-50% + 12px)); } }
+@keyframes end-stamp { from { opacity: 0; transform: scale(1.08); } }
 
-/* Interface en jeu */
-#hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }
-.pill { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-#leftcol { position: absolute; top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); width: min(380px, calc(100vw - 250px)); display: flex; flex-direction: column; gap: 8px; }
-#conditions { font-size: 13px; line-height: 1.35; }
-#conditions .place { font-weight: 700; font-size: 15px; }
-#conditions .data { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
-#conditions .live { color: var(--good); }
-#conditions .warn { color: var(--accent); }
-#mods { margin-top: 6px; font-size: 11.5px; color: var(--muted); padding-left: 0; list-style: none; }
-#mods li::before { content: '• '; color: var(--accent); }
-#vitals { position: absolute; top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); width: min(200px, 40vw); font-size: 11.5px; }
-.bar { height: 8px; border-radius: 4px; background: rgba(255,255,255,.12); overflow: hidden; margin: 3px 0 7px; }
-.bar > i { display: block; height: 100%; width: 100%; transition: width .15s; }
-#health > i { background: var(--danger); }
-#stamina > i { background: var(--stamina); }
-#food > i { background: #e0a050; }
-#water > i { background: #4fc3d9; }
-#body { font-weight: 600; margin-bottom: 2px; }
-#body.cold { color: #8fc8ff; }
-#body.hot { color: #ff9a6a; }
-#inventory { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 6px; pointer-events: auto; }
-.chip { font: inherit; font-size: 11.5px; padding: 5px 2px; white-space: nowrap; border-radius: 8px; border: 1px solid var(--line); background: rgba(255,255,255,.06); color: var(--text); cursor: pointer; touch-action: none; }
-.chip:disabled { opacity: .4; cursor: default; }
-#gear { color: var(--muted); margin-top: 4px; }
-#search { position: absolute; left: 50%; bottom: max(150px, calc(env(safe-area-inset-bottom) + 150px)); transform: translateX(-50%); pointer-events: auto; font: inherit; font-weight: 700; font-size: 15px; padding: 12px 18px; border-radius: 12px; border: 2px solid var(--accent); background: rgba(14,20,32,.85); color: var(--text); cursor: pointer; overflow: hidden; max-width: calc(100vw - 32px); touch-action: none; white-space: nowrap; text-overflow: ellipsis; }
-#search i { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--accent); width: 0; }
-#kills { color: var(--muted); }
-#quest { font-size: 13.5px; line-height: 1.35; }
-#quest .stage { color: var(--accent); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
-#quest .meta { display: flex; gap: 14px; margin-top: 4px; font-weight: 600; }
-#quest .timer.low { color: var(--danger); }
-#compass { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
-#compass .arrow { position: absolute; left: -16px; top: -16px; width: 32px; height: 32px; transform-origin: 16px 16px; }
-#toast { position: absolute; left: 50%; bottom: 130px; transform: translateX(-50%); font-weight: 700; font-size: 16px; text-align: center; max-width: calc(100vw - 32px); transition: opacity .3s; }
-#hurt { position: absolute; inset: 0; box-shadow: inset 0 0 120px rgba(255, 30, 30, .7); opacity: 0; transition: opacity .15s; }
-#topbuttons { position: absolute; right: max(10px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); display: flex; gap: 6px; pointer-events: auto; }
-.small { pointer-events: auto; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; font-size: 12.5px; cursor: pointer; }
+/* Interface en jeu (HUD) : une grille de panneaux le long des bords, le centre reste au monde (guide de style, § 4 et § 6).
+   Ordinateur : conditions et quête à gauche, état et sac à droite. Téléphone : barre du haut, puis quête et état côte à côte.
+   Les éléments du centre (boussole, toast, Fouiller, commandes tactiles) sont posés en absolu par-dessus la grille. */
+@media (min-width: 1024px) { :root { --hud-edge: 16px; } }
+#hud {
+  --hud-hurt: color-mix(in srgb, var(--c-danger) 62%, transparent);
+  --hud-mark: linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 12px 2px no-repeat border-box, linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 2px 12px no-repeat border-box;
+  position: fixed; inset: 0; z-index: var(--z-hud); pointer-events: none;
+  display: grid; grid-template-columns: minmax(0, 340px) 1fr 232px; grid-template-rows: auto auto 1fr; align-items: start; gap: var(--sp-2);
+  padding: var(--hud-t) var(--hud-r) var(--hud-b) var(--hud-l);
+  color: var(--c-text); font-family: var(--font-text); line-height: var(--lh-snug);
+}
+@media (min-width: 1280px) { #hud { grid-template-columns: minmax(0, 360px) 1fr 232px; } }
+/* Panneau : graphite translucide, repère d'angle orange en haut à gauche ; flou seulement à la souris (coût sur mobile). */
+.pill, body:not(.touch) #inventory { background: var(--hud-mark), var(--c-panel); border: 1px solid var(--c-line); border-radius: var(--r-xs); padding: var(--sp-2) var(--sp-3); box-shadow: var(--sh-1); }
+@media (pointer: fine) { body:not(.touch) .pill, body:not(.touch) #inventory { -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); } }
+@keyframes hud-in-left { from { opacity: 0; transform: translateX(-12px); } }
+@keyframes hud-in-right { from { opacity: 0; transform: translateX(12px); } }
+@keyframes hud-in-up { from { opacity: 0; transform: translateY(12px); } }
+@keyframes hud-pulse { 50% { opacity: .45; } }
+@keyframes hud-flash { from { opacity: .6; } to { opacity: 0; } }
+@keyframes hud-pop { from { transform: scale(1.3); } }
+/* Entrée du HUD (chaque fois qu'il réapparaît) : panneaux glissés depuis leur bord, décalés de 40 ms. */
+#conditions { animation: hud-in-left var(--t-slow) var(--ease-out) backwards; }
+#quest { animation: hud-in-left var(--t-slow) var(--ease-out) 40ms backwards; }
+#vitals { animation: hud-in-right var(--t-slow) var(--ease-out) 80ms backwards; }
+#inventory, #topbuttons { animation: hud-in-right var(--t-slow) var(--ease-out) 120ms backwards; }
+#controls .round { animation: hud-in-up var(--t-slow) var(--ease-out) 120ms backwards; }
+#leftcol { grid-column: 1; grid-row: 1 / -1; display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
 
-/* Commandes tactiles */
-#controls { display: none; }
+/* Conditions réelles : lieu, météo et heure, sources des données, effets sur la partie. */
+#conditions { position: relative; min-width: 0; font-size: var(--fs-sm); }
+#conditions .place { overflow: hidden; color: var(--c-text); font: var(--fw-semibold) var(--fs-md) / var(--lh-snug) var(--font-display); letter-spacing: var(--ls-title); white-space: nowrap; text-overflow: ellipsis; }
+.cond-wx { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 2px; }
+.wx-icon { display: inline-flex; flex: none; color: var(--c-text); }
+.wx-icon .icon { width: var(--icon-md); height: var(--icon-md); }
+#weather-line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-width: 0; color: var(--c-text-2); font-weight: var(--fw-medium); }
+#weather-line > span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+#weather-line .icon { width: 14px; height: 14px; }
+.wx-temp { color: var(--c-text); font-size: var(--fs-md); font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; }
+.cond-more { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--c-line); }
+#data-line { color: var(--c-text-3); font-size: var(--fs-xs); }
+#data-line .live, #data-line .warn { font-weight: var(--fw-semibold); }
+#data-line .live { color: var(--c-success); }
+#data-line .warn { color: var(--c-warn); }
+#data-line .live::before, #data-line .warn::before { content: ''; display: inline-block; width: 6px; height: 6px; margin: 0 5px 1px 0; border-radius: 50%; background: currentColor; }
+#mods { margin: var(--sp-1) 0 0; padding: 0; list-style: none; color: var(--c-text-2); font-size: var(--fs-xs); }
+#mods li { position: relative; padding-left: 11px; }
+#mods li::before { content: ''; position: absolute; left: 0; top: .4em; border-left: 5px solid var(--c-accent); border-block: 4px solid transparent; }
+
+/* Carte de quête : filet orange (objectif actif), étape et pips, texte, distance et chrono. */
+#quest { min-width: 0; padding-left: var(--sp-3); background: var(--c-panel); border-left: 2px solid var(--c-accent); font-size: 14px; }
+.quest-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.quest-icon { display: inline-flex; flex: none; color: var(--c-accent); }
+.quest-icon .icon { width: 14px; height: 14px; }
+#quest .stage { min-width: 0; overflow: hidden; color: var(--c-accent); font: var(--fw-semibold) var(--fs-2xs) / 1.3 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; white-space: nowrap; text-overflow: ellipsis; }
+.quest-pips { display: flex; flex: none; gap: 3px; margin-left: 2px; }
+.quest-pips i { width: 8px; height: 4px; border-radius: var(--r-xs); background: var(--c-gauge-track); }
+.quest-pips i:first-child, #quest.stage-2 .quest-pips i { background: var(--c-accent); }
+#quest.stage-2 .quest-pips i:last-child { animation: hud-pop var(--t-slow) var(--ease-out); }
+#quest-text { display: -webkit-box; margin-top: var(--sp-1); overflow: hidden; color: var(--c-text); font-weight: var(--fw-medium); -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+#quest .meta { display: flex; gap: var(--sp-4); margin-top: 6px; }
+.quest-val { display: inline-flex; align-items: center; gap: 5px; color: var(--c-text-2); }
+.quest-val .icon { width: 14px; height: 14px; }
+.quest-val .num { color: var(--c-text); font-size: var(--fs-md); }
+.quest-val.low, #quest .timer.low { color: var(--c-danger); }
+#quest .timer.low { animation: hud-pulse 1s var(--ease-std) infinite; }
+#quest.explore .quest-pips, #quest.explore .meta, #quest.no-target .meta, #quest.no-timer .quest-timer-val { display: none; }
+
+/* État : jauges segmentées (10 segments), température du corps, zombies à terre, équipement. */
+#vitals { grid-column: 3; grid-row: 1; min-width: 0; padding: 10px var(--sp-3); }
+.vital { position: relative; display: grid; grid-template-columns: var(--icon-sm) minmax(0, 1fr); grid-template-areas: 'ico name' 'ico bar'; align-items: center; column-gap: var(--sp-2); color: var(--vital-color); }
+.vital + .vital { margin-top: 6px; }
+.vital[data-vital="health"] { --vital-color: var(--c-health); }
+.vital[data-vital="stamina"] { --vital-color: var(--c-stamina); }
+.vital[data-vital="food"] { --vital-color: var(--c-hunger); }
+.vital[data-vital="water"] { --vital-color: var(--c-thirst); }
+.vital-icon { grid-area: ico; display: inline-flex; }
+.vital-icon .icon { width: var(--icon-sm); height: var(--icon-sm); }
+.vital-name { grid-area: name; line-height: 1.3; }
+.bar { grid-area: bar; position: relative; height: var(--gauge-h); margin-top: 3px; overflow: hidden; background: var(--c-gauge-track); -webkit-mask: var(--gauge-mask); mask: var(--gauge-mask); }
+.bar > i { position: relative; z-index: 1; display: block; width: 100%; height: 100%; background: var(--vital-color, var(--c-accent)); transition: width var(--t-base) var(--ease-out); }
+.bar > i::after { content: ''; position: absolute; inset: 0; background: var(--c-text); opacity: 0; }
+/* Perte fantôme de la santé : la part perdue reste en blanc un instant, puis rattrape la valeur. */
+#health::before { content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: var(--ghost, 0%); background: var(--c-text); opacity: .35; transition: width var(--t-slow) var(--ease-std) 400ms; }
+/* Alertes : .low à 25 % ou moins, .critical à 10 % ou moins (posées par main.js) ; .gain quand on mange, boit ou se soigne. */
+.vital.low .vital-icon, .vital.low .vital-name { color: var(--c-danger); }
+.vital.low .bar > i { animation: hud-pulse 1s var(--ease-std) infinite; }
+.vital.critical .bar > i { animation-duration: .5s; }
+.vital.critical::before { content: ''; position: absolute; top: 0; bottom: 0; left: -7px; width: 2px; background: var(--c-danger); }
+.vital.gain .bar > i::after { animation: hud-flash 300ms var(--ease-std); }
+.vital-stats { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); margin-top: 10px; padding-top: var(--sp-2); border-top: 1px solid var(--c-line); }
+.vital-stat { display: inline-flex; align-items: center; gap: 5px; min-width: 0; font-size: var(--fs-xs); }
+.vital-stat .icon { width: var(--icon-sm); height: var(--icon-sm); }
+.vital-stat .num { font-size: var(--fs-md); }
+#body.cold { color: var(--c-cold); }
+#body.hot { color: var(--c-heat); }
+#body.low .num, #body.low .icon { animation: hud-pulse 1s var(--ease-std) infinite; }
+.body-state { font-weight: var(--fw-semibold); }
+#kills { margin-left: auto; color: var(--c-text-2); }
+#kills .num { color: var(--c-text); }
+.gear-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--c-text-2); font-size: var(--fs-xs); }
+.gear-row .icon { width: 14px; height: 14px; flex: none; }
+
+/* Sac : liste à touches 1 à 4 sous l'état à la souris ; boutons carrés près du pouce droit sur écran tactile. */
+#inventory { grid-column: 3; grid-row: 2; min-width: 0; pointer-events: auto; }
+body:not(.touch) #inventory { display: grid; gap: var(--sp-1); padding: var(--sp-2); }
+.inv-head { display: flex; align-items: center; gap: 6px; padding: 0 2px 6px; border-bottom: 1px solid var(--c-line); }
+.inv-head .icon { width: 14px; height: 14px; }
+.chip { --chip-color: var(--c-text); position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto; align-items: center; gap: var(--sp-2); min-height: 32px; padding: 0 6px 0 var(--sp-2); border: 1px solid var(--c-line); border-radius: var(--r-sm); background: color-mix(in srgb, var(--c-text) 4%, transparent); color: var(--c-text); text-align: left; cursor: pointer; touch-action: none; transition: transform var(--t-fast) var(--ease-std); }
+.chip[data-use="eat"] { --chip-color: var(--c-hunger); }
+.chip[data-use="drink"] { --chip-color: var(--c-thirst); }
+.chip[data-use="heal"] { --chip-color: var(--c-health); }
+.chip[data-use="warm"] { --chip-color: var(--c-heat); }
+.chip-icon { display: inline-flex; color: var(--chip-color); }
+.chip-icon .icon { width: 18px; height: 18px; }
+.chip-name { overflow: hidden; color: var(--c-text-2); font: var(--fw-semibold) var(--fs-2xs) / 1 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; white-space: nowrap; text-overflow: ellipsis; }
+.chip-count { display: inline-block; min-width: 2ch; font-size: var(--fs-md); line-height: 1; text-align: right; }
+.chip::after { content: ''; position: absolute; inset: -1px; border-radius: inherit; background: var(--chip-color); opacity: 0; pointer-events: none; }
+@media (hover: hover) { .chip:not(:disabled):hover { border-color: var(--c-line-strong); background: var(--c-panel-raised); } }
+.chip:not(:disabled):active { border-color: var(--c-accent); background: var(--c-accent-soft); transform: scale(.96); }
+.chip:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+.chip:disabled { opacity: var(--o-disabled); cursor: default; }
+.chip:disabled .chip-icon { color: var(--c-text); }
+.chip.gain::after { animation: hud-flash 300ms var(--ease-std); }
+.chip.found::after { background: var(--c-accent); animation: hud-flash 600ms var(--ease-std); }
+.chip.found .chip-count { animation: hud-pop var(--t-base) var(--ease-out); }
+body.touch #inventory { position: absolute; right: var(--hud-r); bottom: calc(var(--hud-b) + 114px); display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+body.touch .inv-head, body.touch .chip-name, body.touch .chip-key { display: none; }
+body.touch .chip { display: grid; place-items: center; grid-template-columns: none; width: var(--btn-item); height: var(--btn-item); padding: 0; border-color: var(--c-line-strong); border-radius: var(--r-md); background: var(--c-panel); box-shadow: var(--sh-1); pointer-events: auto; }
+body.touch .chip-icon .icon { width: 22px; height: 22px; }
+body.touch .chip-count { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border: 1px solid var(--c-line-strong); border-radius: var(--r-pill); background: var(--c-panel-solid); font-size: var(--fs-2xs); }
+body.touch .chip:disabled .chip-count { display: none; }
+/* Case vide : la tuile reste sombre (lisible sur la neige), seule l'icône s'estompe. */
+body.touch .chip:disabled { opacity: 1; border-color: var(--c-line); }
+body.touch .chip:disabled .chip-icon { opacity: var(--o-disabled); }
+
+/* Effets et Menu : boutons icône à étiquette en bas à droite à la souris, carrés de 44 px en haut sur écran tactile. */
+#topbuttons { position: absolute; right: var(--hud-r); bottom: var(--hud-b); display: flex; gap: 6px; pointer-events: auto; }
+.small { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 36px; height: 36px; padding: 0 10px; border: 1px solid var(--c-line); border-radius: var(--r-sm); background: var(--c-panel); box-shadow: var(--sh-1); color: var(--c-text-2); font: var(--fw-semibold) var(--fs-sm) / 1 var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; transition: transform var(--t-fast) var(--ease-std); }
+.small-icon { display: inline-flex; }
+.small-icon .icon { width: var(--icon-md); height: var(--icon-md); }
+@media (hover: hover) { .small:hover { border-color: var(--c-line-strong); color: var(--c-text); } }
+.small:active { transform: scale(.96); }
+.small:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+body.show-mods #mods-toggle { border-color: var(--c-accent); color: var(--c-accent); }
+body.touch #topbuttons { position: static; grid-column: 2; grid-row: 1; justify-self: end; }
+body.touch .small { width: var(--touch); height: var(--touch); padding: 0; }
+body.touch .small-text { display: none; }
+/* Grand écran : sources, effets et équipement sont toujours affichés, le bouton Effets ne servirait à rien. */
+@media (min-width: 760px) { #mods-toggle { display: none; } }
+
+/* Colonne centrale : Fouiller, notification, bandeau d'objectif. */
+#search { position: absolute; left: 0; right: 0; bottom: calc(var(--hud-b) + 96px); display: flex; align-items: center; gap: var(--sp-2); width: max-content; max-width: min(420px, calc(100vw - 2 * (var(--hud-edge) + 60px))); min-height: var(--touch); margin: 0 auto; padding: 0 var(--sp-3); overflow: hidden; border: 1px solid var(--c-accent); border-radius: var(--r-sm); background: var(--c-panel-strong); box-shadow: var(--sh-2); color: var(--c-text); font: var(--fw-semibold) var(--fs-md) / 1.2 var(--font-text); cursor: pointer; pointer-events: auto; touch-action: none; transition: transform var(--t-fast) var(--ease-std); }
+#search:active { transform: scale(.96); }
+#search:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+.dig-icon { display: inline-flex; flex: none; color: var(--c-accent); }
+.dig-icon .icon { width: var(--icon-md); height: var(--icon-md); }
+#search-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+body.touch .dig-key, #search.busy .dig-key { display: none; }
+.dig-track { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; -webkit-mask: var(--gauge-mask); mask: var(--gauge-mask); }
+#search-progress { display: block; width: 0; height: 100%; background: var(--c-accent); }
+#toast { position: absolute; left: 0; right: 0; bottom: calc(var(--hud-b) + 156px); display: flex; align-items: center; justify-content: center; gap: var(--sp-2); width: max-content; max-width: min(420px, calc(100vw - 2 * (var(--hud-edge) + 60px))); margin: 0 auto; padding: 10px var(--sp-4); background: var(--c-panel-strong); border-radius: var(--r-sm); box-shadow: var(--sh-2); font: var(--fw-semibold) var(--fs-md) / var(--lh-snug) var(--font-text); text-align: center; transition: opacity var(--t-base) var(--ease-std); will-change: opacity; pointer-events: none; }
+#toast-text { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.toast-icon { display: inline-flex; flex: none; }
+.toast-icon[hidden] { display: none; }
+.toast-icon .icon { width: var(--icon-md); height: var(--icon-md); }
+#toast.toast-danger { box-shadow: inset 3px 0 0 var(--c-danger), var(--sh-2); }
+#toast.toast-danger .toast-icon { color: var(--c-danger); }
+#toast.toast-success { box-shadow: inset 3px 0 0 var(--c-success), var(--sh-2); }
+#toast.toast-success .toast-icon { color: var(--c-success); }
+#toast.toast-loot { box-shadow: inset 3px 0 0 var(--c-accent), var(--sh-2); }
+#toast.toast-loot .toast-icon { color: var(--c-accent); }
+/* Bandeau « Objectif mis à jour » : centré dans la colonne du milieu de la grille, animé par main.js.
+   La ligne de fin est explicite : en position absolue, « auto » vaudrait le bord droit du HUD.
+   Colonne trop étroite (fenêtre de 760 à 830 px) : le texte passe sur deux lignes plutôt que de déborder. */
+#objective { position: absolute; grid-column: 2 / 3; grid-row: 1; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: var(--sp-2); width: max-content; max-width: 100%; margin: 0 auto; padding: var(--sp-2) var(--sp-4); border: 1px solid var(--c-accent-line); border-radius: var(--r-xs); background: var(--c-panel-strong); box-shadow: var(--sh-2); color: var(--c-accent); font: var(--fw-bold) var(--fs-sm) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; opacity: 0; pointer-events: none; }
+#objective .icon { width: var(--icon-sm); height: var(--icon-sm); }
+/* Tablette en portrait : sous l'état, sur la largeur des colonnes du milieu et de droite (le bouton Menu occupe le haut). */
+body.touch #objective { grid-column: 2 / -1; grid-row: 2; }
+/* Grand écran : centré sur l'écran, au-dessus du joueur (les colonnes latérales n'ont pas la même largeur). */
+@media (min-width: 1024px) { #objective, body.touch #objective { grid-column: 1 / -1; grid-row: 1; } }
+
+/* Boussole de quête : flèche pleine en orange autour du joueur, distance du côté extérieur. */
+#compass { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transition: opacity var(--t-base) var(--ease-std); }
+#compass.near { opacity: .4; }
+#compass .arrow { position: absolute; left: -16px; top: -16px; width: 32px; height: 32px; overflow: visible; transform-origin: 16px 16px; color: var(--c-accent); will-change: transform; }
+#compass .arrow path { fill: currentColor; stroke: var(--c-on-accent); stroke-width: 2; stroke-linejoin: round; }
+.compass-dist { position: absolute; left: 0; top: 0; color: var(--c-text); font: var(--fw-bold) var(--fs-xs) / 1 var(--font-text); font-variant-numeric: tabular-nums; text-shadow: var(--sh-text); white-space: nowrap; }
+/* Coup reçu : voile rouge radial sous les panneaux, son opacité suit le coup (main.js). */
+#hurt { position: absolute; inset: 0; z-index: -1; background: radial-gradient(ellipse at center, transparent 55%, var(--hud-hurt)); opacity: 0; transition: opacity var(--t-fast) linear; will-change: opacity; pointer-events: none; }
+
+/* Commandes tactiles : joystick du pouce gauche, Frapper et Courir ronds en bas à droite. */
+#controls { display: none; position: absolute; inset: 0; pointer-events: none; }
 body.touch #controls { display: block; }
-#stick-base { position: absolute; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; border: 2px solid rgba(255,255,255,.35); background: rgba(255,255,255,.08); opacity: 0; transition: opacity .15s; }
+#stick-base { position: absolute; width: 120px; height: 120px; margin: -60px 0 0 -60px; border: 2px solid color-mix(in srgb, var(--c-text) 35%, transparent); border-radius: 50%; background: color-mix(in srgb, var(--c-bg) 25%, transparent); opacity: 0; transition: opacity var(--t-fast) var(--ease-std); }
+#stick-base::before { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: repeating-conic-gradient(from -1.5deg, color-mix(in srgb, var(--c-text) 55%, transparent) 0 3deg, transparent 3deg 45deg); -webkit-mask: radial-gradient(circle closest-side, transparent 80%, var(--c-bg) 82%); mask: radial-gradient(circle closest-side, transparent 80%, var(--c-bg) 82%); }
 #stick-base.active { opacity: 1; }
-#stick-knob { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; border-radius: 50%; background: rgba(255,255,255,.55); transform: translate(-50%, -50%); }
-#stick-hint { position: absolute; left: max(18px, env(safe-area-inset-left)); bottom: max(22px, env(safe-area-inset-bottom)); font-size: 12px; color: rgba(255,255,255,.65); }
-.round { position: absolute; pointer-events: auto; border-radius: 50%; border: 2px solid rgba(255,255,255,.4); background: rgba(14,20,32,.6); color: var(--text); font-weight: 700; display: grid; place-items: center; touch-action: none; }
-#attack { width: 84px; height: 84px; right: max(20px, env(safe-area-inset-right)); bottom: max(28px, env(safe-area-inset-bottom)); font-size: 13px; background: rgba(255, 93, 93, .35); }
-#run { width: 64px; height: 64px; right: calc(max(20px, env(safe-area-inset-right)) + 96px); bottom: max(22px, env(safe-area-inset-bottom)); font-size: 12px; }
-#run.on { background: rgba(95, 183, 255, .45); }
+#stick-knob { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; border: 2px solid transparent; border-radius: 50%; background: color-mix(in srgb, var(--c-text) 65%, transparent); transform: translate(-50%, -50%); }
+#stick-knob.full { border-color: var(--c-accent); }
+#stick-hint { position: absolute; left: calc(var(--hud-l) + 8px); bottom: calc(var(--hud-b) + 12px); color: var(--c-text); font: var(--fw-semibold) var(--fs-xs) / 1.2 var(--font-text); text-shadow: var(--sh-text); pointer-events: none; transition: opacity var(--t-slow) var(--ease-std); }
+#stick-hint.used { opacity: 0; }
+.round { position: absolute; isolation: isolate; display: grid; place-items: center; align-content: center; gap: 3px; border-radius: 50%; color: var(--c-text); pointer-events: auto; touch-action: none; transition: transform var(--t-fast) var(--ease-std); }
+.round-icon { display: inline-flex; }
+.round-label { font: var(--fw-semibold) 10px / 1 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
+#attack { right: calc(var(--hud-r) + 10px); bottom: calc(var(--hud-b) + 18px); width: var(--btn-attack); height: var(--btn-attack); border: 2px solid color-mix(in srgb, var(--c-danger) 75%, transparent); background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--c-danger) 34%, transparent), var(--c-panel) 72%); }
+#attack .icon { width: 34px; height: 34px; }
+#attack::after { content: ''; position: absolute; z-index: -1; inset: -2px; border-radius: 50%; background: color-mix(in srgb, var(--c-danger) 50%, transparent); box-shadow: var(--glow-danger); opacity: 0; transition: opacity var(--t-fast) var(--ease-std); }
+#attack.on { transform: scale(.92); }
+#attack.on::after { opacity: 1; }
+#run { right: calc(var(--hud-r) + 106px); bottom: calc(var(--hud-b) + 18px); width: var(--btn-run); height: var(--btn-run); border: 2px solid var(--c-line-strong); background: var(--c-panel); }
+#run .icon { width: 26px; height: 26px; }
+#run.on { border-color: var(--c-stamina); background: color-mix(in srgb, var(--c-stamina) 22%, var(--c-panel-solid)); }
+#run.on .round-icon { color: var(--c-stamina); }
+#run.empty { opacity: var(--o-dim); }
 
-/* Fin de partie */
-#end { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(8, 11, 18, .7); z-index: 25; padding: 16px; }
-#end h2 { margin: 0 0 6px; font-size: 26px; }
-#end .lines { color: var(--muted); line-height: 1.6; font-size: 14.5px; }
-#end .score { font-size: 30px; font-weight: 700; color: var(--accent); margin: 10px 0; }
-.row { display: flex; gap: 10px; }
-.row .primary { margin-top: 18px; }
-.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+/* HUD compact (téléphone en portrait ou à l'horizontale) : conditions sur une ligne, jauges sans nom, Effets en menu déroulant. */
+@media (max-width: 759px), (max-height: 500px) and (orientation: landscape) {
+  #conditions { z-index: 2; display: flex; align-items: center; gap: 6px; padding: 0 10px; white-space: nowrap; }
+  #conditions .place { order: 2; flex: 1; font-size: var(--fs-sm); }
+  #conditions .place::before { content: '·'; margin-right: 6px; color: var(--c-text-3); }
+  .cond-wx { order: 1; flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; }
+  .wx-icon .icon { width: 18px; height: 18px; }
+  #weather-line { flex-wrap: nowrap; gap: 0; color: var(--c-text); }
+  #weather-line > .wx-label, #weather-line > .wx-wind, #weather-line .wx-time .icon, #weather-line .wx-forced { display: none; }
+  #weather-line > span + span::before { content: '·'; margin: 0 5px; color: var(--c-text-3); }
+  .wx-temp { font-size: var(--fs-sm); }
+  .cond-more { display: none; position: absolute; top: calc(100% + 6px); left: -1px; right: -1px; margin: 0; padding: var(--sp-2) 10px; border: 1px solid var(--c-line-strong); border-radius: var(--r-xs); background: var(--c-panel-solid); box-shadow: var(--sh-2); white-space: normal; }
+  body.show-mods .cond-more { display: block; }
+  #quest { padding: 6px var(--sp-2) 6px 10px; font-size: var(--fs-sm); }
+  .stage-step { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #quest .meta { gap: var(--sp-3); margin-top: var(--sp-1); }
+  .quest-val .num { font-size: 14px; }
+  #vitals { padding: 6px var(--sp-2); }
+  .vital { grid-template-columns: 14px minmax(0, 1fr); grid-template-areas: 'ico bar'; column-gap: 6px; height: 18px; }
+  .vital + .vital { margin-top: 2px; }
+  .vital-name { display: none; }
+  .vital-icon .icon { width: 14px; height: 14px; }
+  .bar { height: var(--gauge-h-compact); margin: 0; }
+  .vital-stats { flex-wrap: nowrap; gap: var(--sp-2); margin-top: var(--sp-1); padding-top: var(--sp-1); }
+  .vital-stat { gap: 3px; }
+  .vital-stat .icon { width: 14px; height: 14px; }
+  .vital-stat .num { font-size: 14px; }
+  .body-state, .gear-row { display: none; }
+  body.show-mods .gear-row { display: flex; }
+  .small { width: var(--touch); height: var(--touch); padding: 0; }
+  .small-text { display: none; }
+}
+/* Téléphone en portrait : barre du haut de 44 px (conditions, Effets, Menu), puis quête à gauche et état à droite (128 px). */
+@media (max-width: 759px) {
+  #hud { grid-template-columns: minmax(0, 1fr) 128px; grid-template-rows: var(--touch) auto 1fr; }
+  #leftcol { display: contents; }
+  #conditions { grid-column: 1 / -1; grid-row: 1; height: var(--touch); margin-right: calc(2 * var(--touch) + 6px + var(--sp-2)); }
+  #quest { grid-column: 1; grid-row: 2; }
+  #quest-text { -webkit-line-clamp: 2; }
+  #vitals { grid-column: 2; grid-row: 2; }
+  #topbuttons { position: static; grid-column: 2; grid-row: 1; justify-self: end; }
+  body:not(.touch) #inventory { grid-column: 2; grid-row: 3; }
+  body:not(.touch) .chip-name { display: none; }
+  /* Bandeau d'objectif juste sous la quête et l'état, pour ne pas cacher le nouveau texte de la quête. */
+  #objective, body.touch #objective { grid-column: 1 / -1; grid-row: 3; }
+  /* Fouiller et toast : centrés dans la place laissée à gauche de la colonne du sac. */
+  #search, #toast { left: var(--hud-l); right: calc(var(--hud-r) + var(--btn-item) + var(--sp-2)); max-width: calc(100vw - var(--hud-l) - var(--hud-r) - var(--btn-item) - var(--sp-2)); }
+  #search { bottom: calc(var(--hud-b) + 136px); min-height: 48px; font-size: 14px; }
+  #toast { bottom: calc(var(--hud-b) + 200px); font-size: 14px; }
+  #toast-text { -webkit-line-clamp: 3; }
+}
+@media (max-width: 379px) {
+  #hud { grid-template-columns: minmax(0, 1fr) 120px; }
+  #quest-text { font-size: var(--fs-xs); }
+}
+/* Téléphone à l'horizontale : conditions et quête (1 ligne) à gauche, jauges 2 × 2 à droite, sac en rangée près des boutons. */
+@media (max-height: 500px) and (orientation: landscape) {
+  #hud { grid-template-columns: minmax(0, 320px) 1fr 224px; grid-template-rows: auto auto 1fr; }
+  #leftcol { display: flex; grid-column: 1; grid-row: 1 / -1; gap: 6px; }
+  #conditions { grid-column: auto; grid-row: auto; height: 36px; margin-right: 0; }
+  #quest { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'head meta' 'text text'; align-items: center; column-gap: var(--sp-2); }
+  .quest-head { grid-area: head; }
+  #quest .meta { grid-area: meta; margin: 0; }
+  #quest-text { grid-area: text; margin-top: 2px; -webkit-line-clamp: 1; }
+  #vitals { grid-column: 3; grid-row: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--sp-1) var(--sp-2); }
+  .vital + .vital { margin-top: 0; }
+  .vital-stats, .gear-row { grid-column: 1 / -1; }
+  #topbuttons { position: static; grid-column: 2; grid-row: 1; justify-self: end; }
+  #mods-toggle { display: inline-flex; }
+  body:not(.touch) #inventory { grid-column: 3; grid-row: 2; }
+  body.touch #inventory { flex-direction: row; right: calc(var(--hud-r) + 182px); bottom: calc(var(--hud-b) + 18px); }
+  /* 390 px de haut : un toast centré couvrirait le joueur. Il passe sous la quête, à gauche, et le bandeau d'objectif
+     au centre de la même bande, au-dessus du joueur. */
+  #objective, body.touch #objective { grid-column: 1 / -1; grid-row: 1 / -1; top: 104px; padding: 6px var(--sp-3); }
+  #search { left: 0; right: 0; bottom: calc(var(--hud-b) + 96px); max-width: min(420px, calc(100vw - 2 * (var(--hud-edge) + 60px))); }
+  #toast { top: calc(var(--hud-t) + 104px); bottom: auto; left: var(--hud-l); right: auto; justify-content: flex-start; max-width: min(296px, calc(50vw - var(--hud-l) - 116px)); margin: 0; text-align: left; font-size: 14px; }
+  #toast-text { -webkit-line-clamp: 2; }
+}
+/* Téléphone étroit à l'horizontale (667 × 375, 640 × 360) : la rangée du sac empiéterait sur la zone du joystick
+   (45 % de gauche, input.js) ; elle passe en grille 2 × 2 au-dessus de Frapper. La colonne de gauche se resserre
+   pour que la quête reste hors du cercle dégagé autour du joueur. */
+@media (max-height: 500px) and (orientation: landscape) and (max-width: 729px) {
+  #hud { grid-template-columns: minmax(0, calc(50vw - 50px - var(--hud-l))) 1fr 224px; }
+  body.touch #inventory { display: grid; grid-template-columns: repeat(2, var(--btn-item)); right: var(--hud-r); bottom: calc(var(--hud-b) + 114px); }
+}
+/* Mouvement réduit : les alertes de jauge gardent un filet rouge au lieu de pulser. */
+@media (prefers-reduced-motion: reduce) {
+  .vital.low::before { content: ''; position: absolute; top: 0; bottom: 0; left: -7px; width: 2px; background: var(--c-danger); }
+}
 
-@media (max-width: 640px) {
-  #leftcol { width: calc(100vw - 204px); gap: 6px; }
-  #conditions { font-size: 12px; padding: 6px 10px; }
-  #conditions .place { font-size: 13.5px; }
-  #mods, #conditions .data { display: none; }
-  body.show-mods #mods, body.show-mods #conditions .data { display: block; }
-  #vitals { width: 170px; font-size: 11px; padding: 6px 8px; }
-  .chip { font-size: 11px; }
-  #search { font-size: 14px; padding: 10px 14px; max-width: calc(100vw - 120px); }
-  #topbuttons { top: auto; bottom: max(160px, calc(env(safe-area-inset-bottom) + 160px)); right: max(10px, env(safe-area-inset-right)); flex-direction: column; }
-  #quest { font-size: 12px; padding: 6px 10px; }
-  #toast { bottom: 200px; font-size: 14px; }
-  #vitals .bar { height: 6px; margin: 2px 0 4px; }
-  #search { bottom: 130px; }
-  .card { padding: 20px; }
-  .card h1 { font-size: 28px; }
+/* Fin de partie : bilan sur un voile, sans flou ; le rendu 3D continue derrière et le HUD s'estompe. */
+#end { position: fixed; inset: 0; z-index: var(--z-end); display: grid; overflow-y: auto; padding: max(var(--sp-4), env(safe-area-inset-top)) max(var(--sp-4), env(safe-area-inset-right)) max(var(--sp-4), env(safe-area-inset-bottom)) max(var(--sp-4), env(safe-area-inset-left)); background: var(--c-scrim); animation: screen-fade var(--t-slow) var(--ease-out); }
+body:has(> #end:not(.hidden)) #hud { opacity: var(--o-dim); }
+#end .card { position: relative; width: min(420px, 100%); margin: auto; padding: var(--sp-6) var(--sp-5) var(--sp-5); overflow: hidden; background: var(--c-panel-solid); border: 1px solid var(--c-line); border-radius: var(--r-md); box-shadow: var(--sh-3); animation: screen-rise var(--t-slow) var(--ease-out); }
+/* Barre de 4 px en haut : vert pour une réussite, rouge pour un échec. */
+#end .card::before { content: ''; position: absolute; inset: 0 0 auto; height: 4px; background: var(--c-danger); }
+#end.won .card::before { background: var(--c-success); }
+.end-head { display: flex; align-items: center; gap: var(--sp-3); }
+.end-icon { display: inline-flex; flex: none; color: var(--c-danger); }
+.end-icon .icon { width: 40px; height: 40px; }
+.end-kicker { margin: 0 0 2px; color: var(--c-danger); }
+#end.won :is(.end-icon, .end-kicker) { color: var(--c-success); }
+#end h2 { margin: 0; color: var(--c-text); font: var(--fw-bold) var(--fs-2xl) / var(--lh-tight) var(--font-display); letter-spacing: var(--ls-title); text-transform: uppercase; transform-origin: left center; animation: end-stamp var(--t-slow) var(--ease-out); }
+.end-reason { margin: var(--sp-3) 0 0; color: var(--c-text-2); font-size: var(--fs-md); font-weight: var(--fw-medium); line-height: var(--lh-snug); }
+.end-reason:empty { display: none; }
+/* Bilan : trois tuiles chiffrées, puis les conditions réelles de la partie. */
+#end .lines { margin-top: var(--sp-4); }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-2); }
+.stat { display: grid; justify-items: start; align-content: start; gap: 2px; padding: 10px; background: var(--c-bg-2); border: 1px solid var(--c-line); border-radius: var(--r-sm); }
+.stat-icon { display: inline-flex; color: var(--c-text-2); }
+.stat-icon .icon { width: var(--icon-md); height: var(--icon-md); }
+.stat-value { color: var(--c-text); font-size: var(--fs-2xl); line-height: var(--lh-tight); }
+.stat .label { line-height: var(--lh-snug); }
+.end-cond { display: grid; grid-template-columns: var(--icon-md) 1fr; align-items: center; column-gap: var(--sp-3); margin-top: var(--sp-2); padding: 10px var(--sp-3); border: 1px solid var(--c-line); border-radius: var(--r-sm); }
+.end-cond .label { display: block; }
+.end-cond-text { display: block; color: var(--c-text); font-size: var(--fs-md); font-weight: var(--fw-medium); line-height: var(--lh-snug); }
+/* Score (réussite seulement) : chiffre en accent, bonus des conditions réelles en vert. */
+#end .score { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--c-line); }
+#end .score:empty { display: none; }
+.score-num { color: var(--c-accent); font: var(--fw-bold) var(--fs-3xl) / 1 var(--font-display); }
+.score-bonus { margin-left: auto; padding: 3px var(--sp-2); border: 1px solid var(--c-success); border-radius: var(--r-sm); background: var(--c-success-soft); color: var(--c-success); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
+#end .row { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-top: var(--sp-5); }
+/* Les deux boutons partagent la ligne ; s'ils n'y tiennent pas sans couper leur texte, Menu passe dessous. */
+#end .row .primary { flex: 1 1 auto; min-height: 48px; padding: 0 var(--sp-4); white-space: nowrap; }
+/* Écran étroit : tuiles en lignes (icône, étiquette, chiffre à droite). */
+@media (max-width: 379px) {
+  .stats { grid-template-columns: 1fr; }
+  .stat { grid-template-columns: var(--icon-md) 1fr auto; align-items: center; column-gap: 10px; padding: var(--sp-2) 10px; }
+  .stat-value { grid-column: 3; grid-row: 1; font-size: var(--fs-xl); }
+}
+/* Téléphone à l'horizontale : bilan à droite, titre, score et boutons à gauche. */
+@media (max-height: 500px) and (orientation: landscape) {
+  #end .card { width: min(720px, 100%); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto auto auto 1fr; grid-template-areas: 'head lines' 'reason lines' 'score lines' 'row lines'; column-gap: var(--sp-5); padding: var(--sp-5); }
+  .end-head { grid-area: head; }
+  .end-reason { grid-area: reason; }
+  #end .lines { grid-area: lines; margin-top: 0; }
+  #end .score { grid-area: score; }
+  #end .row { grid-area: row; align-self: end; }
+}
+
+/* Mouvement réduit : plus de pulsation, de secousse ni de glissement, seulement des fondus courts. */
+@media (prefers-reduced-motion: reduce) {
+  /* Transitions à 0 s et non 1 ms : 1 ms ferait transitionner toutes les propriétés de tous les éléments
+     (transition-property vaut « all » par défaut), et le contour de focus apparaîtrait avec une image de retard. */
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 0s !important; transition-delay: 0s !important; scroll-behavior: auto !important; }
+  /* Chargement : jauge figée, trois segments éclairés au milieu. */
+  .load-gauge i { transform: translateX(100%); }
 }
 </style>
 <script type="importmap">
@@ -234,116 +744,181 @@ body.touch #controls { display: block; }
   <div class="menu-ui">
     <div class="menu-top">
       <div class="brand-row">
-        <h1>Earth<span>Life</span></h1>
-        <button type="button" class="text-button" id="help-toggle" aria-expanded="false" aria-controls="help">Comment jouer ?</button>
+        <h1 class="logo">Earth<span>Life</span></h1>
+        <button type="button" class="text-button label" id="help-toggle" aria-expanded="false" aria-controls="help"><span class="btn-icon" data-icon="aide"></span><span>Comment jouer&nbsp;?</span></button>
       </div>
-      <p class="lead">Choisis ton point de départ n'importe où sur Terre : une ville, un village, ou touche simplement la carte. Les rues viennent d'OpenStreetMap, la météo et l'heure sont celles du lieu en ce moment même.</p>
+      <p class="label brand-tag">Survie zombie sur la vraie Terre</p>
+      <p class="lead">Choisis ton point de départ n'importe où sur Terre&nbsp;: une ville, un village, ou touche simplement la carte. Les rues viennent d'OpenStreetMap, la météo et l'heure sont celles du lieu en ce moment même.</p>
       <form id="place-form" role="search" autocomplete="off">
         <label class="sr-only" for="place-search">Chercher un lieu de départ</label>
         <div class="search-box">
-          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          <span class="search-icon" data-icon="recherche"></span>
           <input id="place-search" type="search" placeholder="Ville, village ou adresse…" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="place-suggestions" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false">
-          <button type="button" class="icon-button" id="place-clear" aria-label="Effacer la recherche" hidden><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
-          <button type="submit" class="icon-button search-go" aria-label="Chercher"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button type="button" class="icon-button" id="place-clear" aria-label="Effacer la recherche" hidden><span class="btn-icon" data-icon="fermer"></span></button>
+          <button type="submit" class="icon-button search-go" aria-label="Chercher"><span class="btn-icon" data-icon="fleche"></span></button>
         </div>
         <ul id="place-suggestions" role="listbox" aria-label="Lieux trouvés" hidden></ul>
       </form>
     </div>
     <section class="sheet" aria-label="Lieu de départ et réglages">
+      <p class="label sheet-label" aria-hidden="true">Raccourcis</p>
       <div class="quick" id="quick" role="group" aria-label="Raccourcis">
-        <button type="button" class="pick-chip locate" id="locate"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Autour de moi</button>
+        <button type="button" class="pick-chip locate" id="locate"><span class="btn-icon" data-icon="position"></span>Autour de moi</button>
       </div>
-      <p class="place-line empty" id="place-line" aria-live="polite"><span class="place-empty">Touche la carte ou cherche un lieu pour choisir ton départ.</span><span class="place-label">Départ :</span> <strong id="place-name"></strong> <span id="place-area"></span></p>
+      <div class="place-card">
+        <span class="place-ico" data-icon="cible"></span>
+        <div class="place-body">
+          <span class="label place-title" aria-hidden="true">Point de départ</span>
+          <p class="place-line empty" id="place-line" aria-live="polite"><span class="place-empty">Touche la carte ou cherche un lieu pour choisir ton départ.</span><span class="place-label sr-only">Départ&nbsp;:</span> <strong id="place-name"></strong> <span id="place-area"></span></p>
+        </div>
+      </div>
       <p class="picker-note" id="picker-note" role="status" aria-live="polite"></p>
+      <p class="label sheet-label" aria-hidden="true">Conditions</p>
       <div class="options">
-        <label class="opt"><span>Météo</span>
+        <label class="opt"><span class="label opt-name"><span class="btn-icon" data-icon="nuages"></span>Météo</span>
           <select id="weather-mode">
             <option value="live">Météo réelle en direct</option>
-            <option value="clear">Forcer : ciel dégagé</option>
-            <option value="rain">Forcer : pluie</option>
-            <option value="storm">Forcer : orage</option>
-            <option value="snow">Forcer : neige</option>
-            <option value="fog">Forcer : brouillard</option>
+            <option value="clear">Forcer&nbsp;: ciel dégagé</option>
+            <option value="rain">Forcer&nbsp;: pluie</option>
+            <option value="storm">Forcer&nbsp;: orage</option>
+            <option value="snow">Forcer&nbsp;: neige</option>
+            <option value="fog">Forcer&nbsp;: brouillard</option>
           </select>
         </label>
-        <label class="opt"><span>Heure</span>
+        <label class="opt"><span class="label opt-name"><span class="btn-icon" data-icon="horloge"></span>Heure</span>
           <select id="time-mode">
             <option value="live">Heure réelle du lieu</option>
-            <option value="day">Forcer : midi</option>
-            <option value="night">Forcer : nuit</option>
+            <option value="day">Forcer&nbsp;: midi</option>
+            <option value="night">Forcer&nbsp;: nuit</option>
           </select>
         </label>
       </div>
-      <button class="primary" id="play" disabled>Jouer ici</button>
+      <button class="primary" id="play" disabled><span class="btn-icon" data-icon="jouer"></span><span>Jouer ici</span></button>
     </section>
   </div>
   <div id="help" class="help" role="dialog" aria-labelledby="help-title" hidden>
     <div class="help-head">
       <h2 id="help-title">Comment jouer</h2>
-      <button type="button" class="icon-button" id="help-close" aria-label="Fermer l'aide"><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+      <button type="button" class="icon-button" id="help-close" aria-label="Fermer l'aide"><span class="btn-icon" data-icon="fermer"></span></button>
     </div>
-    <b>Choisir son départ :</b> cherche une ville, un village ou une adresse, touche la carte, ou prends un raccourci. Les rues et les bâtiments du lieu sont ceux d'OpenStreetMap.<br>
-    <b>Survivre :</b> surveille ta faim, ta soif et ta température, qui suit la vraie météo. Fouille les vrais bâtiments : une pharmacie donne des médicaments, un supermarché de quoi manger.<br>
-    <b>Ordinateur :</b> ZQSD ou flèches pour bouger, Maj pour courir, Espace ou clic pour frapper, E pour fouiller, 1 à 4 pour manger, boire, se soigner, se réchauffer, glisser la souris pour tourner la caméra.<br>
-    <b>Mobile :</b> pouce gauche pour bouger, glisser à droite pour la caméra, boutons à l'écran pour le reste.
+    <section class="help-sec">
+      <h3 class="label"><span class="btn-icon" data-icon="carte"></span>Choisis ton départ</h3>
+      <p>Cherche une ville, un village ou une adresse, touche la carte ou prends un raccourci. Les rues et les bâtiments sont les vrais, ceux d'<b>OpenStreetMap</b>.</p>
+    </section>
+    <section class="help-sec">
+      <h3 class="label"><span class="btn-icon" data-icon="sante"></span>Survis</h3>
+      <p>Surveille ta <b>faim</b>, ta <b>soif</b> et ta <b>température</b>, qui suit la vraie météo. Fouille les vrais bâtiments&nbsp;: une pharmacie donne des médicaments, un supermarché de quoi manger.</p>
+    </section>
+    <section class="help-sec help-keys">
+      <h3 class="label"><span class="btn-icon" data-icon="jouer"></span>Commandes</h3>
+      <dl class="keys">
+        <dt><kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> ou flèches</dt><dd>Bouger</dd>
+        <dt><kbd>Maj</kbd></dt><dd>Courir</dd>
+        <dt><kbd>Espace</kbd> ou clic</dt><dd>Frapper</dd>
+        <dt><kbd>E</kbd></dt><dd>Fouiller un bâtiment</dd>
+        <dt><kbd>1</kbd> à <kbd>4</kbd></dt><dd>Manger, boire, te soigner, te réchauffer</dd>
+        <dt><kbd>J</kbd><kbd>L</kbd> ou souris</dt><dd>Tourner la caméra</dd>
+      </dl>
+    </section>
+    <section class="help-sec help-touch">
+      <h3 class="label"><span class="btn-icon" data-icon="jouer"></span>Commandes</h3>
+      <ul class="touch-list">
+        <li><span class="btn-icon" data-icon="navigation"></span><span><b>Pouce gauche</b>&nbsp;: bouger</span></li>
+        <li><span class="btn-icon" data-icon="fleche"></span><span><b>Glisse à droite</b>&nbsp;: tourner la caméra</span></li>
+        <li><span class="btn-icon" data-icon="frapper"></span><span><b>Frapper</b> et <b>Courir</b>&nbsp;: boutons en bas à droite</span></li>
+        <li><span class="btn-icon" data-icon="fouiller"></span><span><b>Fouiller</b>&nbsp;: bouton au centre, près d'un bâtiment</span></li>
+        <li><span class="btn-icon" data-icon="sac"></span><span><b>Sac</b>&nbsp;: touche un objet pour l'utiliser</span></li>
+      </ul>
+    </section>
   </div>
 </div>
 
-<div id="loading" class="hidden"><div><div class="spinner"></div><div id="loading-text">Chargement…</div></div></div>
+<div id="loading" class="hidden">
+  <div class="load-box">
+    <p class="logo" aria-hidden="true">Earth<span>Life</span></p>
+    <p class="label load-tag">Survie zombie sur la vraie Terre</p>
+    <div class="load-panel">
+      <!-- Icône « alerte » de src/icons.js recopiée ici : le message bloquant s'affiche justement quand les modules n'ont pas pu se charger. -->
+      <svg class="icon load-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 21.5 20h-19z"/><path d="M12 10v4.5"/><circle cx="12" cy="17.3" r="1.1" fill="currentColor" stroke="none"/></svg>
+      <p class="label load-kicker" aria-hidden="true">Préparation de la zone</p>
+      <ol class="load-steps" id="loading-steps" aria-hidden="true"></ol>
+      <div id="loading-text" role="status" aria-live="polite">Chargement…</div>
+      <div class="load-gauge" aria-hidden="true"><i></i></div>
+    </div>
+    <div class="load-tip">
+      <p class="label"><span class="btn-icon" data-icon="aide"></span>Conseil de survie</p>
+      <p id="loading-tip"></p>
+    </div>
+  </div>
+</div>
 
 <div id="hud" class="hidden">
+  <!-- Voile rouge du coup reçu : premier enfant, sous les panneaux. -->
+  <div id="hurt" aria-hidden="true"></div>
   <div id="leftcol">
   <div id="conditions" class="pill">
     <div class="place" id="place"></div>
-    <div id="weather-line"></div>
-    <div class="data" id="data-line"></div>
-    <ul id="mods"></ul>
+    <div class="cond-wx"><span class="wx-icon" id="weather-icon" data-icon="soleil"></span><div id="weather-line"></div></div>
+    <div class="cond-more">
+      <div class="data" id="data-line"></div>
+      <ul id="mods"></ul>
+    </div>
   </div>
   <div id="quest" class="pill">
-    <div class="stage" id="quest-stage"></div>
+    <div class="quest-head"><span class="quest-icon" data-icon="quete"></span><span class="stage" id="quest-stage"></span><span class="quest-pips" aria-hidden="true"><i></i><i></i></span></div>
     <div id="quest-text"></div>
-    <div class="meta"><span id="quest-dist"></span><span class="timer" id="quest-timer"></span></div>
+    <div class="meta"><span class="quest-val"><span data-icon="cible"></span><span class="sr-only">Distance :</span><span class="num" id="quest-dist"></span></span><span class="quest-val quest-timer-val"><span data-icon="horloge"></span><span class="sr-only">Temps restant :</span><span class="timer num" id="quest-timer"></span></span></div>
   </div>
   </div>
   <div id="vitals" class="pill">
-    Santé<div class="bar" id="health"><i></i></div>
-    Endurance<div class="bar" id="stamina"><i></i></div>
-    Faim<div class="bar" id="food"><i></i></div>
-    Soif<div class="bar" id="water"><i></i></div>
-    <div id="body"></div>
-    <div id="kills"></div>
-    <div id="inventory">
-      <button class="chip" data-use="eat" id="use-eat">Manger</button>
-      <button class="chip" data-use="drink" id="use-drink">Boire</button>
-      <button class="chip" data-use="heal" id="use-heal">Soigner</button>
-      <button class="chip" data-use="warm" id="use-warm">Chauffer</button>
+    <div class="vital" data-vital="health" aria-label="Santé"><span class="vital-icon" data-icon="sante"></span><span class="label vital-name">Santé</span><div class="bar" id="health"><i></i></div></div>
+    <div class="vital" data-vital="stamina" aria-label="Endurance"><span class="vital-icon" data-icon="endurance"></span><span class="label vital-name">Endurance</span><div class="bar" id="stamina"><i></i></div></div>
+    <div class="vital" data-vital="food" aria-label="Faim"><span class="vital-icon" data-icon="faim"></span><span class="label vital-name">Faim</span><div class="bar" id="food"><i></i></div></div>
+    <div class="vital" data-vital="water" aria-label="Soif"><span class="vital-icon" data-icon="soif"></span><span class="label vital-name">Soif</span><div class="bar" id="water"><i></i></div></div>
+    <div class="vital-stats">
+      <div class="vital-stat" id="body"><span data-icon="temperature"></span><span class="sr-only">Corps :</span><span class="num" id="body-temp">37,0&nbsp;°C</span><span class="body-state" id="body-state"></span></div>
+      <div class="vital-stat" id="kills"><span data-icon="zombie"></span><span class="sr-only">Zombies à terre :</span><span class="num" id="kills-count">0</span></div>
     </div>
-    <div id="gear"></div>
+    <div class="gear-row"><span data-icon="manteau"></span><span id="gear"></span></div>
+  </div>
+  <div id="inventory" role="group" aria-label="Sac">
+    <div class="inv-head label"><span data-icon="sac"></span>Sac</div>
+    <button class="chip" data-use="eat" id="use-eat" aria-label="Manger"><span class="chip-icon" data-icon="manger"></span><span class="chip-name">Manger</span><span class="chip-count num">0</span><kbd class="chip-key">1</kbd></button>
+    <button class="chip" data-use="drink" id="use-drink" aria-label="Boire"><span class="chip-icon" data-icon="boire"></span><span class="chip-name">Boire</span><span class="chip-count num">0</span><kbd class="chip-key">2</kbd></button>
+    <button class="chip" data-use="heal" id="use-heal" aria-label="Soigner"><span class="chip-icon" data-icon="soigner"></span><span class="chip-name">Soigner</span><span class="chip-count num">0</span><kbd class="chip-key">3</kbd></button>
+    <button class="chip" data-use="warm" id="use-warm" aria-label="Chauffer"><span class="chip-icon" data-icon="chauffer"></span><span class="chip-name">Chauffer</span><span class="chip-count num">0</span><kbd class="chip-key">4</kbd></button>
   </div>
   <div id="topbuttons">
-    <button class="small" id="mods-toggle">Effets</button>
-    <button class="small" id="quit">Menu</button>
+    <button class="small" id="mods-toggle" aria-label="Effets et sources des données" aria-expanded="false"><span class="small-icon" data-icon="effets"></span><span class="small-text">Effets</span></button>
+    <button class="small" id="quit" aria-label="Menu"><span class="small-icon" data-icon="menu"></span><span class="small-text">Menu</span></button>
   </div>
-  <div id="compass"><svg class="arrow" viewBox="0 0 32 32"><path d="M16 2 L27 28 L16 21 L5 28 Z" fill="#ffb547" stroke="#1b1300" stroke-width="1.5"/></svg></div>
-  <div id="toast" class="pill" style="opacity:0"></div>
-  <div id="hurt"></div>
+  <div id="objective" aria-hidden="true"><span data-icon="quete"></span>Objectif mis à jour</div>
+  <div id="compass" aria-hidden="true"><svg class="arrow" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><span class="compass-dist" id="compass-dist"></span></div>
+  <div id="toast" class="pill" role="status" aria-live="polite" style="opacity:0"><span class="toast-icon" id="toast-icon" hidden></span><span id="toast-text"></span></div>
   <div id="controls">
     <div id="stick-base"><div id="stick-knob"></div></div>
-    <div id="stick-hint">Pouce gauche : bouger</div>
-    <div class="round" id="run">Courir</div>
-    <div class="round" id="attack">Frapper</div>
+    <div id="stick-hint">Pouce gauche&nbsp;: bouger</div>
+    <div class="round" id="run" role="button" aria-label="Courir"><span class="round-icon" data-icon="courir"></span><span class="round-label">Courir</span></div>
+    <div class="round" id="attack" role="button" aria-label="Frapper"><span class="round-icon" data-icon="frapper"></span><span class="round-label">Frapper</span></div>
   </div>
-  <button id="search" class="hidden"><span id="search-label">Fouiller</span><i id="search-progress"></i></button>
+  <button id="search" class="hidden"><span class="dig-icon" data-icon="fouiller"></span><span id="search-label">Fouiller</span><kbd class="dig-key">E</kbd><span class="dig-track"><i id="search-progress"></i></span></button>
 </div>
 
-<div id="end" class="hidden">
+<div id="end" class="hidden" role="dialog" aria-modal="true" aria-labelledby="end-title">
   <div class="card">
-    <h2 id="end-title"></h2>
+    <div class="end-head">
+      <span class="end-icon" id="end-icon" data-icon="zombie"></span>
+      <div>
+        <p class="label end-kicker" id="end-kicker"></p>
+        <h2 id="end-title"></h2>
+      </div>
+    </div>
+    <p class="end-reason" id="end-reason"></p>
     <div class="lines" id="end-lines"></div>
     <div class="score" id="end-score"></div>
     <div class="row">
-      <button class="primary" id="again">Nouvelle quête</button>
-      <button class="primary secondary" id="to-menu">Menu</button>
+      <button class="primary" id="again"><span class="btn-icon" data-icon="quete"></span><span>Nouvelle quête</span></button>
+      <button class="primary secondary" id="to-menu"><span class="btn-icon" data-icon="carte"></span><span>Menu</span></button>
     </div>
   </div>
 </div>

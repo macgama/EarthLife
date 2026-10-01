@@ -32,6 +32,12 @@ export const cutaway = {
   night: { value: 0 },
 };
 
+// Aspect du monde selon la météo : toits blanchis par la neige, murs assombris et refroidis par la pluie.
+export const weatherLook = {
+  snow: { value: 0 },
+  wet: { value: 0 },
+};
+
 // Façades dessinées dans le shader : étages et fenêtres, sans texture ni géométrie en plus.
 const FACADES = `
   vec3 facadeN = normalize(cross(dFdx(vCutWorld), dFdy(vCutWorld)));
@@ -49,7 +55,9 @@ const FACADES = `
     } else if (facadeV < 0.06) {
       diffuseColor.rgb *= 0.86;
     }
-  }`;
+  }
+  if (facadeN.y > 0.5) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.94, 0.97), uSnow * 0.85);
+  diffuseColor.rgb *= mix(vec3(1.0), vec3(0.78, 0.82, 0.88), uWet);`;
 
 function addCutaway(material, { facades = false } = {}) {
   material.onBeforeCompile = (shader) => {
@@ -57,23 +65,30 @@ function addCutaway(material, { facades = false } = {}) {
     shader.uniforms.uCutCamera = cutaway.camera;
     shader.uniforms.uCutRadius = cutaway.radius;
     shader.uniforms.uNight = cutaway.night;
+    shader.uniforms.uSnow = weatherLook.snow;
+    shader.uniforms.uWet = weatherLook.wet;
     if (facades) {
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <color_fragment>', `#include <color_fragment>\n  float facadeGlow = 0.0;${FACADES}`)
+        .replace('#include <color_fragment>', `#include <color_fragment>\n  float facadeGlow = 0.0;${FACADES}
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.04, 0.05, 0.06), cutEdge * 0.6);`)
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.78, 0.45) * facadeGlow * 0.9;');
     }
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;')
       .replace('#include <project_vertex>', '#include <project_vertex>\nvCutWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;\nuniform vec3 uCutPlayer;\nuniform vec3 uCutCamera;\nuniform float uCutRadius;\nuniform float uNight;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;\nuniform vec3 uCutPlayer;\nuniform vec3 uCutCamera;\nuniform float uCutRadius;\nuniform float uNight;\nuniform float uSnow;\nuniform float uWet;')
       .replace('void main() {', `void main() {
   vec3 cutDir = uCutPlayer - uCutCamera;
   float cutLen = length(cutDir);
   float cutT = dot(vCutWorld - uCutCamera, cutDir) / (cutLen * cutLen);
+  // Bord de la découpe : un filet sombre net, pour lire la trouée comme une fenêtre voulue sur le joueur.
+  float cutEdge = 0.0;
   if (cutT > 0.0 && cutT < 0.96) {
     vec3 cutClosest = uCutCamera + cutDir * cutT;
-    if (distance(vCutWorld, cutClosest) < uCutRadius * (0.35 + 0.65 * cutT)) discard;
+    float cutOver = distance(vCutWorld, cutClosest) - uCutRadius * (0.35 + 0.65 * cutT);
+    if (cutOver < 0.0) discard;
+    cutEdge = 1.0 - step(0.16, cutOver);
   }`);
   };
 }
@@ -149,7 +164,28 @@ export function buildingsGeometry(buildings) {
 }
 
 // Arbres partagés entre tous les morceaux : seules les positions changent.
+const TREE_COLORS = { crown: 0x5a914f, dark: 0x467a45, trunk: 0x6e5440 };
 let treeParts = null;
+let worldKind = 'clear';
+
+function tintTrees() {
+  if (!treeParts) return;
+  const snow = new THREE.Color(0xe8edf2);
+  for (const [mat, hex] of [[treeParts.crownMat, TREE_COLORS.crown], [treeParts.darkMat, TREE_COLORS.dark], [treeParts.trunkMat, TREE_COLORS.trunk]]) {
+    mat.color.setHex(hex);
+    if (worldKind === 'snow' && mat !== treeParts.trunkMat) mat.color.lerp(snow, 0.55);
+    if (worldKind === 'rain' || worldKind === 'storm') mat.color.multiplyScalar(0.8);
+  }
+}
+
+// Météo du monde (appelée par l'atmosphère) : neige sur les toits et les arbres, pluie qui assombrit.
+export function setWorldWeather(kind) {
+  worldKind = kind;
+  weatherLook.snow.value = kind === 'snow' ? 1 : 0;
+  weatherLook.wet.value = kind === 'rain' || kind === 'storm' ? 1 : 0;
+  tintTrees();
+}
+
 export function treesInstanced(spots) {
   if (!spots.length) return null;
   if (!treeParts) {
@@ -159,10 +195,11 @@ export function treesInstanced(spots) {
     trunk.translate(0, 1.3, 0);
     treeParts = {
       crown, trunk,
-      crownMat: new THREE.MeshLambertMaterial({ color: 0x4f9a4a, flatShading: true }),
-      darkMat: new THREE.MeshLambertMaterial({ color: 0x3f8240, flatShading: true }),
-      trunkMat: new THREE.MeshLambertMaterial({ color: 0x7a5a3c }),
+      crownMat: new THREE.MeshLambertMaterial({ color: TREE_COLORS.crown, flatShading: true }),
+      darkMat: new THREE.MeshLambertMaterial({ color: TREE_COLORS.dark, flatShading: true }),
+      trunkMat: new THREE.MeshLambertMaterial({ color: TREE_COLORS.trunk }),
     };
+    tintTrees();
   }
   const group = new THREE.Group();
   const crowns = new THREE.InstancedMesh(treeParts.crown, spots[0].dark ? treeParts.darkMat : treeParts.crownMat, spots.length);
@@ -181,45 +218,84 @@ export function treesInstanced(spots) {
   return group;
 }
 
-// Personnages stylisés : un seul maillage par personnage pour rester léger sur mobile.
-export function makeCharacterGeometry({ arms = false }) {
-  const parts = [];
-  const body = new THREE.CapsuleGeometry(0.35, 0.9, 4, 8);
-  body.translate(0, 0.9, 0);
-  parts.push(body);
-  const head = new THREE.SphereGeometry(0.28, 10, 8);
-  head.translate(0, 1.85, 0);
-  parts.push(head);
-  if (arms) {
-    for (const side of [-1, 1]) {
-      const arm = new THREE.BoxGeometry(0.14, 0.14, 0.7);
-      arm.translate(side * 0.3, 1.35, 0.45);
-      parts.push(arm);
-    }
-  } else {
-    const nose = new THREE.BoxGeometry(0.16, 0.08, 0.2);
-    nose.translate(0, 1.85, 0.3);
-    parts.push(nose);
+// Personnages : voir characters.js (silhouettes animées dans le shader, zombies instanciés).
+
+// Alpha par sommet (couleur à 4 composantes) : `fn(i)` donne l'opacité du sommet i, la couleur reste blanche.
+function vertexAlpha(geo, fn, shade = () => 1) {
+  const n = geo.attributes.position.count;
+  const c = new Float32Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const k = shade(i);
+    c.set([k, k, k, fn(i)], i * 4);
   }
-  const merged = mergeGeometries(parts.map((p) => p.toNonIndexed()));
-  parts.forEach((p) => p.dispose());
-  return merged;
+  geo.setAttribute('color', new THREE.BufferAttribute(c, 4));
+  return geo;
 }
 
+// Balise de quête : faisceau qui s'efface vers le haut et losange qui flotte en tournant (un maillage),
+// réticule au sol cerné de sombre pour rester lisible sur la neige (un maillage), onde qui s'élargit (un maillage).
+// La couleur vient du matériau : ramassage 0xffc23d, livraison 0x3fd08f.
 export function makeBeacon(color) {
   const group = new THREE.Group();
+  const H = 70;
+  const beamGeo = new THREE.CylinderGeometry(0.9, 1.25, H, 16, 1, true).translate(0, H / 2 - 0.6, 0).toNonIndexed();
+  beamGeo.deleteAttribute('uv');
+  vertexAlpha(beamGeo, (i) => 0.26 * Math.pow(1 - Math.min(1, Math.max(0, beamGeo.attributes.position.getY(i) / H)), 2));
+  const gemGeo = new THREE.OctahedronGeometry(0.5).scale(1, 1.6, 1).translate(0, 4.4, 0);
+  gemGeo.deleteAttribute('uv');
+  // Losange : facettes claires et sombres en alternance pour qu'il se lise en relief.
+  vertexAlpha(gemGeo, () => 1, (i) => (Math.floor(i / 3) % 2 ? 1 : 0.72));
   const beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.4, 1.4, 120, 16, 1, true),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide, fog: false }),
+    mergeGeometries([beamGeo, gemGeo]),
+    new THREE.MeshBasicMaterial({ color, vertexColors: true, transparent: true, depthWrite: false, fog: false }),
   );
-  beam.position.y = 60;
+  beam.renderOrder = 2;
+
+  // Réticule au sol : quatre arcs, quatre chevrons tournés vers le centre, un anneau intérieur.
+  const bright = [], dark = [];
+  const flat = (g) => g.rotateX(-Math.PI / 2).toNonIndexed();
+  for (let k = 0; k < 4; k++) {
+    const a0 = k * Math.PI / 2 + 0.22, len = Math.PI / 2 - 0.44;
+    dark.push(flat(new THREE.RingGeometry(2.12, 2.78, 10, 1, a0 - 0.05, len + 0.1)));
+    bright.push(flat(new THREE.RingGeometry(2.25, 2.62, 10, 1, a0, len)));
+    const chevron = (w, r0, r1) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute([-w, 0, r1, w, 0, r1, 0, 0, r0], 3));
+      g.computeVertexNormals();
+      return g.rotateY(k * Math.PI / 2);
+    };
+    dark.push(chevron(0.5, 1.12, 1.9));
+    bright.push(chevron(0.36, 1.25, 1.8));
+  }
+  dark.push(flat(new THREE.RingGeometry(0.38, 0.86, 20)));
+  bright.push(flat(new THREE.RingGeometry(0.5, 0.74, 20)));
+  for (const g of [...dark, ...bright]) g.deleteAttribute('uv');
+  for (const g of dark) vertexAlpha(g, () => 0.5, () => 0.08);
+  for (const g of bright) vertexAlpha(g, () => 0.95);
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(3, 0.25, 8, 32),
-    new THREE.MeshBasicMaterial({ color, fog: false }),
+    mergeGeometries([...dark, ...bright]),
+    new THREE.MeshBasicMaterial({ color, vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
   );
-  ring.rotation.x = Math.PI / 2;
-  ring.position.y = 0.3;
-  group.add(beam, ring);
-  group.userData.ring = ring;
+  ring.position.y = 0.06;
+  [...dark, ...bright].forEach((g) => g.dispose());
+
+  const pulse = new THREE.Mesh(
+    flat(new THREE.RingGeometry(2.6, 2.85, 48)),
+    new THREE.MeshBasicMaterial({ color, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  pulse.position.y = 0.05;
+  group.add(beam, ring, pulse);
+  group.userData.setColor = (hex) => {
+    for (const m of [beam, ring, pulse]) m.material.color.setHex(hex);
+  };
+  // `calm` (mouvement réduit) : ni rotation ni onde, le losange reste fixe.
+  group.userData.update = (t, calm = false) => {
+    beam.position.y = calm ? 0 : Math.sin(t * 2) * 0.18;
+    beam.rotation.y = calm ? 0 : t * 1.4;
+    ring.rotation.y = calm ? 0 : -t * 0.5;
+    const k = calm ? 0.5 : (t / 1.6) % 1;
+    pulse.scale.setScalar(0.75 + k * 0.9);
+    pulse.material.opacity = calm ? 0.35 : 0.85 * (1 - k);
+  };
   return group;
 }

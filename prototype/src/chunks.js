@@ -10,11 +10,12 @@ export const VIEW_RADIUS = 110; // rayon construit et visible autour du joueur (
 export const GRID_RADIUS = 150; // collisions un peu plus loin, pour les zombies qui arrivent
 const DROP_VIEW = 170, DROP_GRID = 230;
 
+// Sol un peu plus sombre et moins saturé que les façades, pour que le HUD et l'orange du joueur ressortent.
 const PAL = {
-  ground: '#d6d0c1', grass: '#a2cd7f', wood: '#86b56c', farmland: '#d9d6a6', sand: '#e7dab0', wetland: '#a9c8a2',
+  ground: '#c8c2b3', grass: '#a2cd7f', wood: '#86b56c', farmland: '#d9d6a6', sand: '#e7dab0', wetland: '#a9c8a2',
   rock: '#c6c0b6', ice: '#eef2f6', pitch: '#8dc672', cemetery: '#aac69c', playground: '#cbd9a3', railway: '#c8c1b6',
   stadium: '#b9d3a0', track: '#c98f6d', quarry: '#c9c0b2', garages: '#cbc6bd',
-  water: '#4b9ed6', sidewalk: '#bfb8aa', asphalt: '#5e636e', major: '#565b67', line: '#ebe5d2', path: '#cfc1a1',
+  water: '#4b9ed6', sidewalk: '#b3ad9f', asphalt: '#4d525b', major: '#464b55', line: '#e8e1c8', path: '#cfc1a1',
   steps: '#b5a88c', rail: '#6f685f', tie: '#9a9083', bridge: '#6c6457',
 };
 const AREA_ORDER = ['farmland', 'grass', 'wood', 'sand', 'wetland', 'rock', 'ice', 'railway', 'quarry', 'garages', 'cemetery', 'stadium', 'playground', 'pitch', 'track'];
@@ -140,10 +141,11 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
   base.position.y = -0.04;
   base.receiveShadow = true;
   root.add(base);
-  let tint = { color: 1, snow: 0 };
+  // Teinte du sol selon la météo : blanchi par la neige, assombri et refroidi par la pluie (sol mouillé).
+  let tint = { r: 1, g: 1, b: 1, snow: 0 };
 
   function applyTint(mat) {
-    mat.color.setScalar(tint.color);
+    mat.color.setRGB(tint.r, tint.g, tint.b);
     mat.emissive.setScalar(tint.snow);
   }
 
@@ -252,7 +254,8 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
   }
 
   function setWeather(kind) {
-    tint = kind === 'snow' ? { color: 0.62, snow: 0.42 } : kind === 'rain' || kind === 'storm' ? { color: 0.8, snow: 0 } : { color: 1, snow: 0 };
+    tint = kind === 'snow' ? { r: 0.62, g: 0.63, b: 0.65, snow: 0.42 }
+      : kind === 'rain' || kind === 'storm' ? { r: 0.68, g: 0.72, b: 0.79, snow: 0 } : { r: 1, g: 1, b: 1, snow: 0 };
     applyTint(baseMat);
     for (const v of views.values()) applyTint(v.mat);
   }

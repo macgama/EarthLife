@@ -1,6 +1,7 @@
-// Ciel, lumière du soleil réel, brouillard, pluie, neige et éclairs.
+// Ciel, lumière du soleil réel (de la lune la nuit), brouillard, pluie, neige, éclairs et lampe torche.
 import * as THREE from 'three';
 import { daylight } from './sun.js';
+import { setWorldWeather } from './scene.js';
 
 const DEG = Math.PI / 180;
 
@@ -15,10 +16,13 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
   sun.shadow.bias = -0.0008;
   scene.add(hemi, sun, sun.target);
 
-  const torch = new THREE.SpotLight(0xfff2cc, 0, 45, 0.55, 0.5, 1.2);
+  // Lampe torche : bord adouci (pénombre), et un cône de lumière visible dans la nuit, la pluie ou le brouillard.
+  const torch = new THREE.SpotLight(0xfff2cc, 0, 40, 0.6, 0.85, 1.5);
   scene.add(torch, torch.target);
-  // Halo autour du joueur la nuit, pour garder la scène lisible.
-  const lantern = new THREE.PointLight(0xffd9a0, 0, 26, 1.4);
+  const beam = torchBeam();
+  scene.add(beam);
+  // Halo autour du joueur la nuit, placé haut pour éclairer large sans brûler le personnage.
+  const lantern = new THREE.PointLight(0xffd9a0, 0, 34, 1.3);
   scene.add(lantern);
 
   scene.fog = new THREE.Fog(0xa9cde8, 150, 700);
@@ -37,7 +41,8 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
   const snowPos = new Float32Array(snowCount * 3);
   const snowGeo = new THREE.BufferGeometry();
   snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3));
-  const snow = new THREE.Points(snowGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.28, transparent: true, opacity: 0.9 }));
+  // Flocons ronds et doux (petite texture de 32 px) plutôt que des carrés.
+  const snow = new THREE.Points(snowGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.3, map: flakeTexture(), transparent: true, opacity: 0.95, depthWrite: false }));
   snow.frustumCulled = false;
   snow.visible = false;
   scene.add(snow);
@@ -54,12 +59,15 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
   const rainDrops = new Float32Array(rainCount * 3);
   seedParticles(rainDrops, 3);
 
-  const state = { weather: null, daylight: 1, flash: 0, nextFlash: 4, onLightning: null, isNight: false };
+  const state = { weather: null, daylight: 1, flash: 0, nextFlash: 4, onLightning: null, isNight: false, sunDir: new THREE.Vector3(0, 1, 0) };
+  // Palette du guide de style (§ 9.1) : un peu moins saturée et plus froide, pour que l'orange ressorte.
   const colors = {
-    day: new THREE.Color(0x9fd0f0), overcast: new THREE.Color(0xa8b0b8), night: new THREE.Color(0x1a2744),
-    nightOvercast: new THREE.Color(0x232a36), fog: new THREE.Color(0xc8ccd0), snow: new THREE.Color(0xdfe5ec), dusk: new THREE.Color(0xf0a878),
+    day: new THREE.Color(0x9cc3dc), overcast: new THREE.Color(0x9aa4ad), night: new THREE.Color(0x0e1626),
+    nightOvercast: new THREE.Color(0x151a22), fog: new THREE.Color(0xb7bec4), snow: new THREE.Color(0xdfe5ec), dusk: new THREE.Color(0xe89a6a),
+    sun: new THREE.Color(0xfff1d6), sunDusk: new THREE.Color(0xffc890), moon: new THREE.Color(0x9fb6e6),
+    hemiSky: new THREE.Color(0xdfefff), hemiNight: new THREE.Color(0x4d5d8c), hemiGround: new THREE.Color(0x8a7f6a), hemiGroundNight: new THREE.Color(0x232634),
   };
-  const tmp = new THREE.Color();
+  const tmp = new THREE.Color(), tmp2 = new THREE.Color();
 
   function setConditions({ weather, sunAltitude, sunAzimuth }) {
     state.weather = weather;
@@ -72,8 +80,7 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
     const dayCol = tmp.copy(colors.day).lerp(colors.overcast, overcast);
     if (w.kind === 'snow') dayCol.lerp(colors.snow, 0.5);
     if (w.kind === 'fog') dayCol.lerp(colors.fog, 0.8);
-    const nightCol = colors.night.clone().lerp(colors.nightOvercast, overcast);
-    const sky = nightCol.lerp(dayCol, state.daylight);
+    const sky = tmp2.copy(colors.night).lerp(colors.nightOvercast, overcast).lerp(dayCol, state.daylight);
     const duskAmount = Math.max(0, 1 - Math.abs(sunAltitude - 1) / 7) * (1 - overcast);
     sky.lerp(colors.dusk, duskAmount * 0.45);
     scene.background.copy(sky);
@@ -91,15 +98,27 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
     scene.fog.near = Math.min(far * 0.4, 60);
     scene.fog.far = far;
 
-    // Soleil placé selon sa vraie position (azimut depuis le nord, -z = nord).
-    const alt = Math.max(sunAltitude, 6) * DEG, az = sunAzimuth * DEG;
-    state.sunDir = new THREE.Vector3(Math.sin(az) * Math.cos(alt), Math.sin(alt), -Math.cos(az) * Math.cos(alt));
-    sun.intensity = 2.4 * state.daylight * (1 - 0.65 * overcast);
-    sun.color.set(duskAmount > 0.3 ? 0xffc890 : 0xfff1d6);
-    hemi.intensity = 0.55 + 0.7 * state.daylight * (1 - 0.25 * overcast);
-    hemi.color.set(state.daylight < 0.3 ? 0x5a6a9a : 0xdfefff);
-    torch.intensity = state.isNight || w.kind === 'fog' ? 60 : 0;
-    lantern.intensity = state.daylight < 0.4 ? 40 * (1 - state.daylight) : 0;
+    // Soleil placé selon sa vraie position (azimut depuis le nord, -z = nord). La nuit, la même lumière devient
+    // un clair de lune froid et haut (opposé au soleil), qui détache les silhouettes sans nouvelle lumière.
+    const moonLit = state.daylight < 0.25;
+    const alt = (moonLit ? 48 : Math.max(sunAltitude, 6)) * DEG, az = (moonLit ? sunAzimuth + 180 : sunAzimuth) * DEG;
+    state.sunDir.set(Math.sin(az) * Math.cos(alt), Math.sin(alt), -Math.cos(az) * Math.cos(alt));
+    const moon = 0.7 * (1 - state.daylight) * (1 - 0.6 * overcast);
+    sun.intensity = 2.4 * state.daylight * (1 - 0.65 * overcast) + moon;
+    sun.color.copy(colors.sun).lerp(colors.sunDusk, Math.min(1, duskAmount * 1.6)).lerp(colors.moon, 1 - state.daylight);
+    const wet = w.kind === 'rain' || w.kind === 'storm';
+    hemi.intensity = (0.55 + 0.7 * state.daylight * (1 - 0.25 * overcast)) * (wet ? 0.88 : 1);
+    // Aube et crépuscule : le ciel orangé réchauffe aussi la lumière ambiante (soleil trop bas pour éclairer le sol).
+    hemi.color.copy(colors.hemiNight).lerp(colors.hemiSky, state.daylight).lerp(colors.dusk, duskAmount * 0.4);
+    hemi.groundColor.copy(colors.hemiGroundNight).lerp(colors.hemiGround, state.daylight).lerp(colors.dusk, duskAmount * 0.2);
+    torch.intensity = state.isNight || w.kind === 'fog' ? 32 : 0;
+    // Cône visible : plus net dans la pluie et le brouillard (les gouttes accrochent la lumière).
+    beam.visible = torch.intensity > 0;
+    beam.material.uniforms.uStrength.value = (state.isNight ? 0.16 : 0.1) * (wet || w.kind === 'fog' || w.kind === 'snow' ? 1.35 : 1);
+    lantern.intensity = state.daylight < 0.4 ? 22 * (1 - state.daylight) : 0;
+    // Pluie un peu moins blanche la nuit, pour ne pas griser toute la vue.
+    rain.material.opacity = state.isNight ? 0.4 : 0.55;
+    setWorldWeather(w.kind);
 
     // Sol blanc quand il neige, plus sombre quand il pleut.
     if (groundMaterials) {
@@ -118,13 +137,17 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
   function update(dt, focus, playerYaw) {
     const w = state.weather;
     if (!w) return;
-    if (state.sunDir) {
-      sun.position.copy(focus).addScaledVector(state.sunDir, 150);
-      sun.target.position.copy(focus);
+    sun.position.copy(focus).addScaledVector(state.sunDir, 150);
+    sun.target.position.copy(focus);
+    // Lampe tenue à hauteur de poitrine, un peu devant le joueur, pointée 12 m devant lui.
+    const fx = Math.sin(playerYaw), fz = Math.cos(playerYaw);
+    torch.position.set(focus.x + fx * 0.45, focus.y + 1.5, focus.z + fz * 0.45);
+    lantern.position.set(focus.x, focus.y + 6, focus.z);
+    torch.target.position.set(focus.x + fx * 12, 0, focus.z + fz * 12);
+    if (beam.visible) {
+      beam.position.copy(torch.position);
+      beam.lookAt(torch.target.position);
     }
-    torch.position.set(focus.x, focus.y + 2.2, focus.z);
-    lantern.position.set(focus.x, focus.y + 4, focus.z);
-    torch.target.position.set(focus.x + Math.sin(playerYaw) * 12, 0, focus.z + Math.cos(playerYaw) * 12);
 
     // Vent réel : la pluie et la neige penchent dans la direction où souffle le vent.
     const windRad = ((w.windDirection ?? 0) + 180) * DEG;
@@ -186,4 +209,61 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
   }
 
   return { state, setConditions, update, endFrame, setGroundMaterials };
+}
+
+function flakeTexture() {
+  const c = Object.assign(document.createElement('canvas'), { width: 32, height: 32 });
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.5, 'rgba(255,255,255,0.85)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 32, 32);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Cône de la lampe torche : additif, plus fort près de la lampe, effacé sur les bords de la silhouette.
+// Pointe à l'origine, ouverture vers +z (orienté avec lookAt).
+function torchBeam() {
+  const length = 11;
+  const geo = new THREE.ConeGeometry(4.1, length, 20, 1, true).rotateX(-Math.PI / 2).translate(0, 0, length / 2);
+  const pos = geo.attributes.position;
+  const fade = new Float32Array(pos.count);
+  for (let i = 0; i < pos.count; i++) fade[i] = 1 - pos.getZ(i) / length;
+  // Le cône a une seule rangée de sommets : la montée près de la lampe se fait dans le shader (vFade proche de 1).
+  geo.setAttribute('aFade', new THREE.BufferAttribute(fade, 1));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(0xfff2cc) }, uStrength: { value: 0.2 } },
+    vertexShader: `
+      attribute float aFade;
+      varying float vFade;
+      varying float vFacing;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vFacing = abs(dot(normalize(normalMatrix * normal), normalize(-mv.xyz)));
+        vFade = aFade;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uStrength;
+      varying float vFade;
+      varying float vFacing;
+      void main() {
+        float near = 1.0 - smoothstep(0.82, 1.0, vFade);
+        gl_FragColor = vec4(uColor * uStrength * vFade * vFade * near * vFacing * vFacing, 1.0);
+        #include <colorspace_fragment>
+      }`,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  return mesh;
 }

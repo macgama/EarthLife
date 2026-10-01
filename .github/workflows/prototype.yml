@@ -79,6 +79,7 @@ jobs:
           mkdir -p _site
           cp prototype/index.html _site/
           cp -r prototype/src _site/
+          cp -r prototype/assets _site/
           touch _site/.nojekyll
       - name: Publier sur la branche gh-pages
         uses: peaceiris/actions-gh-pages@v4

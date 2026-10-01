@@ -14,7 +14,7 @@ const APPROACH_ZOOM = 11; // quand on touche la carte de loin
 const MAP_TIMEOUT_MS = 20000;
 const SUGGEST_DELAY_MS = 350;
 const SUGGEST_MIN_CHARS = 3;
-const NOMINATIM_GAP_MS = 1000; // règle d'usage de Nominatim : une requête par seconde au plus
+const NOMINATIM_GAP_MS = 1100; // règle d'usage de Nominatim : une requête par seconde au plus, avec une marge
 const MAX_LAT = 85; // au-delà, plus de tuiles Web Mercator (main.js refuse aussi ces latitudes)
 const SIDE_LAYOUT = '(min-width: 760px)';
 const DEFAULT_NAME = 'Point sur la carte';
@@ -25,7 +25,8 @@ const MAP_LOCALE = {
   'NavigationControl.ZoomIn': 'Zoomer',
   'NavigationControl.ZoomOut': 'Dézoomer',
 };
-const MARKER_SVG = '<svg viewBox="0 0 34 46" width="34" height="46" aria-hidden="true"><path d="M17 1.5C8.4 1.5 1.5 8.3 1.5 16.8 1.5 28.4 17 44.5 17 44.5s15.5-16.1 15.5-27.7C32.5 8.3 25.6 1.5 17 1.5z" fill="#ffb547" stroke="#1b1300" stroke-width="2.5"/><circle cx="17" cy="17" r="6" fill="#1b1300"/></svg>';
+// Repère de départ aux couleurs de l'accent (#ff7f1f, contour #170b00), ombre au sol dessinée dans le SVG (pas de filtre CSS).
+const MARKER_SVG = '<svg viewBox="0 0 34 46" width="34" height="46" aria-hidden="true"><ellipse cx="17" cy="43.5" rx="7" ry="2.5" fill="#000" fill-opacity=".35"/><path d="M17 1.5C8.4 1.5 1.5 8.3 1.5 16.8 1.5 28.4 17 44.5 17 44.5s15.5-16.1 15.5-27.7C32.5 8.3 25.6 1.5 17 1.5z" fill="#ff7f1f" stroke="#170b00" stroke-width="2.5"/><circle cx="17" cy="17" r="6" fill="#170b00"/><circle cx="17" cy="17" r="2.2" fill="#ff7f1f"/></svg>';
 
 // ---------- Données ----------
 export function placeFromCity(city) {

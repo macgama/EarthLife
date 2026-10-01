@@ -9,6 +9,8 @@
     "test": "node --test test/*.test.js"
   },
   "devDependencies": {
+    "@fontsource/barlow-semi-condensed": "5.3.0",
+    "@fontsource/chakra-petch": "5.3.0",
     "@mapbox/vector-tile": "^3.0.0",
     "geojson-vt": "^4.0.3",
     "maplibre-gl": "^6.11.2",
