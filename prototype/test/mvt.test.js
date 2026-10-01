@@ -70,8 +70,9 @@ function reference(bytes) {
     for (let i = 0; i < layer.length; i++) {
       const f = layer.feature(i);
       const rings = f.loadGeometry().map((part) => part.map((p) => [p.x, p.y]));
-      // La référence répète le premier point à chaque ClosePath ; mvt.js ne le fait pas.
-      if (f.type === 3) for (const r of rings) while (r.length > 1 && r.at(-1)[0] === r[0][0] && r.at(-1)[1] === r[0][1]) r.pop();
+      // La référence répète le premier point à chaque ClosePath ; mvt.js ne le fait pas et retire en plus
+      // au plus UN premier point déjà répété par l'encodeur (un anneau dégénéré peut en garder d'autres).
+      if (f.type === 3) for (const r of rings) { r.pop(); if (r.length > 1 && r.at(-1)[0] === r[0][0] && r.at(-1)[1] === r[0][1]) r.pop(); }
       features.push({ id: f.id, type: f.type, properties: { ...f.properties }, geometry: rings, raw: f.loadGeometry() });
     }
     out[name] = { name, extent: layer.extent, version: layer.version, features };
@@ -132,7 +133,7 @@ const cmd = (id, count) => count * 8 + id;
 const tileOf = (...layers) => new Uint8Array(layers.flatMap((l) => pb.bytes(3, l)));
 
 function handmadeTile() {
-  const keys = ['s', 'f', 'f01', 'd', 'i', 'u', 'z', 'b', 'bf', 'u32', 'i40', 'apres', '__proto__'];
+  const keys = ['s', 'f', 'f01', 'd', 'i', 'u', 'z', 'b', 'bf', 'u32', 'i40', 'apres', '__proto__', 'zneg', 'bom'];
   const values = [
     pb.str(1, 'Hôpital Édouard-Herriot 🚑 (longue chaîne)'),
     pb.float(2, 1.5),
@@ -147,6 +148,8 @@ function handmadeTile() {
     pb.varint(4, -(2 ** 40)),
     [...pb.varint(9, 5), ...pb.double(10, 1), ...pb.str(11, 'x'), ...pb.float(12, 1), ...pb.str(1, 'après-inconnus')],
     pb.str(1, 'proto'),
+    pb.varint(6, 2n ** 61n - 1n), // sint64 zigzag de -(2^60) : au-delà de 2^53, le signe doit rester négatif
+    pb.str(1, '\uFEFFRue avec BOM'), // U+FEFF en tête : conservé (TextDecoder le retire par défaut)
   ];
   const tags = keys.flatMap((_, i) => [i, i]);
   const points = [
@@ -256,6 +259,8 @@ test('mvt : tous les types de Value, champs inconnus, valeurs par défaut, Close
   assert.equal(p.u32, 3000000000);
   assert.equal(p.i40, -(2 ** 40));
   assert.equal(p.apres, 'après-inconnus');
+  assert.equal(p.zneg, -(2 ** 60));
+  assert.equal(p.bom, '\uFEFFRue avec BOM');
   assert.ok(Object.hasOwn(p, '__proto__'));
   assert.equal(Object.getOwnPropertyDescriptor(p, '__proto__').value, 'proto');
   assert.deepEqual(pts.geometry, [[[5, 5]], [[10, -3]], [[4100, 4200]]]);

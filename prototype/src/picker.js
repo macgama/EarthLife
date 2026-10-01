@@ -14,6 +14,7 @@ const MAP_TIMEOUT_MS = 20000;
 const SUGGEST_DELAY_MS = 350;
 const SUGGEST_MIN_CHARS = 3;
 const NOMINATIM_GAP_MS = 1000; // règle d'usage de Nominatim : une requête par seconde au plus
+const MAX_LAT = 85; // au-delà, plus de tuiles Web Mercator (main.js refuse aussi ces latitudes)
 const SIDE_LAYOUT = '(min-width: 760px)';
 const DEFAULT_NAME = 'Point sur la carte';
 const MAP_LOCALE = {
@@ -34,13 +35,14 @@ const clean = (s) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : ''
 const round6 = (v) => Math.round(v * 1e6) / 1e6;
 const num = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN);
 
-// Valide un lieu et le ramène à { lat, lon, name, area } (longitude repliée entre -180 et 180).
+// Valide un lieu et le ramène à { lat, lon, name, area } (longitude repliée entre -180 et 180,
+// latitude ramenée à ±85° : près des pôles il n'y a ni tuiles ni projection locale utilisable).
 export function normalizePlace(p) {
   if (!p || typeof p !== 'object') return null;
   const lat = num(p.lat), lon = num(p.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90) return null;
   const wrapped = ((((lon + 180) % 360) + 360) % 360) - 180;
-  return { lat: round6(lat), lon: round6(wrapped), name: clean(p.name).slice(0, 120) || DEFAULT_NAME, area: clean(p.area).slice(0, 160) };
+  return { lat: round6(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat))), lon: round6(wrapped), name: clean(p.name).slice(0, 120) || DEFAULT_NAME, area: clean(p.area).slice(0, 160) };
 }
 
 // Morceaux d'adresse uniques, sans répéter le nom du lieu.
@@ -237,7 +239,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
   let visible = false;
   let map = null, gl = null, marker = null, markerOnMap = false;
   let mapState = 'idle'; // idle | loading | ready | failed
-  let mapTimer = 0, mapErrors = 0;
+  let mapTimer = 0, mapErrors = 0, mapAttempt = 0;
   let spinning = false, ignoreClick = false;
   let items = [], active = -1, debounce = 0;
   let suggestCtrl = null, searchCtrl = null, reverseCtrl = null;
@@ -267,6 +269,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     const place = normalizePlace(raw);
     if (!place) return;
     token += 1;
+    cancelSearch();
     reverseCtrl?.abort();
     current = place;
     save(place);
@@ -324,6 +327,13 @@ export function createPicker({ root, cities = [], onChange } = {}) {
   }
 
   // ----- Recherche : Photon pour les suggestions, Nominatim sur validation -----
+  // Annule la recherche en cours : une réponse en retard n'écrase pas un lieu choisi autrement.
+  function cancelSearch() {
+    clearTimeout(debounce);
+    suggestCtrl?.abort();
+    searchCtrl?.abort();
+  }
+
   function openList(entries, info = '') {
     items = entries;
     active = -1;
@@ -445,7 +455,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
       e.preventDefault();
       highlight(e.key === 'ArrowDown' ? (active + 1) % n : (active <= 0 ? n - 1 : active - 1));
     } else if (e.key === 'Escape') {
-      if (!list.hidden) { e.preventDefault(); closeList(); }
+      if (!list.hidden) { e.preventDefault(); cancelSearch(); closeList(); }
       else if (input.value) { e.preventDefault(); input.value = ''; if (clearBtn) clearBtn.hidden = true; }
     }
   });
@@ -490,8 +500,10 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     locateBtn.setAttribute('aria-busy', 'true');
     setNote('Recherche de ta position…');
     const done = () => { locateBtn.disabled = false; locateBtn.removeAttribute('aria-busy'); };
+    const t = token;
     navigator.geolocation.getCurrentPosition((pos) => {
       done();
+      if (t !== token) return; // un autre lieu a été choisi pendant l'attente
       const { latitude: lat, longitude: lon } = pos.coords;
       closeList();
       choose({ lat, lon, name: 'Ma position', area: coordLabel(lat, lon) }, { zoom: PLACE_ZOOM, reverse: true });
@@ -553,6 +565,13 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     layoutFrame = requestAnimationFrame(() => { if (visible) updateLayout(); });
   };
   window.addEventListener('resize', onWindowResize);
+  // Clavier virtuel : il recouvre le bas de l'écran sans changer sa taille ; les suggestions restent au-dessus.
+  const vv = window.visualViewport;
+  if (vv) {
+    const onViewport = () => root.style.setProperty('--vv-h', `${Math.round(vv.height)}px`);
+    vv.addEventListener('resize', onViewport);
+    onViewport();
+  }
   if (typeof ResizeObserver === 'function') {
     // Les crédits de la carte restent au-dessus du panneau du bas, sans déplacer la carte.
     const ro = new ResizeObserver(() => { if (visible) updateLayout({ padding: false }); });
@@ -636,13 +655,15 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     mapErrors = 0;
     root.classList.add('map-loading');
     mapTimer = setTimeout(() => { if (mapState === 'loading') failMap(new Error('délai dépassé')); }, MAP_TIMEOUT_MS);
+    // Un essai abandonné (délai dépassé) ne doit pas créer une seconde carte quand MapLibre finit par arriver.
+    const attempt = ++mapAttempt;
     try {
       gl = await loadMapLibre();
     } catch (err) {
-      failMap(err);
+      if (attempt === mapAttempt) failMap(err);
       return;
     }
-    if (mapState !== 'loading') return;
+    if (mapState !== 'loading' || attempt !== mapAttempt) return;
     const m = measure();
     try {
       map = new gl.Map({
