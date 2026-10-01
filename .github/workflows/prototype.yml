@@ -1,0 +1,66 @@
+name: Prototype
+
+# Teste le prototype 3D, le vérifie contre les vraies données (Overpass, Open-Meteo)
+# et le publie sur GitHub Pages via la branche gh-pages.
+on:
+  push:
+    branches: [main, claude/prototype-3d-earthlife]
+    paths: ['prototype/**', '.github/workflows/prototype.yml']
+  pull_request:
+    paths: ['prototype/**', '.github/workflows/prototype.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: prototype-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+
+  real-data:
+    # Les serveurs Overpass sont parfois saturés : ce contrôle informe sans bloquer la publication.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: node test/real-data-smoke.mjs lyon paris tokyo newyork reykjavik
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Préparer le site
+        run: |
+          mkdir -p _site
+          cp prototype/index.html _site/
+          cp -r prototype/src _site/
+          touch _site/.nojekyll
+      - name: Publier sur la branche gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./_site
+          commit_message: 'Publie le prototype'
