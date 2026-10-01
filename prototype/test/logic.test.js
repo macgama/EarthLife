@@ -63,11 +63,11 @@ test('soleil : midi d\'été haut, minuit sous l\'horizon, à Lyon', () => {
   assert.equal(localTimeLabel(new Date('2026-10-01T19:40:00Z'), 7200), '21 h 40');
 });
 
-test('quête : temps écoulé = échec', () => {
+test('quête : temps écoulé après le ramassage = échec', () => {
   const world = proceduralWorld(LYON, 700);
-  const grid = buildGrid(world);
-  const q = planDelivery(world.pois, nearestFree(grid, 0, 0));
-  assert.ok(q);
+  const q = planDelivery(world.pois, nearestFree(buildGrid(world), 0, 0));
+  assert.equal(updateQuest(q, { x: 9999, z: 9999 }, q.timeLimit + 1), null, 'le chrono ne part qu\'au ramassage');
+  assert.equal(updateQuest(q, q.pickup, 0), 'picked');
   assert.equal(updateQuest(q, { x: 9999, z: 9999 }, q.timeLimit + 1), 'timeout');
 });
 

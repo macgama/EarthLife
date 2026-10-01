@@ -135,6 +135,17 @@ export function moveWithCollisions(grid, pos, dx, dz, r = 0.4) {
   return { x, z, blocked: x === pos.x + dx && z === pos.z + dz ? false : true };
 }
 
+// Segment dégagé (vue, lancer) : vrai si tous les points pris tous les `step` mètres, extrémités comprises, sont libres.
+// Lecture seule : la grille n'est jamais modifiée.
+export function lineFree(grid, x0, z0, x1, z1, step = 0.25) {
+  const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / Math.max(1e-3, step)));
+  for (let k = 0; k <= n; k++) {
+    const t = k / n;
+    if (!isFree(grid, x0 + (x1 - x0) * t, z0 + (z1 - z0) * t)) return false;
+  }
+  return true;
+}
+
 // Case libre la plus proche (recherche en spirale), pour placer un joueur ou une quête hors des murs.
 export function nearestFree(grid, x, z, maxRadius = 120, clearance = 0.6, accept = null) {
   const roomy = (px, pz) => {
