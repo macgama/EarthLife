@@ -58,6 +58,33 @@ jobs:
       - run: npm ci
       - run: node test/tiles-probe.mjs
 
+  tile-fixtures:
+    # Copie quelques vraies tuiles (Lyon Bellecour, Pérouges) sur la branche tile-fixtures,
+    # pour tester le chargement du monde hors ligne. Ne touche pas à la branche du prototype.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - name: Télécharger et publier les tuiles
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          TEMPLATE=$(curl -sf https://tiles.openfreemap.org/planet | jq -r '.tiles[0]')
+          mkdir -p fixtures/tiles && cd fixtures
+          curl -sf https://tiles.openfreemap.org/planet -o tiles/tilejson.json
+          for t in 14/8411/5844 14/8412/5844 14/8411/5845 14/8412/5845 14/8427/5835 14/8427/5834; do
+            url=${TEMPLATE/\{z\}\/\{x\}\/\{y\}/$t}
+            curl -sf --compressed "$url" -o "tiles/$(echo $t | tr / -).mvt"
+          done
+          ls -l tiles
+          git init -q -b tile-fixtures
+          git add tiles
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -qm "Tuiles OpenFreeMap pour les tests (© OpenStreetMap, ODbL)"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:tile-fixtures
+
   deploy:
     needs: test
     if: github.event_name != 'pull_request'
