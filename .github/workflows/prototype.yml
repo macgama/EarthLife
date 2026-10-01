@@ -1,6 +1,6 @@
 name: Prototype
 
-# Teste le prototype 3D, le vérifie contre les vraies données (Overpass, Open-Meteo)
+# Teste le prototype 3D, le vérifie contre les vraies données (OpenFreeMap, Open-Meteo)
 # et le publie sur GitHub Pages via la branche gh-pages.
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
       - run: npm test
 
   real-data:
-    # Les serveurs Overpass sont parfois saturés : ce contrôle informe sans bloquer la publication.
+    # Vraies tuiles OpenFreeMap et vraie météo : ce contrôle informe sans bloquer la publication.
     runs-on: ubuntu-latest
     continue-on-error: true
     defaults:
@@ -41,49 +41,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: node test/real-data-smoke.mjs lyon paris tokyo newyork reykjavik
-
-  tiles-probe:
-    # Sonde les tuiles vectorielles OpenFreeMap et la recherche de lieux (informatif).
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    defaults:
-      run:
-        working-directory: prototype
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm ci
-      - run: node test/tiles-probe.mjs
-
-  tile-fixtures:
-    # Copie quelques vraies tuiles (Lyon Bellecour, Pérouges) sur la branche tile-fixtures,
-    # pour tester le chargement du monde hors ligne. Ne touche pas à la branche du prototype.
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: write
-    steps:
-      - name: Télécharger et publier les tuiles
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -eu
-          TEMPLATE=$(curl -sf https://tiles.openfreemap.org/planet | jq -r '.tiles[0]')
-          mkdir -p fixtures/tiles && cd fixtures
-          curl -sf https://tiles.openfreemap.org/planet -o tiles/tilejson.json
-          for t in 14/8411/5844 14/8412/5844 14/8411/5845 14/8412/5845 14/8427/5835 14/8427/5834; do
-            url=${TEMPLATE/\{z\}\/\{x\}\/\{y\}/$t}
-            curl -sf --compressed "$url" -o "tiles/$(echo $t | tr / -).mvt"
-          done
-          ls -l tiles
-          git init -q -b tile-fixtures
-          git add tiles
-          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -qm "Tuiles OpenFreeMap pour les tests (© OpenStreetMap, ODbL)"
-          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:tile-fixtures
+      - run: node test/real-data-smoke.mjs lyon paris tokyo newyork reykjavik perouges
 
   deploy:
     needs: test

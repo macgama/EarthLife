@@ -6,11 +6,19 @@ Jeux de référence donnés par Gaël : As One We Survive, Project Zomboid, Don'
 
 Le document de game design qui fixe ce périmètre : https://claude.ai/code/artifact/d5aa4bea-d219-46a8-8e94-1766864dadeb
 
+## Choisir son lieu de départ
+
+Le menu est une carte du monde : on cherche une ville, un village ou une adresse (ou « Autour de moi »), on peut aussi toucher n'importe quel point de la carte, puis « Jouer ici ». Le dernier lieu choisi est retenu sur l'appareil.
+
+Le monde se construit au fil de la marche : rues, bâtiments, eau, parcs et arbres apparaissent dans un rayon d'environ 110 m autour du personnage, par carrés de 64 m, les plus proches d'abord. Ce qui s'éloigne est démonté pour garder le jeu fluide sur mobile. Les données arrivent par tuiles vectorielles d'environ 1,7 km de côté, demandées 600 m à l'avance.
+
+Chaque tuile téléchargée est gardée dans le cache de l'appareil : revenir dans un quartier déjà visité ne télécharge plus rien. Le cache est vidé automatiquement quand OpenFreeMap publie une nouvelle version de la carte. Une base partagée entre joueurs (ce que les joueurs construisent ou changent) viendra plus tard.
+
 ## Jouer en ligne
 
 Chaque modification poussée sur la branche du prototype est testée puis publiée sur la branche `gh-pages` par `.github/workflows/prototype.yml`. Une fois GitHub Pages activé (Settings, Pages, « Deploy from a branch », branche `gh-pages`, dossier `/ (root)`), le jeu est jouable à l'adresse https://macgama.github.io/EarthLife/.
 
-Les rues téléchargées sont gardées une semaine dans le cache du navigateur. Si tous les serveurs Overpass sont saturés, le jeu bascule sur une ville générée et le dit dans le panneau des conditions.
+Si les tuiles sont injoignables, le jeu bascule sur une ville générée et le dit à l'écran.
 
 ## Lancer sur sa machine
 
@@ -23,8 +31,11 @@ npx serve -l 5173 .        # ou : python3 -m http.server 5173
 
 Puis ouvrir http://localhost:5173 sur ordinateur, ou http://<ip-de-la-machine>:5173 sur un téléphone du même réseau.
 
-Paramètres d'adresse utiles pour tester : `?city=lyon&weather=rain&time=night&autostart=1`
-(`weather` : `live`, `clear`, `rain`, `storm`, `snow`, `fog` ; `time` : `live`, `day`, `night`).
+Paramètres d'adresse utiles pour tester :
+
+- `?lat=45.9206&lon=5.1754&name=Pérouges&autostart=1` : partir d'un point précis (`name` et `area` sont des libellés facultatifs) ;
+- `?city=lyon&weather=rain&time=night&autostart=1` : partir d'une ville de la liste (`lyon`, `paris`, `tokyo`, `newyork`, `reykjavik`…) ;
+- `weather` : `live`, `clear`, `rain`, `storm`, `snow`, `fog` ; `time` : `live`, `day`, `night`.
 
 ## Commandes
 
@@ -41,30 +52,37 @@ Paramètres d'adresse utiles pour tester : `?city=lyon&weather=rain&time=night&a
 
 | Donnée | Source | Effet en jeu |
 | --- | --- | --- |
-| Bâtiments, rues, ponts, eau, parcs | OpenStreetMap via Overpass, 1,4 km autour du point de départ | Décor 3D, collisions, ponts praticables |
-| Lieux (pharmacies, hôpitaux, gares…) | OpenStreetMap | Points A et B de la quête |
-| Météo actuelle | Open-Meteo, relue toutes les 15 min | Pluie (sol glissant, pas couverts), orage (éclairs qui alertent les zombies), neige (‑20 % de vitesse), brouillard (vision réduite), froid ou chaleur (endurance) |
-| Heure et soleil | Calcul astronomique | Éclairage, nuit (zombies plus nombreux et rapides, lampe torche) |
+| Bâtiments (hauteurs réelles), rues, ponts, voies ferrées, eau, parcs, bois | OpenStreetMap, en tuiles vectorielles OpenFreeMap (zoom 14) | Décor 3D, collisions, ponts praticables, arbres |
+| Lieux (pharmacies, hôpitaux, supermarchés, gares…) | OpenStreetMap, mêmes tuiles | Butin selon le lieu, points A et B de la quête |
+| Recherche de lieu | Photon (autocomplétion) et Nominatim | Choix du point de départ |
+| Météo actuelle à l'endroit du joueur | Open-Meteo, relue toutes les 15 min | Pluie (sol glissant, pas couverts), orage (éclairs qui alertent les zombies), neige (‑20 % de vitesse), brouillard (vision réduite), froid ou chaleur (température du corps) |
+| Heure et soleil | Calcul astronomique | Éclairage, fenêtres allumées la nuit, nuit plus dangereuse |
 
-Si Overpass ne répond pas, une ville de secours est générée et l'interface l'indique. Le menu permet de forcer une météo ou la nuit pour tester.
+Le menu permet de forcer une météo ou la nuit pour tester.
+
+Crédits : © les contributeurs d'OpenStreetMap (licence ODbL), tuiles OpenFreeMap au schéma OpenMapTiles, météo Open-Meteo (CC BY 4.0), recherche Photon (Komoot) et Nominatim, carte du menu MapLibre GL.
 
 ## Tests
 
 ```sh
-npm install   # installe three, uniquement pour les tests et le chargement hors ligne
+npm install   # bibliothèques de référence, uniquement pour les tests
 npm test
 ```
 
-Les tests utilisent des réponses Overpass et Open-Meteo synthétiques au format réel (`test/fixtures/make-fixtures.mjs`).
+Les tests utilisent deux tuiles synthétiques au format OpenFreeMap autour de la place Bellecour (`test/fixtures/make-mvt-fixture.mjs`) et une réponse Open-Meteo synthétique (`test/fixtures/make-fixtures.mjs`). `node test/real-data-smoke.mjs lyon perouges` vérifie la chaîne complète contre les vraies données (réseau requis) ; la CI le lance à chaque modification.
 
 ## Organisation
 
-- `src/osm.js` : requête Overpass et conversion en géométrie locale
+- `src/picker.js` : carte du monde du menu, recherche et choix du lieu
+- `src/tiles.js`, `src/mvt.js`, `src/tile-worker.js` : téléchargement, cache et lecture des tuiles vectorielles
+- `src/world.js` : monde du joueur (bâtiments, lieux, butin), chargement des tuiles au fil de la marche
+- `src/chunks.js` : construction et démontage des carrés de 64 m autour du joueur
+- `src/osm.js` : ville de secours générée quand les tuiles sont injoignables
 - `src/weather.js` : météo Open-Meteo et règles de jeu qui en découlent
 - `src/sun.js` : position du soleil
-- `src/collision.js` : grille d'occupation (murs, eau, ponts), distances à pied
+- `src/collision.js` : grille d'occupation (murs, eau, ponts) par carrés, point de départ accessible
 - `src/quest.js` : choix des lieux A et B, déroulé de la quête
 - `src/game.js` : joueur, zombies, combat
 - `src/survival.js` : faim, soif, température du corps, butin selon le type de lieu, inventaire
-- `src/scene.js`, `src/atmosphere.js` : rendu Three.js, ciel, pluie, neige, éclairs
+- `src/scene.js`, `src/atmosphere.js` : rendu Three.js, façades et fenêtres, ciel, pluie, neige, éclairs
 - `src/input.js` : clavier, souris, joystick tactile

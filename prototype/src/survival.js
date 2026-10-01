@@ -29,12 +29,16 @@ const LOOT = {
   retail: [['soda', 0.4, 2], ['barre', 0.4, 2], ['manteau', 0.2, 1]],
   industrial: [['batte', 0.3, 1], ['chaufferette', 0.3, 1]],
   house: [['conserve', 0.45, 2], ['eau', 0.45, 2], ['manteau', 0.15, 1], ['bandage', 0.25, 1], ['chaufferette', 0.2, 1]],
+  food: [['conserve', 0.6, 2], ['eau', 0.7, 2], ['soda', 0.6, 2], ['barre', 0.4, 1]],
+  clothes: [['manteau', 0.65, 1], ['chaufferette', 0.3, 1]],
+  outdoor: [['manteau', 0.5, 1], ['chaufferette', 0.5, 2], ['eau', 0.5, 2], ['batte', 0.25, 1]],
 };
 const KIND_ALIASES = {
   apartments: 'house', residential: 'house', detached: 'house', yes: 'house', terrace: 'house', semidetached_house: 'house', dormitory: 'house',
   shop: 'retail', supermarket: 'supermarket', office: 'commercial', warehouse: 'industrial', garage: 'industrial', garages: 'industrial',
   kindergarten: 'school', university: 'school', college: 'school', train_station: 'station', subway_entrance: 'station', fuel: 'convenience',
   townhall: 'commercial', civic: 'commercial', public: 'commercial', church: 'house',
+  doctors: 'clinic', bank: 'commercial',
 };
 
 export function lootKind(kind) {
@@ -68,9 +72,10 @@ export function createSurvivor() {
 
 // Température ressentie par le corps : météo réelle, vêtements, abri et humidité.
 export function effectiveAmbient(s, env) {
-  let t = env.feelsLike + 6 + (s.coat ? 12 : 0) + (env.sheltered ? 4 : 0);
-  if (s.warmth > 0) t += 15;
-  return t;
+  const base = env.feelsLike + 6 + (env.sheltered ? 4 : 0);
+  // Manteau et chaufferette réchauffent quand il fait froid, sans faire suer quand il fait doux (on les ouvre).
+  const extra = (s.coat ? 12 : 0) + (s.warmth > 0 ? 15 : 0);
+  return base + Math.max(0, Math.min(extra, COMFORT_HIGH - 2 - base));
 }
 
 export const COMFORT_LOW = 18, COMFORT_HIGH = 28;

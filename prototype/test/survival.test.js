@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, lootKind, count } from '../src/survival.js';
-import { buildWorldData } from '../src/osm.js';
-import { buildGrid, buildingAt, buildingNear } from '../src/collision.js';
+import { featuresFromBytes } from '../src/tiles.js';
+import { createWorldStore, addFeatures, buildPatch } from '../src/world.js';
+import { createChunkedGrid, chunkKey, buildingAt, buildingNear } from '../src/collision.js';
 
 const env = (o) => ({ feelsLike: 15, raining: false, snowing: false, sheltered: false, running: false, windKmh: 0, ...o });
 const simulate = (s, e, seconds) => { for (let t = 0; t < seconds; t += 0.5) updateSurvivor(s, e, 0.5); return s; };
@@ -17,6 +18,11 @@ test('le froid réel fait baisser la température du corps, le manteau protège'
   assert.ok(coat.bodyTemp > cold.bodyTemp + 1, 'le manteau ralentit le refroidissement');
   const mild = simulate(createSurvivor(), env({ feelsLike: 16 }), 300);
   assert.ok(Math.abs(mild.bodyTemp - 37) < 0.2, 'temps doux : le corps reste à 37 °C');
+  const coatMild = createSurvivor();
+  coatMild.coat = true;
+  coatMild.warmth = 600;
+  simulate(coatMild, env({ feelsLike: 20 }), 600);
+  assert.ok(coatMild.bodyTemp < 37.5, `manteau et chaufferette par temps doux : pas de coup de chaud (${coatMild.bodyTemp})`);
 });
 
 test('la pluie trempe, et trempé on a plus froid', () => {
@@ -61,12 +67,16 @@ test('inventaire : ramasser, manger, boire, se soigner, s\'équiper', () => {
   assert.equal(useBest(s, 'eat'), null);
 });
 
-test('chaque bâtiment OSM est repérable dans la grille pour la fouille', () => {
-  const world = buildWorldData(JSON.parse(readFileSync(new URL('./fixtures/overpass-lyon.json', import.meta.url))), { lat: 45.7578, lon: 4.832 }, 700);
-  const grid = buildGrid(world);
-  const b = world.buildings[10];
-  const c = b.points.reduce((a, p) => ({ x: a.x + p.x / b.points.length, z: a.z + p.z / b.points.length }), { x: 0, z: 0 });
-  assert.equal(buildingAt(grid, c.x, c.z), 10);
-  const edge = b.points[0];
-  assert.notEqual(buildingNear(grid, edge.x - 0.7, edge.z - 0.7, 1.6), null);
+test('chaque bâtiment réel est repérable dans la grille pour la fouille', () => {
+  const origin = { lat: 45.7578, lon: 4.832 };
+  const store = createWorldStore(origin);
+  addFeatures(store, featuresFromBytes(readFileSync(new URL('./fixtures/lyon-14-8411-5844.mvt', import.meta.url)), 8411, 5844, 14, origin));
+  const grid = createChunkedGrid(store.chunkSize);
+  const b = store.buildings.find((x) => x.area > 200 && x.minHeight === 0 && x.rings.length === 1);
+  const cx = Math.floor(b.cx / 64), cz = Math.floor(b.cz / 64);
+  for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) grid.chunks.set(chunkKey(cx + i, cz + j), buildPatch(store, cx + i, cz + j));
+  assert.equal(buildingAt(grid, b.cx, b.cz), b.index);
+  const edge = b.rings[0][0];
+  const out = { x: edge.x + (edge.x - b.cx) / Math.hypot(edge.x - b.cx, edge.z - b.cz) * 0.8, z: edge.z + (edge.z - b.cz) / Math.hypot(edge.x - b.cx, edge.z - b.cz) * 0.8 };
+  assert.notEqual(buildingNear(grid, out.x, out.z, 1.6), null);
 });

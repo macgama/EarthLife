@@ -17,6 +17,8 @@ export function createInput(canvas, ui) {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
     keys.add(e.code);
     if (e.code === 'Space') { state.attack = true; e.preventDefault(); }
+    // Une touche maintenue ne doit pas vider le sac ni relancer la fouille.
+    if (e.repeat) return;
     if (e.code === 'KeyE') state.interact = true;
     const uses = { Digit1: 'eat', Digit2: 'drink', Digit3: 'heal', Digit4: 'warm' };
     if (uses[e.code]) state.use = uses[e.code];
@@ -76,7 +78,7 @@ export function createInput(canvas, ui) {
         state.move.x = dx / radius;
         state.move.y = -dy / radius;
         // Pousser le joystick au bout = courir.
-        state.run = len > radius * 0.95 && ui.autoRun;
+        stick.full = len > radius * 0.95 && ui.autoRun;
         knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
       } else if (look && t.identifier === look.id) {
         state.cameraYawDelta -= (t.clientX - look.x) * 0.008;
@@ -120,8 +122,8 @@ export function createInput(canvas, ui) {
       const y = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
       state.move.x = x; state.move.y = y;
       state.run = keys.has('ShiftLeft') || keys.has('ShiftRight') || runHeld;
-    } else if (runHeld) {
-      state.run = true;
+    } else {
+      state.run = stick.full || runHeld;
     }
     if (keys.has('KeyJ')) state.cameraYawDelta += 0.04;
     if (keys.has('KeyL')) state.cameraYawDelta -= 0.04;

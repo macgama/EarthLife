@@ -1,16 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { makeProjection, polygonArea } from '../src/geo.js';
+import { makeProjection } from '../src/geo.js';
 import { parseWeather, gameplayModifiers, forcedWeather, weatherUrl } from '../src/weather.js';
 import { sunPosition, localTimeLabel } from '../src/sun.js';
-import { buildWorldData, proceduralWorld, parseHeight, stitchRings, overpassQuery } from '../src/osm.js';
-import { buildGrid, isFree, getAt, BUILDING, WATER, moveWithCollisions, nearestFree, walkDistances } from '../src/collision.js';
-import { planDelivery, updateQuest, questText, placeWith } from '../src/quest.js';
+import { proceduralWorld } from '../src/osm.js';
+import { buildGrid, nearestFree } from '../src/collision.js';
+import { planDelivery, updateQuest, placeWith } from '../src/quest.js';
 import { createPlayer, createZombieDirector, updatePlayer, playerAttack } from '../src/game.js';
 
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url)));
 const LYON = { lat: 45.7578, lon: 4.832 };
+
+test('lieux : « à la pharmacie », « au supermarché », sans répéter le type', () => {
+  assert.equal(placeWith('à', { label: 'Supermarché', name: 'Supermarché' }), 'au supermarché');
+  assert.equal(placeWith('à', { label: 'Pharmacie', name: 'Pharmacie Bellecour' }), 'à la Pharmacie Bellecour');
+  assert.equal(placeWith('à', { label: 'Pharmacie', name: "Lyon Presqu'île Pharmacie" }), "à la pharmacie « Lyon Presqu'île Pharmacie »");
+});
 
 test('la projection locale fait un aller-retour précis', () => {
   const p = makeProjection(LYON.lat, LYON.lon);
@@ -57,64 +63,10 @@ test('soleil : midi d\'été haut, minuit sous l\'horizon, à Lyon', () => {
   assert.equal(localTimeLabel(new Date('2026-10-01T19:40:00Z'), 7200), '21 h 40');
 });
 
-test('OSM : bâtiments, routes, pont, fleuve en multipolygone et lieux réels', () => {
-  const world = buildWorldData(fixture('overpass-lyon.json'), LYON, 700);
-  assert.equal(world.source, 'osm');
-  assert.ok(world.buildings.length > 400);
-  assert.ok(world.roads.length > 30);
-  assert.equal(world.water.length, 1, 'les deux ways du fleuve sont reliés');
-  assert.ok(Math.abs(polygonArea(world.water[0].points)) > 80 * 1300);
-  assert.ok(world.roads.some((r) => r.bridge));
-  const names = world.pois.map((p) => p.name);
-  assert.ok(names.includes('Pharmacie Bellecour') && names.includes('Hôpital Édouard-Herriot'));
-  assert.equal(parseHeight({ height: '21' }, 1), 21);
-  assert.equal(parseHeight({ 'building:levels': '5' }, 1), 5 * 3.2 + 1.5);
-  assert.match(overpassQuery({ south: 1, west: 2, north: 3, east: 4 }), /way\["building"\]\(1\.00000,2\.00000,3\.00000,4\.00000\)/);
-});
-
-test('stitchRings relie des segments dans n\'importe quel sens', () => {
-  const p = (lat, lon) => ({ lat, lon });
-  const rings = stitchRings([[p(0, 0), p(0, 1)], [p(1, 1), p(0, 1)], [p(1, 1), p(1, 0), p(0, 0)]]);
-  assert.equal(rings.length, 1);
-  assert.equal(rings[0].length, 5);
-});
-
-test('collisions : murs et eau bloquent, le pont laisse passer', () => {
-  const world = buildWorldData(fixture('overpass-lyon.json'), LYON, 700);
-  const grid = buildGrid(world);
-  const b = world.buildings[0].points;
-  const cx = b.reduce((s, q) => s + q.x, 0) / b.length, cz = b.reduce((s, q) => s + q.z, 0) / b.length;
-  assert.equal(getAt(grid, cx, cz), BUILDING);
-  assert.equal(getAt(grid, 340, 100), WATER);
-  assert.ok(isFree(grid, 340, 240), 'le pont au-dessus du fleuve est praticable');
-  const start = nearestFree(grid, cx, cz);
-  assert.ok(start && isFree(grid, start.x, start.z));
-  const moved = moveWithCollisions(grid, { x: 0, z: 0 }, 0.5, 0, 0.4);
-  assert.ok(moved.x > 0);
-  const field = walkDistances(grid, { x: 0, z: 0 });
-  assert.ok(Number.isFinite(field.at(450, 240)), 'l\'autre rive est atteignable par le pont');
-});
-
-test('quête : de la pharmacie réelle à l\'hôpital réel, puis livraison', () => {
-  const world = buildWorldData(fixture('overpass-lyon.json'), LYON, 700);
-  const grid = buildGrid(world);
-  const start = nearestFree(grid, 0, 0);
-  let seed = 7;
-  const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const q = planDelivery(world, grid, start, { rand });
-  assert.ok(q, 'une quête est trouvée');
-  assert.equal(q.pickup.kind, 'pharmacy');
-  assert.equal(q.dropoff.kind, 'hospital');
-  assert.equal(questText(q), "Récupère une caisse de médicaments à la Pharmacie Bellecour, puis livre ta cargaison à l'Hôpital Édouard-Herriot.");
-  assert.equal(updateQuest(q, q.pickup, 1), 'picked');
-  assert.equal(updateQuest(q, q.dropoff, 1), 'delivered');
-  assert.equal(placeWith('à', { label: 'Supermarché', name: 'Supermarché' }), 'au supermarché');
-});
-
 test('quête : temps écoulé = échec', () => {
   const world = proceduralWorld(LYON, 700);
   const grid = buildGrid(world);
-  const q = planDelivery(world, grid, nearestFree(grid, 0, 0));
+  const q = planDelivery(world.pois, nearestFree(grid, 0, 0));
   assert.ok(q);
   assert.equal(updateQuest(q, { x: 9999, z: 9999 }, q.timeLimit + 1), 'timeout');
 });

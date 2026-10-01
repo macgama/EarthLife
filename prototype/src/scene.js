@@ -1,17 +1,11 @@
-// Construction de la scène 3D stylisée à partir des données de la carte.
+// Éléments 3D stylisés partagés : rendu, bâtiments extrudés, arbres, personnages, balise de quête.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const PALETTE = {
-  ground: 0xd8d2c2,
-  road: 0x5f6470,
-  footway: 0xc2b8a3,
-  water: 0x3f97d1,
-  park: 0x86c06a,
-  cemetery: 0x9cb98a,
-  forest: 0x5e9e52,
-  pitch: 0x7cbf6a,
   buildings: [0xf2e4cf, 0xe8d3b5, 0xf5efe6, 0xe9c8a8, 0xd9dde3, 0xf0d9c4, 0xe3e7d3, 0xf3dcc9],
+  // Toits : tuiles, ardoise, zinc. Bien distincts des façades pour lire la ville vue d'en haut.
+  roofs: [0xb4674d, 0xa65d47, 0xc07a58, 0x7d8590, 0x8f969e, 0x6c7480, 0x9a8f85],
 };
 
 export function createRenderer(canvas, { lowPower }) {
@@ -29,113 +23,50 @@ function hash(str) {
   return h >>> 0;
 }
 
-function shapeFrom(points) {
-  // Forme dans le plan (x, -z) : après rotation de -90° autour de X, elle retombe sur (x, z).
-  return new THREE.Shape(points.map((p) => new THREE.Vector2(p.x, -p.z)));
-}
-
-function flatPolygons(polys, y, color) {
-  const geos = [];
-  for (const p of polys) {
-    try {
-      const g = new THREE.ShapeGeometry(shapeFrom(p.points));
-      g.rotateX(-Math.PI / 2);
-      g.translate(0, y, 0);
-      geos.push(g);
-    } catch { /* polygone invalide ignoré */ }
-  }
-  if (!geos.length) return null;
-  const mesh = new THREE.Mesh(mergeGeometries(geos), new THREE.MeshLambertMaterial({ color }));
-  mesh.receiveShadow = true;
-  geos.forEach((g) => g.dispose());
-  return mesh;
-}
-
-// Rubans plats le long de polylignes (routes, rivières), avec des disques aux jointures.
-function ribbons(lines, y) {
-  const pos = [];
-  const idx = [];
-  const addVertex = (x, z) => { pos.push(x, y, z); return pos.length / 3 - 1; };
-  for (const line of lines) {
-    const half = line.width / 2;
-    for (let s = 0; s + 1 < line.points.length; s++) {
-      const a = line.points[s], b = line.points[s + 1];
-      const dx = b.x - a.x, dz = b.z - a.z;
-      const len = Math.hypot(dx, dz);
-      if (len < 0.01) continue;
-      const nx = (-dz / len) * half, nz = (dx / len) * half;
-      const i0 = addVertex(a.x + nx, a.z + nz), i1 = addVertex(a.x - nx, a.z - nz);
-      const i2 = addVertex(b.x + nx, b.z + nz), i3 = addVertex(b.x - nx, b.z - nz);
-      idx.push(i0, i2, i1, i1, i2, i3);
-    }
-    for (const p of line.points) {
-      const c = addVertex(p.x, p.z);
-      const n = 8;
-      const first = pos.length / 3;
-      for (let k = 0; k < n; k++) addVertex(p.x + Math.cos((k / n) * Math.PI * 2) * half, p.z + Math.sin((k / n) * Math.PI * 2) * half);
-      for (let k = 0; k < n; k++) idx.push(c, first + ((k + 1) % n), first + k);
-    }
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setIndex(idx);
-  g.computeVertexNormals();
-  return g;
-}
-
-function buildingsMesh(buildings) {
-  const geos = [];
-  const color = new THREE.Color();
-  for (const b of buildings) {
-    let g;
-    try {
-      g = new THREE.ExtrudeGeometry(shapeFrom(b.points), { depth: b.height, bevelEnabled: false });
-    } catch { continue; }
-    g.rotateX(-Math.PI / 2);
-    const h = hash(b.id);
-    color.setHex(PALETTE.buildings[h % PALETTE.buildings.length]);
-    const normals = g.getAttribute('normal');
-    const colors = new Float32Array(normals.count * 3);
-    for (let i = 0; i < normals.count; i++) {
-      // Toits un peu plus sombres et teintés : lecture plus claire vue d'en haut.
-      const roof = normals.getY(i) > 0.9;
-      const k = roof ? 0.82 : 1;
-      colors[i * 3] = color.r * k * (roof ? 0.95 : 1);
-      colors[i * 3 + 1] = color.g * k;
-      colors[i * 3 + 2] = color.b * k * (roof ? 1.05 : 1);
-    }
-    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    g.deleteAttribute('uv');
-    geos.push(g);
-  }
-  if (!geos.length) return null;
-  const merged = mergeGeometries(geos);
-  geos.forEach((g) => g.dispose());
-  const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-  addCutaway(material);
-  const mesh = new THREE.Mesh(merged, material);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
 // Vue isométrique : les murs entre la caméra et le joueur sont découpés pour qu'il reste visible.
+// `night` (0 à 1) allume une partie des fenêtres quand il fait nuit.
 export const cutaway = {
   player: { value: new THREE.Vector3() },
   camera: { value: new THREE.Vector3() },
   radius: { value: 5.5 },
+  night: { value: 0 },
 };
 
-function addCutaway(material) {
+// Façades dessinées dans le shader : étages et fenêtres, sans texture ni géométrie en plus.
+const FACADES = `
+  vec3 facadeN = normalize(cross(dFdx(vCutWorld), dFdy(vCutWorld)));
+  if (abs(facadeN.y) < 0.5 && vCutWorld.y > 0.9) {
+    vec2 facadeT = normalize(vec2(-facadeN.z, facadeN.x));
+    float facadeU = dot(vCutWorld.xz, facadeT);
+    float facadeLevel = floor((vCutWorld.y - 0.9) / 3.2);
+    float facadeV = fract((vCutWorld.y - 0.9) / 3.2);
+    float facadeCol = floor(facadeU / 2.8);
+    float facadeW = fract(facadeU / 2.8);
+    if (facadeV > 0.28 && facadeV < 0.78 && facadeW > 0.28 && facadeW < 0.72) {
+      float facadeLit = step(0.72, fract(sin(dot(vec2(facadeCol, facadeLevel), vec2(12.9898, 78.233))) * 43758.5453));
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.2, 0.24, 0.3), 0.72);
+      facadeGlow = facadeLit * uNight;
+    } else if (facadeV < 0.06) {
+      diffuseColor.rgb *= 0.86;
+    }
+  }`;
+
+function addCutaway(material, { facades = false } = {}) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uCutPlayer = cutaway.player;
     shader.uniforms.uCutCamera = cutaway.camera;
     shader.uniforms.uCutRadius = cutaway.radius;
+    shader.uniforms.uNight = cutaway.night;
+    if (facades) {
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <color_fragment>', `#include <color_fragment>\n  float facadeGlow = 0.0;${FACADES}`)
+        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.78, 0.45) * facadeGlow * 0.9;');
+    }
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;')
       .replace('#include <project_vertex>', '#include <project_vertex>\nvCutWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;\nuniform vec3 uCutPlayer;\nuniform vec3 uCutCamera;\nuniform float uCutRadius;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;\nuniform vec3 uCutPlayer;\nuniform vec3 uCutCamera;\nuniform float uCutRadius;\nuniform float uNight;')
       .replace('void main() {', `void main() {
   vec3 cutDir = uCutPlayer - uCutCamera;
   float cutLen = length(cutDir);
@@ -147,28 +78,97 @@ function addCutaway(material) {
   };
 }
 
-function treesMesh(parks, grid, isFree) {
-  const spots = [];
-  for (const p of parks) {
-    if (!['park', 'garden', 'forest', 'recreation_ground'].includes(p.kind)) continue;
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    for (const q of p.points) { minX = Math.min(minX, q.x); maxX = Math.max(maxX, q.x); minZ = Math.min(minZ, q.z); maxZ = Math.max(maxZ, q.z); }
-    let seed = hash(p.id);
-    const rand = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
-    const count = Math.min(80, Math.floor(((maxX - minX) * (maxZ - minZ)) / 450));
-    for (let i = 0; i < count; i++) {
-      const x = minX + rand() * (maxX - minX), z = minZ + rand() * (maxZ - minZ);
-      if (insidePoly(x, z, p.points) && isFree(grid, x, z)) spots.push({ x, z, s: 0.7 + rand() * 0.5 });
+// ---------- Monde en morceaux ----------
+
+// Matériau unique des bâtiments (couleurs par sommet, ombrage plat, découpe des murs devant le joueur).
+let sharedBuildingMaterial = null;
+export function buildingMaterial() {
+  if (!sharedBuildingMaterial) {
+    sharedBuildingMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    addCutaway(sharedBuildingMaterial, { facades: true });
+  }
+  return sharedBuildingMaterial;
+}
+
+function signedArea(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += ring[j].x * ring[i].z - ring[i].x * ring[j].z;
+  return a / 2;
+}
+
+// Extrusion rapide (murs + toit) de bâtiments à trous, sans biseau ni UV : bien plus légère qu'ExtrudeGeometry,
+// pour construire un morceau de ville pendant la marche sans à-coup.
+export function buildingsGeometry(buildings) {
+  const pos = [];
+  const col = [];
+  const c = new THREE.Color();
+  const r = new THREE.Color();
+  for (const b of buildings) {
+    if (b.colour) {
+      try { c.set(b.colour); } catch { c.setHex(PALETTE.buildings[hash(b.id) % PALETTE.buildings.length]); }
+      c.lerp(new THREE.Color(0xf2ece2), 0.35);
+    } else {
+      c.setHex(PALETTE.buildings[hash(b.id) % PALETTE.buildings.length]);
+    }
+    const h = b.height, y0 = b.minHeight ?? 0;
+    const wall = [c.r, c.g, c.b];
+    r.setHex(PALETTE.roofs[(hash(b.id) >>> 8) % PALETTE.roofs.length]);
+    const roof = [r.r, r.g, r.b];
+    const rings = b.rings.map((ring, k) => {
+      // Murs tournés vers l'extérieur : anneau extérieur dans un sens, cours intérieures dans l'autre.
+      const outer = k === 0;
+      const a = signedArea(ring);
+      return (outer ? a > 0 : a < 0) ? ring.slice().reverse() : ring;
+    });
+    for (const ring of rings) {
+      for (let i = 0; i < ring.length; i++) {
+        const p = ring[i], q = ring[(i + 1) % ring.length];
+        pos.push(p.x, y0, p.z, q.x, y0, q.z, q.x, h, q.z, p.x, y0, p.z, q.x, h, q.z, p.x, h, p.z);
+        for (let k = 0; k < 6; k++) col.push(wall[0], wall[1], wall[2]);
+      }
+    }
+    const contour = rings[0].map((p) => new THREE.Vector2(p.x, p.z));
+    const holes = rings.slice(1).map((r) => r.map((p) => new THREE.Vector2(p.x, p.z)));
+    const flat = contour.concat(...holes);
+    let faces;
+    try { faces = THREE.ShapeUtils.triangulateShape(contour, holes); } catch { faces = []; }
+    for (const [i0, i1, i2] of faces) {
+      const a = flat[i0], bb = flat[i1], cc = flat[i2];
+      // Toit vers le haut, quel que soit le sens rendu par la triangulation.
+      const up = (bb.y - a.y) * (cc.x - a.x) - (bb.x - a.x) * (cc.y - a.y) > 0;
+      const [m, n] = up ? [bb, cc] : [cc, bb];
+      pos.push(a.x, h, a.y, m.x, h, m.y, n.x, h, n.y);
+      for (let k = 0; k < 3; k++) col.push(roof[0], roof[1], roof[2]);
     }
   }
+  if (!pos.length) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  return g;
+}
+
+// Arbres partagés entre tous les morceaux : seules les positions changent.
+let treeParts = null;
+export function treesInstanced(spots) {
   if (!spots.length) return null;
-  const crown = new THREE.ConeGeometry(1.8, 4.5, 7);
-  crown.translate(0, 4.4, 0);
-  const trunk = new THREE.CylinderGeometry(0.25, 0.3, 2.6, 6);
-  trunk.translate(0, 1.3, 0);
+  if (!treeParts) {
+    const crown = new THREE.ConeGeometry(1.8, 4.5, 7);
+    crown.translate(0, 4.4, 0);
+    const trunk = new THREE.CylinderGeometry(0.25, 0.3, 2.6, 6);
+    trunk.translate(0, 1.3, 0);
+    treeParts = {
+      crown, trunk,
+      crownMat: new THREE.MeshLambertMaterial({ color: 0x4f9a4a, flatShading: true }),
+      darkMat: new THREE.MeshLambertMaterial({ color: 0x3f8240, flatShading: true }),
+      trunkMat: new THREE.MeshLambertMaterial({ color: 0x7a5a3c }),
+    };
+  }
   const group = new THREE.Group();
-  const crowns = new THREE.InstancedMesh(crown, new THREE.MeshLambertMaterial({ color: 0x4f9a4a, flatShading: true }), spots.length);
-  const trunks = new THREE.InstancedMesh(trunk, new THREE.MeshLambertMaterial({ color: 0x7a5a3c }), spots.length);
+  const crowns = new THREE.InstancedMesh(treeParts.crown, spots[0].dark ? treeParts.darkMat : treeParts.crownMat, spots.length);
+  const trunks = new THREE.InstancedMesh(treeParts.trunk, treeParts.trunkMat, spots.length);
   const m = new THREE.Matrix4();
   spots.forEach((t, i) => {
     m.makeScale(t.s, t.s, t.s).setPosition(t.x, 0, t.z);
@@ -176,54 +176,11 @@ function treesMesh(parks, grid, isFree) {
     trunks.setMatrixAt(i, m);
   });
   crowns.castShadow = true;
+  crowns.computeBoundingSphere();
+  trunks.computeBoundingSphere();
   group.add(crowns, trunks);
+  group.userData.instanced = [crowns, trunks];
   return group;
-}
-
-function insidePoly(x, z, pts) {
-  let inside = false;
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    if ((pts[i].z > z) !== (pts[j].z > z) && x < ((pts[j].x - pts[i].x) * (z - pts[i].z)) / (pts[j].z - pts[i].z) + pts[i].x) inside = !inside;
-  }
-  return inside;
-}
-
-export function buildCity(world, grid, isFree) {
-  const group = new THREE.Group();
-  const groundMat = new THREE.MeshLambertMaterial({ color: PALETTE.ground });
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(world.radius * 2 + 400, world.radius * 2 + 400), groundMat);
-  ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
-  group.add(ground);
-
-  const byKind = (kinds) => world.parks.filter((p) => kinds.includes(p.kind));
-  const parkMats = [];
-  for (const [kinds, color] of [[['park', 'garden', 'recreation_ground', 'grass'], PALETTE.park], [['pitch'], PALETTE.pitch], [['cemetery'], PALETTE.cemetery], [['forest'], PALETTE.forest]]) {
-    const m = flatPolygons(byKind(kinds), 0.01, color);
-    if (m) { group.add(m); parkMats.push(m.material); }
-  }
-
-  const waterMat = new THREE.MeshLambertMaterial({ color: PALETTE.water });
-  const water = flatPolygons(world.water, 0.02, PALETTE.water);
-  if (water) { water.material = waterMat; group.add(water); }
-  if (world.waterLines.length) {
-    const river = new THREE.Mesh(ribbons(world.waterLines, 0.025), waterMat);
-    group.add(river);
-  }
-
-  const roadMat = new THREE.MeshLambertMaterial({ color: PALETTE.road });
-  const footMat = new THREE.MeshLambertMaterial({ color: PALETTE.footway });
-  const foot = world.roads.filter((r) => r.walkOnly);
-  const drive = world.roads.filter((r) => !r.walkOnly);
-  if (foot.length) { const m = new THREE.Mesh(ribbons(foot, 0.04), footMat); m.receiveShadow = true; group.add(m); }
-  if (drive.length) { const m = new THREE.Mesh(ribbons(drive, 0.05), roadMat); m.receiveShadow = true; group.add(m); }
-
-  const b = buildingsMesh(world.buildings);
-  if (b) group.add(b);
-  const trees = treesMesh(world.parks, grid, isFree);
-  if (trees) group.add(trees);
-
-  return { group, materials: { ground: groundMat, road: roadMat, foot: footMat, water: waterMat, parks: parkMats } };
 }
 
 // Personnages stylisés : un seul maillage par personnage pour rester léger sur mobile.

@@ -4,7 +4,8 @@ import { daylight } from './sun.js';
 
 const DEG = Math.PI / 180;
 
-export function createAtmosphere(scene, { lowPower }) {
+// `maxDistance` : la ville n'est construite qu'autour du joueur, le brouillard en cache le bord.
+export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
   let groundMaterials = null;
   const hemi = new THREE.HemisphereLight(0xdfefff, 0x8a7f6a, 1.2);
   const sun = new THREE.DirectionalLight(0xfff1d6, 2.2);
@@ -85,7 +86,9 @@ export function createAtmosphere(scene, { lowPower }) {
     if (w.kind === 'snow') far = 200 - 80 * w.intensity;
     if (w.kind === 'fog') far = Math.max(35, Math.min(160, (w.visibility ?? 200) * 0.35));
     if (state.isNight) far = Math.min(far, 260);
-    scene.fog.near = Math.min(far * 0.15, 60);
+    // Le brouillard cache le bord du quartier construit, sans descendre sous une distance jouable.
+    far = Math.max(Math.min(far, maxDistance), Math.min(55, maxDistance));
+    scene.fog.near = Math.min(far * 0.4, 60);
     scene.fog.far = far;
 
     // Soleil placé selon sa vraie position (azimut depuis le nord, -z = nord).
