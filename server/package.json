@@ -4,6 +4,7 @@
   "type": "module",
   "engines": { "node": ">=18" },
   "scripts": {
+    "test": "node --test test/*.test.js",
     "test:probe": "node probe/essai-sonde.mjs"
   },
   "dependencies": {
