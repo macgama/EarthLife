@@ -1,0 +1,29 @@
+name: Tuiles de New York (temporaire)
+# Copie les vraies tuiles OpenFreeMap de Midtown (New York) sur la branche tile-fixtures-newyork,
+# pour reproduire hors ligne l'affichage des routes signalé par Gaël. Branche temporaire, supprimée ensuite.
+on:
+  push:
+    branches: [claude/tuiles-new-york]
+permissions:
+  contents: write
+jobs:
+  tuiles:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Télécharger et publier les tuiles
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          TEMPLATE=$(curl -sf https://tiles.openfreemap.org/planet | jq -r '.tiles[0]')
+          mkdir -p tiles
+          curl -sf https://tiles.openfreemap.org/planet -o tiles/tilejson.json
+          for t in 14/4824/6156 14/4825/6156 14/4824/6157 14/4825/6157 14/4824/6158 14/4825/6158; do
+            url=${TEMPLATE/\{z\}\/\{x\}\/\{y\}/$t}
+            curl -sf --compressed "$url" -o "tiles/$(echo $t | tr / -).mvt"
+          done
+          ls -l tiles
+          git init -q -b tile-fixtures-newyork
+          git add tiles
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -qm "Tuiles OpenFreeMap de Midtown, New York, pour les tests (© OpenStreetMap, ODbL)"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:tile-fixtures-newyork
