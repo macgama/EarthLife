@@ -38,7 +38,7 @@ const EMPTY = Object.freeze([]);
 export function createRoom({
   store, cfg: cfgIn = {}, now = Date.now, rand = Math.random, hmac, log = () => {},
   randomBytes = nodeRandomBytes, sha256 = (s) => createHash('sha256').update(s).digest('hex'),
-  perfNow = () => performance.now(),
+  perfNow = () => performance.now(), dbUp = () => true,
 } = {}) {
   const cfg = { ...ROOM_DEFAULTS, ...cfgIn };
   if (!hmac) {
@@ -72,6 +72,8 @@ export function createRoom({
   let inflight = null;                                // lot en cours d'écriture
   let ipBans = new Map();
   let dbOk = true, flushing = null, maintenance = !!cfg.maintenance;
+  // Base prête : dernier lot ou lecture réussi, et avis du transport (sonde de la base, lecture de démarrage faite).
+  const dbReady = () => dbOk && dbUp();
   let lastFlush = 0, lastSweep = 0, lastEvict = 0, lastStats = now();
   const tickTimes = new Float64Array(1200);
   let tickIdx = 0, tickN = 0, tickNo = 0;
@@ -687,7 +689,7 @@ export function createRoom({
     const cur = refuges.get(msg.id);
     if (cur && cur.owner === s.playerId) return ack(true);       // renvoyé à chaque welcome
     if (cur) return ack(false, 'taken');
-    if (!dbOk) return ack(false, 'rate');
+    if (!dbReady()) return ack(false, 'rate');
     const pos = s.ps.pos;
     const place = placeOfId(msg.id);
     if (!pos || s.left || !place || metersE6(pos.a, pos.o, toE6(place.lat), toE6(place.lon)) > cfg.claimReachM) return ack(false, 'far');
@@ -1080,7 +1082,7 @@ export function createRoom({
     },
 
     health() {
-      return { ok: true, v: PROTOCOL, minClient: cfg.minClient, version: cfg.version, ws: !!cfg.ws, db: dbOk,
+      return { ok: true, v: PROTOCOL, minClient: cfg.minClient, version: cfg.version, ws: !!cfg.ws, db: dbReady(),
         maintenance, invite: !!cfg.inviteCode, online: worldCount(), now: now() };
     },
 
@@ -1112,8 +1114,13 @@ export function createRoom({
         closeConn(s, 1012);
         close(s, 'arret');
       }
+      // Un lot déjà en cours rend sa propre promesse : ce qui est arrivé pendant ce lot part ensuite.
+      const drain = (async () => {
+        await flush();
+        if (pending.marks.length || pending.refuges.size) await flush();
+      })();
       let timer;
-      await Promise.race([flush(), new Promise((res) => { timer = setTimeout(res, 2000); })]);
+      await Promise.race([drain, new Promise((res) => { timer = setTimeout(res, 2000); })]);
       clearTimeout(timer);
     },
 

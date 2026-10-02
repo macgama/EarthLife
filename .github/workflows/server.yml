@@ -1,0 +1,52 @@
+name: Serveur
+
+# Tests du serveur du jeu à plusieurs (section 4.8 : server-test, mariadb et abuse réunis) : rien n'est déployé ici et
+# aucun secret GitHub n'est lu. Les identifiants de la base sont des valeurs de test jetables, propres au conteneur
+# MariaDB éphémère de ce travail.
+on:
+  push:
+    branches: [claude/multijoueur]
+    paths: ['server/**', 'prototype/src/net/**', '.github/workflows/server.yml']
+  pull_request:
+    paths: ['server/**', 'prototype/src/net/**', '.github/workflows/server.yml']
+
+concurrency:
+  group: server-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: racine-de-test-jetable
+          MARIADB_DATABASE: earthlife_test
+          MARIADB_USER: earthlife_test
+          MARIADB_PASSWORD: test-jetable
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=24
+    env:
+      # La suite du magasin (test/store.test.js) tourne aussi sur MariaDB quand cette adresse est fournie.
+      EARTHLIFE_TEST_DB: mysql://earthlife_test:test-jetable@127.0.0.1:3306/earthlife_test
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run test:probe
+      # Tableau de la section 9.5 (attaques simulées, 200 survivants pendant 2 min) contre le faux serveur.
+      - name: Attaques simulées et charge
+        run: node tools/abuse.mjs
