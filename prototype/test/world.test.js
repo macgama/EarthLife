@@ -6,6 +6,7 @@ import { createWorldStore, addFeatures, buildPatch, chunkReady, useProceduralWor
 import { createGrid, createChunkedGrid, chunkKey, fillRings, getAt, isFree, nearestFree, nearestOpen, moveWithCollisions, buildingNear, BUILDING, WATER, OUTSIDE } from '../src/collision.js';
 import { buildingsGeometry } from '../src/scene.js';
 import { treeSpots } from '../src/chunks.js';
+import { featuresAround } from '../src/props.js';
 import { planDelivery, updateQuest, questText } from '../src/quest.js';
 
 const LYON = { lat: 45.7578, lon: 4.832 };
@@ -134,8 +135,9 @@ test('arbres : reproductibles, jamais dans un mur ni sur la chaussée', () => {
   const house = { id: 'h', rings: [[{ x: 5, z: 5 }, { x: 20, z: 5 }, { x: 20, z: 20 }, { x: 5, z: 20 }]], cx: 12.5, cz: 12.5, area: 225, height: 8, minHeight: 0, colour: null, bounds: { minX: 5, minZ: 5, maxX: 20, maxZ: 20 } };
   addFeatures(store, { buildings: [house], roads: [road], water: [], waterLines: [], areas: [wood], zones: [], pois: [] });
   const patch = buildPatch(store, 0, 0);
-  const f = { areas: [wood], roads: [road] };
-  const a = treeSpots(f, patch, 0, 0, 64), b = treeSpots(f, patch, 0, 0, 64);
+  // Éléments du morceau et de ses voisins, et projection du monde : arbres ancrés en latitude et longitude.
+  const f = featuresAround(store, 0, 0);
+  const a = treeSpots(f, patch, 0, 0, 64, store.proj), b = treeSpots(f, patch, 0, 0, 64, store.proj);
   assert.ok(a.length > 20);
   assert.deepEqual(a, b);
   for (const t of a) {

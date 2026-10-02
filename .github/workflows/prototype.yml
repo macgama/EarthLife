@@ -1,7 +1,8 @@
 name: Prototype
 
-# Teste le prototype 3D, le vérifie contre les vraies données (OpenFreeMap, Open-Meteo)
-# et le publie sur GitHub Pages via la branche gh-pages.
+# Teste le prototype 3D (tests unitaires et mesures de performance, puis tests d'acceptation hors ligne dans
+# Chromium), le vérifie contre les vraies données (OpenFreeMap, Open-Meteo) et le publie sur GitHub Pages via la
+# branche gh-pages.
 on:
   push:
     branches: [main, claude/prototype-3d-earthlife]
@@ -27,6 +28,8 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm test
+      # Mesures de performance de la base sous node (spec 9.3), 95e centile sur la fixture de Lyon.
+      - run: npm run bench
 
   real-data:
     # Vraies tuiles OpenFreeMap et vraie météo : ce contrôle informe sans bloquer la publication.
@@ -42,6 +45,32 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: node test/real-data-smoke.mjs lyon paris tokyo newyork reykjavik perouges
+
+  acceptance:
+    # Tests d'acceptation de la base (spec 9.2 et 9.3) dans Chromium, sans réseau : tuiles de Lyon et météo
+    # enregistrées dans test/fixtures. Ce contrôle bloque la publication.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm install --no-save playwright@1
+      - run: npx playwright install --with-deps chromium
+      - run: node test/base-acceptance.mjs browser-shots/acceptance
+        env:
+          ROUTES: test/fixtures/offline-routes.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: captures-acceptation
+          path: prototype/browser-shots/acceptance
+          retention-days: 14
 
   browser:
     # Vrai navigateur et vrais services (carte, recherche, tuiles, météo) : informe sans bloquer la publication.
@@ -67,7 +96,7 @@ jobs:
           retention-days: 14
 
   deploy:
-    needs: test
+    needs: [test, acceptance]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:

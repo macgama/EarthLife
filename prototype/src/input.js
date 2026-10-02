@@ -6,8 +6,12 @@ export function createInput(canvas, ui) {
     move: { x: 0, y: 0 },   // x = droite, y = avant, dans [-1, 1]
     run: false,
     attack: false,          // vrai pendant une image après un appui
-    interact: false,        // fouiller
-    use: null,              // 'eat' | 'drink' | 'heal' | 'warm'
+    interact: false,        // action principale (E) : fouiller, entrer, clouer, démonter…
+    action2: false,         // action secondaire (R) : refuge, piège, dormir
+    tab: false,             // onglet suivant du panneau (Tab, panneau ouvert seulement)
+    fold: false,            // replier ou déplier le panneau (B)
+    escape: false,          // fermer une carte ou le panneau, sortir du refuge (Échap)
+    use: null,              // 'eat' | 'drink' | 'heal' | 'warm' | 'lure'
     cameraYawDelta: 0,
     cameraPitchDelta: 0,
     touch: false,
@@ -17,10 +21,17 @@ export function createInput(canvas, ui) {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
     keys.add(e.code);
     if (e.code === 'Space') { state.attack = true; e.preventDefault(); }
+    // Tab ne change d'onglet que si le panneau du refuge est ouvert ; sinon il garde son rôle (focus).
+    const panelTab = e.code === 'Tab' && document.body.classList.contains('panel-open');
+    if (panelTab) e.preventDefault();
     // Une touche maintenue ne doit pas vider le sac ni relancer la fouille.
     if (e.repeat) return;
     if (e.code === 'KeyE') state.interact = true;
-    const uses = { Digit1: 'eat', Digit2: 'drink', Digit3: 'heal', Digit4: 'warm' };
+    if (e.code === 'KeyR') state.action2 = true;
+    if (e.code === 'KeyB') state.fold = true;
+    if (e.code === 'Escape') state.escape = true;
+    if (panelTab) state.tab = true;
+    const uses = { Digit1: 'eat', Digit2: 'drink', Digit3: 'heal', Digit4: 'warm', Digit5: 'lure' };
     if (uses[e.code]) state.use = uses[e.code];
   };
   const up = (e) => keys.delete(e.code);
@@ -112,7 +123,23 @@ export function createInput(canvas, ui) {
   // .on : bouton enfoncé (le CSS le rétrécit et allume son halo).
   press(ui.attackButton, (on) => { if (on) state.attack = true; ui.attackButton.classList.toggle('on', on); });
   press(ui.runButton, (on) => { runHeld = on; ui.runButton.classList.toggle('on', on); });
-  ui.searchButton.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); state.interact = true; });
+  // L'action peut ouvrir la feuille du refuge ou une carte sous le doigt : le clic émis au relâcher est avalé,
+  // sinon il replierait la feuille ou toucherait un de ses boutons.
+  const eatNextClick = (id) => {
+    const stop = (ev) => { ev.stopPropagation(); ev.preventDefault(); off(); };
+    const off = () => window.removeEventListener('click', stop, true);
+    const release = (ev) => {
+      if (ev.pointerId !== id) return;
+      window.removeEventListener('pointerup', release, true);
+      window.removeEventListener('pointercancel', release, true);
+      window.addEventListener('click', stop, true);
+      setTimeout(off, 400);
+    };
+    window.addEventListener('pointerup', release, true);
+    window.addEventListener('pointercancel', release, true);
+  };
+  ui.searchButton.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); eatNextClick(e.pointerId); state.interact = true; });
+  ui.action2Button?.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); eatNextClick(e.pointerId); state.action2 = true; });
   for (const el of ui.useButtons) {
     el.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); state.use = el.dataset.use; });
   }
@@ -134,6 +161,10 @@ export function createInput(canvas, ui) {
   function consume() {
     state.attack = false;
     state.interact = false;
+    state.action2 = false;
+    state.tab = false;
+    state.fold = false;
+    state.escape = false;
     state.use = null;
     state.cameraYawDelta = 0;
     state.cameraPitchDelta = 0;

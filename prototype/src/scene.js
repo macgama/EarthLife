@@ -163,19 +163,46 @@ export function buildingsGeometry(buildings) {
   return g;
 }
 
-// Arbres partagés entre tous les morceaux : seules les positions changent.
+// Arbres de l'ancien chemin (un groupe par morceau, sans props-view) : seules les positions changent.
 const TREE_COLORS = { crown: 0x5a914f, dark: 0x467a45, trunk: 0x6e5440 };
 let treeParts = null;
 let worldKind = 'clear';
+// Matériaux d'arbres qui suivent la météo : matériau → { base (couleur d'origine), crown, refs }.
+const treeMats = new Map();
+const SNOW = new THREE.Color(0xe8edf2);
+
+function tintTree(mat, t) {
+  mat.color.setHex(t.base);
+  if (worldKind === 'snow' && t.crown) mat.color.lerp(SNOW, 0.55);
+  if (worldKind === 'rain' || worldKind === 'storm') mat.color.multiplyScalar(0.8);
+}
 
 function tintTrees() {
-  if (!treeParts) return;
-  const snow = new THREE.Color(0xe8edf2);
-  for (const [mat, hex] of [[treeParts.crownMat, TREE_COLORS.crown], [treeParts.darkMat, TREE_COLORS.dark], [treeParts.trunkMat, TREE_COLORS.trunk]]) {
-    mat.color.setHex(hex);
-    if (worldKind === 'snow' && mat !== treeParts.trunkMat) mat.color.lerp(snow, 0.55);
-    if (worldKind === 'rain' || worldKind === 'storm') mat.color.multiplyScalar(0.8);
+  for (const [mat, t] of treeMats) tintTree(mat, t);
+}
+
+// Rattache des matériaux d'arbres à la météo du monde (couronnes blanchies par la neige, tout assombri par
+// la pluie), par exemple ceux de props-view.js. Renvoie la fonction qui les détache et rend leur couleur.
+export function followTreeWeather({ crowns = [], trunks = [] } = {}) {
+  const list = [...crowns.map((m) => [m, true]), ...trunks.map((m) => [m, false])];
+  for (const [mat, crown] of list) {
+    const t = treeMats.get(mat);
+    if (t) { t.refs++; continue; }
+    const entry = { base: mat.color.getHex(), crown, refs: 1 };
+    treeMats.set(mat, entry);
+    tintTree(mat, entry);
   }
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    for (const [mat] of list) {
+      const t = treeMats.get(mat);
+      if (!t || --t.refs > 0) continue;
+      mat.color.setHex(t.base);
+      treeMats.delete(mat);
+    }
+  };
 }
 
 // Météo du monde (appelée par l'atmosphère) : neige sur les toits et les arbres, pluie qui assombrit.
@@ -186,6 +213,8 @@ export function setWorldWeather(kind) {
   tintTrees();
 }
 
+// Ancien chemin du décor, gardé tant que main.js ne passe pas de propsView à createChunkManager.
+// Les voitures, bancs, planches, pointes et le drapeau sont dans props-view.js et base-view.js.
 export function treesInstanced(spots) {
   if (!spots.length) return null;
   if (!treeParts) {
@@ -199,7 +228,7 @@ export function treesInstanced(spots) {
       darkMat: new THREE.MeshLambertMaterial({ color: TREE_COLORS.dark, flatShading: true }),
       trunkMat: new THREE.MeshLambertMaterial({ color: TREE_COLORS.trunk }),
     };
-    tintTrees();
+    followTreeWeather({ crowns: [treeParts.crownMat, treeParts.darkMat], trunks: [treeParts.trunkMat] });
   }
   const group = new THREE.Group();
   const crowns = new THREE.InstancedMesh(treeParts.crown, spots[0].dark ? treeParts.darkMat : treeParts.crownMat, spots.length);

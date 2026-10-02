@@ -45,8 +45,35 @@ Paramètres d'adresse utiles pour tester :
 | Courir | Maj | Bouton Courir, ou joystick poussé au bout |
 | Frapper | Espace ou clic | Bouton Frapper |
 | Caméra | Glisser la souris, J et L | Glisser à droite de l'écran |
-| Fouiller un bâtiment | E, contre un mur | Bouton Fouiller |
+| Action principale : fouiller, entrer au refuge, sortir, clouer, démonter, abattre | E, contre un mur ou près de l'objet | Bouton centré en bas |
+| Action secondaire : en faire mon refuge, déménager, poser un piège, dormir | R | Bouton juste au-dessus |
+| Onglet suivant du panneau du refuge | Tab (panneau ouvert) | Toucher l'onglet |
+| Replier ou déplier le panneau | B | Poignée du panneau |
+| Fermer une carte ou le panneau, puis sortir | Échap | Bouton « Fermer » ou « Sortir » |
+| Lancer un leurre | 5 | Puce « Leurre » |
 | Manger, boire, se soigner, se réchauffer | 1, 2, 3, 4 | Boutons du sac |
+
+Une action chronométrée (fouille, clouage, démontage) s'arrête si on bouge, si on frappe ou si on est mordu.
+
+## Ta base
+
+**Le refuge.** Fouille un vrai bâtiment (une maison, une boutique, une école…), puis touche « En faire mon refuge » (R). La porte et jusqu'à 4 fenêtres sont placées sur les murs qui donnent sur la rue. Le kit de départ (6 bois, 4 clous, 2 tissus) attend au coffre, et le refuge garde un atout selon le type réel du bâtiment : Lits pour une maison, Infirmerie pour une pharmacie, Réserve pour un commerce de bouche, Atelier pour une quincaillerie, Murs épais pour la police ou les pompiers, Abri pour une école ou une gare, Arrière-boutique pour un magasin. On n'a qu'un refuge ; près d'un autre bâtiment fouillé, « Déménager ici » emporte le coffre et les aménagements, mais pas les barricades.
+
+**Dedans.** On entre par la porte (« Entrer au refuge », à 2 m au plus). Les zombies ne te voient plus, tu as plus chaud, ta santé remonte doucement et tes matériaux passent tout seuls du sac au coffre (200 places ; le sac en a 30). Le panneau du refuge a trois onglets : Défense (ouvertures, pièges), Fabriquer et Coffre (« Préparer le sac », « Tout déposer », « Équiper »). En bas : « Dormir · 25 s », « Missions » et le carnet. Sur téléphone, le panneau monte du bas de l'écran et se replie avec sa poignée pour garder la rue en vue.
+
+**Matériaux.** Bois, clous, ferraille, tissu et ruban viennent de ce qui existe vraiment autour de toi : on fouille les maisons et les boutiques, on démonte les voitures garées le long des rues (3,5 s, attention à l'alarme) et les bancs des allées piétonnes, on abat les arbres des parcs et des bois. Un objet démonté ne revient qu'au bout de 72 h.
+
+**Fabriquer** (au refuge, instantané) : planches, piège à pointes, batte cloutée, bandage, manteau chaud, poncho, leurre ; avec un établi (dont il faut d'abord trouver le plan en fouillant), plaque de métal, hache, récupérateur d'eau de pluie et sirène.
+
+**Barricades.** Chaque planche clouée (3 s) renforce une ouverture : une fenêtre passe de 20 PV (vitre) à 100, 180 puis 260, et la porte de 120 à 200, 280 puis 360 ; la plaque de métal monte encore. « Réparer » rend 50 PV pour 1 bois et 1 clou. Un piège posé devant une ouverture blesse les zombies de la horde.
+
+**La nuit et les hordes.** Quand la vraie nuit tombe chez toi, une horde se forme : après 3 minutes de nuit jouée, un bandeau rouge annonce « Horde dans 1:00 » et la direction, une flèche rouge apparaît sur la boussole, puis l'attaque arrive. Trois vagues au plus par nuit. Leur taille dépend de la densité réelle de ton quartier et de la vraie météo (la pluie couvre le bruit, l'orage grossit la horde). Abats au moins 70 % de la vague pour la repousser : le butin va au coffre et ta première nuit tenue s'écrit dans le carnet. Un leurre (touche 5) attire tous les zombies à 45 m pendant 20 s. Si tu ne joues pas de la nuit, ton refuge subit un siège en ton absence : les barricades s'abîment, mais le coffre n'est jamais touché.
+
+**Mort.** Tu te réveilles au refuge avec la moitié de ta santé, le sac vide. Ton sac t'attend là où tu es tombé : repasse dessus pour le reprendre.
+
+**Missions.** La première est « Trouve un refuge ». Ensuite, le bouton « Missions » du panneau propose trois livraisons entre vrais lieux ; le chrono ne part qu'au ramassage, et la récompense est déposée au coffre.
+
+**Sauvegarde.** La partie est gardée dans le navigateur à chaque action importante ; le menu propose alors « Rentrer au refuge ». « Exporter ma partie » et « Importer une partie » passent d'un appareil à l'autre. Si le jeu est ouvert dans deux onglets, l'ancien onglet cesse de sauvegarder (« Reprendre ici » pour y revenir). `?fresh=1` dans l'adresse commence une partie neuve (l'ancienne est gardée une fois de côté).
 
 ## Données réelles et effets
 
@@ -67,9 +94,21 @@ Crédits : © les contributeurs d'OpenStreetMap (licence ODbL), tuiles OpenFreeM
 ```sh
 npm install   # bibliothèques de référence, uniquement pour les tests
 npm test
+npm run bench # mesures de performance de la base (spec 9.3), sous node
 ```
 
-Les tests utilisent deux tuiles synthétiques au format OpenFreeMap autour de la place Bellecour (`test/fixtures/make-mvt-fixture.mjs`) et une réponse Open-Meteo synthétique (`test/fixtures/make-fixtures.mjs`). `node test/real-data-smoke.mjs lyon perouges` vérifie la chaîne complète contre les vraies données (réseau requis) ; la CI le lance à chaque modification.
+Les tests unitaires utilisent deux tuiles synthétiques au format OpenFreeMap autour de la place Bellecour (`test/fixtures/make-mvt-fixture.mjs`) et une réponse Open-Meteo synthétique (`test/fixtures/make-fixtures.mjs`). `node test/real-data-smoke.mjs lyon perouges` vérifie la chaîne complète contre les vraies données (réseau requis) ; la CI le lance à chaque modification. `npm run bench` (`test/bench-base.mjs`) mesure au 95e centile, sur les tuiles de Lyon, les calculs de la base (ouvertures, champ de distances, directeur avec 60 zombies, refuge pendant une vague, décor, nuits manquées, écriture de la sauvegarde) et échoue si un seuil de la spec 9.3 est dépassé ; la CI le lance après `npm test`.
+
+**Tests d'acceptation de la base** (`test/base-acceptance.mjs`, spec 9.2 et 9.3), dans un vrai Chromium mais sans réseau :
+
+```sh
+npm install --no-save playwright@1 && npx playwright install --with-deps chromium   # une fois
+npm run acceptance            # ou : ONLY=desktop (ou mobile) node test/base-acceptance.mjs [dossier-des-captures]
+```
+
+Le script joue deux parties près de la place Bellecour, l'une sur ordinateur (1280×800) et l'autre sur téléphone (390×844), avec les crochets de `?debug=1` : installation du refuge, fabrication et clouage, rechargement et retour par le menu, alerte et vague de nuit forcée (joueur dehors face au front : chaque apparition est projetée avec la vraie caméra), mort et sac, démontage d'une voiture, deux onglets (« Reprendre ici » encore offert après « Fermer »), panneau en bas d'écran, réparation pendant une vague, leurre, et absence d'erreur dans la console. Il mesure aussi le temps de logique par image pendant une vague (95e centile sous 6 ms sur ordinateur, 8 ms sur téléphone) et les appels de dessin ajoutés par le décor et le refuge. Sans carte graphique, le jeu tourne plus lentement que la montre : les durées (fouille, clouage, leurre) sont vérifiées en temps de jeu. Les captures vont dans `browser-shots/acceptance`. La CI lance ce script à chaque modification ; il bloque la publication.
+
+Les réponses du réseau viennent de `test/fixtures/offline-routes.mjs` : de vraies tuiles OpenFreeMap de Lyon (place Bellecour) et de Pérouges réduites à un carré de 800 m (`test/fixtures/tiles/`, 207 Ko), leur `tilejson.json`, une météo enregistrée (pluie de nuit), Three.js et MapLibre pris dans `node_modules`. Toute autre adresse est refusée. `npm run tiles:crop -- <dossier des tuiles brutes>` refait les tuiles réduites à partir de tuiles téléchargées (`z-x-y.mvt`). Le même fichier sert au test de fumée : `npm run smoke:offline` (ou `npm run smoke` avec les vrais services).
 
 ## Organisation
 

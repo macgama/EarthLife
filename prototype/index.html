@@ -49,6 +49,12 @@
   --c-thirst: #3fb6f2;
   --c-cold: #8fd0ff;
   --c-heat: #ff7347;
+  --c-fatigue: #b3a6c9;
+  /* Refuge (bleu), sac perdu (violet), horde (rouge) : flèches de boussole et bandeau */
+  --c-refuge: #5fb7ff;
+  --c-bag: #c58bff;
+  --c-horde: #ff5d5d;
+  --c-horde-soft: rgba(255, 93, 93, .16);
   --c-gauge-track: rgba(255, 255, 255, .10);
   /* Opacités */
   --o-disabled: .38;
@@ -145,7 +151,7 @@ select, button { font: inherit; }
 
 /* ---------- Écrans : menu, aide, chargement, fin (guide de style § 4.4, 4.5 et 4.11 à 4.14) ---------- */
 /* Repère d'angle orange (signature des panneaux) et quadrillage tactique des fonds d'écran. */
-#menu, #loading, #end {
+#menu, #loading {
   --corner: linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 12px 2px no-repeat border-box, linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 2px 12px no-repeat border-box;
   --grid: repeating-linear-gradient(0deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 32px), repeating-linear-gradient(90deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 32px);
   font-family: var(--font-text);
@@ -260,6 +266,13 @@ select, button { font: inherit; }
 @media (hover: hover) { #menu select:hover { border-color: var(--c-line-strong); } }
 #menu select:focus-visible { border-color: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-soft); }
 #menu #play { width: 100%; min-height: 52px; margin-top: 2px; }
+/* Partie sauvegardée : « Ton refuge : … » avec « Choisir mon refuge », puis le message de la sauvegarde. */
+.save-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); padding: var(--sp-2) var(--sp-3); background: var(--c-bg-2); border: 1px solid var(--c-line); border-left: 2px solid var(--c-refuge); border-radius: var(--r-sm); }
+.save-line > .btn-icon { color: var(--c-refuge); }
+#save-text { flex: 1 1 160px; min-width: 0; color: var(--c-text); font-size: var(--fs-sm); font-weight: var(--fw-semibold); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+#menu .save-line .secondary, .save-actions .secondary, #menu #save-take { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--touch); padding: 0 var(--sp-3); font-family: var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
+.save-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+.save-actions .secondary { flex: 1 1 180px; }
 /* Aide : carte modale à sections illustrées, commandes au clavier ou au doigt selon l'appareil. */
 #help { position: absolute; z-index: 5; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(460px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: var(--sp-2) var(--sp-5) var(--sp-5); background: var(--corner), var(--c-panel-solid); border: 1px solid var(--c-line); border-radius: var(--r-xs) var(--r-md) var(--r-md); box-shadow: var(--sh-3); color: var(--c-text-2); font-size: var(--fs-md); line-height: var(--lh-body); animation: help-in var(--t-slow) var(--ease-out); }
 .help-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); margin-bottom: var(--sp-3); padding-bottom: var(--sp-1); border-bottom: 1px solid var(--c-line); }
@@ -284,6 +297,11 @@ select, button { font: inherit; }
   /* --vv-h : hauteur visible au-dessus du clavier virtuel (src/picker.js). */
   #place-suggestions { max-height: calc(100vh - 150px); max-height: calc(var(--vv-h, 100dvh) - 150px); }
   #menu #play { font-size: var(--fs-md); }
+}
+/* Téléphone en portrait : l'aide (longue depuis le refuge et la sauvegarde) s'ancre en bas et laisse la marque et la
+   recherche visibles au-dessus ; toucher cette bande ferme l'aide. */
+@media (max-width: 759px) and (min-height: 560px) {
+  #help { top: auto; bottom: var(--sp-3); transform: translateX(-50%); max-height: calc(100% - 152px); animation-name: help-in-low; }
 }
 @media (max-width: 359px) {
   #menu .logo { font-size: var(--fs-xl); }
@@ -360,7 +378,7 @@ select, button { font: inherit; }
 @keyframes screen-fade { from { opacity: 0; } }
 @keyframes screen-rise { from { opacity: 0; transform: translateY(12px); } }
 @keyframes help-in { from { opacity: 0; transform: translate(-50%, calc(-50% + 12px)); } }
-@keyframes end-stamp { from { opacity: 0; transform: scale(1.08); } }
+@keyframes help-in-low { from { opacity: 0; transform: translate(-50%, 12px); } }
 
 /* Interface en jeu (HUD) : une grille de panneaux le long des bords, le centre reste au monde (guide de style, § 4 et § 6).
    Ordinateur : conditions et quête à gauche, état et sac à droite. Téléphone : barre du haut, puis quête et état côte à côte.
@@ -439,6 +457,7 @@ select, button { font: inherit; }
 .vital[data-vital="stamina"] { --vital-color: var(--c-stamina); }
 .vital[data-vital="food"] { --vital-color: var(--c-hunger); }
 .vital[data-vital="water"] { --vital-color: var(--c-thirst); }
+.vital[data-vital="fatigue"] { --vital-color: var(--c-fatigue); }
 .vital-icon { grid-area: ico; display: inline-flex; }
 .vital-icon .icon { width: var(--icon-sm); height: var(--icon-sm); }
 .vital-name { grid-area: name; line-height: 1.3; }
@@ -465,6 +484,11 @@ select, button { font: inherit; }
 #kills .num { color: var(--c-text); }
 .gear-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--c-text-2); font-size: var(--fs-xs); }
 .gear-row .icon { width: 14px; height: 14px; flex: none; }
+/* Sac (places occupées) et refuge (distance et porte, ou état dedans) : sous l'équipement. */
+#bag-line .num { color: var(--c-text); font-size: var(--fs-xs); }
+#bag-line.full .num, #bag-line.full .icon { color: var(--c-warn); }
+#base-line .icon { color: var(--c-refuge); }
+#base-text { min-width: 0; overflow: hidden; color: var(--c-text); white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 
 /* Sac : liste à touches 1 à 4 sous l'état à la souris ; boutons carrés près du pouce droit sur écran tactile. */
 #inventory { grid-column: 3; grid-row: 2; min-width: 0; pointer-events: auto; }
@@ -476,6 +500,7 @@ body:not(.touch) #inventory { display: grid; gap: var(--sp-1); padding: var(--sp
 .chip[data-use="drink"] { --chip-color: var(--c-thirst); }
 .chip[data-use="heal"] { --chip-color: var(--c-health); }
 .chip[data-use="warm"] { --chip-color: var(--c-heat); }
+.chip[data-use="lure"] { --chip-color: var(--c-accent); }
 .chip-icon { display: inline-flex; color: var(--chip-color); }
 .chip-icon .icon { width: 18px; height: 18px; }
 .chip-name { overflow: hidden; color: var(--c-text-2); font: var(--fw-semibold) var(--fs-2xs) / 1 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; white-space: nowrap; text-overflow: ellipsis; }
@@ -508,22 +533,36 @@ body.touch .chip:disabled .chip-icon { opacity: var(--o-disabled); }
 .small:active { transform: scale(.96); }
 .small:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
 body.show-mods #mods-toggle { border-color: var(--c-accent); color: var(--c-accent); }
+/* Refuge : rouvre le panneau quand on est dedans et qu'il a été fermé. */
+#refuge-open .small-icon { color: var(--c-refuge); }
+/* Onglet en lecture seule (partie ouverte ailleurs) : rappel permanent, il rouvre la carte « Reprendre ici ». */
+#hud #save-warn { border-color: var(--c-warn); color: var(--c-warn); }
 body.touch #topbuttons { position: static; grid-column: 2; grid-row: 1; justify-self: end; }
 body.touch .small { width: var(--touch); height: var(--touch); padding: 0; }
 body.touch .small-text { display: none; }
 /* Grand écran : sources, effets et équipement sont toujours affichés, le bouton Effets ne servirait à rien. */
 @media (min-width: 760px) { #mods-toggle { display: none; } }
 
-/* Colonne centrale : Fouiller, notification, bandeau d'objectif. */
-#search { position: absolute; left: 0; right: 0; bottom: calc(var(--hud-b) + 96px); display: flex; align-items: center; gap: var(--sp-2); width: max-content; max-width: min(420px, calc(100vw - 2 * (var(--hud-edge) + 60px))); min-height: var(--touch); margin: 0 auto; padding: 0 var(--sp-3); overflow: hidden; border: 1px solid var(--c-accent); border-radius: var(--r-sm); background: var(--c-panel-strong); box-shadow: var(--sh-2); color: var(--c-text); font: var(--fw-semibold) var(--fs-md) / 1.2 var(--font-text); cursor: pointer; pointer-events: auto; touch-action: none; transition: transform var(--t-fast) var(--ease-std); }
-#search:active { transform: scale(.96); }
-#search:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+/* Colonne centrale : action principale (#search, E) et secondaire (#action2, R, juste au-dessus), notification,
+   bandeau d'objectif. */
+#search, #action2 { position: absolute; left: 0; right: 0; bottom: calc(var(--hud-b) + 96px); display: flex; align-items: center; gap: var(--sp-2); width: max-content; max-width: min(420px, calc(100vw - 2 * (var(--hud-edge) + 60px))); min-height: var(--touch); margin: 0 auto; padding: 0 var(--sp-3); overflow: hidden; border: 1px solid var(--c-accent); border-radius: var(--r-sm); background: var(--c-panel-strong); box-shadow: var(--sh-2); color: var(--c-text); font: var(--fw-semibold) var(--fs-md) / 1.2 var(--font-text); cursor: pointer; pointer-events: auto; touch-action: none; transition: transform var(--t-fast) var(--ease-std); }
+#search:active, #action2:active { transform: scale(.96); }
+#search:focus-visible, #action2:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+/* Secondaire : contour neutre, au-dessus de l'action principale. */
+#action2 { bottom: calc(var(--hud-b) + 148px); border-color: var(--c-line-strong); }
+#action2 .dig-icon { color: var(--c-text); }
 .dig-icon { display: inline-flex; flex: none; color: var(--c-accent); }
 .dig-icon .icon { width: var(--icon-md); height: var(--icon-md); }
-#search-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-body.touch .dig-key, #search.busy .dig-key { display: none; }
+#search-label, #action2-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .dig-track { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; -webkit-mask: var(--gauge-mask); mask: var(--gauge-mask); }
-#search-progress { display: block; width: 0; height: 100%; background: var(--c-accent); }
+#search-progress, #action2-progress { display: block; width: 0; height: 100%; background: var(--c-accent); }
+/* Action secondaire visible (seule ou avec la principale) : la notification remonte au-dessus d'elle (hud.js). */
+#hud.two-actions #toast { bottom: calc(var(--hud-b) + 208px); }
+/* Bandeau rouge de la horde (alerte et vague) : en haut, dans la colonne du milieu ; il pulse doucement pendant l'alerte. */
+#horde-banner { position: absolute; grid-column: 2 / 3; grid-row: 1; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: var(--sp-2); width: max-content; max-width: 100%; margin: 0 auto; padding: var(--sp-2) var(--sp-4); border: 1px solid var(--c-horde); border-radius: var(--r-xs); background: var(--c-panel-strong); box-shadow: var(--sh-2), inset 0 0 0 999px var(--c-horde-soft); color: var(--c-text); font: var(--fw-semibold) var(--fs-md) / 1.2 var(--font-text); font-variant-numeric: tabular-nums; pointer-events: none; }
+#horde-banner .icon { width: var(--icon-md); height: var(--icon-md); flex: none; color: var(--c-horde); }
+#horde-banner.alert .icon { animation: hud-pulse 1s var(--ease-std) infinite; }
+#hud.has-banner #objective { top: 48px; }
 #toast { position: absolute; left: 0; right: 0; bottom: calc(var(--hud-b) + 156px); display: flex; align-items: center; justify-content: center; gap: var(--sp-2); width: max-content; max-width: min(420px, calc(100vw - 2 * (var(--hud-edge) + 60px))); margin: 0 auto; padding: 10px var(--sp-4); background: var(--c-panel-strong); border-radius: var(--r-sm); box-shadow: var(--sh-2); font: var(--fw-semibold) var(--fs-md) / var(--lh-snug) var(--font-text); text-align: center; transition: opacity var(--t-base) var(--ease-std); will-change: opacity; pointer-events: none; }
 #toast-text { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .toast-icon { display: inline-flex; flex: none; }
@@ -545,11 +584,17 @@ body.touch #objective { grid-column: 2 / -1; grid-row: 2; }
 /* Grand écran : centré sur l'écran, au-dessus du joueur (les colonnes latérales n'ont pas la même largeur). */
 @media (min-width: 1024px) { #objective, body.touch #objective { grid-column: 1 / -1; grid-row: 1; } }
 
-/* Boussole de quête : flèche pleine en orange autour du joueur, distance du côté extérieur. */
-#compass { position: absolute; left: 50%; top: 50%; width: 0; height: 0; transition: opacity var(--t-base) var(--ease-std); }
+/* Boussole : flèches pleines autour du joueur (centre de l'écran, même panneau ouvert), chacune sur son cercle et à sa
+   taille : quête en orange (la plus grande, distance du côté extérieur), refuge en bleu, sac perdu en violet, horde en rouge. */
+#compass { position: fixed; left: 50%; top: 50%; width: 0; height: 0; transition: opacity var(--t-base) var(--ease-std); }
 #compass.near { opacity: .4; }
-#compass .arrow { position: absolute; left: -16px; top: -16px; width: 32px; height: 32px; overflow: visible; transform-origin: 16px 16px; color: var(--c-accent); will-change: transform; }
+#compass .arrow { position: absolute; left: -16px; top: -16px; width: 32px; height: 32px; overflow: visible; transform-origin: 16px 16px; color: var(--c-accent); transition: opacity var(--t-base) var(--ease-std); will-change: transform; }
 #compass .arrow path { fill: currentColor; stroke: var(--c-on-accent); stroke-width: 2; stroke-linejoin: round; }
+#compass .arrow[data-kind="home"] { left: -13px; top: -13px; width: 26px; height: 26px; transform-origin: 13px 13px; color: var(--c-refuge); }
+#compass .arrow[data-kind="bag"] { left: -12px; top: -12px; width: 24px; height: 24px; transform-origin: 12px 12px; color: var(--c-bag); }
+#compass .arrow[data-kind="horde"] { left: -14px; top: -14px; width: 28px; height: 28px; transform-origin: 14px 14px; color: var(--c-horde); }
+#compass .arrow.near, .compass-dist.near { opacity: .4; }
+#compass .arrow.off, .compass-dist.off { display: none; }
 .compass-dist { position: absolute; left: 0; top: 0; color: var(--c-text); font: var(--fw-bold) var(--fs-xs) / 1 var(--font-text); font-variant-numeric: tabular-nums; text-shadow: var(--sh-text); white-space: nowrap; }
 /* Coup reçu : voile rouge radial sous les panneaux, son opacité suit le coup (main.js). */
 #hurt { position: absolute; inset: 0; z-index: -1; background: radial-gradient(ellipse at center, transparent 55%, var(--hud-hurt)); opacity: 0; transition: opacity var(--t-fast) linear; will-change: opacity; pointer-events: none; }
@@ -586,7 +631,7 @@ body.touch #controls { display: block; }
   .cond-wx { order: 1; flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; }
   .wx-icon .icon { width: 18px; height: 18px; }
   #weather-line { flex-wrap: nowrap; gap: 0; color: var(--c-text); }
-  #weather-line > .wx-label, #weather-line > .wx-wind, #weather-line .wx-time .icon, #weather-line .wx-forced { display: none; }
+  #weather-line > .wx-label, #weather-line > .wx-wind, #weather-line > .wx-next, #weather-line .wx-time .icon, #weather-line .wx-forced { display: none; }
   #weather-line > span + span::before { content: '·'; margin: 0 5px; color: var(--c-text-3); }
   .wx-temp { font-size: var(--fs-sm); }
   .cond-more { display: none; position: absolute; top: calc(100% + 6px); left: -1px; right: -1px; margin: 0; padding: var(--sp-2) 10px; border: 1px solid var(--c-line-strong); border-radius: var(--r-xs); background: var(--c-panel-solid); box-shadow: var(--sh-2); white-space: normal; }
@@ -615,6 +660,9 @@ body.touch #controls { display: block; }
   #hud { grid-template-columns: minmax(0, 1fr) 128px; grid-template-rows: var(--touch) auto 1fr; }
   #leftcol { display: contents; }
   #conditions { grid-column: 1 / -1; grid-row: 1; height: var(--touch); margin-right: calc(2 * var(--touch) + 6px + var(--sp-2)); }
+  /* Bouton Refuge en plus (dedans, panneau fermé) : trois boutons en haut à droite. */
+  #hud.show-refuge-btn #conditions, #hud.show-save-warn #conditions { margin-right: calc(3 * var(--touch) + 12px + var(--sp-2)); }
+  #hud.show-refuge-btn.show-save-warn #conditions { margin-right: calc(4 * var(--touch) + 18px + var(--sp-2)); }
   #quest { grid-column: 1; grid-row: 2; }
   #quest-text { -webkit-line-clamp: 2; }
   #vitals { grid-column: 2; grid-row: 2; }
@@ -624,13 +672,24 @@ body.touch #controls { display: block; }
   /* Bandeau d'objectif juste sous la quête et l'état, pour ne pas cacher le nouveau texte de la quête. */
   #objective, body.touch #objective { grid-column: 1 / -1; grid-row: 3; }
   /* Fouiller et toast : centrés dans la place laissée à gauche de la colonne du sac. */
-  #search, #toast { left: var(--hud-l); right: calc(var(--hud-r) + var(--btn-item) + var(--sp-2)); max-width: calc(100vw - var(--hud-l) - var(--hud-r) - var(--btn-item) - var(--sp-2)); }
-  #search { bottom: calc(var(--hud-b) + 136px); min-height: 48px; font-size: 14px; }
+  #search, #action2, #toast { left: var(--hud-l); right: calc(var(--hud-r) + var(--btn-item) + var(--sp-2)); max-width: calc(100vw - var(--hud-l) - var(--hud-r) - var(--btn-item) - var(--sp-2)); }
+  #search, #action2 { bottom: calc(var(--hud-b) + 136px); min-height: 48px; font-size: 14px; }
+  #action2 { bottom: calc(var(--hud-b) + 192px); }
   #toast { bottom: calc(var(--hud-b) + 200px); font-size: 14px; }
+  #hud.two-actions #toast { bottom: calc(var(--hud-b) + 256px); }
   #toast-text { -webkit-line-clamp: 3; }
+  /* Bandeau de horde sous la quête et l'état ; le bandeau d'objectif passe dessous. */
+  #horde-banner { grid-column: 1 / -1; grid-row: 3; font-size: 14px; }
+  /* Feuille du refuge ouverte (60 % de l'écran) : seule l'action en cours reste, au-dessus de la feuille.
+     Le bandeau de horde passe dans la colonne de la quête, en bas, à côté des jauges ; le toast passe en haut, sur la
+     quête (le temps de sa lecture). Les trois tiennent sans se chevaucher jusqu'à 360 × 640. */
+  body.panel-open:not(.panel-folded) #search, body.panel-open:not(.panel-folded) #action2 { bottom: calc(60vh + var(--sp-1)); bottom: calc(60dvh + var(--sp-1)); }
+  body.panel-open:not(.panel-folded) #horde-banner { grid-column: 1 / 2; grid-row: 2 / 3; top: auto; bottom: 0; max-width: 100%; padding: 6px var(--sp-3); font-size: var(--fs-sm); }
+  body.panel-open:not(.panel-folded) #toast, body.panel-open:not(.panel-folded) #hud.two-actions #toast { top: calc(var(--hud-t) + var(--touch) + var(--sp-2)); bottom: auto; right: calc(var(--hud-r) + 128px + var(--sp-2)); width: auto; max-width: calc(100vw - var(--hud-l) - var(--hud-r) - 128px - var(--sp-2)); margin: 0; background: var(--c-panel-solid); }
 }
 @media (max-width: 379px) {
   #hud { grid-template-columns: minmax(0, 1fr) 120px; }
+  body.panel-open:not(.panel-folded) #toast, body.panel-open:not(.panel-folded) #hud.two-actions #toast { right: calc(var(--hud-r) + 120px + var(--sp-2)); max-width: calc(100vw - var(--hud-l) - var(--hud-r) - 120px - var(--sp-2)); }
   #quest-text { font-size: var(--fs-xs); }
 }
 /* Téléphone à l'horizontale : conditions et quête (1 ligne) à gauche, jauges 2 × 2 à droite, sac en rangée près des boutons. */
@@ -652,71 +711,58 @@ body.touch #controls { display: block; }
   /* 390 px de haut : un toast centré couvrirait le joueur. Il passe sous la quête, à gauche, et le bandeau d'objectif
      au centre de la même bande, au-dessus du joueur. */
   #objective, body.touch #objective { grid-column: 1 / -1; grid-row: 1 / -1; top: 104px; padding: 6px var(--sp-3); }
-  #search { left: 0; right: 0; bottom: calc(var(--hud-b) + 96px); max-width: min(420px, calc(100vw - 2 * (var(--hud-edge) + 60px))); }
-  #toast { top: calc(var(--hud-t) + 104px); bottom: auto; left: var(--hud-l); right: auto; justify-content: flex-start; max-width: min(296px, calc(50vw - var(--hud-l) - 116px)); margin: 0; text-align: left; font-size: 14px; }
+  #search, #action2 { left: 0; right: 0; bottom: calc(var(--hud-b) + 96px); max-width: min(420px, calc(100vw - 2 * (var(--hud-edge) + 60px))); }
+  #action2 { bottom: calc(var(--hud-b) + 148px); }
+  #toast, #hud.two-actions #toast { top: calc(var(--hud-t) + 104px); bottom: auto; left: var(--hud-l); right: auto; justify-content: flex-start; max-width: min(296px, calc(50vw - var(--hud-l) - 116px)); margin: 0; text-align: left; font-size: 14px; }
   #toast-text { -webkit-line-clamp: 2; }
+  /* Bandeau de horde au centre, juste sous les jauges (107 px à 667 px de large), assez étroit pour laisser le toast à gauche. */
+  #horde-banner { grid-column: 1 / -1; grid-row: 1 / -1; top: 112px; max-width: 220px; padding: 6px var(--sp-3); font-size: var(--fs-sm); }
+  #hud.has-banner #objective { top: 168px; }
+}
+/* Téléphone à l'horizontale, feuille du refuge ouverte (225 px sur 375) : conditions et quête s'effacent. Bandeau de horde
+   en haut à gauche, toast dessous, action en cours au centre juste au-dessus de la feuille, sans toucher le toast ni les jauges. */
+@media (max-height: 500px) and (orientation: landscape) and (max-width: 759px) {
+  body.panel-open:not(.panel-folded) #conditions, body.panel-open:not(.panel-folded) #quest { visibility: hidden; }
+  body.panel-open:not(.panel-folded) #horde-banner { grid-column: 1 / 2; grid-row: 1 / -1; top: 0; bottom: auto; left: 0; right: auto; max-width: 100%; margin: 0; }
+  body.panel-open:not(.panel-folded) #toast, body.panel-open:not(.panel-folded) #hud.two-actions #toast { top: calc(var(--hud-t) + 56px); right: auto; width: max-content; max-width: min(296px, calc(50vw - var(--hud-l) - 116px)); }
+  body.panel-open:not(.panel-folded) #search, body.panel-open:not(.panel-folded) #action2 { max-width: min(224px, calc(100vw - var(--hud-l) - var(--hud-r) - 464px)); }
+}
+/* Téléphone large à l'horizontale (844 × 390), panneau du refuge ouvert ou replié (tiroir de 420 px à droite, comme sur
+   ordinateur) : le HUD se range à sa gauche. La place manque pour les conditions et la quête : elles s'effacent.
+   Menu et jauges en haut, bandeau de horde sous le Menu, toast sous les jauges, action en cours et sac en bas. */
+@media (max-height: 500px) and (orientation: landscape) and (min-width: 760px) {
+  body.panel-open #hud { right: 420px; }
+  body.panel-open #conditions, body.panel-open #quest, body.panel-open #objective { visibility: hidden; }
+  body.panel-open #horde-banner { grid-column: 1 / 3; grid-row: 1 / -1; top: calc(var(--touch) + var(--sp-2)); left: 0; right: auto; max-width: 100%; margin: 0; }
+  body.panel-open #toast, body.panel-open #hud.two-actions #toast { top: calc(var(--hud-t) + 115px); }
+  body.panel-open #search, body.panel-open #action2 { max-width: calc(100vw - 420px - var(--hud-l) - var(--hud-r)); }
+  body.touch.panel-open #inventory { right: var(--hud-r); }
 }
 /* Téléphone étroit à l'horizontale (667 × 375, 640 × 360) : la rangée du sac empiéterait sur la zone du joystick
-   (45 % de gauche, input.js) ; elle passe en grille 2 × 2 au-dessus de Frapper. La colonne de gauche se resserre
-   pour que la quête reste hors du cercle dégagé autour du joueur. */
+   (45 % de gauche, input.js) ; elle passe en grille 2 × 2 au-dessus de Frapper (3 colonnes avec le leurre).
+   La colonne de gauche se resserre pour que la quête reste hors du cercle dégagé autour du joueur. */
 @media (max-height: 500px) and (orientation: landscape) and (max-width: 729px) {
   #hud { grid-template-columns: minmax(0, calc(50vw - 50px - var(--hud-l))) 1fr 224px; }
   body.touch #inventory { display: grid; grid-template-columns: repeat(2, var(--btn-item)); right: var(--hud-r); bottom: calc(var(--hud-b) + 114px); }
+  body.touch #inventory:has(#use-lure:not(.hidden)) { grid-template-columns: repeat(3, var(--btn-item)); }
+}
+/* Ordinateur, panneau du refuge ouvert (tiroir de 420 px à droite) : le HUD se range à sa gauche. */
+@media (min-width: 1024px) and (min-height: 501px) {
+  body.panel-open #hud { right: 420px; }
+}
+/* De 1024 à 1279 px, il ne reste rien à la colonne du milieu : le bandeau de horde passe dans celle de gauche, sous la
+   quête, au-dessus du toast et des actions. */
+@media (min-width: 1024px) and (max-width: 1279px) and (min-height: 501px) {
+  body.panel-open #horde-banner { grid-column: 1 / 2; grid-row: 1 / -1; top: auto; bottom: 270px; margin: 0; }
 }
 /* Mouvement réduit : les alertes de jauge gardent un filet rouge au lieu de pulser. */
 @media (prefers-reduced-motion: reduce) {
   .vital.low::before { content: ''; position: absolute; top: 0; bottom: 0; left: -7px; width: 2px; background: var(--c-danger); }
 }
 
-/* Fin de partie : bilan sur un voile, sans flou ; le rendu 3D continue derrière et le HUD s'estompe. */
-#end { position: fixed; inset: 0; z-index: var(--z-end); display: grid; overflow-y: auto; padding: max(var(--sp-4), env(safe-area-inset-top)) max(var(--sp-4), env(safe-area-inset-right)) max(var(--sp-4), env(safe-area-inset-bottom)) max(var(--sp-4), env(safe-area-inset-left)); background: var(--c-scrim); animation: screen-fade var(--t-slow) var(--ease-out); }
-body:has(> #end:not(.hidden)) #hud { opacity: var(--o-dim); }
-#end .card { position: relative; width: min(420px, 100%); margin: auto; padding: var(--sp-6) var(--sp-5) var(--sp-5); overflow: hidden; background: var(--c-panel-solid); border: 1px solid var(--c-line); border-radius: var(--r-md); box-shadow: var(--sh-3); animation: screen-rise var(--t-slow) var(--ease-out); }
-/* Barre de 4 px en haut : vert pour une réussite, rouge pour un échec. */
-#end .card::before { content: ''; position: absolute; inset: 0 0 auto; height: 4px; background: var(--c-danger); }
-#end.won .card::before { background: var(--c-success); }
-.end-head { display: flex; align-items: center; gap: var(--sp-3); }
-.end-icon { display: inline-flex; flex: none; color: var(--c-danger); }
-.end-icon .icon { width: 40px; height: 40px; }
-.end-kicker { margin: 0 0 2px; color: var(--c-danger); }
-#end.won :is(.end-icon, .end-kicker) { color: var(--c-success); }
-#end h2 { margin: 0; color: var(--c-text); font: var(--fw-bold) var(--fs-2xl) / var(--lh-tight) var(--font-display); letter-spacing: var(--ls-title); text-transform: uppercase; transform-origin: left center; animation: end-stamp var(--t-slow) var(--ease-out); }
-.end-reason { margin: var(--sp-3) 0 0; color: var(--c-text-2); font-size: var(--fs-md); font-weight: var(--fw-medium); line-height: var(--lh-snug); }
-.end-reason:empty { display: none; }
-/* Bilan : trois tuiles chiffrées, puis les conditions réelles de la partie. */
-#end .lines { margin-top: var(--sp-4); }
-.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-2); }
-.stat { display: grid; justify-items: start; align-content: start; gap: 2px; padding: 10px; background: var(--c-bg-2); border: 1px solid var(--c-line); border-radius: var(--r-sm); }
-.stat-icon { display: inline-flex; color: var(--c-text-2); }
-.stat-icon .icon { width: var(--icon-md); height: var(--icon-md); }
-.stat-value { color: var(--c-text); font-size: var(--fs-2xl); line-height: var(--lh-tight); }
-.stat .label { line-height: var(--lh-snug); }
-.end-cond { display: grid; grid-template-columns: var(--icon-md) 1fr; align-items: center; column-gap: var(--sp-3); margin-top: var(--sp-2); padding: 10px var(--sp-3); border: 1px solid var(--c-line); border-radius: var(--r-sm); }
-.end-cond .label { display: block; }
-.end-cond-text { display: block; color: var(--c-text); font-size: var(--fs-md); font-weight: var(--fw-medium); line-height: var(--lh-snug); }
-/* Score (réussite seulement) : chiffre en accent, bonus des conditions réelles en vert. */
-#end .score { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--c-line); }
-#end .score:empty { display: none; }
-.score-num { color: var(--c-accent); font: var(--fw-bold) var(--fs-3xl) / 1 var(--font-display); }
-.score-bonus { margin-left: auto; padding: 3px var(--sp-2); border: 1px solid var(--c-success); border-radius: var(--r-sm); background: var(--c-success-soft); color: var(--c-success); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
-#end .row { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-top: var(--sp-5); }
-/* Les deux boutons partagent la ligne ; s'ils n'y tiennent pas sans couper leur texte, Menu passe dessous. */
-#end .row .primary { flex: 1 1 auto; min-height: 48px; padding: 0 var(--sp-4); white-space: nowrap; }
-/* Écran étroit : tuiles en lignes (icône, étiquette, chiffre à droite). */
-@media (max-width: 379px) {
-  .stats { grid-template-columns: 1fr; }
-  .stat { grid-template-columns: var(--icon-md) 1fr auto; align-items: center; column-gap: 10px; padding: var(--sp-2) 10px; }
-  .stat-value { grid-column: 3; grid-row: 1; font-size: var(--fs-xl); }
-}
-/* Téléphone à l'horizontale : bilan à droite, titre, score et boutons à gauche. */
-@media (max-height: 500px) and (orientation: landscape) {
-  #end .card { width: min(720px, 100%); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto auto auto 1fr; grid-template-areas: 'head lines' 'reason lines' 'score lines' 'row lines'; column-gap: var(--sp-5); padding: var(--sp-5); }
-  .end-head { grid-area: head; }
-  .end-reason { grid-area: reason; }
-  #end .lines { grid-area: lines; margin-top: 0; }
-  #end .score { grid-area: score; }
-  #end .row { grid-area: row; align-self: end; }
-}
+/* Cartes de jeu (#card : livraison, mort, missions, vague repoussée…) : style injecté par panels.js.
+   Carte bloquante : le rendu 3D continue derrière et le HUD s'estompe ; une carte discrète (.rp-quiet) le laisse net. */
+body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
 
 /* Mouvement réduit : plus de pulsation, de secousse ni de glissement, seulement des fondus courts. */
 @media (prefers-reduced-motion: reduce) {
@@ -793,7 +839,11 @@ body:has(> #end:not(.hidden)) #hud { opacity: var(--o-dim); }
           </select>
         </label>
       </div>
-      <button class="primary" id="play" disabled><span class="btn-icon" data-icon="jouer"></span><span>Jouer ici</span></button>
+      <div class="save-line" id="save-line" hidden><span class="btn-icon" data-icon="refuge"></span><span id="save-text"></span><button type="button" class="secondary" id="save-home">Choisir mon refuge</button></div>
+      <p class="picker-note warn" id="save-note" role="status" hidden></p>
+      <!-- Onglet en lecture seule (partie ouverte ailleurs) : reprendre la main, même après avoir fermé la carte. -->
+      <button type="button" class="secondary" id="save-take" hidden><span class="btn-icon" data-icon="importer"></span><span>Reprendre ici</span></button>
+      <button class="primary" id="play" disabled><span class="btn-icon" id="play-icon" data-icon="jouer"></span><span id="play-label">Jouer ici</span></button>
     </section>
   </div>
   <div id="help" class="help" role="dialog" aria-labelledby="help-title" hidden>
@@ -815,8 +865,12 @@ body:has(> #end:not(.hidden)) #hud { opacity: var(--o-dim); }
         <dt><kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> ou flèches</dt><dd>Bouger</dd>
         <dt><kbd>Maj</kbd></dt><dd>Courir</dd>
         <dt><kbd>Espace</kbd> ou clic</dt><dd>Frapper</dd>
-        <dt><kbd>E</kbd></dt><dd>Fouiller un bâtiment</dd>
+        <dt><kbd>E</kbd></dt><dd>Fouiller, entrer au refuge, clouer, démonter</dd>
+        <dt><kbd>R</kbd></dt><dd>En faire ton refuge, poser un piège, dormir</dd>
         <dt><kbd>1</kbd> à <kbd>4</kbd></dt><dd>Manger, boire, te soigner, te réchauffer</dd>
+        <dt><kbd>5</kbd></dt><dd>Lancer un leurre</dd>
+        <dt><kbd>Tab</kbd><kbd>B</kbd></dt><dd>Onglet suivant, replier le panneau du refuge</dd>
+        <dt><kbd>Échap</kbd></dt><dd>Fermer une carte ou le panneau, sortir du refuge</dd>
         <dt><kbd>J</kbd><kbd>L</kbd> ou souris</dt><dd>Tourner la caméra</dd>
       </dl>
     </section>
@@ -826,9 +880,24 @@ body:has(> #end:not(.hidden)) #hud { opacity: var(--o-dim); }
         <li><span class="btn-icon" data-icon="navigation"></span><span><b>Pouce gauche</b>&nbsp;: bouger</span></li>
         <li><span class="btn-icon" data-icon="fleche"></span><span><b>Glisse à droite</b>&nbsp;: tourner la caméra</span></li>
         <li><span class="btn-icon" data-icon="frapper"></span><span><b>Frapper</b> et <b>Courir</b>&nbsp;: boutons en bas à droite</span></li>
-        <li><span class="btn-icon" data-icon="fouiller"></span><span><b>Fouiller</b>&nbsp;: bouton au centre, près d'un bâtiment</span></li>
-        <li><span class="btn-icon" data-icon="sac"></span><span><b>Sac</b>&nbsp;: touche un objet pour l'utiliser</span></li>
+        <li><span class="btn-icon" data-icon="fouiller"></span><span><b>Fouiller</b>, <b>entrer</b>, <b>clouer</b>&nbsp;: bouton au centre, près d'un bâtiment</span></li>
+        <li><span class="btn-icon" data-icon="refuge"></span><span><b>En faire ton refuge</b>&nbsp;: bouton juste au-dessus, une fois le bâtiment fouillé</span></li>
+        <li><span class="btn-icon" data-icon="sac"></span><span><b>Sac</b>&nbsp;: touche un objet pour l'utiliser, ou un leurre pour le lancer</span></li>
       </ul>
+    </section>
+    <section class="help-sec">
+      <h3 class="label"><span class="btn-icon" data-icon="refuge"></span>Ton refuge</h3>
+      <p>Fouille un vrai bâtiment, puis fais-en ton refuge&nbsp;: barricade ses ouvertures, fabrique avec ce que tu ramènes et tiens la nuit face aux hordes.</p>
+    </section>
+    <section class="help-sec">
+      <h3 class="label"><span class="btn-icon" data-icon="telecharger"></span>Ta partie</h3>
+      <p>Elle est enregistrée dans ce navigateur. Garde-en une copie, ou reprends-la sur un autre appareil.</p>
+      <div class="save-actions">
+        <button type="button" class="secondary" id="save-export"><span class="btn-icon" data-icon="telecharger"></span><span>Exporter ma partie</span></button>
+        <button type="button" class="secondary" id="save-import"><span class="btn-icon" data-icon="importer"></span><span>Importer une partie</span></button>
+      </div>
+      <input type="file" id="import-file" accept="application/json,.json" hidden>
+      <p class="picker-note warn" id="import-note" role="status" hidden></p>
     </section>
   </div>
 </div>
@@ -875,11 +944,14 @@ body:has(> #end:not(.hidden)) #hud { opacity: var(--o-dim); }
     <div class="vital" data-vital="stamina" aria-label="Endurance"><span class="vital-icon" data-icon="endurance"></span><span class="label vital-name">Endurance</span><div class="bar" id="stamina"><i></i></div></div>
     <div class="vital" data-vital="food" aria-label="Faim"><span class="vital-icon" data-icon="faim"></span><span class="label vital-name">Faim</span><div class="bar" id="food"><i></i></div></div>
     <div class="vital" data-vital="water" aria-label="Soif"><span class="vital-icon" data-icon="soif"></span><span class="label vital-name">Soif</span><div class="bar" id="water"><i></i></div></div>
+    <div class="vital" data-vital="fatigue" aria-label="Fatigue"><span class="vital-icon" data-icon="fatigue"></span><span class="label vital-name">Fatigue</span><div class="bar" id="fatigue"><i></i></div></div>
     <div class="vital-stats">
       <div class="vital-stat" id="body"><span data-icon="temperature"></span><span class="sr-only">Corps :</span><span class="num" id="body-temp">37,0&nbsp;°C</span><span class="body-state" id="body-state"></span></div>
       <div class="vital-stat" id="kills"><span data-icon="zombie"></span><span class="sr-only">Zombies à terre :</span><span class="num" id="kills-count">0</span></div>
     </div>
     <div class="gear-row"><span data-icon="manteau"></span><span id="gear"></span></div>
+    <div class="gear-row" id="bag-line"><span data-icon="sac"></span><span class="num" id="bag-count">Sac 0/30</span></div>
+    <div class="gear-row hidden" id="base-line"><span data-icon="refuge"></span><span id="base-text"></span></div>
   </div>
   <div id="inventory" role="group" aria-label="Sac">
     <div class="inv-head label"><span data-icon="sac"></span>Sac</div>
@@ -887,13 +959,18 @@ body:has(> #end:not(.hidden)) #hud { opacity: var(--o-dim); }
     <button class="chip" data-use="drink" id="use-drink" aria-label="Boire"><span class="chip-icon" data-icon="boire"></span><span class="chip-name">Boire</span><span class="chip-count num">0</span><kbd class="chip-key">2</kbd></button>
     <button class="chip" data-use="heal" id="use-heal" aria-label="Soigner"><span class="chip-icon" data-icon="soigner"></span><span class="chip-name">Soigner</span><span class="chip-count num">0</span><kbd class="chip-key">3</kbd></button>
     <button class="chip" data-use="warm" id="use-warm" aria-label="Chauffer"><span class="chip-icon" data-icon="chauffer"></span><span class="chip-name">Chauffer</span><span class="chip-count num">0</span><kbd class="chip-key">4</kbd></button>
+    <button class="chip hidden" data-use="lure" id="use-lure" aria-label="Leurre"><span class="chip-icon" data-icon="leurre"></span><span class="chip-name">Leurre</span><span class="chip-count num">0</span><kbd class="chip-key">5</kbd></button>
   </div>
   <div id="topbuttons">
+    <button class="small hidden" id="save-warn" aria-label="Cet onglet ne sauvegarde plus : reprendre ici"><span class="small-icon" data-icon="alerte"></span><span class="small-text">Non sauvegardé</span></button>
+    <button class="small hidden" id="refuge-open" aria-label="Ouvrir le panneau du refuge"><span class="small-icon" data-icon="refuge"></span><span class="small-text">Refuge</span></button>
     <button class="small" id="mods-toggle" aria-label="Effets et sources des données" aria-expanded="false"><span class="small-icon" data-icon="effets"></span><span class="small-text">Effets</span></button>
     <button class="small" id="quit" aria-label="Menu"><span class="small-icon" data-icon="menu"></span><span class="small-text">Menu</span></button>
   </div>
   <div id="objective" aria-hidden="true"><span data-icon="quete"></span>Objectif mis à jour</div>
-  <div id="compass" aria-hidden="true"><svg class="arrow" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><span class="compass-dist" id="compass-dist"></span></div>
+  <div id="horde-banner" class="hidden" role="status" aria-live="polite"><span data-icon="alerte"></span><span id="horde-text"></span></div>
+  <!-- Boussole : la flèche de quête reste le premier enfant ; refuge, sac perdu et horde (une par front) ensuite. -->
+  <div id="compass" aria-hidden="true"><svg class="arrow off" data-kind="quest" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="home" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="bag" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="horde" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="horde" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><span class="compass-dist off" id="compass-dist"></span></div>
   <div id="toast" class="pill" role="status" aria-live="polite" style="opacity:0"><span class="toast-icon" id="toast-icon" hidden></span><span id="toast-text"></span></div>
   <div id="controls">
     <div id="stick-base"><div id="stick-knob"></div></div>
@@ -901,27 +978,13 @@ body:has(> #end:not(.hidden)) #hud { opacity: var(--o-dim); }
     <div class="round" id="run" role="button" aria-label="Courir"><span class="round-icon" data-icon="courir"></span><span class="round-label">Courir</span></div>
     <div class="round" id="attack" role="button" aria-label="Frapper"><span class="round-icon" data-icon="frapper"></span><span class="round-label">Frapper</span></div>
   </div>
-  <button id="search" class="hidden"><span class="dig-icon" data-icon="fouiller"></span><span id="search-label">Fouiller</span><kbd class="dig-key">E</kbd><span class="dig-track"><i id="search-progress"></i></span></button>
+  <!-- Actions : principale (E) et secondaire (R) ; les libellés finissent par « (E) » ou « (R) » sur ordinateur. -->
+  <button id="action2" class="hidden"><span class="dig-icon" id="action2-icon" data-icon="refuge"></span><span id="action2-label"></span><span class="dig-track"><i id="action2-progress"></i></span></button>
+  <button id="search" class="hidden"><span class="dig-icon" id="search-icon" data-icon="fouiller"></span><span id="search-label">Fouiller</span><span class="dig-track"><i id="search-progress"></i></span></button>
 </div>
 
-<div id="end" class="hidden" role="dialog" aria-modal="true" aria-labelledby="end-title">
-  <div class="card">
-    <div class="end-head">
-      <span class="end-icon" id="end-icon" data-icon="zombie"></span>
-      <div>
-        <p class="label end-kicker" id="end-kicker"></p>
-        <h2 id="end-title"></h2>
-      </div>
-    </div>
-    <p class="end-reason" id="end-reason"></p>
-    <div class="lines" id="end-lines"></div>
-    <div class="score" id="end-score"></div>
-    <div class="row">
-      <button class="primary" id="again"><span class="btn-icon" data-icon="quete"></span><span>Nouvelle quête</span></button>
-      <button class="primary secondary" id="to-menu"><span class="btn-icon" data-icon="carte"></span><span>Menu</span></button>
-    </div>
-  </div>
-</div>
+<!-- Cartes de jeu (panels.js) : livraison, mort, missions, déménagement, vague repoussée, absence. -->
+<div id="card" class="hidden"></div>
 
 <script type="module" src="./src/main.js"></script>
 <script>

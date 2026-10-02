@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createGrid, BUILDING, isFree, lineFree } from '../src/collision.js';
-import { createPlayer, createZombieDirector, updatePlayer, ZOMBIE_TYPES, HORDE_AI } from '../src/game.js';
+import { createPlayer, createZombieDirector, updatePlayer, ZOMBIE_TYPES, HORDE_AI, CHASE_AI } from '../src/game.js';
 import { createFlowField } from '../src/flowfield.js';
 import { gameplayModifiers, forcedWeather } from '../src/weather.js';
 
@@ -141,6 +141,42 @@ test('horde sans ouverture ni centre : comportement ordinaire, elle repère le j
     assert.equal(z.state, 'chase', label);
     assert.ok(z.z < 20.5 - 3, `${label} : il fonce vers le joueur (z = ${z.z.toFixed(2)})`);
   }
+});
+
+test('poursuite sans issue : derrière un mur, sans ligne de vue ni progrès, il lâche prise et ne repère plus qu\'à vue', () => {
+  const grid = refugeGrid();
+  const dir = createZombieDirector(grid, () => 0.5);
+  // Joueur au nord du bâtiment, zombie au sud, alerté par un bruit (fouille) : le bâtiment est entre eux.
+  const player = createPlayer({ x: 0.5, z: 6.5 });
+  const z = dir.spawnAt(0.5, -8, 'errant');
+  z.state = 'chase';
+  const s = sim(dir, player, {});
+  while (z.state === 'chase' && s.t < 12) s.run(0.1);
+  assert.ok(z.state === 'wander' && s.t <= 2 * CHASE_AI.every + 0.5, `il lâche prise au bout de ${s.t.toFixed(1)} s`);
+  assert.equal(lineFree(grid, z.x, z.z, player.x, player.z), false, 'toujours sans ligne de vue');
+  // Le joueur longe le mur nord, à portée d'ouïe mais sans ligne libre : il ne le repère plus à travers le mur.
+  Object.assign(player, { x: Math.min(4, z.x), z: 5.6 });
+  assert.ok(isFree(grid, player.x, player.z) && Math.hypot(player.x - z.x, player.z - z.z) < 11 * mods.hearing);
+  assert.equal(lineFree(grid, z.x, z.z, player.x, player.z), false);
+  s.run(20);
+  assert.equal(z.state, 'wander');
+  assert.equal(s.of('spotted').length, 0);
+  // Le joueur passe devant lui, à découvert : repéré.
+  const spot = { x: z.x + Math.sin(z.yaw) * 5, z: z.z + Math.cos(z.yaw) * 5 };
+  Object.assign(player, spot);
+  assert.ok(isFree(grid, spot.x, spot.z) && lineFree(grid, z.x, z.z, spot.x, spot.z));
+  s.run(0.1);
+  assert.equal(z.state, 'chase');
+  assert.equal(s.of('spotted').length, 1);
+
+  // À découvert, un poursuivant qui gagne du terrain ne lâche pas.
+  const open = createZombieDirector(createGrid(60), () => 0.5);
+  const runner = open.spawnAt(20.5, 0.5, 'errant');
+  runner.state = 'chase';
+  const far = createPlayer({ x: -20.5, z: 0.5 });
+  const s2 = sim(open, far, {});
+  s2.run(10);
+  assert.equal(runner.state, 'chase');
 });
 
 test('horde : elle chasse le joueur dehors, visible et à moins de 12 m, puis reprend sa route', () => {

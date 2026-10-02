@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { featuresFromBytes } from '../src/tiles.js';
 import { createWorldStore, addFeatures, buildPatch } from '../src/world.js';
-import { createChunkedGrid, chunkKey, getAt, isFree, FREE } from '../src/collision.js';
+import { createChunkedGrid, chunkKey, getAt, isFree, FREE, lineFree } from '../src/collision.js';
 import { claimableShape, wallSamples, countOf, KIT } from '../src/base.js';
 import { HORDE, hordeSize, frontVector, bearingOf } from '../src/horde.js';
 import { createRefuge, dayLabel, underWeather, clockLabel, durationLabel } from '../src/refuge.js';
+import { createZombieDirector, createPlayer } from '../src/game.js';
+import { createFlowField, reachableFrom } from '../src/flowfield.js';
 
-// Le directeur des zombies, le champ de distances et reachableFrom viennent du lot C : ici, ce sont des
-// faux objets au format figé de la spec (7.4). Le lot F branchera le test transversal sur les vrais modules.
+// Le directeur des zombies, le champ de distances et reachableFrom sont ici de faux objets au format figé de la
+// spec (7.4), pour des cas courts et lisibles ; le test transversal (9.1), en fin de fichier, prend les vrais modules.
 
 const LYON = { lat: 45.7578, lon: 4.832 };
 const tileBytes = (x) => readFileSync(new URL(`./fixtures/lyon-14-${x}-5844.mvt`, import.meta.url));
@@ -336,6 +338,18 @@ test('revendication refusée : fouille, ville de secours, forme, vague, poursuiv
   fresh.director.spawnAt(player.x + 10, player.z, 'errant', {}).state = 'chase';
   assert.equal(why({ searched: true }, b, fresh), "Des zombies te poursuivent : sème-les d'abord");
   assert.equal(why({ searched: true, chasersNear: 0 }, b, fresh), '');
+  // Un poursuivant bloqué derrière un bâtiment, sans ligne de vue (alerté par la fouille), ne compte pas.
+  const hidden = setup();
+  let behind = null;
+  for (let rad = 6; rad < 19 && !behind; rad += 0.5) {
+    for (let k = 0; k < 72 && !behind; k++) {
+      const x = player.x + Math.sin((k / 72) * Math.PI * 2) * rad, z = player.z + Math.cos((k / 72) * Math.PI * 2) * rad;
+      if (isFree(hidden.grid, x, z) && !lineFree(hidden.grid, x, z, player.x, player.z)) behind = { x, z };
+    }
+  }
+  assert.ok(behind, 'un point caché à moins de 20 m');
+  hidden.director.spawnAt(behind.x, behind.z, 'errant', {}).state = 'chase';
+  assert.equal(why({ searched: true }, b, hidden), '');
   const sealed = setup({ reachableFrom: () => ({ has: () => false, count: 0 }) });
   assert.equal(why({ searched: true }, b, sealed), 'Aucune entrée accessible depuis la rue');
   assert.equal(sealed.save.base, null);
@@ -1029,6 +1043,10 @@ test('dedans : soins de 0,2 PV/s (0,5 avec l\'Infirmerie) si faim et soif au-des
   env.save.base.perk = 'infirmerie';
   env.refuge.update(10, { player, survivor, isNight: false, now: T0 });
   assert.ok(Math.abs(player.health - 57) < 1e-9);
+  // À 0 PV, pas de soins : la mort doit être relevée par la boucle (étape 14), après refuge.update (étape 10).
+  player.health = 0;
+  env.refuge.update(0.05, { player, survivor, isNight: false, now: T0 });
+  assert.equal(player.health, 0);
 });
 
 test('leurre et sirène', () => {
@@ -1177,6 +1195,31 @@ test('panneau : états des ouvertures, lignes de nuit et de refuge, bandeau', ()
   assert.equal(env.refuge.phase, 'vague');
 });
 
+test('ville de secours : le refuge de la sauvegarde y est inerte (ni repère, ni action, ni nuit, ni siège)', () => {
+  const env = setup({ save: {} });
+  claimNear(env, { now: lyon(1, 12) });
+  env.save.lastSiegeCheck = lyon(1, 12);
+  const saved = JSON.stringify(env.save);
+  // Rechargement dans la ville générée : même sauvegarde, monde « procedural ».
+  const gen = setup({ save: env.save, source: 'procedural' });
+  const r = gen.refuge;
+  r.inside = false;
+  assert.ok(r.base);
+  assert.equal(r.anchor(), null);
+  assert.deepEqual(r.openingsWorld(), []);
+  const player = { x: 0, z: 0, health: 100, hidden: false };
+  assert.deepEqual(r.actions(player, { survivor: { inventory: { planche: 2, piege: 1 } } }), { primary: null, secondary: null });
+  const ctx = nightCtx({ player, survivor: { food: 80, water: 80, inventory: {} } });
+  for (let i = 0; i < 300; i++) assert.deepEqual(frame(gen, ctx, 1), []);
+  assert.equal(r.wave, null);
+  assert.equal(r.bannerText(), null);
+  assert.deepEqual(r.hordeArrows(), []);
+  const away = r.absence(lyon(3, 12));
+  assert.equal(away.nights, 0);
+  assert.equal(away.waiting, true, 'le siège attend une session dans les vraies rues');
+  assert.equal(JSON.stringify(env.save), saved, 'sauvegarde inchangée');
+});
+
 test('siège d\'absence : 2 nuits manquées, pièges d\'abord, brèches et rôdeurs, coffre intact', () => {
   const env = setup({ save: {} });
   claimNear(env, { now: lyon(1, 12) });
@@ -1322,32 +1365,44 @@ test('« La nuit tombe dans 10 min » puis « La nuit tombe »', () => {
   assert.deepEqual(ev.map((e) => e.minutes), [10, 0]);
 });
 
-// Test transversal de la spec (9.1) avec le faux directeur et le faux champ de ce fichier : le lot F le
-// rebranchera sur createZombieDirector et createFlowField une fois l'intégration faite.
+// Test transversal de la spec (9.1), avec les vrais modules : createZombieDirector (game.js), createFlowField et
+// reachableFrom (flowfield.js), sur les tuiles de Lyon. Le joueur est caché au refuge ; la horde frappe les barricades.
 test('transversal : vague de 12 zombies sur 180 s à 30 images par seconde, brèche avant 120 s, grille intacte', () => {
-  const env = setup({ rand: seeded(21) });
-  const before = snapshot(env.grid);
-  const { survivor } = claimNear(env);
-  const base = env.save.base;
+  const { store, grid } = lyonWorld();
+  const before = snapshot(grid);
+  const field = createFlowField(grid);
+  const director = createZombieDirector(grid, seeded(21));
+  const save = {};
+  const refuge = createRefuge({ save, rand: seeded(21), consumables: CONSUMABLES });
+  refuge.attach({ store, grid, proj: store.proj, director, field, reachableFrom, source: 'tiles' });
+  const b = houses(store)[0];
+  const player = createPlayer(besideWall(grid, b));
+  const survivor = { inventory: {}, fatigue: 50, food: 80, water: 80 };
+  const r = refuge.claim(b, { player, survivor, searched: true, now: T0, place: { name: 'Lyon', area: 'Lyon 2e, Rhône, France' }, utcOffset: 7200 });
+  assert.ok(r.ok, r.why);
+  player.hidden = refuge.inside;
+  assert.equal(player.hidden, true);
+  const base = save.base;
   base.density = 0.54;
   for (const o of base.openings) { o.lvl = 1; o.hp = o.door ? 200 : 100; }
-  // Sans joueur : personne ne se bat, seules les barricades encaissent.
-  const ctx = nightCtx({ player: undefined, survivor, sim: true });
-  Object.assign(env.save.horde, { nightKey: '2026-10-01', t: 239.99 });
+  Object.assign(save.horde, { nightKey: '2026-10-01', t: 239.99 });
+  const ctx = nightCtx({ player, survivor });
+  const mods = { zombieSpeed: 1, hearing: 1, sight: 1, zombieCount: 1, rewardBonus: 30 };
   const dt = 1 / 30;
   const struck = new Set();
   let breachAt = null, strikes = 0;
   for (let i = 0; i < 180 * 30; i++) {
     ctx.now += dt * 1000;
-    const zev = env.director.update(dt, env.refuge.directorOpenings());
+    const zev = director.update(dt, player, mods, { isNight: true, desired: 0, field, openings: refuge.directorOpenings(), centre: refuge.anchor() });
     for (const e of zev) if (e.type === 'strike') { strikes++; struck.add(e.id); }
-    if (env.field && !env.field.ready) env.field.step(4000);
-    const ev = env.refuge.update(dt, { ...ctx, zombieEvents: zev });
+    if (!field.ready) field.step(4000);
+    const ev = refuge.update(dt, { ...ctx, zombieEvents: zev });
     if (breachAt === null && ev.some((e) => e.type === 'breach')) breachAt = i * dt;
   }
-  assert.equal(env.director.log.spawned.length, 12);
+  assert.equal(refuge.spawnLog.length, 12);
+  assert.ok(refuge.spawnLog.every((e) => e.distPlayer >= HORDE.minFromPlayer));
   assert.ok(strikes > 20, `${strikes} frappes`);
   assert.ok(struck.size >= 1);
   assert.ok(breachAt !== null && breachAt < 120, `première brèche à ${breachAt} s`);
-  assert.equal(snapshot(env.grid), before, 'aucune case de patch.data ne change');
+  assert.equal(snapshot(grid), before, 'aucune case de patch.data ne change');
 });

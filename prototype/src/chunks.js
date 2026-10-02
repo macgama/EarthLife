@@ -1,10 +1,13 @@
 // Ville construite au fil de la marche : morceaux carrés de 64 m autour du joueur.
 // Chaque morceau a sa grille de collision, son sol dessiné (rues, trottoirs, eau, parcs) et ses bâtiments en 3D.
 // Les morceaux trop loin sont retirés de la mémoire ; ceux qui reviennent se reconstruisent en quelques millisecondes.
+// Le décor démontable (arbres, voitures, bancs : props.js) est calculé par morceau et dessiné par props-view.js.
 import * as THREE from 'three';
 import { chunkKey } from './collision.js';
-import { chunkFeatures, chunkReady, buildPatch, insideRings } from './world.js';
-import { buildingsGeometry, buildingMaterial, treesInstanced } from './scene.js';
+import { chunkFeatures, chunkReady, buildPatch } from './world.js';
+import { tilesForRect, tileKey } from './tiles.js';
+import { propsForChunk, featuresAround, nearestProp, PROP_KINDS, PROP_REACH } from './props.js';
+import { buildingsGeometry, buildingMaterial, treesInstanced, followTreeWeather } from './scene.js';
 
 export const VIEW_RADIUS = 110; // rayon construit et visible autour du joueur (Gaël : environ 100 m)
 export const GRID_RADIUS = 150; // collisions un peu plus loin, pour les zombies qui arrivent
@@ -21,12 +24,8 @@ const PAL = {
 const AREA_ORDER = ['farmland', 'grass', 'wood', 'sand', 'wetland', 'rock', 'ice', 'railway', 'quarry', 'garages', 'cemetery', 'stadium', 'playground', 'pitch', 'track'];
 const ROAD_ORDER = { path: 0, track: 1, service: 2, minor: 3, tertiary: 4, secondary: 5, primary: 6, trunk: 7, motorway: 8, raceway: 4, busway: 4, bus_guideway: 4 };
 const MAJOR = new Set(['primary', 'secondary', 'trunk', 'motorway']);
-const PARKISH = new Set(['park', 'garden', 'recreation_ground', 'village_green', 'golf_course']);
-
-function rng(seed) {
-  let s = seed >>> 0 || 1;
-  return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
-}
+// Portée d'action la plus longue du décor (voiture : 2,2 m).
+const PROP_ACT = Math.max(...Object.values(PROP_KINDS).map((k) => k.reach));
 
 function tracePolygon(ctx, rings) {
   ctx.beginPath();
@@ -92,47 +91,31 @@ export function drawGround(ctx, f, x0, z0, size, px) {
   ctx.setLineDash([]);
 }
 
-function nearRoad(roads, x, z) {
-  for (const r of roads) {
-    const b = r.bounds;
-    if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) continue;
-    const half = r.width / 2 + (r.walkOnly ? 0.5 : 2);
-    for (let i = 0; i + 1 < r.points.length; i++) {
-      const a = r.points[i], c = r.points[i + 1];
-      const dx = c.x - a.x, dz = c.z - a.z;
-      const len2 = dx * dx + dz * dz || 1;
-      const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / len2));
-      if (Math.hypot(a.x + dx * t - x, a.z + dz * t - z) < half) return true;
-    }
-  }
-  return false;
+const spotOf = (t) => ({ x: t.x, z: t.z, s: t.s, dark: t.dark });
+
+// Arbres des bois et des parcs, ancrés en latitude et longitude (props.js) : mêmes arbres quelle que soit l'origine.
+// f = éléments du morceau et de ses voisins (featuresAround(store, cx, cz)), proj = projection du monde (store.proj).
+export function treeSpots(f, patch, cx, cz, size, proj) {
+  return propsForChunk(f, patch, cx, cz, size, proj).trees.map(spotOf);
 }
 
-// Arbres des bois et des parcs, placés de façon reproductible (même morceau, mêmes arbres).
-export function treeSpots(f, patch, cx, cz, size) {
-  const spots = [];
-  const rand = rng(chunkKey(cx, cz) * 2654435761);
-  const x0 = cx * size, z0 = cz * size;
-  for (const a of f.areas) {
-    const dense = a.cls === 'wood';
-    if (!dense && !(a.cls === 'grass' && PARKISH.has(a.sub))) continue;
-    const tries = Math.round((size * size) / (dense ? 55 : 260));
-    for (let i = 0; i < tries && spots.length < 160; i++) {
-      const x = x0 + rand() * size, z = z0 + rand() * size;
-      const s = 0.7 + rand() * 0.55;
-      if (!insideRings(x, z, a.rings)) continue;
-      const k = Math.floor(z - patch.oz) * patch.size + Math.floor(x - patch.ox);
-      if (patch.data[k] !== 0 || nearRoad(f.roads, x, z)) continue;
-      spots.push({ x, z, s, dark: dense });
-    }
-  }
-  return spots;
-}
-
-export function createChunkManager({ scene, store, grid, lowPower = false, anisotropy = 4 }) {
+// propsView (props-view.js) : décor dessiné en instances globales. Sans lui (ancien chemin), seuls les arbres sont
+// dessinés, un groupe par morceau. isGone(id) : objet démonté il y a moins de 72 h (save.dismantled).
+export function createChunkManager({ scene, store, grid, lowPower = false, anisotropy = 4, proj = store.proj, propsView = null, isGone = () => false }) {
   const size = store.chunkSize;
   const px = lowPower ? 256 : 512;
   const views = new Map();
+  const pending = new Set(); // morceaux construits dont le décor attend une tuile voisine
+  const gone = new Set(); // démontés : vus par isGone au calcul du décor, ou signalés par markGone
+  const hidden = (id) => gone.has(id) || isGone(id);
+  // Arbres du décor teintés par la météo comme ceux de l'ancien chemin (neige, pluie).
+  const treeMats = (name) => {
+    const m = propsView?.group?.getObjectByName?.(name)?.material;
+    return m ? [m] : [];
+  };
+  const untint = propsView
+    ? followTreeWeather({ crowns: [...treeMats('couronnes'), ...treeMats('couronnes-sombres')], trunks: treeMats('troncs') })
+    : null;
   const groundGeo = new THREE.PlaneGeometry(size, size).rotateX(-Math.PI / 2);
   const root = new THREE.Group();
   scene.add(root);
@@ -197,10 +180,43 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
       mesh.receiveShadow = true;
       group.add(mesh);
     }
-    const trees = treesInstanced(treeSpots(f, patch, cx, cz, size));
-    if (trees) group.add(trees);
     root.add(group);
-    return { group, mat, tex, geo, trees, buildings: own.length };
+    const v = { group, mat, tex, geo, trees: null, props: null, cx, cz, buildings: own.length };
+    if (decorReady(cx, cz)) placeDecor(key, v, patch);
+    else pending.add(key);
+    return v;
+  }
+
+  // Le décor regarde jusqu'à PROP_REACH autour du morceau : il attend aussi les tuiles voisines à cette distance
+  // (une tuile en échec ne bloque pas), sinon un banc ou une voiture pourrait naître dans un bâtiment encore inconnu.
+  function decorReady(cx, cz) {
+    if (store.source === 'procedural') return true;
+    const r = PROP_REACH;
+    for (const t of tilesForRect(store.proj, cx * size - r, cz * size - r, (cx + 1) * size + r - 0.01, (cz + 1) * size + r - 0.01)) {
+      const state = store.tiles.get(tileKey(t.x, t.y, t.z))?.state;
+      if (state !== 'ready' && state !== 'failed') return false;
+    }
+    return true;
+  }
+
+  // Décor du morceau, gardé dans v.props (Prop[]) ; les objets démontés ne sont pas dessinés.
+  function placeDecor(key, v, patch = ensurePatch(v.cx, v.cz, key)) {
+    pending.delete(key);
+    const d = propsForChunk(featuresAround(store, v.cx, v.cz), patch, v.cx, v.cz, size, proj);
+    v.props = [...d.trees, ...d.cars, ...d.benches];
+    for (const p of v.props) if (!gone.has(p.id) && isGone(p.id)) gone.add(p.id);
+    if (propsView) propsView.setChunk(key, v.props.filter((p) => !gone.has(p.id)));
+    else showTrees(v);
+  }
+
+  // Ancien chemin (sans propsView) : un groupe d'arbres par morceau, refait quand un arbre est abattu.
+  function showTrees(v) {
+    if (v.trees) {
+      v.group.remove(v.trees);
+      v.trees.userData.instanced.forEach((m) => m.dispose());
+    }
+    v.trees = treesInstanced(v.props.filter((p) => p.kind === 'tree' && !gone.has(p.id)).map(spotOf));
+    if (v.trees) v.group.add(v.trees);
   }
 
   function dropView(key) {
@@ -211,6 +227,8 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     v.mat.dispose();
     v.geo?.dispose();
     v.trees?.userData.instanced.forEach((m) => m.dispose());
+    if (propsView && v.props) propsView.dropChunk(key);
+    pending.delete(key);
     views.delete(key);
   }
 
@@ -231,6 +249,13 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
       if (!chunkReady(store, c.cx, c.cz)) { waiting++; continue; }
       if (performance.now() - t0 > budgetMs) break;
       views.set(c.key, buildView(c.cx, c.cz, c.key));
+    }
+    // Décor en attente : posé dès que les tuiles voisines sont arrivées.
+    for (const key of pending) {
+      if (performance.now() - t0 > budgetMs) break;
+      const v = views.get(key);
+      if (!v) pending.delete(key);
+      else if (decorReady(v.cx, v.cz)) placeDecor(key, v);
     }
     for (const key of [...views.keys()]) {
       const cx = Math.floor(key / 65536) - 32768, cz = (key % 65536) - 32768;
@@ -260,8 +285,51 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     for (const v of views.values()) applyTint(v.mat);
   }
 
+  // Objet du décor le plus proche à portée de son type (PROP_KINDS[kind].reach), sauf démonté, ou null.
+  // kinds : liste ou Set de types ('tree', 'car', 'bench'), ou rien pour tous.
+  function propNear(x, z, kinds = null) {
+    // Sans propsView, voitures et bancs ne sont pas dessinés : on ne les propose pas.
+    const allowed = propsView ? kinds : [...(kinds ?? ['tree'])].filter((k) => k === 'tree');
+    let best = null, bestD = Infinity;
+    // Un objet recalé peut déborder de son morceau, jamais au-delà de PROP_REACH.
+    for (const c of around(x, z, PROP_REACH + PROP_ACT)) {
+      const v = views.get(c.key);
+      if (!v?.props) continue;
+      const p = nearestProp(v.props, x, z, { kinds: allowed, isGone: hidden });
+      if (!p) continue;
+      const d = Math.hypot(p.x - x, p.z - z);
+      if (d < bestD) { best = p; bestD = d; }
+    }
+    return best;
+  }
+
+  // Objet démonté (déjà noté dans save.dismantled par l'appelant) : caché tout de suite et plus proposé.
+  function markGone(id) {
+    if (gone.has(id)) return;
+    gone.add(id);
+    if (propsView) {
+      propsView.setGone(id, true);
+      return;
+    }
+    for (const v of views.values()) {
+      if (v.props?.some((p) => p.id === id)) { showTrees(v); break; }
+    }
+  }
+
+  // Objets du décor construits et pas démontés (d'un type, ou tous) : pour le débogage.
+  function props(kind = null) {
+    const out = [];
+    for (const v of views.values()) {
+      for (const p of v.props ?? []) if ((!kind || p.kind === kind) && !hidden(p.id)) out.push(p);
+    }
+    return out;
+  }
+
   function dispose() {
     for (const key of [...views.keys()]) dropView(key);
+    pending.clear();
+    gone.clear();
+    untint?.();
     grid.chunks.clear();
     scene.remove(root);
     base.geometry.dispose();
@@ -270,10 +338,13 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
   }
 
   function stats() {
-    let buildings = 0;
-    for (const v of views.values()) buildings += v.buildings;
-    return { views: views.size, patches: grid.chunks.size, buildings };
+    let buildings = 0, decor = 0;
+    for (const v of views.values()) {
+      buildings += v.buildings;
+      decor += v.props?.length ?? 0;
+    }
+    return { views: views.size, patches: grid.chunks.size, buildings, props: decor, decorPending: pending.size };
   }
 
-  return { update, buildAll, missing, setWeather, dispose, stats, root };
+  return { update, buildAll, missing, setWeather, dispose, stats, propNear, markGone, props, root };
 }
