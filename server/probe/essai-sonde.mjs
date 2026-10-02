@@ -402,6 +402,27 @@ q2.kill('SIGTERM'); await q2.fin;
 const q3 = lancer({ PORT: String(PORT + 2), SONDE_CLE: 'courte' });
 ok((await q3.fin) === 2, 'SONDE_CLE trop courte : refus au démarrage');
 
+// Sortie standard fermée (tube cassé, gestionnaire qui ne lit plus) : la sonde se tait. Avant, chaque ligne de
+// journal levait EPIPE, l'erreur était écrite à son tour, et la sonde tournait à vide à 100 % d'un cœur.
+const q8 = lancer({ PORT: String(PORT + 3), SONDE_CLE: CLE });
+await attendre(() => q8.log.includes('à l\'écoute'));
+q8.stdout.destroy();
+for (let i = 0; i < 3; i++) {
+  const w = new WS(`ws://127.0.0.1:${PORT + 3}/${CLE}/ws`, { origin: 'https://macgama.github.io' });
+  await new Promise((res) => { w.on('open', () => w.close()); w.on('close', res); w.on('error', res); });
+}
+if (fs.existsSync(`/proc/${q8.pid}/stat`)) {
+  const cpu = () => { const f = fs.readFileSync(`/proc/${q8.pid}/stat`, 'utf8').split(') ')[1].split(' '); return Number(f[11]) + Number(f[12]); };
+  await pause(500);
+  const c0 = cpu();
+  await pause(2000);
+  const c1 = cpu();
+  let rep = 0;
+  try { rep = (await fetch(`http://127.0.0.1:${PORT + 3}/`)).status; } catch {}
+  ok(c1 - c0 < 40 && rep === 200, 'sortie standard fermée : la sonde se tait, ne tourne pas à vide et répond', `${c1 - c0} centièmes de seconde de processeur en 2 s, réponse ${rep}`);
+} else ok(true, 'sortie standard fermée : non mesuré hors Linux');
+q8.kill('SIGTERM'); await q8.fin;
+
 // Socket Unix (chemin relatif : un socket ne peut dépasser 107 caractères). Le dossier « sous » ne doit
 // jamais être publié, et le fichier du socket ne doit pas empêcher la relance.
 fs.mkdirSync(path.join(DOSSIER, 'sous'), { recursive: true });

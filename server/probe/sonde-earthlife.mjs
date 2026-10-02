@@ -1,4 +1,4 @@
-// Sonde EarthLife pour l'Hébergement Web Infomaniak (section 4.3 de multi-design.md).
+// Sonde EarthLife pour l'Hébergement Web Infomaniak (conception du jeu à plusieurs, section 4.3).
 // Un seul fichier, aucune dépendance, Node.js 18 ou plus. À déposer seule sur earthlife.needhelpapp.com
 // AVANT d'écrire le serveur du jeu, à garder en ligne environ 1 h, puis à arrêter et supprimer.
 //
@@ -59,7 +59,15 @@ const ORIGINES = new Set([
 ]);
 const HOTES_DB = new Set(liste(process.env.SONDE_DB_HOTES).map((h) => h.toLowerCase()));
 
-const journal = (msg) => console.log(`${new Date().toISOString()} ${msg}`);
+// Journal : la sortie standard, que lit le Manager. Si elle se ferme (tube cassé, gestionnaire qui ne lit plus),
+// la sonde se tait : sinon chaque écriture lève EPIPE, l'erreur est écrite à son tour, et la sonde tourne à vide
+// à 100 % d'un cœur, sur un hébergement peut-être partagé avec needhelpapp.com.
+let sortieFermee = false;
+process.stdout.on('error', () => { sortieFermee = true; });
+const journal = (msg) => {
+  if (sortieFermee) return;
+  try { process.stdout.write(`${new Date().toISOString()} ${msg}\n`); } catch { sortieFermee = true; }
+};
 const lire = (p) => { try { return fs.readFileSync(p, 'utf8').trim(); } catch { return null; } };
 
 // ---------- La clé ----------
@@ -398,7 +406,7 @@ const TESTS = [
   ['sse', 'V22', 'SSE', '30 s d\'écoute : les messages arrivent-ils au fil de l\'eau ?'],
   ['lent', 'V22', 'Requête de 30 s', 'La réponse arrive-t-elle après 30 s ?'],
   ['db', 'V14', 'MariaDB', 'Nom d\'hôte des bases, lu dans le Manager (rubrique Bases de données), de la forme xxxx.myd.infomaniak.com. Chaque essai compte pour MariaDB comme une connexion interrompue : deux ou trois essais suffisent.'],
-  ['temoin', 'V16', 'Fichier témoin', 'Dépose d\'abord temoin.txt (contenu : TEMOIN) dans le dossier du site : commande à l\'étape 7 de la section 4.7, ou gestionnaire de fichiers du Manager.'],
+  ['temoin', 'V16', 'Fichier témoin', 'Dépose d\'abord temoin.txt (contenu : TEMOIN) dans le dossier du site : commande donnée à l\'étape 7 de ton document, ou gestionnaire de fichiers du Manager.'],
   ['exit', 'V10', 'Arrêter le processus', 'À faire en dernier : la page vérifie ensuite la relance pendant 2 min et retient le nouveau processus pour V6.'],
 ];
 const CSS = `
@@ -430,7 +438,7 @@ ${id === 'db' ? '<p class="aide"><input id="hote" placeholder="xxxx.myd.infomani
 <p class="aide">${aide}</p><p class="res" id="r-${id}"></p></div>`).join('');
   const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Sonde EarthLife</title><style nonce="${nonce}">${CSS}</style></head>
 <body><main><h1>Sonde EarthLife</h1>
-<p class="intro">Chaque bouton fait un test du tableau 4.2. Fais-les sur ordinateur, puis sur téléphone en 4G, et colle le résumé dans le fil. Le résumé ne contient ni la clé ni ton adresse IP complète.</p>
+<p class="intro">Chaque bouton fait un test, dans l'ordre. Fais-les sur ordinateur, puis sur téléphone en 4G, et colle le résumé dans le fil. Le résumé ne contient ni la clé ni ton adresse IP complète.</p>
 <p class="ligne"><label for="reseau">Réseau de cet appareil pour ces tests :</label><select id="reseau"><option value="">à choisir</option><option value="wifi">Wi-Fi</option><option value="mobile">4G ou 5G (données mobiles)</option><option value="filaire">câble Ethernet</option></select></p>
 <p id="alerte" class="alerte"></p>
 ${lignes}
@@ -721,7 +729,17 @@ function scriptPage() {
 }
 
 // ---------- Démarrage et arrêt ----------
-process.on('uncaughtException', (e) => journal(`Erreur inattendue : ${e && e.stack ? e.stack : e}`));
+// Erreur inattendue : notée, et la sonde continue. Une rafale (plus de 20 en 10 s) trahit une boucle : la sonde
+// sort alors avec le code 1, pour que le gestionnaire relance un processus propre.
+let erreursRecentes = [];
+process.on('uncaughtException', (e) => {
+  if (e && e.code === 'EPIPE') { sortieFermee = true; return; }
+  const t = Date.now();
+  erreursRecentes = erreursRecentes.filter((x) => t - x < 10000);
+  erreursRecentes.push(t);
+  journal(`Erreur inattendue : ${e && e.stack ? e.stack : e}`);
+  if (erreursRecentes.length > 20) { journal('Plus de 20 erreurs en 10 s : arrêt avec le code 1.'); process.exit(1); }
+});
 serveur.on('error', (e) => { journal(`Écoute impossible : ${e.code || e.message}`); process.exit(1); });
 // Socket Unix : process.exit() laisse le fichier en place, et la relance suivante échouerait sur EADDRINUSE.
 // On le supprime à la sortie (seulement s'il est à nous), et au démarrage s'il est orphelin (personne n'y répond).
