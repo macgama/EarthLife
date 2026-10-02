@@ -27,6 +27,15 @@ const MAP_LOCALE = {
 };
 // Repère de départ aux couleurs de l'accent (#ff7f1f, contour #170b00), ombre au sol dessinée dans le SVG (pas de filtre CSS).
 const MARKER_SVG = '<svg viewBox="0 0 34 46" width="34" height="46" aria-hidden="true"><ellipse cx="17" cy="43.5" rx="7" ry="2.5" fill="#000" fill-opacity=".35"/><path d="M17 1.5C8.4 1.5 1.5 8.3 1.5 16.8 1.5 28.4 17 44.5 17 44.5s15.5-16.1 15.5-27.7C32.5 8.3 25.6 1.5 17 1.5z" fill="#ff7f1f" stroke="#170b00" stroke-width="2.5"/><circle cx="17" cy="17" r="6" fill="#170b00"/><circle cx="17" cy="17" r="2.2" fill="#ff7f1f"/></svg>';
+// Repères du refuge (bleu #5fb7ff, maison) et du sac perdu (violet #c58bff, sac), sur le modèle du repère de départ,
+// un peu plus petits : celui-ci reste devant eux quand on choisit de partir du refuge.
+const pinSvg = (fill, glyph) => `<svg viewBox="0 0 34 46" width="30" height="41" aria-hidden="true"><ellipse cx="17" cy="43.5" rx="7" ry="2.5" fill="#000" fill-opacity=".35"/><path d="M17 1.5C8.4 1.5 1.5 8.3 1.5 16.8 1.5 28.4 17 44.5 17 44.5s15.5-16.1 15.5-27.7C32.5 8.3 25.6 1.5 17 1.5z" fill="${fill}" stroke="#0a0d10" stroke-width="2.5"/>${glyph}</svg>`;
+const HOME_SVG = pinSvg('#5fb7ff', '<path d="M17 9.8 10.2 16h2.3v7.2h9V16h2.3z" fill="#0a0d10"/><rect x="15.5" y="18.4" width="3" height="4.8" fill="#5fb7ff"/>');
+const BAG_SVG = pinSvg('#c58bff', '<path d="M14.4 9.6 17 11.6l2.6-2-.7 3.1h-3.8z" fill="#0a0d10"/><path d="M15.1 13.3c-2.4 1.3-3.8 3.6-3.8 6 0 2.6 2.4 4.1 5.7 4.1s5.7-1.5 5.7-4.1c0-2.4-1.4-4.7-3.8-6z" fill="#0a0d10"/>');
+// Étiquette « Ton refuge » à droite du repère (jetons du guide de style seulement) ; injectée au premier repère posé.
+const PIN_CSS = `
+#picker-map .map-pin-tag { position: absolute; top: 5px; left: calc(100% + 2px); padding: 3px 6px 2px; border: 1px solid var(--c-line-strong); border-radius: var(--r-xs); background: var(--c-panel-solid); box-shadow: var(--sh-1); color: var(--c-text); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; white-space: nowrap; pointer-events: none; }
+`;
 
 // ---------- Données ----------
 export function placeFromCity(city) {
@@ -240,6 +249,13 @@ export function createPicker({ root, cities = [], onChange } = {}) {
   let items = [], active = -1, debounce = 0;
   let suggestCtrl = null, searchCtrl = null, reverseCtrl = null;
   let mapNote = '', lastSheetH = 0, layoutFrame = 0;
+  // Repères du refuge et du sac : gardés sans carte, posés dès qu'une carte est prête.
+  // Ordre d'empilement : refuge et son étiquette au fond, puis sac, puis départ (un repère passe devant une étiquette).
+  const pins = [
+    { kind: 'home', svg: HOME_SVG, tag: 'Ton refuge', spot: null, text: '', marker: null },
+    { kind: 'bag', svg: BAG_SVG, tag: '', spot: null, text: '', marker: null },
+  ];
+  const pinOf = (kind) => pins.find((p) => p.kind === kind);
   const photonCache = new Map();
   const reverseCache = new Map();
 
@@ -593,6 +609,69 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     if (!markerOnMap) { marker.addTo(map); markerOnMap = true; }
   }
 
+  function injectPinStyle() {
+    if (document.getElementById('picker-pin-style')) return;
+    const style = document.createElement('style');
+    style.id = 'picker-pin-style';
+    style.textContent = PIN_CSS;
+    document.head.append(style);
+  }
+
+  function makePin(pin) {
+    injectPinStyle();
+    const el = document.createElement('div');
+    el.className = `map-pin map-pin-${pin.kind}`;
+    el.setAttribute('role', 'img');
+    el.innerHTML = pin.svg;
+    if (pin.tag) {
+      const tag = document.createElement('span');
+      tag.className = 'map-pin-tag';
+      tag.setAttribute('aria-hidden', 'true');
+      tag.textContent = pin.tag;
+      el.append(tag);
+    }
+    return new gl.Marker({ element: el, anchor: 'bottom' });
+  }
+
+  // Pose, déplace ou retire les repères ; rien tant que la carte n'est pas prête (mapReady les rejoue).
+  function syncPins() {
+    if (!map || !gl || mapState !== 'ready') return;
+    const box = map.getCanvasContainer();
+    let added = false;
+    for (const pin of pins) {
+      if (!pin.spot) {
+        pin.marker?.remove();
+        pin.marker = null;
+        continue;
+      }
+      if (!pin.marker) pin.marker = makePin(pin);
+      const el = pin.marker.getElement();
+      el.setAttribute('aria-label', pin.text);
+      el.title = pin.text;
+      pin.marker.setLngLat([pin.spot.lon, pin.spot.lat]);
+      if (el.parentNode !== box) { pin.marker.addTo(map); added = true; }
+    }
+    // Un repère ajouté est remis à sa place dans l'empilement : refuge, sac, puis départ au premier plan.
+    if (!added) return;
+    for (const m of [...pins.map((p) => p.marker), markerOnMap ? marker : null]) {
+      const el = m?.getElement();
+      if (el?.parentNode === box) box.append(el);
+    }
+  }
+
+  function setPin(kind, raw, text) {
+    const pin = pinOf(kind);
+    const p = raw ? normalizePlace(raw) : null;
+    pin.spot = p ? { lat: p.lat, lon: p.lon } : null;
+    pin.text = text;
+    syncPins();
+  }
+
+  // La carte détruite emporte les éléments des repères ; leur position reste pour la prochaine carte.
+  function dropPins() {
+    for (const pin of pins) pin.marker = null;
+  }
+
   function flyTo(place, zoom) {
     if (!map || mapState === 'failed') return;
     stopSpin();
@@ -627,6 +706,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     map = null;
     marker = null;
     markerOnMap = false;
+    dropPins();
     root.classList.remove('map-loading');
     root.classList.add('no-map');
     mapNote = 'Carte indisponible : cherche un lieu, choisis une ville ou utilise ta position.';
@@ -642,6 +722,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     map = null;
     marker = null;
     markerOnMap = false;
+    dropPins();
     mapState = 'idle';
     root.classList.remove('map-loading');
   }
@@ -654,6 +735,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     if (mapNote) { mapNote = ''; setNote(''); }
     try { map.setProjection({ type: 'globe' }); } catch (err) { console.warn('Globe indisponible', err); }
     syncMarker();
+    syncPins();
     startSpin();
   }
 
@@ -720,6 +802,14 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     setPlace(place, { fly = true } = {}) {
       choose(place, { zoom: fly ? PLACE_ZOOM : null });
       if (!fly && map && current) map.jumpTo({ center: [current.lon, current.lat] });
+    },
+    // Repère bleu du refuge ({ lat, lon, label } ou null) et repère violet du sac perdu ({ lat, lon } ou null).
+    setHome(home) {
+      const label = clean(home?.label).slice(0, 120);
+      setPin('home', home, label ? `Ton refuge : ${label}` : 'Ton refuge');
+    },
+    setBag(bag) {
+      setPin('bag', bag, 'Ton sac');
     },
     show() {
       visible = true;

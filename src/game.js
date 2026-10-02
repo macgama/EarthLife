@@ -9,6 +9,9 @@ export const ZOMBIE_TYPES = {
   costaud: { speed: 0.8, chase: 2.6, health: 250, damage: 16, strike: 10, color: 0x4f6e48 },
 };
 const ATTACK = { range: 2.3, arc: Math.PI * 0.42, damage: 50, cooldown: 0.45, knockback: 1.2 };
+// Poursuite sans issue (un mur entre le zombie et le joueur) : sans ligne de vue ni 1 m gagné en 4 s, il lâche prise.
+// Il ne repère plus alors le joueur qu'avec une ligne libre, tant qu'il est à portée de vue et 10 s de plus.
+export const CHASE_AI = { every: 4, gain: 1, deaf: 10 };
 
 // Horde et siège du refuge (spécification 3.1 et 3.5) : places de frappe, pièges, intrusion, blocage, retrait.
 export const HORDE_AI = {
@@ -68,7 +71,24 @@ export function createZombieDirector(grid, rand = Math.random) {
       lure: null, flee: null, siege: null, slot: null,
       strikeT: 0, trapCd: 0, intrudeT: 0, intruded: null,
       stuck: null, blocks: 0, dash: 0, lost: false,
+      chaseT: -1, chaseD: 0, deaf: 0,
     };
+  }
+
+  // Poursuite sans issue : toutes les 4 s, sans ligne de vue ni 1 m gagné, le zombie repasse en errance.
+  function giveUp(z, dist, player, dt) {
+    if (z.state !== 'chase') { z.chaseT = -1; return; }
+    if (z.chaseT < 0) { z.chaseT = 0; z.chaseD = dist; return; }
+    z.chaseT += dt;
+    if (z.chaseT < CHASE_AI.every) return;
+    const gained = z.chaseD - dist >= CHASE_AI.gain;
+    z.chaseT = 0;
+    z.chaseD = dist;
+    if (!gained && !lineFree(grid, z.x, z.z, player.x, player.z)) {
+      z.state = 'wander';
+      z.chaseT = -1;
+      z.deaf = CHASE_AI.deaf;
+    }
   }
 
   function spawn(player, isNight) {
@@ -431,11 +451,15 @@ export function createZombieDirector(grid, rand = Math.random) {
         // Comportement ordinaire : errance, repérage, poursuite.
         leaveSlot(z);
         if (player.hidden && z.state === 'chase') z.state = 'wander';
-        if (exposed && z.state === 'wander' && (dist < hearing || dist < sight * facingFactor(z, dx, dz))) {
+        // Après une poursuite sans issue : sourd au joueur à travers les murs tant qu'il est à portée de vue.
+        if (z.deaf > 0) z.deaf = dist < Math.max(sight, hearing) ? CHASE_AI.deaf : z.deaf - dt;
+        if (exposed && z.state === 'wander' && (dist < hearing || dist < sight * facingFactor(z, dx, dz))
+          && (!(z.deaf > 0) || lineFree(grid, z.x, z.z, player.x, player.z))) {
           z.state = 'chase';
           events.push({ type: 'spotted', zombie: z });
         }
         if (z.state === 'chase' && dist > Math.max(sight, hearing) * 2.2 + 10) z.state = 'wander';
+        giveUp(z, dist, player, dt);
 
         let speed, heading;
         if (z.state === 'chase') {
@@ -452,7 +476,7 @@ export function createZombieDirector(grid, rand = Math.random) {
           wander = true;
         }
         move = dist > 1.1 ? { heading, speed } : null;
-      }
+      } else z.chaseT = -1;
       if (move && z.hit <= 0) stepZombie(z, move, dt, wander);
 
       // Séparation entre zombies, pour éviter qu'ils se superposent.

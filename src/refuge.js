@@ -1,7 +1,7 @@
 // Refuge et hordes, côté règles : revendication, entrée et sortie, barricades, vagues de la nuit, siège
 // d'absence. Orchestrateur pur (ni DOM ni THREE) : le directeur des zombies, le champ de distances et
 // reachableFrom arrivent par attach(world) ; l'heure et les tirages sont passés en paramètre.
-import { isFree, getAt, BUILDING } from './collision.js';
+import { isFree, getAt, BUILDING, lineFree } from './collision.js';
 import {
   TIMES, TRAP, KIT, PERKS, claimableShape, planOpenings, createBase, relocateBase, anchorOf,
   openingsWorld as worldOpenings, maxHp, nail, plate, repair, canRepair, repairCost, setTrap, hit, breaches,
@@ -18,6 +18,7 @@ const REACH = 2.0;            // distance d'action devant une ouverture (point d
 const ENTER_BLOCK = 2.5;      // un zombie plus près empêche d'entrer
 const SIEGE_RADIUS = 10, SIEGE_SECONDS = 90;
 const EXIT_COUNT_RADIUS = 6;
+const CHASER_CLOSE = 4;       // un poursuivant à moins de 4 m compte, même sans ligne de vue
 const SLEEP_MIN_FATIGUE = 20, SLEEP_CHASE_RADIUS = 30;
 const EJECT_DAMAGE = 10, INTRUDE_EVERY = 6;
 // Un intrus reste à sa place de frappe (1,6 m du point d'approche au plus dans le directeur) : au-delà de 2 m,
@@ -176,8 +177,12 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     return refuge;
   }
 
+  // Ville de secours (rues générées, pas géographiques) : le refuge n'y est pas. Il reste dans la sauvegarde, inerte :
+  // ni repère, ni ouverture, ni horloge de nuit, ni siège d'absence.
+  const realStreets = () => !!world && sourceOf() === 'tiles';
+
   function anchorFull() {
-    if (!base() || !world) return null;
+    if (!base() || !realStreets()) return null;
     return anchorOf(base(), world.store, world.proj ?? world.store?.proj);
   }
 
@@ -290,11 +295,15 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     return !!save.searched?.[building.id];
   }
 
+  // Poursuivants : en chasse à moins de 20 m, en vue du joueur ou tout près de lui. Un zombie bloqué derrière un mur
+  // (alerté par la fouille) ne compte pas : le joueur ne le voit pas et ne saurait pas quoi semer.
   function chasersNear(ctx) {
     if (ctx?.chasersNear !== undefined) return Number(ctx.chasersNear) > 0 || ctx.chasersNear === true;
     const p = ctx?.player;
     if (!p) return false;
-    return zombiesNear(p.x, p.z, 20, (zb) => zb.state === 'chase') > 0;
+    const grid = world?.grid;
+    const seen = (zb) => !grid || Math.hypot(zb.x - p.x, zb.z - p.z) < CHASER_CLOSE || lineFree(grid, zb.x, zb.z, p.x, p.z);
+    return zombiesNear(p.x, p.z, 20, (zb) => zb.state === 'chase' && seen(zb)) > 0;
   }
 
   function sourceOf() {
@@ -1028,7 +1037,7 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     const b = base();
     const now = nowOf(ctx);
     if (firstNow === null) firstNow = now;
-    if (!b || !world) { prevNight = !!ctx.isNight; return events; }
+    if (!b || !realStreets()) { prevNight = !!ctx.isNight; return events; }
     ctx = { ...ctx, dt };
     syncTraps();
     const h = horde();
@@ -1105,9 +1114,9 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     if (fieldDirty && sinceReset >= FIELD_MIN_GAP) resetField();
     if (!fieldNeeded()) fieldDirty = false;
 
-    // Soins au refuge.
+    // Soins au refuge : jamais à 0 PV (la mort est relevée après, à l'étape 14 de la boucle).
     const p = ctx.player, s = ctx.survivor;
-    if (inside && p && (!s || ((s.food ?? 1) > 0 && (s.water ?? 1) > 0))) {
+    if (inside && p && (p.health ?? 100) > 0 && (!s || ((s.food ?? 1) > 0 && (s.water ?? 1) > 0))) {
       p.health = Math.min(100, (p.health ?? 100) + (b.perk === 'infirmerie' ? HEAL.infirmerie : HEAL.normal) * dt);
     }
 
@@ -1182,7 +1191,7 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     const out = { nights: 0, lines: [], prowlers: [], trapsUsed: 0 };
     if (absenceDone) return out;
     const b = base();
-    if (b && !world) { out.waiting = true; return out; }
+    if (b && !realStreets()) { out.waiting = true; return out; }
     absenceDone = true;
     const last = save.lastSiegeCheck;
     if (!b) { save.lastSiegeCheck = now; return out; }
