@@ -247,8 +247,10 @@ async function install(page, device, tag) {
     const t0 = Date.now();
     await press(page, device, 'KeyE', 'search');
     const time = await until(page, () => window.__earthlife.session.action?.time ?? null, null, 5000);
-    const searched = await until(page, (id) => !!window.__earthlife.save.searched[id], spot.id, 60000);
-    if (attempt === 0) check(!!searched && Math.abs(time - 2.2) < 0.01, `${tag} : fouille de ${time} s en temps de jeu (${round((Date.now() - t0) / 1000, 1)} s à la montre)`);
+    const search = await searchSafely(page, device, spot.id);
+    const restarted = search.restarts ? `, relancée ${search.restarts} fois` : '';
+    if (attempt === 0) check(search.done && Math.abs(time - 2.2) < 0.01, `${tag} : fouille de ${time} s en temps de jeu (${round((Date.now() - t0) / 1000, 1)} s à la montre${restarted})`);
+    if (!search.done) note(`${tag} : fouille inachevée, ${await state(page)}`);
     const l2 = await until(page, (id) => window.__label(id), 'action2', 10000);
     if (attempt === 0) check(l2 === (device === 'mobile' ? 'En faire mon refuge' : 'En faire mon refuge (R)'), `${tag} : bouton secondaire « ${l2} »`);
     // Matériaux du sac avant l'installation : ils passent au coffre avec le kit.
@@ -257,10 +259,73 @@ async function install(page, device, tag) {
     await press(page, device, 'KeyR', 'action2');
     const claimed = await until(page, () => !!window.__earthlife.save.base, null, 8000);
     if (claimed) return { spot, bagBefore: before.bag };
-    note(`${tag} : installation refusée : ${(await seen(page)).toasts.slice(-1)[0]}`);
+    note(`${tag} : installation refusée, ${await state(page)}`);
   }
   return null;
 }
+
+// Fouille à l'abri. Sur un exécuteur de CI lent, la fouille (2,2 s de jeu) prend de 17 à plus de 60 s à la
+// montre sur ordinateur, et son bruit attire les zombies que le directeur refait apparaître : une morsure
+// l'annule, et le joueur peut mourir avant la fin. On retire les zombies toutes les 250 ms jusqu'à la fin, on
+// relance la fouille si elle a quand même été interrompue (2 fois au plus), et l'on n'abandonne qu'après 30 s
+// sans aucun progrès de la fouille (4 min au plus en tout).
+async function searchSafely(page, device, id) {
+  const start = Date.now();
+  let restarts = 0, last = -1, moved = start;
+  while (Date.now() - start < 240000 && Date.now() - moved < 30000) {
+    const st = await ev(page, (i) => {
+      const { session, save } = window.__earthlife;
+      session.director.zombies.length = 0;
+      return { done: !!save.searched[i], t: session.action?.t ?? null, ended: !!session.ended };
+    }, id);
+    if (st.done) return { done: true, restarts };
+    if (st.ended) break;
+    if (st.t === null && restarts < 2) {
+      restarts++;
+      await press(page, device, 'KeyE', 'search');
+    } else if (st.t !== null && st.t !== last) {
+      last = st.t;
+      moved = Date.now();
+    }
+    await wait(250);
+  }
+  return { done: false, restarts };
+}
+
+// Suivi du leurre jusqu'à 21,5 s de temps de jeu : on attend tant que le temps de jeu avance
+// (sur un exécuteur lent, dt plafonné à 0,05 s le fait avancer moins vite que la montre).
+async function lureFollowed(page) {
+  const start = Date.now();
+  let last = -1, moved = start;
+  while (Date.now() - start < 300000 && Date.now() - moved < 30000) {
+    const st = await ev(page, () => {
+      const W = window.__lureWatch;
+      if (!W.point) return { t: null };
+      const t = W.t - W.start;
+      return { t, zs: t >= 21.5 ? W.zs.map((i) => ({ d: i.d, lured: i.lured, end: i.end, off: i.off })) : null };
+    });
+    if (st.zs) return st.zs;
+    if (st.t !== null && st.t !== last) {
+      last = st.t;
+      moved = Date.now();
+    }
+    await wait(250);
+  }
+  return null;
+}
+
+// État du jeu pour les messages d'échec : santé, fin de partie, action, zombies, dernières notifications.
+const state = (page) => ev(page, () => {
+  const { session } = window.__earthlife;
+  const card = document.getElementById('card');
+  const parts = [
+    `santé ${Math.round(session.player.health)}`, session.ended ? 'partie finie' : null, session.paused ? 'en pause' : null,
+    `action ${session.action?.id ?? 'aucune'}`, `${session.director.zombies.length} zombie(s)`,
+    card && !card.classList.contains('hidden') ? `carte « ${card.innerText.replace(/\s+/g, ' ').slice(0, 60)} »` : null,
+    `notifications ${JSON.stringify(window.__seen.toasts.slice(-3))}`,
+  ];
+  return parts.filter(Boolean).join(', ');
+});
 
 // Sortie du refuge par « Sortir » en pied du panneau (rouvert au besoin) ; rien à faire si le joueur est dehors.
 async function leave(page, device) {
@@ -881,18 +946,19 @@ async function mobile() {
   const thrown = await until(page, () => window.__lureWatch.point, null, 10000);
   check(!!thrown, `${tag} 11 : leurre lancé (« ${await toastSeen(page, 'Leurre lancé', 10000)} »)`);
   await shot(page, `${tag}-08-leurre`);
-  const res = await until(page, () => {
-    const W = window.__lureWatch;
-    if (!W.point || W.t - W.start < 21.5) return null;
-    return W.zs.map((i) => ({ d: i.d, lured: i.lured, end: i.end, off: i.off }));
-  }, null, 120000);
+  const t1 = Date.now();
+  const res = await lureFollowed(page);
   await ev(page, () => window.__lureWatch.restore());
   if (res) {
+    note(`${tag} 11 : 21,5 s de temps de jeu en ${round((Date.now() - t1) / 1000, 1)} s à la montre`);
     const inRange = res.filter((z) => z.d <= 45), outRange = res.filter((z) => z.d > 45 + 1e-6);
     const bad = inRange.filter((z) => !z.lured || z.off || z.end === null || Math.abs(z.end - 20) > 0.5);
     check(inRange.length > 0 && !bad.length, `${tag} 11 : ${inRange.length} zombies à 45 m ou moins visent le leurre pendant ${inRange.map((z) => `${round(z.end, 2)} s`).join(', ')}`);
     check(outRange.every((z) => !z.lured), `${tag} 11 : ${outRange.length} zombie(s) au-delà de 45 m non attiré(s)`);
-  } else check(false, `${tag} 11 : suivi du leurre incomplet`);
+  } else {
+    const t = await ev(page, () => { const W = window.__lureWatch; return W.point ? W.t - W.start : null; });
+    check(false, `${tag} 11 : suivi du leurre incomplet (${t === null ? 'leurre non lancé' : `${round(t, 1)} s de temps de jeu sur 21,5`} en ${round((Date.now() - t1) / 1000, 1)} s à la montre, ${await state(page)})`);
+  }
 
   // 9.3 : logique par image pendant une vague, en émulation téléphone.
   await ev(page, () => { window.__earthlife.session.player.shield = 0; });
