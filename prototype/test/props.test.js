@@ -12,6 +12,8 @@ import {
 } from '../src/props.js';
 import { createPropsView, addCarLamps, PROP_CAPACITY } from '../src/props-view.js';
 import { createBaseView, addWallCut } from '../src/base-view.js';
+import { groundPlan } from '../src/chunks.js';
+import { carriageway, markBoxes, boxesClose } from '../src/roadway.js';
 
 const LYON = { lat: 45.7578, lon: 4.832 };
 const SIZE = 64;
@@ -25,8 +27,13 @@ function lyonStore(origin = LYON) {
   return store;
 }
 
-// Décor d'un morceau tel que le calcule chunks.js : éléments du morceau et de ses voisins (featuresAround).
-const chunkProps = (store, cx, cz, patch = buildPatch(store, cx, cz)) => propsForChunk(featuresAround(store, cx, cz), patch, cx, cz, SIZE, store.proj);
+// Décor d'un morceau tel que le calcule chunks.js : éléments du morceau et de ses voisins (featuresAround), passages
+// piétons et lignes d'arrêt du plan du sol du morceau.
+const chunkMarks = (near, cx, cz) => markBoxes(groundPlan(near, cx * SIZE, cz * SIZE, SIZE));
+function chunkProps(store, cx, cz, patch = buildPatch(store, cx, cz), opts = {}) {
+  const near = featuresAround(store, cx, cz);
+  return propsForChunk(near, patch, cx, cz, SIZE, store.proj, { marks: chunkMarks(near, cx, cz), ...opts });
+}
 
 // Décor de tous les morceaux qui recouvrent un rectangle géographique (f = éléments du seul morceau).
 function propsInBox(store, box) {
@@ -308,6 +315,329 @@ test('décor : sur la fixture de Lyon, 1 à 8 voitures en moyenne par morceau tr
   assert.ok(withRoad.length > 100);
   const mean = withRoad.reduce((n, c) => n + c.props.cars.length, 0) / withRoad.length;
   assert.ok(mean >= 1 && mean <= 8, `moyenne ${mean.toFixed(2)}`);
+});
+
+// ---------- Pose contre le sol dessiné ----------
+
+// Voies qui portent une voiture : un de leurs segments, parallèle à la voiture (à 11° près), passe sous son centre à
+// moins de la demi-largeur dessinée, et la voie est dessinée à cet endroit (dans sa tuile, à 1 m près : r.span ; au
+// bord des tuiles réduites de la fixture, la copie voisine manque : toutes) ; distance de l'axe et demi-largeur
+// dessinée. Plusieurs à la couture de deux tuiles (copies d'une même rue).
+function carriers(roads, c) {
+  const fx = Math.sin(c.yaw), fz = Math.cos(c.yaw);
+  const out = [], all = [];
+  for (const r of roads) {
+    if (r.walkOnly || r.rail || r.bridge) continue;
+    let best = null, s = 0;
+    for (let i = 0; i + 1 < r.points.length; i++) {
+      const a = r.points[i], b = r.points[i + 1], len = Math.hypot(b.x - a.x, b.z - a.z);
+      if (len > 1e-9 && Math.abs(((b.x - a.x) * fz - (b.z - a.z) * fx) / len) < 0.2) {
+        const d = segDist(c, a, b);
+        const t = Math.max(0, Math.min(1, ((c.x - a.x) * (b.x - a.x) + (c.z - a.z) * (b.z - a.z)) / (len * len)));
+        if (d < carriageway(r) / 2 && (!best || d < best.d)) best = { r, d, half: carriageway(r) / 2, s: s + t * len };
+      }
+      s += len;
+    }
+    if (best) all.push(best);
+    if (best && (!r.span || r.span.some(([a, b]) => best.s >= a - 1 && best.s <= b + 1))) out.push(best);
+  }
+  return (out.length ? out : all).sort((a, b) => a.d - b.d);
+}
+const carrier = (roads, c) => carriers(roads, c)[0] ?? null;
+// La voie r prolonge celle qui porte la voiture : un segment parallèle dont la droite passe à d (± 0,5 m) du centre.
+function sameAxis(r, c, d) {
+  const fx = Math.sin(c.yaw), fz = Math.cos(c.yaw);
+  for (let i = 0; i + 1 < r.points.length; i++) {
+    const a = r.points[i], b = r.points[i + 1], len = Math.hypot(b.x - a.x, b.z - a.z);
+    if (len < 1e-9 || Math.abs(((b.x - a.x) * fz - (b.z - a.z) * fx) / len) >= 0.2) continue;
+    if (Math.abs(Math.abs(((c.x - a.x) * (b.z - a.z) - (c.z - a.z) * (b.x - a.x)) / len) - d) < 0.5) return true;
+  }
+  return false;
+}
+const carBox = (c) => ({ x: c.x, z: c.z, ux: Math.sin(c.yaw), uz: Math.cos(c.yaw), hl: 2.05, hw: 0.9 });
+// Coins de la carrosserie (4,1 × 1,8 m) d'une voiture posée.
+const carCorners = (c) => [[-1, -1], [-1, 1], [1, -1], [1, 1]].map(([a, b]) => ({
+  x: c.x + Math.sin(c.yaw) * 2.05 * a - Math.cos(c.yaw) * 0.9 * b, z: c.z + Math.cos(c.yaw) * 2.05 * a + Math.sin(c.yaw) * 0.9 * b,
+}));
+// Le point est sur la chaussée dessinée de la voie r : à moins de sa demi-largeur dessinée de l'axe (bouts et virages
+// arrondis), là où la voie est dessinée (dans sa tuile, à 1 m près : r.span).
+function onDrawnRoad(r, p) {
+  let best = Infinity, at = 0, s = 0;
+  for (let i = 0; i + 1 < r.points.length; i++) {
+    const a = r.points[i], b = r.points[i + 1], len = Math.hypot(b.x - a.x, b.z - a.z), d = segDist(p, a, b);
+    if (d < best) { best = d; at = s + (len > 1e-9 ? Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.z - a.z) * (b.z - a.z)) / (len * len))) * len : 0); }
+    s += len;
+  }
+  return best < carriageway(r) / 2 && (!r.span || r.span.some(([a, b]) => at >= a - 1 && at <= b + 1));
+}
+// Distance d'un rectangle (échantillonné tous les 5 cm sur son bord) à une polyligne.
+function boxDist(b, points) {
+  const vx = -b.uz, vz = b.ux;
+  let d = Infinity;
+  for (const [a0, a1, c0, c1] of [[-b.hl, b.hl, -b.hw, -b.hw], [-b.hl, b.hl, b.hw, b.hw], [-b.hl, -b.hl, -b.hw, b.hw], [b.hl, b.hl, -b.hw, b.hw]]) {
+    const n = Math.ceil(Math.max(a1 - a0, c1 - c0) / 0.05);
+    for (let k = 0; k <= n; k++) {
+      const a = a0 + ((a1 - a0) * k) / n, c = c0 + ((c1 - c0) * k) / n;
+      d = Math.min(d, lineDist({ x: b.x + b.ux * a + vx * c, z: b.z + b.uz * a + vz * c }, points));
+    }
+  }
+  return d;
+}
+
+// Tuiles enregistrées (test/fixtures/tiles ; Midtown A, reproduction synthétique de New York hors dépôt, si la
+// variable MIDTOWN_TILES donne son dossier) et résumé du décor de fc9b2f6 sur toute leur étendue (900 m au plus
+// autour de l'origine) : par type, nombre d'objets et empreinte FNV-1a des identifiants triés, joints par des virgules.
+const RECORDED = {
+  lyon: {
+    origin: { lat: 45.7578, lon: 4.832 }, dir: new URL('./fixtures/tiles/', import.meta.url).pathname, tiles: [[8411, 5844], [8412, 5844], [8411, 5845], [8412, 5845]],
+    fc9b2f6: { tree: [23, 0xbb94aff3], car: [220, 0xaee6c98a], bench: [214, 0x51fdc429] },
+  },
+  perouges: {
+    origin: { lat: 45.9035, lon: 5.1797 }, dir: new URL('./fixtures/tiles/', import.meta.url).pathname, tiles: [[8427, 5834], [8427, 5835]],
+    fc9b2f6: { tree: [5333, 0xf2f94f12], car: [289, 0x5c6c45ae], bench: [33, 0x2c153d54] },
+  },
+  midtownA: {
+    origin: { lat: 40.7549, lon: -73.984 }, dir: process.env.MIDTOWN_TILES ? `${process.env.MIDTOWN_TILES}/` : null, tiles: [[4824, 6156], [4825, 6156], [4824, 6157], [4825, 6157], [4824, 6158], [4825, 6158]],
+    fc9b2f6: { tree: [87, 0x262e46c4], car: [1724, 0x24b84eea], bench: [986, 0xd439c570] },
+  },
+};
+const fnv = (str) => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 0x01000193) >>> 0;
+  return h;
+};
+const recorded = new Map();
+// Décor posé (comme dans le jeu) et cellules retenues (place = false) sur toute l'étendue des voies des tuiles, avec
+// les passages piétons et lignes d'arrêt de tous les plans du sol (ce que le joueur voit).
+function recordedDecor(name) {
+  if (recorded.has(name)) return recorded.get(name);
+  const { origin, dir, tiles } = RECORDED[name];
+  const store = createWorldStore(origin);
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const [x, y] of tiles) {
+    const f = featuresFromBytes(readFileSync(`${dir}14-${x}-${y}.mvt`), x, y, 14, origin);
+    addFeatures(store, f);
+    for (const r of f.roads) for (const p of r.points) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z); }
+  }
+  const out = { store, placed: [], retained: [], marks: [], roads: new Set() };
+  for (let cx = Math.floor(Math.max(minX, -900) / SIZE); cx <= Math.floor(Math.min(maxX, 900) / SIZE); cx++) {
+    for (let cz = Math.floor(Math.max(minZ, -900) / SIZE); cz <= Math.floor(Math.min(maxZ, 900) / SIZE); cz++) {
+      const near = featuresAround(store, cx, cz), patch = buildPatch(store, cx, cz);
+      const marks = chunkMarks(near, cx, cz);
+      out.placed.push(...flat(propsForChunk(near, patch, cx, cz, SIZE, store.proj, { marks })));
+      out.retained.push(...flat(propsForChunk(near, patch, cx, cz, SIZE, store.proj, { marks, place: false })));
+      out.marks.push(...marks);
+      for (const r of chunkFeatures(store, cx, cz).roads) out.roads.add(r);
+    }
+  }
+  out.roads = [...out.roads];
+  recorded.set(name, out);
+  return out;
+}
+
+for (const name of Object.keys(RECORDED)) {
+  const skip = RECORDED[name].dir ? false : 'MIDTOWN_TILES non défini (tuiles hors dépôt)';
+  test(`décor : tuiles enregistrées (${name}), mêmes identifiants qu'en fc9b2f6, aucun nouveau, objets gardés déplacés de 3 m au plus`, { skip }, () => {
+    const { placed, retained } = recordedDecor(name);
+    // Cellules retenues : exactement le décor de fc9b2f6.
+    for (const kind of ['tree', 'car', 'bench']) {
+      const ids = retained.filter((p) => p.kind === kind).map((p) => p.id).sort();
+      assert.deepEqual([ids.length, fnv(ids.join(','))], RECORDED[name].fc9b2f6[kind], `${kind} : décor de fc9b2f6`);
+    }
+    // Décor posé : un sous-ensemble, même identifiant, même type, même orientation, à 3 m au plus.
+    const before = new Map(retained.map((p) => [p.id, p]));
+    let moved = 0;
+    for (const p of placed) {
+      const q = before.get(p.id);
+      assert.ok(q, `${p.id} : aucun objet nouveau`);
+      assert.equal(p.kind, q.kind);
+      assert.equal(p.yaw, q.yaw, `${p.id} : même orientation`);
+      const d = Math.hypot(p.x - q.x, p.z - q.z);
+      assert.ok(d <= 3 + 1e-9, `${p.id} déplacé de ${d.toFixed(2)} m`);
+      if (p.kind === 'tree') assert.equal(d, 0, 'arbres inchangés');
+      if (d > 1e-6) moved++;
+    }
+    assert.equal(new Set(placed.map((p) => p.id)).size, placed.length, 'aucun doublon');
+    const removed = retained.length - placed.length;
+    assert.ok(removed >= 0 && removed <= 0.12 * retained.filter((p) => p.kind !== 'tree').length, `${removed} objets retirés`);
+    if (name !== 'perouges') assert.ok(moved > 10, `${moved} objets déplacés`);
+  });
+
+  test(`décor : tuiles enregistrées (${name}), voitures contre la bordure dessinée, hors des passages et des lignes d'arrêt ; bancs derrière la bordure`, { skip }, () => {
+    const { store, placed, marks, roads } = recordedDecor(name);
+    const near = (p, r, pad) => p.x >= r.bounds.minX - pad && p.x <= r.bounds.maxX + pad && p.z >= r.bounds.minZ - pad && p.z <= r.bounds.maxZ + pad;
+    let cars = 0, benches = 0;
+    for (const c of placed.filter((p) => p.kind === 'car')) {
+      cars++;
+      const under = carriers(roads.filter((r) => near(c, r, 20)), c);
+      assert.ok(under.length, `${c.id} sur une chaussée dessinée`);
+      // Flanc à 0,2 m de la bordure dessinée à cet endroit (à la couture de deux tuiles : celle d'une des deux copies).
+      const gaps = under.map((u) => u.half - u.d - 0.9);
+      assert.ok(gaps.some((g) => Math.abs(g - 0.2) < 0.02), `${c.id} : flanc à ${gaps.map((g) => g.toFixed(2)).join(' ou ')} m de la bordure (${under[0].r.cls})`);
+      // Carrosserie tout entière sur l'enrobé (bout d'impasse, extérieur d'un virage, couture de deux tuiles).
+      for (const q of carCorners(c)) {
+        assert.ok(roads.some((r) => !r.walkOnly && !r.rail && !r.bridge && near(q, r, 20) && onDrawnRoad(r, q)), `${c.id} : un coin dépasse de la chaussée dessinée`);
+      }
+      const box = carBox(c);
+      for (const m of marks) assert.ok(!boxesClose(box, m), `${c.id} sur un passage ou une ligne d'arrêt`);
+      // Hors de la chaussée dessinée de toute autre voie (sauf une copie de la même rue : parallèle, même axe).
+      for (const r of roads) {
+        if (r.walkOnly || r.rail || !near(c, r, 20) || under.some((u) => u.r === r) || sameAxis(r, c, under[0].d)) continue;
+        assert.ok(boxDist(box, r.points) >= carriageway(r) / 2 - 0.02, `${c.id} sur la chaussée d'une autre voie (${r.cls})`);
+      }
+      for (const p of [box, ...[[-1, -1], [-1, 1], [1, -1], [1, 1]].map(([a, b]) => ({ x: c.x + box.ux * 2.05 * a - box.uz * 0.9 * b, z: c.z + box.uz * 2.05 * a + box.ux * 0.9 * b }))]) {
+        assert.equal(buildingAt(store, p), null, `${c.id} : coin dans un bâtiment`);
+      }
+    }
+    for (const b of placed.filter((p) => p.kind === 'bench')) {
+      benches++;
+      // Banc de 1,6 × 0,5 m : à 0,3 m au moins derrière la bordure (0,2 m) de toute chaussée dessinée.
+      const box = { x: b.x, z: b.z, ux: Math.cos(b.yaw), uz: -Math.sin(b.yaw), hl: 0.8, hw: 0.25 };
+      for (const r of roads) {
+        if (r.walkOnly || r.rail || !near(b, r, 20)) continue;
+        assert.ok(boxDist(box, r.points) >= carriageway(r) / 2 + 0.5 - 0.02, `${b.id} sur la bordure ou la chaussée (${r.cls})`);
+      }
+    }
+    assert.ok(cars > 100 && benches > 20, `${cars} voitures, ${benches} bancs`);
+  });
+}
+
+// Rues de ville est-ouest et nord-sud tous les 80 m : secondary de 10 m, façades à 12 m (chaussée dessinée de 13,2 m),
+// carrefours à passages piétons et lignes d'arrêt ; ou minor de 7 m, façades à 8 m (8,8 m), carrefours sans marquage.
+function gridTown(cls = 'secondary', width = 10, front = 12) {
+  const roads = [];
+  for (let k = -3; k <= 3; k++) {
+    roads.push(way([{ x: -300, z: k * 80 + 20 }, { x: 300, z: k * 80 + 20 }], cls, null, width));
+    roads.push(way([{ x: k * 80 + 20, z: -300 }, { x: k * 80 + 20, z: 300 }], cls, null, width));
+  }
+  for (const r of roads) Object.assign(r, { setting: 'city', frontage: [front, front] });
+  return syntheticStore({ roads });
+}
+
+test('décor : voitures garées contre la bordure de la chaussée dessinée, jamais sur un passage piéton ni une ligne d\'arrêt', () => {
+  const store = gridTown();
+  const roads = [...store.buckets.values()].flatMap((b) => b.roads).filter((r, i, all) => all.indexOf(r) === i);
+  assert.equal(carriageway(roads[0]), 13.2);
+  let n = 0, onMarksWithout = 0, removed = 0;
+  for (let cx = -4; cx < 4; cx++) {
+    for (let cz = -4; cz < 4; cz++) {
+      const near = featuresAround(store, cx, cz), patch = buildPatch(store, cx, cz);
+      const marks = chunkMarks(near, cx, cz);
+      const cars = propsForChunk(near, patch, cx, cz, SIZE, store.proj, { marks }).cars;
+      const free = propsForChunk(near, patch, cx, cz, SIZE, store.proj).cars; // sans les marquages
+      const retainedCars = propsForChunk(near, patch, cx, cz, SIZE, store.proj, { place: false }).cars;
+      removed += retainedCars.length - cars.length;
+      for (const c of free) if (marks.some((m) => boxesClose(carBox(c), m))) onMarksWithout++;
+      for (const c of cars) {
+        n++;
+        const carry = carrier(roads, c);
+        assert.ok(carry && Math.abs(carry.d - (6.6 - 1.1)) < 1e-6, `${c.id} à 5,5 m de l'axe (flanc à 0,2 m de la bordure)`);
+        for (const m of marks) assert.ok(!boxesClose(carBox(c), m, 0.5 - 1e-6), `${c.id} : 0,5 m au moins d'un passage ou d'une ligne d'arrêt`);
+        // Carrosserie à 1 m au moins de la chaussée dessinée d'une rue transversale.
+        for (const r of roads) if (r !== carry.r) assert.ok(boxDist(carBox(c), r.points) >= 6.6 + 1 - 0.03, `${c.id} hors du carrefour`);
+      }
+    }
+  }
+  assert.ok(n >= 60, `${n} voitures`);
+  assert.ok(onMarksWithout > 0, `sans les marquages, ${onMarksWithout} voitures sur un passage ou une ligne d'arrêt`);
+  assert.ok(removed > 0 && removed < n, `${removed} voitures retirées`);
+});
+
+test('décor : carrefour sans marquage, carrosserie à 1 m au moins de la chaussée dessinée de la rue transversale', () => {
+  const store = gridTown('minor', 7, 8);
+  const roads = [...store.buckets.values()].flatMap((b) => b.roads).filter((r, i, all) => all.indexOf(r) === i);
+  assert.equal(carriageway(roads[0]), 8.8);
+  let n = 0;
+  for (let cx = -4; cx < 4; cx++) {
+    for (let cz = -4; cz < 4; cz++) {
+      const near = featuresAround(store, cx, cz);
+      assert.deepEqual(chunkMarks(near, cx, cz), [], 'ni passage ni ligne d\'arrêt entre deux minor');
+      for (const c of chunkProps(store, cx, cz).cars) {
+        n++;
+        const carry = carrier(roads, c);
+        assert.ok(carry && Math.abs(carry.d - (4.4 - 1.1)) < 1e-6, `${c.id} à 3,3 m de l'axe`);
+        for (const r of roads) if (r !== carry.r) assert.ok(boxDist(carBox(c), r.points) >= 4.4 + 1 - 0.03, `${c.id} hors du carrefour`);
+      }
+    }
+  }
+  assert.ok(n >= 60, `${n} voitures`);
+});
+
+test('décor : au bout d\'une impasse et à l\'extérieur d\'un virage, aucune voiture ne dépasse de la chaussée dessinée', () => {
+  // Rues de village de 5 m (chaussée dessinée de 5 m, bouts et virages arrondis), à 40 m les unes des autres :
+  // impasses de 46 m et rues en zigzag (virages de 50°).
+  const roads = [];
+  for (let k = -8; k < 8; k++) {
+    const x = k * 40 + 7;
+    roads.push(way([{ x, z: -150 }, { x, z: -104 }], 'minor', null, 5));
+    const zig = [];
+    for (let j = 0; j <= 8; j++) zig.push({ x: x + (j % 2 ? 9 : 0), z: -60 + j * 20 });
+    roads.push(way(zig, 'minor', null, 5));
+  }
+  for (const r of roads) r.setting = 'village';
+  const store = syntheticStore({ roads });
+  assert.equal(carriageway(roads[0]), 5);
+  let n = 0, overEnd = 0, overBend = 0;
+  for (let cx = -6; cx < 6; cx++) {
+    for (let cz = -3; cz < 3; cz++) {
+      const placed = chunkProps(store, cx, cz).cars;
+      const retained = chunkProps(store, cx, cz, undefined, { place: false }).cars;
+      const ids = new Set(placed.map((c) => c.id));
+      for (const c of placed) {
+        n++;
+        for (const q of carCorners(c)) assert.ok(Math.min(...roads.map((r) => lineDist(q, r.points))) <= 2.5 - 0.02 + 1e-9, `${c.id} : coin hors de la chaussée`);
+      }
+      // Sur ces rues, la pose ne déplace rien (chaussée de classe) : elle retire exactement les voitures qui
+      // dépassent, et seulement elles.
+      for (const c of retained) {
+        const out = carCorners(c).some((q) => Math.min(...roads.map((r) => lineDist(q, r.points))) > 2.5 - 0.02);
+        if (out && c.z > -55 && c.z < 95) overBend++;
+        else if (out) overEnd++;
+        assert.equal(ids.has(c.id), !out, `${c.id} ${out ? 'dépasse, retirée' : 'gardée'}`);
+      }
+    }
+  }
+  assert.ok(n >= 40 && overEnd >= 2 && overBend >= 2, `${n} voitures ; retirées : ${overEnd} au bout d'une impasse, ${overBend} dans un virage`);
+});
+
+test('décor : bancs poussés hors de la chaussée dessinée jusqu\'au trottoir, retirés s\'ils ne trouvent pas de place', () => {
+  // Primary de ville (12 m, façades à 30 m : chaussée dessinée de 18 m), allée parallèle à 10 m de l'axe, dans un
+  // parc ; au nord, un bâtiment collé contre la bordure : le banc poussé y tomberait.
+  const road = Object.assign(way([{ x: -400, z: 0 }, { x: 400, z: 0 }], 'primary', null, 12), { setting: 'city', frontage: [30, 30] });
+  const paths = [way([{ x: -400, z: 10 }, { x: 400, z: 10 }], 'path', 'footway', 2.5), way([{ x: -400, z: -10 }, { x: 400, z: -10 }], 'path', 'footway', 2.5)];
+  const park = rect(-400, -40, 400, 40);
+  const wall = rect(-400, -11.2, 0, -10.2);
+  const store = syntheticStore({
+    roads: [road, ...paths], areas: [{ rings: [park], cls: 'grass', sub: 'park', bounds: box(park, 0) }],
+    buildings: [{ id: 'mur', rings: [wall], cx: -200, cz: -10.7, area: 400, height: 3, minHeight: 0, colour: null, bounds: box(wall, 0) }],
+  });
+  assert.equal(carriageway(road), 18);
+  let n = 0, pushed = 0, removedNorth = 0, keptNorth = 0;
+  for (let cx = -5; cx < 5; cx++) {
+    for (const cz of [-1, 0]) {
+      const before = new Map(chunkProps(store, cx, cz, undefined, { place: false }).benches.map((b) => [b.id, b]));
+      const after = chunkProps(store, cx, cz).benches;
+      for (const b of after) {
+        n++;
+        const q = before.get(b.id);
+        assert.ok(q, `${b.id} retenu avant la pose`);
+        // Le banc (1,6 × 0,5 m) reste à 0,3 m au moins derrière la bordure (9 m + 0,2 m), poussé de 3 m au plus.
+        assert.ok(boxDist({ x: b.x, z: b.z, ux: Math.cos(b.yaw), uz: -Math.sin(b.yaw), hl: 0.8, hw: 0.25 }, road.points) >= 9 + 0.5 - 0.02, `${b.id} derrière la bordure`);
+        assert.ok(Math.hypot(b.x - q.x, b.z - q.z) <= 3 + 1e-9);
+        if (b.x !== q.x || b.z !== q.z) {
+          pushed++;
+          assert.ok(Math.abs(b.x - q.x) < 1e-9, 'poussé en travers de la rue');
+        }
+        assert.equal(buildingAt(store, b), null);
+      }
+      for (const q of before.values()) {
+        // Côté rue de l'allée nord (z = -8,15), contre le mur : le banc poussé tomberait dans le bâtiment.
+        if (q.z > -9 && q.z < -7 && q.x < -1) (after.some((b) => b.id === q.id) ? keptNorth++ : removedNorth++);
+      }
+    }
+  }
+  assert.ok(n >= 30 && pushed >= 5, `${n} bancs, ${pushed} poussés`);
+  assert.ok(removedNorth >= 3 && keptNorth === 0, `${removedNorth} bancs retirés contre le mur`);
 });
 
 test('décor : arbres reproductibles, jamais dans la maison ni sur la route', () => {
@@ -606,13 +936,13 @@ test('shaders : phares d\'alarme et découpe des murs s\'insèrent dans le shade
 test('décor : moins de 1 ms par morceau sur la fixture de Lyon (médiane)', () => {
   const store = lyonStore();
   const jobs = [];
-  for (let cx = -8; cx < 8; cx++) for (let cz = -8; cz < 8; cz++) jobs.push([buildPatch(store, cx, cz), cx, cz]);
+  for (let cx = -8; cx < 8; cx++) for (let cz = -8; cz < 8; cz++) jobs.push([buildPatch(store, cx, cz), cx, cz, chunkMarks(featuresAround(store, cx, cz), cx, cz)]);
   const times = [];
   for (let rep = 0; rep < 2; rep++) {
-    for (const [patch, cx, cz] of jobs) {
-      // Mesure comprise : réunion des éléments des 9 morceaux.
+    for (const [patch, cx, cz, marks] of jobs) {
+      // Mesure comprise : réunion des éléments des 9 morceaux (le plan du sol est déjà calculé par chunks.js).
       const t0 = performance.now();
-      propsForChunk(featuresAround(store, cx, cz), patch, cx, cz, SIZE, store.proj);
+      propsForChunk(featuresAround(store, cx, cz), patch, cx, cz, SIZE, store.proj, { marks });
       times.push(performance.now() - t0);
     }
   }

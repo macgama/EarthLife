@@ -120,6 +120,8 @@ test('bâtiments 3D : murs vers l\'extérieur, cours intérieures, toit vers le 
       const u = b.map((v, i) => v - a[i]), v = c.map((w, i) => w - a[i]);
       const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
       if (Math.abs(n[1]) > 1e-6) { assert.ok(n[1] > 0, 'toit vers le haut'); continue; }
+      // Face intérieure de l'acrotère (au-dessus du toit, à 8 m) : tournée vers le toit, comme voulu.
+      if (Math.min(a[1], b[1], c[1]) >= 8 - 1e-6) continue;
       const mx = (a[0] + b[0] + c[0]) / 3 - 5, mz = (a[2] + b[2] + c[2]) / 3 - 5;
       const outer = Math.max(Math.abs(mx), Math.abs(mz)) > 4;
       const dot = n[0] * mx + n[2] * mz;

@@ -2,8 +2,12 @@
 // des vraies routes, bancs des allées piétonnes. Chaque objet naît d'une cellule géographique fixe : son
 // identifiant (« t762630_80533 ») reste le même d'une partie à l'autre, quelle que soit l'origine du monde,
 // ce qui permet de mémoriser ce qui a été démonté. Module pur : ni THREE, ni DOM.
+// Deux temps : les cellules retenues (règles d'origine, figées : elles décident des identifiants), puis la pose contre
+// le sol dessiné (bordure de la chaussée de roadway.js, passages piétons et lignes d'arrêt du plan du sol), qui ne fait
+// que déplacer ou retirer un objet retenu : jamais d'identifiant nouveau.
 import { countsLabel } from './survival.js';
 import { chunkFeatures } from './world.js';
+import { carriageway, boxesClose } from './roadway.js';
 
 export const PROP_KINDS = {
   tree:  { verb: 'Abattre',  noun: "l'arbre",   time: 4,   timeAxe: 1.5, noise: 16, reach: 1.6 },
@@ -36,8 +40,16 @@ const BENCH_PATH = 5; // un banc naît à moins de 5 m d'une allée
 // (5 m) de la voie, leurs projections sur elle sont alors à plus de 5,3 m (3,3 m) : pas de chevauchement.
 const CAR_SPACING = 8, BENCH_SPACING = 6;
 const CAR_HALF = 2.05, CAR_SIDE = 0.9; // demi-longueur et demi-largeur de la voiture (props-view : 4,1 × 1,8 m)
-// Distance au-delà du morceau jusqu'où regardent les décisions : au plus 21 m environ (point à 6 m d'une primary,
-// recalage au trottoir, demi-voiture, puis la demi-largeur d'un fleuve ou d'une autoroute voisine). Marge prise : 32 m.
+// Pose contre le sol dessiné : flanc de la voiture à 0,2 m de la bordure ; coins sur l'enrobé (bout arrondi d'une
+// impasse, extérieur d'un virage : 2 cm de marge) ; carrosserie à 1 m au moins de la chaussée d'une autre voie
+// (carrefour, entrée de garage) et à 0,5 m au moins d'un passage piéton ou d'une ligne d'arrêt.
+const CURB_GAP = 0.2, CORNER_GAP = 0.02, CROSS_GAP = 1, MARK_GAP = 0.5;
+const CAR_CORNERS = [[-CAR_HALF, -CAR_SIDE], [-CAR_HALF, CAR_SIDE], [CAR_HALF, -CAR_SIDE], [CAR_HALF, CAR_SIDE]];
+// Banc (props-view : 1,6 × 0,42 m) : à 0,3 m au moins derrière la bordure (0,2 m), poussé au plus de 3 m.
+const BENCH_HALF = 0.8, BENCH_DEPTH = 0.25, BENCH_CLEAR = 0.2 + 0.3, BENCH_PUSH = 3;
+// Distance au-delà du morceau jusqu'où regardent les décisions : au plus 26 m environ (point à 6 m d'une primary,
+// recalage à la bordure dessinée (7,9 m au plus), demi-voiture, puis la chaussée dessinée d'une autoroute voisine et
+// 1,9 m ; banc poussé de 3 m au plus). Marge prise : 32 m.
 export const PROP_REACH = 32;
 const FEATURE_KEYS = ['buildings', 'roads', 'water', 'waterLines', 'areas'];
 const DRIVABLE = new Set(['primary', 'secondary', 'tertiary', 'minor', 'service']);
@@ -187,6 +199,14 @@ function blocked(ctx, x, z, margin) {
   return false;
 }
 
+// Demi-largeur de la chaussée dessinée (roadway.js), gardée tant que la voie existe (elle sert à plusieurs morceaux).
+const halves = new WeakMap();
+function drawnHalf(r) {
+  let h = halves.get(r);
+  if (h === undefined) halves.set(r, h = carriageway(r) / 2);
+  return h;
+}
+
 // Une des voies de `roads` passe à moins de largeur / 2 + `pad` mètres.
 function onAny(roads, x, z, pad) {
   for (const r of roads) {
@@ -196,9 +216,10 @@ function onAny(roads, x, z, pad) {
   return false;
 }
 
-// La voie `r` passe à moins de largeur / 2 + `pad` mètres du segment [a, b] (emprise d'une voiture).
-function alongRoad(r, ax, az, bx, bz, pad) {
-  const reach = r.width / 2 + pad, b = r.bounds;
+// La voie `r` passe à moins de half + `pad` mètres du segment [a, b] (emprise d'une voiture) ; half : demi-largeur
+// de classe, ou de la chaussée dessinée.
+function alongRoad(r, ax, az, bx, bz, pad, half = r.width / 2) {
+  const reach = half + pad, b = r.bounds;
   if (b.maxX < Math.min(ax, bx) - reach || b.minX > Math.max(ax, bx) + reach) return false;
   if (b.maxZ < Math.min(az, bz) - reach || b.minZ > Math.max(az, bz) + reach) return false;
   const pts = r.points, r2 = reach * reach;
@@ -270,10 +291,11 @@ function crowded(proj, kind, ilat, ilon, x, z, keep, limit, spacing) {
 }
 
 // Garde les candidats par ordre de tirage (plus petit `keep` d'abord), jusqu'au plafond du morceau.
-function pick(cands, cap) {
+function retained(cands, cap) {
   cands.sort((a, b) => a.keep - b.keep || (a.prop.id < b.prop.id ? -1 : 1));
-  return cands.slice(0, cap).map((c) => c.prop);
+  return cands.slice(0, cap);
 }
+const pick = (cands, cap) => retained(cands, cap).map((c) => c.prop);
 
 function trees(ctx, patch, x0, z0, size, proj) {
   if (!ctx.treeAreas.length) return [];
@@ -297,7 +319,7 @@ function trees(ctx, patch, x0, z0, size, proj) {
   return pick(cands, CAPS.tree);
 }
 
-function cars(ctx, patch, x0, z0, size, proj) {
+function cars(ctx, patch, x0, z0, size, proj, { marks = null, place = true } = {}) {
   if (!ctx.drive.length) return [];
   const cands = [];
   const hit = { d: Infinity }, same = { d: Infinity };
@@ -334,12 +356,107 @@ function cars(ctx, patch, x0, z0, size, proj) {
     }
     if (!patchFree(patch, cx, cz)) return;
     const color = CAR_TINTS[Math.min(CAR_TINTS.length - 1, Math.floor(tint * CAR_TINTS.length))];
-    cands.push({ keep, prop: { id: cellId('car', ilat, ilon), kind: 'car', x: cx, z: cz, yaw: Math.atan2(fx, fz), s: 1, color } });
+    cands.push({ keep, prop: { id: cellId('car', ilat, ilon), kind: 'car', x: cx, z: cz, yaw: Math.atan2(fx, fz), s: 1, color }, road, px, pz, dx, dz, side });
   });
-  return pick(cands, CAPS.car);
+  if (!place) return pick(cands, CAPS.car);
+  const out = [];
+  for (const c of retained(cands, CAPS.car)) {
+    const p = parkAtCurb(ctx, patch, c, marks);
+    if (p) out.push(p);
+  }
+  return out;
 }
 
-function benches(ctx, patch, x0, z0, size, proj) {
+// La voie `o` prolonge la voie qui porte la voiture (même rue coupée à un sommet, ou copie de la tuile voisine) :
+// son segment le plus proche est parallèle (à 11° près) et sa droite passe à moins de 0,5 m du pied de la voiture.
+function sameStreet(o, c, hit) {
+  nearestOnLine(o.points, c.px, c.pz, hit);
+  if (hit.d === Infinity || Math.abs(hit.dx * c.dz - hit.dz * c.dx) >= 0.2) return false;
+  return Math.abs((c.px - hit.px) * hit.dz - (c.pz - hit.pz) * hit.dx) < 0.5;
+}
+
+// Abscisse curviligne du point de la polyligne le plus proche de (x, z).
+function arcAt(points, x, z) {
+  let best = Infinity, at = 0, s = 0;
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i], b = points[i + 1], dx = b.x - a.x, dz = b.z - a.z, len2 = dx * dx + dz * dz, len = Math.sqrt(len2);
+    let t = len2 > 1e-12 ? ((x - a.x) * dx + (z - a.z) * dz) / len2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const ex = a.x + dx * t - x, ez = a.z + dz * t - z, d = ex * ex + ez * ez;
+    if (d < best) { best = d; at = s + t * len; }
+    s += len;
+  }
+  return at;
+}
+
+// Une voie coupée au bord de sa tuile (span, tiles.js) n'est dessinée que dans sa tuile (1 m de plus à la couture) ;
+// au-delà, c'est sa copie venue de la tuile voisine qui dessine la bordure (axe et chaussée à quelques centimètres près).
+const SEAM = 1;
+function drawnHere(r, x, z) {
+  if (!Array.isArray(r.span)) return true;
+  const s = arcAt(r.points, x, z);
+  return r.span.some(([a, b]) => s >= a - SEAM && s <= b + SEAM);
+}
+// Le point est sur l'enrobé dessiné de la voie r, à `gap` mètres au moins de sa bordure (trait à bouts et joints
+// ronds : distance à l'axe ; seulement là où la voie est dessinée).
+function onDrawn(r, x, z, gap) {
+  const half = drawnHalf(r) - gap;
+  return near(r.bounds, x, z, half) && lineDist(r.points, x, z) < half && drawnHere(r, x, z);
+}
+function curbRoad(ctx, c, hit) {
+  if (drawnHere(c.road, c.px, c.pz)) return c.road;
+  for (const o of ctx.drive) {
+    if (o === c.road) continue;
+    // Copie de la même rue : son axe passe sous le pied (à 0,5 m près, hors de ses bouts), parallèle.
+    nearestOnLine(o.points, c.px, c.pz, hit);
+    if (hit.d < 0.5 && !hit.end && Math.abs(hit.dx * c.dz - hit.dz * c.dx) < 0.2 && drawnHere(o, c.px, c.pz)) return o;
+  }
+  return c.road;
+}
+
+// Voiture retenue garée contre la bordure de la chaussée dessinée (roadway.js) à son pied, du même côté et dans le
+// même sens ; null si elle n'y trouve pas sa place : bâti ou eau, coin hors de l'enrobé, allée, voie ferrée, chaussée
+// d'une autre voie (carrefour), passage piéton ou ligne d'arrêt (marks).
+function parkAtCurb(ctx, patch, c, marks) {
+  const { road, side } = c;
+  const hit = { d: Infinity };
+  // Pied de la voiture sur l'axe de la copie qui dessine la rue à cet endroit (même direction : orientation gardée).
+  const curb = curbRoad(ctx, c, hit);
+  const { dx, dz } = c;
+  let { px, pz } = c;
+  if (curb !== road) {
+    nearestOnLine(curb.points, px, pz, hit);
+    px = hit.px; pz = hit.pz;
+  }
+  const rx = -dz, rz = dx;
+  const offset = Math.max(0.3, drawnHalf(curb) - CURB_GAP - CAR_SIDE);
+  const cx = px + rx * side * offset, cz = pz + rz * side * offset;
+  const fx = dx * side, fz = dz * side;
+  if (blocked(ctx, cx, cz, 1) || blocked(ctx, cx + fx * 2, cz + fz * 2, 0.2) || blocked(ctx, cx - fx * 2, cz - fz * 2, 0.2)) return null;
+  // Coins de la carrosserie hors du bâti (un pignon en biais au bord de la rue) et sur l'enrobé de la rue, ou d'une
+  // copie ou suite de la même rue : rien ne dépasse au bout d'une impasse ni à l'extérieur d'un virage.
+  for (const [a, b] of CAR_CORNERS) {
+    const qx = cx + fx * a - fz * b, qz = cz + fz * a + fx * b;
+    if (blocked(ctx, qx, qz, 0.1)) return null;
+    if (onDrawn(curb, qx, qz, CORNER_GAP) || onDrawn(road, qx, qz, CORNER_GAP)) continue;
+    if (!ctx.others.some((o) => !o.bridge && o !== road && o !== curb && onDrawn(o, qx, qz, CORNER_GAP) && sameStreet(o, c, hit))) return null;
+  }
+  const ax = cx - fx * CAR_HALF, az = cz - fz * CAR_HALF, bx = cx + fx * CAR_HALF, bz = cz + fz * CAR_HALF;
+  if (alongAny(ctx.walk, ax, az, bx, bz, CAR_SIDE) || alongAny(ctx.rails, ax, az, bx, bz, CAR_SIDE)) return null;
+  // L'axe de la voiture (4,1 m) élargi de 0,9 m couvre toute la carrosserie.
+  for (const o of ctx.others) {
+    if (o === road || o === curb || !alongRoad(o, ax, az, bx, bz, CAR_SIDE + CROSS_GAP, drawnHalf(o)) || sameStreet(o, c, hit)) continue;
+    return null;
+  }
+  if (marks?.length) {
+    const box = { x: cx, z: cz, ux: fx, uz: fz, hl: CAR_HALF, hw: CAR_SIDE };
+    for (const m of marks) if (Math.abs(m.x - cx) < 16 && Math.abs(m.z - cz) < 16 && boxesClose(box, m, MARK_GAP)) return null;
+  }
+  if (!patchFree(patch, cx, cz)) return null;
+  return { ...c.prop, x: cx, z: cz };
+}
+
+function benches(ctx, patch, x0, z0, size, proj, { place = true } = {}) {
   if (!ctx.foot.length) return [];
   const cands = [];
   const hit = { d: Infinity };
@@ -364,7 +481,47 @@ function benches(ctx, patch, x0, z0, size, proj) {
     if (!patchFree(patch, bx, bz)) return;
     cands.push({ keep, prop: { id: cellId('bench', ilat, ilon), kind: 'bench', x: bx, z: bz, yaw: Math.atan2(-rx * side, -rz * side), s: 1 } });
   });
-  return pick(cands, CAPS.bench);
+  if (!place) return pick(cands, CAPS.bench);
+  const out = [];
+  for (const c of retained(cands, CAPS.bench)) {
+    const p = benchOffRoad(ctx, patch, c.prop);
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+// Banc retenu sorti de la chaussée dessinée : s'il est à moins de 0,3 m derrière une bordure (ou dessus, ou dedans),
+// poussé en travers de la voie la plus mordue jusqu'au trottoir (trois passes pour un coin de rue, 3 m au plus),
+// sinon retiré ; puis hors du bâti, de l'eau et des voies ferrées. Le banc garde son orientation.
+function benchOffRoad(ctx, patch, b) {
+  const ux = Math.cos(b.yaw), uz = -Math.sin(b.yaw); // grand axe du banc (perpendiculaire à son avant)
+  let x = b.x, z = b.z;
+  const hit = { d: Infinity };
+  for (let pass = 0; ; pass++) {
+    let worst = 0, nx = 0, nz = 0;
+    for (const r of ctx.others) {
+      const need = drawnHalf(r) + BENCH_CLEAR + BENCH_DEPTH;
+      if (!near(r.bounds, x, z, need + BENCH_HALF)) continue;
+      // Bout du banc le plus proche de l'axe de la voie.
+      for (const k of [-BENCH_HALF, 0, BENCH_HALF]) {
+        const ex = x + ux * k, ez = z + uz * k;
+        nearestOnLine(r.points, ex, ez, hit);
+        const miss = need - hit.d;
+        if (miss > worst) {
+          worst = miss;
+          // Hors du segment (coin) : en s'éloignant du point le plus proche ; sur l'axe : sur sa normale.
+          if (hit.d > 1e-6) { nx = (ex - hit.px) / hit.d; nz = (ez - hit.pz) / hit.d; } else { nx = -hit.dz; nz = hit.dx; }
+        }
+      }
+    }
+    if (worst <= 1e-6) break;
+    if (pass === 3) return null;
+    x += nx * (worst + 0.01);
+    z += nz * (worst + 0.01);
+  }
+  if (Math.hypot(x - b.x, z - b.z) > BENCH_PUSH) return null;
+  if (blocked(ctx, x, z, 0.8) || onAny(ctx.rails, x, z, 0.8) || !patchFree(patch, x, z)) return null;
+  return x === b.x && z === b.z ? b : { ...b, x, z };
 }
 
 // ---------- API ----------
@@ -382,15 +539,17 @@ export function featuresAround(store, cx, cz) {
 // (ou un seul objet { buildings, roads, water, waterLines, areas } qui couvre déjà PROP_REACH autour du morceau).
 // Avec les seuls éléments du morceau (chunkFeatures), un banc ou une voiture du bord peut finir dans un bâtiment
 // voisin. patch = grille de collision du morceau, proj = projection du monde (store.proj).
+// marks : passages piétons et lignes d'arrêt du plan du sol du morceau (markBoxes de roadway.js), que les voitures
+// évitent ; place = false : cellules retenues à leur position d'origine, sans la pose contre le sol dessiné (tests).
 // Reproductible et indépendant de l'origine du monde ; aucune écriture dans `f` ni dans `patch`.
 // yaw : rotation autour de la verticale, l'axe +z local de l'objet pointant vers (sin yaw, cos yaw).
-export function propsForChunk(f, patch, cx, cz, size, proj) {
+export function propsForChunk(f, patch, cx, cz, size, proj, opts = {}) {
   const x0 = cx * size, z0 = cz * size;
   const ctx = sortFeatures(gather(f, x0, z0, size));
   return {
     trees: trees(ctx, patch, x0, z0, size, proj),
-    cars: cars(ctx, patch, x0, z0, size, proj),
-    benches: benches(ctx, patch, x0, z0, size, proj),
+    cars: cars(ctx, patch, x0, z0, size, proj, opts),
+    benches: benches(ctx, patch, x0, z0, size, proj, opts),
   };
 }
 
