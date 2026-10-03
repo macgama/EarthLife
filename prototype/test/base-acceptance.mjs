@@ -966,11 +966,468 @@ async function mobile() {
   await ctx.close();
 }
 
+// ---------- Déménagement (scénario 12, sur ordinateur et sur téléphone) ----------
+// Partie neuve : refuge près de Bellecour, ligne « Changer de refuge » vue dès l'ouverture du panneau, petit bâtiment
+// fouillé sans refus non demandé, puis déménagement dans le même quartier (coffre de magasin trop plein pour la maison :
+// le surplus attend dans une caisse devant l'ancienne porte ; le conseil de fin de fouille une seule fois), rechargement
+// avec la caisse pleine, menu, caisse reprise, puis expédition à Pérouges (tuiles enregistrées, à 31,5 km) et
+// déménagement sur place, sans jamais passer par « Voir mon refuge ». Sur téléphone, les nouveaux textes sont aussi
+// mesurés à l'horizontale (844×390 et 667×375).
+
+const MOVE_HINT = 'Changer de refuge : fouille un autre bâtiment, puis « Déménager ici » devant lui. Ton coffre et tes aménagements suivent.';
+const PEROUGES_NOTE = 'Sur place, fouille un bâtiment puis « Déménager ici » pour y installer ton refuge.';
+const MOVE_HOW = 'Pour changer de refuge : en jeu, fouille un autre bâtiment puis « Déménager ici ».';
+const NEAR_NOTE = 'À moins de 1,5 km, tu repars de ton refuge. Pour en changer : en jeu, fouille un autre bâtiment puis « Déménager ici ».';
+const AWAY_QUEST = "Déménager ici : fouille un bâtiment pour t'y installer.";
+const MOVE_TOAST = 'Ce bâtiment peut devenir ton refuge';
+const SMALL = 'Trop petit pour un refuge (moins de 25 m²)';
+
+// Bâtiment qui peut devenir le refuge (forme, porte posable depuis sa façade), pas encore fouillé, à dMin mètres au moins
+// de `from` et le plus proche de lui ; avec le point libre contre sa façade d'où « Fouiller » le désigne.
+function moveSpot(page, from, dMin) {
+  return ev(page, async ([f, lo]) => {
+    const col = await import('/src/collision.js');
+    const { session: s, refuge: r, save } = window.__earthlife;
+    const list = s.store.buildings.map((b, i) => ({ b, i, d: Math.hypot(b.cx - f.x, b.cz - f.z) })).filter((e) => e.d >= lo).sort((a, b) => a.d - b.d);
+    for (const { b, i, d } of list) {
+      if (d > 100) break;
+      if (b.id === save.base?.id || save.searched[b.id] || !r.canClaim(b, { searched: true, player: s.player, chasersNear: 0 }).ok) continue;
+      facade: for (let rad = 2; rad < 40; rad += 0.5) {
+        for (let k = 0; k < 48; k++) {
+          const a = (k / 48) * Math.PI * 2;
+          const x = b.cx + Math.sin(a) * rad, z = b.cz + Math.cos(a) * rad;
+          if (!col.isFree(s.grid, x, z) || col.buildingNear(s.grid, x, z, 1.6) !== i) continue;
+          if (!r.suitable(b, { x, z }).ok) break facade;
+          return { i, id: b.id, x, z, d: Math.round(d), area: Math.round(b.area), loot: b.loot };
+        }
+      }
+    }
+    return null;
+  }, [from, dMin]);
+}
+
+// Petit bâtiment (moins de 25 m²) pas encore fouillé, le plus proche de `from` entre 15 et 200 m (loin des ouvertures
+// du refuge), avec le point libre contre sa façade d'où « Fouiller » le désigne. Au-delà des carrés construits, on va
+// d'abord près de lui (le téléport construit les carrés autour).
+function smallSpot(page, from) {
+  return ev(page, async (f) => {
+    const col = await import('/src/collision.js');
+    const { session: s, save, debug: dbg } = window.__earthlife;
+    const list = s.store.buildings.map((b, i) => ({ b, i, d: Math.hypot(b.cx - f.x, b.cz - f.z) }))
+      .filter((e) => e.b.area >= 5 && e.b.area < 25 && e.d >= 15 && e.d <= 200 && !save.searched[e.b.id]).sort((a, b) => a.d - b.d);
+    for (const { b, i, d } of list.slice(0, 6)) {
+      for (let pass = 0; pass < 2; pass++) {
+        if (pass) dbg.teleport(b.cx + 6, b.cz + 6);
+        for (let rad = 1; rad < 10; rad += 0.5) {
+          for (let k = 0; k < 48; k++) {
+            const a = (k / 48) * Math.PI * 2;
+            const x = b.cx + Math.sin(a) * rad, z = b.cz + Math.cos(a) * rad;
+            if (col.isFree(s.grid, x, z) && col.buildingNear(s.grid, x, z, 1.6) === i) return { i, id: b.id, x, z, d: Math.round(d), area: Math.round(b.area), loot: b.loot };
+          }
+        }
+      }
+    }
+    return null;
+  }, from);
+}
+
+// Texte d'un élément visible, avec ce qui dépasse : coupé (lignes limitées, débord) et chevauchements du HUD.
+const textBox = (page, sel, others = []) => ev(page, ([q, list]) => {
+  const el = document.querySelector(q);
+  if (!el) return null;
+  const cs = getComputedStyle(el), r = el.getBoundingClientRect();
+  const shown = cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0 && r.width > 0 && r.height > 0;
+  const hits = list.filter((o) => {
+    const e = document.querySelector(o);
+    if (!e || e.classList.contains('hidden') || getComputedStyle(e).visibility === 'hidden') return false;
+    const b = e.getBoundingClientRect();
+    return b.width > 0 && r.left < b.right && b.left < r.right && r.top < b.bottom && b.top < r.bottom;
+  });
+  return {
+    text: el.textContent.replace(/\s+/g, ' ').trim(), shown,
+    clipped: el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1 || r.right > innerWidth + 0.5 || r.left < -0.5,
+    hits, box: `${Math.round(r.left)},${Math.round(r.top)} → ${Math.round(r.right)},${Math.round(r.bottom)}`,
+  };
+}, [sel, others]);
+
+const HUD_BUTTONS = ['#search', '#action2', '#conditions', '#quest', '#vitals', '#inventory', '#topbuttons', '#stick-base', '#run', '#attack', '#horde-banner'];
+
+// Chaque notification est mesurée à l'image qui suit son affichage (coupée, chevauchements du HUD) : sous swiftshader,
+// une notification peut passer avant que le test ne la lise. `gt` : temps de jeu approché (pas de 0,05 s au plus,
+// comme le jeu), pour vérifier qu'un conseil laisse au butin ses 3 s.
+function watchToasts(page) {
+  return ev(page, (list) => {
+    if (window.__toastBoxes) return;
+    window.__toastBoxes = [];
+    window.__gt = 0;
+    let last = performance.now();
+    const loop = (t) => { window.__gt += Math.max(0, Math.min((t - last) / 1000, 0.05)); last = t; requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+    const el = document.getElementById('toast-text');
+    new MutationObserver(() => requestAnimationFrame(() => {
+      const text = el.textContent.replace(/\s+/g, ' ').trim();
+      if (!text || window.__toastBoxes.at(-1)?.text === text) return;
+      const r = el.getBoundingClientRect();
+      const hits = list.filter((o) => {
+        const e = document.querySelector(o);
+        if (!e || e.classList.contains('hidden') || getComputedStyle(e).visibility === 'hidden') return false;
+        const b = e.getBoundingClientRect();
+        return b.width > 0 && r.left < b.right && b.left < r.right && r.top < b.bottom && b.top < r.bottom;
+      });
+      const clipped = el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1 || r.right > innerWidth + 0.5 || r.left < -0.5;
+      const loot = document.getElementById('toast').classList.contains('toast-loot');
+      window.__toastBoxes.push({ text, clipped, hits, loot, gt: window.__gt, box: `${Math.round(r.left)},${Math.round(r.top)} → ${Math.round(r.right)},${Math.round(r.bottom)}` });
+    })).observe(el, { childList: true, characterData: true, subtree: true });
+  }, HUD_BUTTONS);
+}
+// Mesure de la notification qui commence par `start`, ou null. Une notification attend que la précédente ait eu
+// 1,2 s de temps de jeu : sous swiftshader chargé (2 à 5 images par seconde), cela peut prendre une demi-minute.
+const toastBox = (page, start, timeout = 90000) => until(page, (t) => window.__toastBoxes?.find((b) => b.text.startsWith(t)) ?? null, start, timeout);
+// Notifications vues depuis l'indice `from` de la liste (textes).
+const toastsSince = (page, from) => ev(page, (i) => (window.__toastBoxes ?? []).slice(i).map((b) => b.text), from);
+const toastCount = (page) => ev(page, () => window.__toastBoxes?.length ?? 0);
+// Attend `sec` secondes de temps de jeu (approché), 3 min au plus à la montre.
+const gameWait = (page, sec) => ev(page, () => window.__gt).then((t0) => until(page, ([t, s]) => window.__gt - t >= s || null, [t0, sec], 180000));
+
+// Fouille d'un bâtiment depuis sa façade (E ou toucher #search) ; renvoie le libellé du bouton secondaire ensuite.
+async function searchFor(page, device, spot, tag) {
+  await clearZombies(page);
+  await debug(page, 'teleport', spot.x, spot.z);
+  // Le bouton se redessine toutes les 150 ms : juste après le téléport, il peut montrer l'action d'avant.
+  const label = await until(page, (id) => (window.__label(id)?.startsWith('Fouiller') ? window.__label(id) : null), 'search', 20000);
+  check(/^Fouiller : /.test(label ?? ''), `${tag} : bâtiment ${spot.id} (${spot.loot}, ${spot.area} m², à ${spot.d} m), bouton « ${label} »`);
+  await press(page, device, 'KeyE', 'search');
+  const search = await searchSafely(page, device, spot.id);
+  if (!search.done) note(`${tag} : fouille inachevée, ${await state(page)}`);
+  // Le bouton secondaire peut ne pas exister (petit bâtiment) : on attend que le bouton principal ait quitté « Fouiller ».
+  await until(page, (id) => (window.__label(id)?.startsWith('Fouiller') ? null : true), 'search', 10000);
+  return ev(page, (id) => window.__label(id), 'action2');
+}
+
+// Notification du butin (sorte « loot ») puis conseil : le conseil arrive après les 3 s du butin (temps de jeu approché,
+// à 0,3 s près).
+async function afterLoot(page, tag, hint, from) {
+  const boxes = await ev(page, (i) => (window.__toastBoxes ?? []).slice(i), from);
+  const h = boxes.findIndex((b) => b.text === hint.text);
+  const loot = boxes.slice(0, h).reverse().find((b) => b.loot);
+  check(!!loot && hint.gt - loot.gt >= 2.7, `${tag} : conseil ${round(hint.gt - (loot?.gt ?? NaN), 1)} s de jeu après le butin « ${loot?.text} »`);
+}
+
+// Textes du déménagement posés dans le toast et la pastille de quête avec le CSS du jeu, à l'horizontale, dans l'état
+// où le jeu les montre (feuille du refuge ouverte ou non, icône du toast selon sa sorte, comme hud.js) : le toast tient
+// sans coupure, et la pastille (une ligne) garde le mot du bouton, « Déménager ici », en entier. Le joueur est au refuge,
+// feuille ouverte.
+const LANDSCAPE_TOASTS = [
+  ['Expédition : ton refuge est à 31,5 km (flèche bleue)', false, ''],
+  ['Expédition : ton refuge est à 392,4 km (flèche bleue)', false, ''],
+  [`${MOVE_TOAST} : Déménager\u00a0ici`, false, ''],
+  ["Pas d'entrée possible d'ici : essaie un autre côté", false, ''],
+  ["Refuge déplacé. Caisse de 100 objets devant l'ancien.", true, 'success'],
+];
+const toastFits = (page, list) => ev(page, (items) => items.map(([t, , kind]) => {
+  const box = document.getElementById('toast'), el = document.getElementById('toast-text'), icon = document.getElementById('toast-icon');
+  el.textContent = t.replace(/ ([!?:;])/g, '\u00a0$1');
+  for (const k of ['danger', 'success', 'loot']) box.classList.toggle(`toast-${k}`, k === kind);
+  icon.hidden = !kind;
+  return { t, clipped: el.scrollHeight > el.clientHeight + 1 || box.getBoundingClientRect().right > innerWidth + 0.5 };
+}), list);
+async function landscapeTexts(page, tag) {
+  for (const size of [{ width: 844, height: 390 }, { width: 667, height: 375 }]) {
+    await page.setViewportSize(size);
+    await wait(800);
+    const open = await toastFits(page, LANDSCAPE_TOASTS.filter((t) => t[1]));
+    // Feuille fermée, comme dehors : les autres notifications et la pastille de quête de l'expédition.
+    await ev(page, () => document.querySelector('#refuge-panel [data-ui="close"]')?.click());
+    await until(page, () => !document.body.classList.contains('panel-open') || null, null, 5000);
+    await wait(800);
+    const closed = await toastFits(page, LANDSCAPE_TOASTS.filter((t) => !t[1]));
+    const q = await ev(page, (quest) => {
+      const el = document.getElementById('quest-text');
+      el.textContent = quest;
+      const range = document.createRange();
+      range.setStart(el.firstChild, 0);
+      range.setEnd(el.firstChild, 'Déménager ici'.length);
+      const qr = el.getBoundingClientRect(), kr = range.getBoundingClientRect();
+      return { keyword: kr.width > 0 && kr.bottom <= qr.top + el.clientHeight + 0.5 && kr.right <= qr.right + 0.5, size: `${Math.round(qr.width)}×${el.clientHeight} px` };
+    }, AWAY_QUEST);
+    for (const r of [...closed, ...open]) check(!r.clipped, `${tag} : ${size.width}×${size.height}, notification « ${r.t} » ${r.clipped ? 'coupée' : 'entière'}`);
+    check(q.keyword, `${tag} : ${size.width}×${size.height}, pastille de quête (${q.size}) : « Déménager ici » ${q.keyword ? 'visible' : 'coupé'}`);
+    await shot(page, `tel-30-horizontale-${size.width}x${size.height}`);
+    await ev(page, () => document.getElementById('refuge-open')?.click());
+    await until(page, () => document.body.classList.contains('panel-open') || null, null, 5000);
+  }
+}
+
+async function relocation(device) {
+  const tag = device === 'mobile' ? 'tel 12' : 'pc 12';
+  const pre = device === 'mobile' ? 'tel' : 'pc';
+  const r = device === 'mobile' ? '' : ' (R)';
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, tag);
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  const claim = await install(page, device, tag);
+  if (!check(!!claim, `${tag} : refuge installé`)) { await ctx.close(); return; }
+  await wait(500);
+
+  await watchToasts(page);
+  // Panneau : la ligne « Changer de refuge » en tête de l'onglet Défense, entière, vue dès l'ouverture sans défiler
+  // (une fois le tiroir arrivé).
+  await until(page, () => { const p = document.getElementById('refuge-panel')?.getBoundingClientRect(); return p && p.width > 0 && p.right <= innerWidth + 0.5; }, null, 5000);
+  await wait(300);
+  const hint = await textBox(page, '#refuge-panel .rp-hint');
+  const seenAtOpen = await ev(page, () => {
+    const p = document.getElementById('refuge-panel').getBoundingClientRect(), h = document.querySelector('#refuge-panel .rp-hint')?.getBoundingClientRect();
+    const body = document.querySelector('#refuge-panel .rp-body'), b = body.getBoundingClientRect();
+    return { ok: !!h && h.left >= p.left - 0.5 && h.right <= p.right + 0.5 && h.top >= b.top - 0.5 && h.bottom <= b.bottom + 0.5 && h.bottom <= innerHeight, scroll: body.scrollTop, hint: h ? `${Math.round(h.top)}-${Math.round(h.bottom)}` : null, view: `${Math.round(b.top)}-${Math.round(b.bottom)}` };
+  });
+  check(!!hint && hint.shown && hint.text === MOVE_HINT && !hint.clipped && seenAtOpen.ok && seenAtOpen.scroll === 0,
+    `${tag} : panneau à l'ouverture, « ${hint?.text} » vue sans défiler (ligne ${seenAtOpen.hint}, zone ${seenAtOpen.view}${hint?.clipped ? ', coupée' : ''})`);
+  await shot(page, `${pre}-20-panneau-changer`);
+
+  // Coffre d'un magasin (Arrière-boutique, 300 places) rempli à 230 et porte clouée et piégée : la maison voisine n'a
+  // que 200 places.
+  const old = await ev(page, () => {
+    const { save, refuge: rf, session: s } = window.__earthlife;
+    const b = save.base;
+    b.perk = 'arriere';
+    b.chest = { bois: 30, clous: 20, conserve: 100, eau: 80 };
+    Object.assign(b.openings[0], { lvl: 1, hp: 200, trap: 6 });
+    for (const k of Object.keys(s.survivor.inventory)) delete s.survivor.inventory[k];
+    // Point prévu pour la caisse (2 m devant la porte) en lat/lon : la partie rechargée a un autre repère local.
+    const a = rf.anchor(), d = rf.openingsWorld()[0];
+    return { id: b.id, anchor: a, nx: d.nx, nz: d.nz, crateAt: s.store.proj.toLatLon(d.x + d.nx * 2, d.z + d.nz * 2) };
+  });
+  await clearZombies(page);
+  await leave(page, device);
+
+  // Avec un refuge, un petit bâtiment fouillé ne dit rien de lui-même ; sur ordinateur, R donne le motif.
+  const small = await smallSpot(page, old.anchor);
+  if (check(!!small, `${tag} : petit bâtiment près du refuge`)) {
+    const n0 = await toastCount(page);
+    const l1 = await searchFor(page, device, small, `${tag} petit`);
+    await gameWait(page, 4.5);
+    const after = await toastsSince(page, n0);
+    check(l1 === null && !after.some((t) => t.startsWith('Trop ') || t.startsWith(MOVE_TOAST)), `${tag} : petit bâtiment fouillé, pas de bouton secondaire, notifications ${JSON.stringify(after)}`);
+    if (device !== 'mobile') {
+      await press(page, device, 'KeyR', 'action2');
+      const why = await until(page, ([i, t]) => (window.__toastBoxes ?? []).slice(i).find((b) => b.text === t)?.text ?? null, [n0, SMALL], 30000);
+      check(!!why, `${tag} : R devant le petit bâtiment : « ${why} »`);
+    }
+    await shot(page, `${pre}-21-petit-batiment`);
+  }
+
+  // Même quartier : un autre bâtiment, à 40 m au moins du refuge ; le conseil vient après le butin.
+  const first = await moveSpot(page, old.anchor, 40);
+  if (!check(!!first, `${tag} : bâtiment du même quartier qui peut devenir le refuge`)) { await ctx.close(); return; }
+  let n0 = await toastCount(page);
+  const l2 = await searchFor(page, device, first, tag);
+  check(l2 === `Déménager ici${r}`, `${tag} : après la fouille, bouton secondaire « ${l2} »`);
+  const hintBox = await toastBox(page, MOVE_TOAST);
+  check(hintBox?.text === `${MOVE_TOAST} : Déménager ici${r}`, `${tag} : notification « ${hintBox?.text} »${hintBox ? '' : ` ; vues : ${JSON.stringify((await seen(page)).toasts.slice(-6))}`}`);
+  check(!!hintBox && !hintBox.clipped && !hintBox.hits.length, `${tag} : notification entière (${hintBox?.box}), sans chevauchement du HUD${hintBox?.hits.length ? ` : ${hintBox.hits.join(', ')}` : ''}`);
+  if (hintBox) await afterLoot(page, tag, hintBox, n0);
+  await shot(page, `${pre}-22-fouille-demenager`);
+
+  // Un 2e bâtiment possible dans la même partie : le bouton, mais plus le conseil. On y déménage.
+  const spot = await moveSpot(page, old.anchor, 40);
+  if (!check(!!spot, `${tag} : 2e bâtiment du même quartier qui peut devenir le refuge`)) { await ctx.close(); return; }
+  n0 = await toastCount(page);
+  const l3 = await searchFor(page, device, spot, `${tag} 2e`);
+  await gameWait(page, 4.5);
+  const again = await toastsSince(page, n0);
+  check(l3 === `Déménager ici${r}` && !again.some((t) => t.startsWith(MOVE_TOAST)), `${tag} : 2e bâtiment fouillé, bouton « ${l3} », sans 2e conseil : ${JSON.stringify(again)}`);
+
+  const overflow = await ev(page, (i) => window.__earthlife.refuge.overflowFor(window.__earthlife.session.store.buildings[i]), spot.i);
+  await clearZombies(page);
+  await press(page, device, 'KeyR', 'action2');
+  const card = await until(page, () => {
+    const c = document.getElementById('card');
+    return !c.classList.contains('hidden') && c.querySelector('.rp-card-title')?.textContent === 'Déménager ici ?' ? [...c.querySelectorAll('.rp-card-line')].map((l) => l.textContent.trim()) : null;
+  }, null, 10000);
+  const want = ['Ton coffre et tes aménagements suivent.', ...(overflow ? [`Coffre trop petit ici : ${overflow} objet${overflow > 1 ? 's resteront' : ' restera'} dans une caisse devant l'ancien refuge.`] : []), 'Tes barricades et tes pièges actuels sont perdus.'];
+  check(JSON.stringify(card) === JSON.stringify(want), `${tag} : carte « Déménager ici ? » : ${JSON.stringify(card)}`);
+  check(overflow === 30 || spot.loot === 'retail' || spot.loot === 'commercial' || spot.loot === 'clothes' || spot.loot === 'outdoor', `${tag} : ${overflow} objets en trop pour le coffre de ce ${spot.loot}`);
+  await shot(page, `${pre}-23-carte-demenager`);
+  await hit(page, device, '#card [data-card-btn="move"]');
+  const moved = await until(page, (id) => window.__earthlife.save.base?.id === id, spot.id, 10000);
+  await wait(500);
+  const s1 = await snapshot(page);
+  const n = s1.base?.openings.length ?? 0;
+  const msgBox = await toastBox(page, 'Refuge déplacé');
+  const msg = msgBox?.text;
+  check(!!moved && !!msg && (overflow ? msg === `Refuge déplacé. Caisse de ${overflow} objets devant l'ancien.` : msg.startsWith('Refuge déplacé : ') && msg.includes(`${n} ouverture`)), `${tag} : refuge déplacé, « ${msg} »`);
+  // Feuille du refuge ouverte sur téléphone en portrait : le toast passe en haut, sur la quête, à dessein (index.html).
+  const msgHits = (msgBox?.hits ?? []).filter((h) => !(device === 'mobile' && h === '#quest'));
+  check(!!msgBox && !msgBox.clipped && !msgHits.length, `${tag} : notification entière (${msgBox?.box}), sans chevauchement du HUD${msgHits.length ? ` : ${msgHits.join(', ')}` : ''}${msgBox?.hits.length > msgHits.length ? ' (sur la quête, feuille ouverte)' : ''}`);
+  check(s1.base.openings.every((o) => o.lvl === 0 && o.trap === 0) && s1.inside && s1.hidden, `${tag} : barricades et pièges perdus (${JSON.stringify(s1.base.openings.map((o) => o.hp))}), joueur au nouveau refuge`);
+  const crate = await ev(page, () => window.__earthlife.save.orphanChest);
+  const total = (c) => Object.values(c ?? {}).reduce((a, v) => a + v, 0);
+  // Vers une maison : 200 au coffre, 30 dans la caisse ; vers un magasin, tout suit (et les matériaux du sac s'y ajoutent).
+  check(overflow ? total(s1.base.chest) === 200 && total(crate?.chest) === 30 : total(s1.base.chest) >= 230 && !crate,
+    `${tag} : coffre suivi ${JSON.stringify(s1.base.chest)} (${total(s1.base.chest)}), caisse ${JSON.stringify(crate?.chest ?? null)}`);
+  // Carnet : le déménagement, puis la caisse (on la retrouve au carnet).
+  const lines = s1.journal.slice(overflow ? -2 : -1);
+  check(/· Refuge déplacé : /.test(lines[0] ?? '') && (!overflow || lines[1]?.endsWith(`· Caisse de ${overflow} objets devant l'ancien refuge`)), `${tag} : carnet ${JSON.stringify(lines)}`);
+  const p1 = await panelState(page);
+  check(p1.open && /^Ton refuge · /.test(p1.title ?? ''), `${tag} : panneau « ${p1.title} » ouvert`);
+  await shot(page, `${pre}-24-demenage`);
+
+  // Rechargement, caisse encore pleine : même refuge, même coffre, même caisse, joueur à la nouvelle porte.
+  await until(page, () => !window.__earthlife.saveStore.dirty, null, 10000);
+  const before = await snapshot(page);
+  await page.reload();
+  check(await started(page), `${tag} : partie reprise après le rechargement`);
+  await watchToasts(page);
+  await wait(500);
+  const s2 = await snapshot(page);
+  const crate2 = await ev(page, () => window.__earthlife.save.orphanChest);
+  const doorGap = await ev(page, () => { const { session: s, refuge: rf } = window.__earthlife; const d = rf.openingsWorld()[0]; return Math.hypot(s.player.x - d.x, s.player.z - d.z); });
+  check(s2.base?.id === spot.id && JSON.stringify(s2.base.chest) === JSON.stringify(before.base.chest) && JSON.stringify(crate2) === JSON.stringify(crate) && doorGap < 3,
+    `${tag} : après rechargement, refuge ${s2.base?.id}, coffre identique (${total(s2.base?.chest)} objets), caisse ${JSON.stringify(crate2?.chest ?? null)}, joueur à ${round(doorGap)} m de la nouvelle porte`);
+
+  // Menu : « Voir mon refuge » (il ne choisit rien), la ligne sous le refuge (comment en changer), la caisse.
+  await clearZombies(page);
+  await hit(page, device, '#quit');
+  await until(page, () => !document.getElementById('menu').classList.contains('hidden'), null, 10000);
+  const menu1 = await ev(page, () => ({ home: document.getElementById('save-home').textContent.trim(), text: document.getElementById('save-text').textContent, play: document.getElementById('play-label').textContent }));
+  const near = await textBox(page, '#save-move');
+  const crateLine = await textBox(page, '#save-crate');
+  check(menu1.home === 'Voir mon refuge' && menu1.play === 'Rentrer au refuge' && /^Ton refuge : .+ · \d ouvertures?$/.test(menu1.text),
+    `${tag} : menu « ${menu1.text} », bouton « ${menu1.home} », « ${menu1.play} »`);
+  check(!!near && near.shown && near.text === NEAR_NOTE && !near.clipped, `${tag} : départ choisi tout près du refuge : « ${near?.text} »`);
+  const crateWant = overflow ? new RegExp(`^Caisse de ${overflow} objets devant ton ancien refuge, à \\d+ m du nouveau\\.$`) : /^$/;
+  check(overflow ? !!crateLine?.shown && crateWant.test(crateLine.text) && !crateLine.clipped : !crateLine?.shown, `${tag} : menu, caisse « ${crateLine?.text} »`);
+  const menuFit = await ev(page, () => ({ sw: document.documentElement.scrollWidth, play: document.getElementById('play').getBoundingClientRect().bottom <= innerHeight + 0.5 }));
+  check(menuFit.sw <= (device === 'mobile' ? 390 : 1280) && menuFit.play, `${tag} : menu, scrollWidth ${menuFit.sw} px, « ${menu1.play} » ${menuFit.play ? 'à l\'écran' : 'hors de l\'écran'}`);
+  await shot(page, `${pre}-25-menu`);
+  await hit(page, device, '#save-home');
+  const back = await until(page, (t) => (document.getElementById('save-move').textContent.replace(/\s+/g, ' ') === t ? document.getElementById('play-label').textContent : null), MOVE_HOW, 5000);
+  check(back === 'Rentrer au refuge', `${tag} : « Voir mon refuge » recentre la carte sur le refuge : « ${MOVE_HOW} », « ${back} »`);
+
+  // Point choisi à 600 m du refuge : la ligne le dit, « Rentrer au refuge » ramène à la porte, et le HUD donne le lieu
+  // du refuge, pas celui du point.
+  const home = await ev(page, () => {
+    const b = window.__earthlife.save.base;
+    window.__earthlife.picker.setPlace({ lat: b.lat + 0.0054, lon: b.lon, name: 'Point à 600 m', area: 'essai' }, { fly: false });
+    return { want: b.place.area ? `${b.place.name} · ${b.place.area}` : b.place.name };
+  });
+  const note600 = await until(page, () => (document.getElementById('play-label').textContent === 'Rentrer au refuge' && !document.getElementById('save-move').hidden ? document.getElementById('save-move').textContent : null), null, 5000);
+  await hit(page, device, '#play');
+  // Le lieu du HUD se redessine avec les conditions : on attend qu'il donne le refuge, sinon on relève ce qu'il donne.
+  const hudNow = (want) => {
+    const { session: s, refuge: rf } = window.__earthlife;
+    if (!s?.player || s.paused || !document.getElementById('menu').classList.contains('hidden') || !document.getElementById('loading').classList.contains('hidden')) return null;
+    const d = rf.openingsWorld()[0];
+    const place = document.getElementById('place').textContent;
+    return want === null || place === want ? { place, gap: Math.hypot(s.player.x - d.x, s.player.z - d.z) } : null;
+  };
+  const hud600 = (await until(page, hudNow, home.want, 90000)) ?? (await ev(page, hudNow, null));
+  check(note600?.replace(/\s+/g, ' ') === NEAR_NOTE && hud600?.place === home.want && hud600.gap < 3,
+    `${tag} : point à 600 m, « ${note600} », partie reprise à ${round(hud600?.gap ?? NaN)} m de la porte, lieu affiché « ${hud600?.place} »`);
+
+  // Caisse du surplus, reprise après le rechargement : 2 m devant l'ancienne porte, « Récupérer le coffre » la vide
+  // dans le sac.
+  if (overflow) {
+    await clearZombies(page);
+    await leave(page, device);
+    const { at, want } = await ev(page, (c) => {
+      const { save, session: s } = window.__earthlife;
+      return { at: s.store.proj.toLocal(save.orphanChest.lat, save.orphanChest.lon), want: s.store.proj.toLocal(c.lat, c.lon) };
+    }, old.crateAt);
+    const gap = Math.hypot(at.x - want.x, at.z - want.z);
+    // Sac vidé (le butin des fouilles y est) : les 30 objets de la caisse y tiennent.
+    await ev(page, () => { const inv = window.__earthlife.session.survivor.inventory; for (const k of Object.keys(inv)) delete inv[k]; });
+    await debug(page, 'teleport', at.x + old.nx * 0.8, at.z + old.nz * 0.8);
+    const label = await until(page, (id) => window.__label(id)?.startsWith('Récupérer le coffre') ? window.__label(id) : null, 'search', 10000);
+    check(gap < 0.3 && label === `Récupérer le coffre${device === 'mobile' ? '' : ' (E)'}`, `${tag} : caisse à ${round(gap)} m du point prévu devant l'ancienne porte, bouton « ${label} »`);
+    await shot(page, `${pre}-26-caisse`);
+    await press(page, device, 'KeyE', 'search');
+    const got = await toastSeen(page, 'Coffre récupéré', 60000);
+    const left = await ev(page, () => window.__earthlife.save.orphanChest);
+    check(!!got && left === null, `${tag} : « ${got} », caisse vide`);
+  }
+  await clearZombies(page);
+  await hit(page, device, '#quit');
+  await until(page, () => !document.getElementById('menu').classList.contains('hidden'), null, 10000);
+  check(await ev(page, () => document.getElementById('save-crate').hidden), `${tag} : menu, plus de ligne de caisse`);
+
+  // Expédition : Pérouges par la recherche du menu.
+  await page.fill('#place-search', 'Pérouges');
+  const sugg = await page.waitForSelector('#place-suggestions:not([hidden]) li', { timeout: 20000 }).then(() => true, () => false);
+  if (sugg) await hit(page, device, '#place-suggestions li');
+  else await page.press('#place-search', 'Enter');
+  const play2 = await until(page, () => (/Pérouges/.test(document.getElementById('place-name').textContent) ? document.getElementById('play-label').textContent : null), null, 15000);
+  const far = await textBox(page, '#save-move');
+  check(play2 === 'Partir en expédition ici' && !!far && far.shown && far.text === PEROUGES_NOTE && !far.clipped, `${tag} : Pérouges choisi, « ${play2} », « ${far?.text} »`);
+  const sw = await ev(page, () => document.documentElement.scrollWidth);
+  check(sw <= (device === 'mobile' ? 390 : 1280), `${tag} : menu, scrollWidth ${sw} px`);
+  await shot(page, `${pre}-27-menu-perouges`);
+  await hit(page, device, '#play');
+  const there = await until(page, () => { const s = window.__earthlife.session; return s?.player && document.getElementById('loading').classList.contains('hidden') && Math.abs(s.origin.lat - 45.9034) < 1e-3 ? true : null; }, null, 90000);
+  check(!!there, `${tag} : expédition à Pérouges lancée`);
+  const expBox = await toastBox(page, 'Expédition : ');
+  check(expBox?.text === 'Expédition : ton refuge est à 31,5 km (flèche bleue)', `${tag} : notification « ${expBox?.text} »`);
+  check(!!expBox && !expBox.clipped && !expBox.hits.length, `${tag} : notification entière (${expBox?.box})${expBox?.hits.length ? `, chevauche ${expBox.hits.join(', ')}` : ''}`);
+  const quest = await ev(page, () => ({ stage: document.getElementById('quest-stage').textContent, text: document.getElementById('quest-text').textContent }));
+  const questBox = await textBox(page, '#quest-text');
+  check(quest.stage === 'Expédition' && quest.text === AWAY_QUEST && !questBox?.clipped,
+    `${tag} : mission « ${quest.stage} · ${quest.text} »${questBox?.clipped ? ' (coupée)' : ''}`);
+  await shot(page, `${pre}-28-expedition`);
+
+  const chestBefore = (await snapshot(page)).base.chest;
+  const spot2 = await moveSpot(page, await ev(page, () => ({ x: window.__earthlife.session.player.x, z: window.__earthlife.session.player.z })), 0);
+  if (check(!!spot2, `${tag} : bâtiment de Pérouges qui peut devenir le refuge`)) {
+    const n2 = await toastCount(page);
+    const l4 = await searchFor(page, device, spot2, `${tag} Pérouges`);
+    const hint2 = await toastBox(page, MOVE_TOAST);
+    check(l4 === `Déménager ici${r}` && hint2?.text === `${MOVE_TOAST} : Déménager ici${r}` && !hint2.clipped && !hint2.hits.length,
+      `${tag} : à Pérouges, bouton « ${l4} », notification « ${hint2?.text} » (${hint2?.box}), une fois par partie et la partie de Pérouges est neuve${hint2 ? '' : ` ; vues : ${JSON.stringify((await seen(page)).toasts.slice(-6))}`}`);
+    if (hint2) await afterLoot(page, `${tag} Pérouges`, hint2, n2);
+    await clearZombies(page);
+    await press(page, device, 'KeyR', 'action2');
+    const card2 = await until(page, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') && c.querySelector('.rp-card-title')?.textContent === 'Déménager ici ?'; }, null, 10000);
+    if (card2) await hit(page, device, '#card [data-card-btn="move"]');
+    const moved2 = await until(page, (id) => window.__earthlife.save.base?.id === id, spot2.id, 10000);
+    await wait(500);
+    const s3 = await snapshot(page);
+    const place = await ev(page, () => ({ ...window.__earthlife.save.base.place, lat: window.__earthlife.save.base.lat, home: window.__earthlife.session.home }));
+    check(!!card2 && !!moved2 && Math.abs(place.lat - 45.903) < 0.01 && place.name === 'Pérouges' && place.home,
+      `${tag} : refuge déplacé à Pérouges (${place.name} · ${place.area}, lat ${round(place.lat, 4)}), la partie est au refuge`);
+    check(Object.keys(chestBefore).every((k) => (s3.base.chest[k] ?? 0) >= chestBefore[k]), `${tag} : coffre suivi jusqu'à Pérouges ${JSON.stringify(s3.base.chest)}`);
+    check(/· Refuge déplacé : .+, Pérouges$/.test(s3.journal.at(-1) ?? ''), `${tag} : carnet « ${s3.journal.at(-1)} »`);
+    const q2 = await ev(page, () => document.getElementById('quest-text').textContent);
+    check(q2 === 'Pas de mission en cours : choisis-en une avec « Missions » au refuge.', `${tag} : mission « ${q2} »`);
+    await shot(page, `${pre}-29-perouges-demenage`);
+    if (device === 'mobile') {
+      await landscapeTexts(page, tag);
+      await page.setViewportSize(DEVICES.mobile.viewport);
+    }
+
+    // Rechargement sur le menu : la sauvegarde a le refuge de Pérouges, son coffre, et le menu le montre.
+    await until(page, () => !window.__earthlife.saveStore.dirty, null, 10000);
+    await page.goto(START.replace(/\?.*$/, '?time=day&debug=1'));
+    await until(page, () => !!window.__earthlife?.picker && !document.getElementById('menu').classList.contains('hidden'), null, 30000);
+    await wait(500);
+    const after = await ev(page, () => {
+      const b = window.__earthlife.save.base;
+      return { id: b?.id, chest: b?.chest, text: document.getElementById('save-text').textContent, play: document.getElementById('play-label').textContent, reason: window.__earthlife.saveStore.reason ?? null };
+    });
+    check(after.id === spot2.id && JSON.stringify(after.chest) === JSON.stringify(s3.base.chest) && /^Ton refuge : .+ · Pérouges · \d ouvertures?$/.test(after.text) && after.play === 'Rentrer au refuge' && !after.reason,
+      `${tag} : après rechargement, menu « ${after.text} », « ${after.play} », coffre identique`);
+    await shot(page, `${pre}-31-menu-recharge`);
+  }
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
   if (only !== 'mobile') await desktop();
   if (only !== 'desktop') await mobile();
+  if (only !== 'mobile') await relocation('desktop');
+  if (only !== 'desktop') await relocation('mobile');
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {
   check(false, `exception du test : ${err?.stack ?? err}`);
