@@ -11,7 +11,7 @@ import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
   offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, BAG_CAPACITY,
 } from './survival.js';
-import { createRenderer, makeBeacon, cutaway } from './scene.js';
+import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
 import { createCharacters } from './characters.js';
 import { createAtmosphere } from './atmosphere.js';
 import { createInput } from './input.js';
@@ -1555,13 +1555,18 @@ function syncScene(s, dt) {
 function syncBase(s, dt) {
   const r = s.refuge, b = r.base;
   const a = b ? r.anchor() : null;
-  const key = a ? `${b.id}|${a.x.toFixed(1)}|${a.z.toFixed(1)}` : '';
+  // Bâtiment du refuge chargé : mât sur le toit réellement dessiné (pan ou toit plat), pas sur la hauteur gardée
+  // dans la sauvegarde (périmée pour une partie d'avant les hauteurs déduites) ; la clé change à son arrivée.
+  const bi = a ? s.store.buildingIds?.get(b.id) : undefined;
+  const bld = bi === undefined ? null : s.store.buildings[bi] ?? null;
+  const key = a ? `${b.id}|${a.x.toFixed(1)}|${a.z.toFixed(1)}|${bld ? 1 : 0}` : '';
   if (key !== s.viewBase) {
     s.viewBase = key;
     s.viewVersion = -1;
     s.viewInside = undefined;
     const door = a ? r.openingsWorld()[0] : null;
-    baseView.setBase(a ? { x: a.x, z: a.z, roofHeight: b.height, doorX: door?.ax ?? a.x, doorZ: door?.az ?? a.z } : null);
+    const roof = !a ? 0 : bld ? roofTop(bld, a.x, a.z) ?? b.height : b.height;
+    baseView.setBase(a ? { x: a.x, z: a.z, roofHeight: roof, doorX: door?.ax ?? a.x, doorZ: door?.az ?? a.z } : null);
   }
   if (a && r.version !== s.viewVersion) {
     s.viewVersion = r.version;
