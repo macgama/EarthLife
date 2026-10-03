@@ -267,6 +267,8 @@ export function createOnline({
     if (!enabled || !started || closedForGood) return 'off';
     if (choice === 'off') return 'seul';
     if (block === 'perime') return 'perime';
+    // Maintenance au premier lancement : pas de carte, mais la pastille le dit (O14).
+    if (choice === null && maint) return 'maintenance';
     if (choice === null && block !== 'invite') return 'off';
     if (block === 'autre-onglet') return 'autre-onglet';
     if (block === 'invite') return 'invite';

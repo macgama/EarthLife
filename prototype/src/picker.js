@@ -24,7 +24,7 @@ const SIDE_LAYOUT = '(min-width: 760px)';
 const DEFAULT_NAME = 'Point sur la carte';
 const MY_POSITION = 'Ma position';
 const MY_POSITION_NOTE = `Position arrondie à 100 m. Une zone privée de ${PRIVATE.radius} m t'entoure : personne ne t'y voit.`;
-const PROTECT_NOTE = `Lieu protégé : personne ne te verra à moins de ${PRIVATE.radius} m.`;
+const PROTECT_NOTE = `Lieu protégé : personne ne te verra à moins de ${PRIVATE.radius} m`; // annexe A, sans point
 const MAP_LOCALE = {
   'AttributionControl.ToggleAttribution': 'Afficher les crédits',
   'Map.Title': 'Carte du monde',
@@ -176,31 +176,36 @@ function migratePlace(p, cities) {
   return { ...p, lat, lon, area };
 }
 
+// Lieu rangé : { place, legacyHome } ou null. legacyHome : « Ma position » rangée par une version d'avant (sans v: 2),
+// dont la zone privée promise (section 6.6) n'a jamais été créée ; createPicker la crée, puis marque le lieu.
 function readSaved(cities, storage) {
   try {
     const text = storage?.getItem(STORAGE_KEY) ?? null;
     const raw = JSON.parse(text ?? 'null');
     const saved = normalizePlace(raw);
     if (saved) {
-      let place = raw.v === PLACE_FORMAT ? saved : migratePlace(saved, cities);
+      const legacy = raw.v !== PLACE_FORMAT;
+      let place = legacy ? migratePlace(saved, cities) : saved;
       // « Ma position » vient toujours du GPS : jamais plus de 3 décimales, jamais de coordonnées affichées.
       if (place.name === MY_POSITION) {
         place = { ...place, lat: roundCoord(place.lat), lon: roundCoord(place.lon), area: looksLikeCoords(place.area) ? '' : place.area };
       }
-      // Réécrit aussitôt : la position précise ne reste pas dans le stockage.
-      if (stamp(place) !== text) save(storage, place);
-      return place;
+      const legacyHome = legacy && place.name === MY_POSITION;
+      // Réécrit aussitôt : la position précise ne reste pas dans le stockage (sans v: 2 tant que la zone manque).
+      if (legacyHome) save(storage, place, { stamped: false });
+      else if (stamp(place) !== text) save(storage, place);
+      return { place, legacyHome };
     }
     // Ancienne version du menu : seul l'identifiant de la ville était gardé.
     const city = cities.find((c) => c.id === storage?.getItem(LEGACY_CITY_KEY));
-    return city ? normalizePlace(placeFromCity(city)) : null;
+    return city ? { place: normalizePlace(placeFromCity(city)), legacyHome: false } : null;
   } catch {
     return null;
   }
 }
 
-function save(storage, place) {
-  try { storage.setItem(STORAGE_KEY, stamp(place)); } catch { /* stockage indisponible */ }
+function save(storage, place, { stamped = true } = {}) {
+  try { storage.setItem(STORAGE_KEY, stamped ? stamp(place) : JSON.stringify(place)); } catch { /* stockage indisponible */ }
 }
 
 function defaultStorage() {
@@ -325,9 +330,17 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const finePointer = window.matchMedia('(pointer: fine)');
 
-  let current = readSaved(cities, storage);
+  const saved = readSaved(cities, storage);
+  let current = saved?.place ?? null;
   let zones = loadZones(storage); // zones privées ; gardées en mémoire même si le stockage est bloqué ou plein
   let zonesSaved = true; // dernière écriture des zones réussie ; sinon, la liste en mémoire fait foi
+  // Ancien « Autour de moi » : sa zone privée est créée une fois, autour du point arrondi (une zone proche est
+  // réutilisée sans nouveau tirage). Le lieu ne passe au format 2 qu'une fois la zone rangée : sinon, on réessaie
+  // au prochain chargement.
+  if (saved?.legacyHome) {
+    keepZone(zoneFor(zones, current.lat, current.lon, rand, { now: now(), name: current.area }));
+    if (zonesSaved) save(storage, current);
+  }
   let placeNote = ''; // note propre au lieu choisi (zone privée), rétablie après le géocodage inverse
   let token = 0; // change à chaque nouveau lieu : une réponse en retard ne l'écrase pas
   let visible = false;
@@ -414,7 +427,7 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
 
   function zoneNote(text, r) {
     if (!r.dropped) return text;
-    return `${text} Zone privée la plus ancienne retirée${r.dropped.name ? ` : ${r.dropped.name}` : ''}.`;
+    return `${text}${text.endsWith('.') ? '' : '.'} Zone privée la plus ancienne retirée${r.dropped.name ? ` : ${r.dropped.name}` : ''}.`;
   }
 
   function renderProtect() {

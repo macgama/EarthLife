@@ -4,7 +4,9 @@
 
 export const PROTOCOL = 1;
 export const CLIENT_LEVEL = 1;                    // comparé à minClient (section 4.8)
-export const FLAGS = { run: 1, inside: 2, carrying: 4, down: 8 };
+// crown : posé par le serveur seulement, dans les lignes de `near` d'un survivant en couronne anonyme (spec 3.1 et
+// 6.6 : jamais de flèche vers lui) ; un client ne l'envoie pas (allure de 0 à 15).
+export const FLAGS = { run: 1, inside: 2, carrying: 4, down: 8, crown: 16 };
 export const CELL_DEG = 0.0036;                   // carreau d'environ 400 m
 export const RULES = {
   maxPayload: 2048, hz: 4, beatMs: 5000, tickMs: 250, nearM: 150, farM: 400, nameM: 30,
@@ -372,7 +374,7 @@ const SERVER = {
     const ts = get(o, 'ts');
     out.ts = SAFE(ts) ? ts : bad('ts');
     out.p = list(o, 'p', NEAR_MAX, (e) => (Array.isArray(e) && e.length === 6 && inRange(e[0], 1, MAX_U31 - 1)
-      && latOk(e[1]) && lonOk(e[2]) && inRange(e[3], 0, 255) && inRange(e[4], 0, 15)
+      && latOk(e[1]) && lonOk(e[2]) && inRange(e[3], 0, 255) && inRange(e[4], 0, 31)
       ? [e[0], e[1], e[2], e[3], e[4], nameOrZero(e[5], 'p')] : null));
     out.f = list(o, 'f', FAR_MAX, (e) => (Array.isArray(e) && e.length === 2 && inRange(e[0], 0, 7)
       && inRange(e[1], 0, 100000) ? [e[0], e[1]] : null));

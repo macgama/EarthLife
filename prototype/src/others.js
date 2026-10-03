@@ -2,14 +2,15 @@
 // l'heure du serveur, rejoués dans le passé (350 ms en WebSocket, 1 300 ms en repli HTTP), fondus d'apparition et
 // d'effacement, flèches lointaines, compte « autour », alerte de suivi. Module pur : aucune horloge interne, l'heure
 // du serveur est passée à chaque appel.
-import { fromE6, nameOf, metersBetween } from './net/protocol.js';
+import { fromE6, nameOf, metersBetween, RULES } from './net/protocol.js';
 
 export const OTHERS = {
   keep: 8, delayWs: 350, delayPoll: 1300, extrapolateMs: 250, jumpM: 30, fadeInMs: 500, fadeOutMs: 1000,
   silenceMs: 10000, maxSpeed: 9.5 * 1.2,
-  // Saut : plus de 30 m, et plus que ce que le serveur accepte entre deux instantanés (11,4 m/s × Δt + 4 m ; en
-  // repli à 3 s, un coureur fait 30 m sans sauter). Instantané daté de plus de 60 s après l'heure du serveur : ignoré.
-  jumpPadM: 4, aheadMs: 60000,
+  // Saut : plus que ce que le serveur accepte entre deux instantanés (11,4 m/s × Δt + 4 m), et, en repli HTTP
+  // seulement, plus de 30 m (à 3 s, un coureur fait 30 m sans sauter). Instantané daté de plus de 60 s après l'heure
+  // du serveur : ignoré. tickMs : tic du serveur (un instantané part au tic qui suit tout déplacement).
+  jumpPadM: 4, aheadMs: 60000, tickMs: RULES.tickMs,
   // Alerte de suivi : 5 min cumulées à 30 m ou moins sur 6 min, 200 m parcourus, une fois par survivant et par heure.
   followM: 30, followNeedS: 300, followWindowS: 360, followMovedM: 200, followEveryS: 3600, followBucketS: 5,
 };
@@ -34,8 +35,12 @@ export function shortArc(from, to) {
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-// Écart au-delà duquel deux instantanés espacés de `dtMs` sont un saut (fondu à la nouvelle place).
-const jumpLimit = (dtMs) => Math.max(OTHERS.jumpM, (OTHERS.maxSpeed * Math.max(0, dtMs)) / 1000 + OTHERS.jumpPadM);
+// Écart au-delà duquel deux instantanés espacés de `dtMs` sont un saut (fondu à la nouvelle place). En WebSocket, un
+// rattrapage plus rapide que la course se verrait glisser (rejoué 350 ms dans le passé, il tiendrait en un tic).
+function jumpLimit(dtMs, ws) {
+  const reach = (OTHERS.maxSpeed * Math.max(0, dtMs)) / 1000 + OTHERS.jumpPadM;
+  return ws ? reach : Math.max(OTHERS.jumpM, reach);
+}
 
 // Position rejouée à l'heure `rt` : interpolation linéaire entre deux instantanés, cap par le plus court arc ;
 // avant le premier, on tient le premier ; après le dernier, mouvement prolongé de 250 ms au plus, puis arrêt.
@@ -89,6 +94,7 @@ export function createOthers({ delayMs = OTHERS.delayWs } = {}) {
     // Instantané `near` validé par parseServer : { ts, p: [[sid, a, o, h, m, nm ou 0]], f, c }.
     push(near, serverNow = near?.ts) {
       if (!near || !Number.isFinite(near.ts) || !(near.ts > lastTs) || !Array.isArray(near.p)) return false;
+      const ws = delay < OTHERS.delayPoll;
       // Un instantané venu du futur bloquerait tous les suivants (ts croissants) : il est ignoré.
       if (Number.isFinite(serverNow) && near.ts > serverNow + OTHERS.aheadMs) return false;
       lastTs = near.ts;
@@ -110,10 +116,21 @@ export function createOthers({ delayMs = OTHERS.delayWs } = {}) {
           s.bornAt = serverNow - alpha * OTHERS.fadeInMs;
         }
         const last = s.snaps[s.snaps.length - 1];
-        if (last && metersBetween(last, snap) > jumpLimit(snap.t - last.t)) {
-          // Saut : le personnage réapparaît à sa nouvelle place, en fondu.
-          s.snaps = [];
-          s.bornAt = Math.max(near.ts, serverNow);
+        if (last) {
+          const d = metersBetween(last, snap);
+          let dt = snap.t - last.t;
+          // En WebSocket, plus d'un tic sans instantané : le survivant n'avait pas bougé jusqu'au tic précédent (le
+          // serveur relayait sa dernière position, par exemple pendant une coupure de son réseau). Sans ce repère,
+          // le rattrapage serait étalé sur tout l'intervalle, déjà presque rejoué : un bond d'une image.
+          if (ws && d > 0 && dt > OTHERS.tickMs) {
+            s.snaps.push({ ...last, t: snap.t - OTHERS.tickMs });
+            dt = OTHERS.tickMs;
+          }
+          if (d > jumpLimit(dt, ws)) {
+            // Saut : le personnage réapparaît à sa nouvelle place, en fondu.
+            s.snaps = [];
+            s.bornAt = Math.max(near.ts, serverNow);
+          }
         }
         s.snaps.push(snap);
         if (s.snaps.length > OTHERS.keep) s.snaps.shift();

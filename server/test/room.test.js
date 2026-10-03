@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRoom } from '../src/room.js';
 import { createMemoryStore } from '../src/store-memory.js';
 import { dayOf } from '../src/rules.js';
-import { cellOf, cellKey, cellCenter, parseServer, nameOf, RULES } from '../../prototype/src/net/protocol.js';
+import { cellOf, cellKey, cellCenter, parseServer, nameOf, RULES, FLAGS } from '../../prototype/src/net/protocol.js';
 
 const T0 = 1791640000000;
 const H = 3600000, DAY = 86400000;
@@ -144,6 +144,8 @@ test('flèches : secteur et distance arrondie seulement, 3 au plus, jamais vers 
   const e = near.p.find((x) => x[0] === crownNear.sid);
   assert.ok(e);
   assert.equal(e[5], 0);
+  // Marqué « couronne » (FLAGS.crown) : le client ne lui fait pas de flèche précise ; les autres ne le sont pas.
+  assert.equal(e[4] & FLAGS.crown, FLAGS.crown);
   assert.equal(near.c, 5, '1 visible à 150 m et 4 flèches possibles ; la couronne lointaine n\'est pas comptée');
 });
 
@@ -158,6 +160,10 @@ test('surnom seulement à 30 m, jamais en couronne', async () => {
   assert.equal(nameOf(of(a)[5]), nameOf(a.nm));
   assert.equal(of(b)[5], 0);
   assert.equal(of(c)[5], 0);
+  // Couronne marquée (pas de flèche chez les autres), publics non marqués, à 30 m comme au-delà.
+  assert.equal(of(c)[4] & FLAGS.crown, FLAGS.crown);
+  assert.equal(of(a)[4] & FLAGS.crown, 0);
+  assert.equal(of(b)[4] & FLAGS.crown, 0);
   // Le surnom ne voyage jamais au-delà de 30 m, sous aucune forme.
   const text = JSON.stringify(me.all('near'));
   assert.ok(!text.includes(JSON.stringify(b.nm)) || JSON.stringify(b.nm) === JSON.stringify(a.nm));

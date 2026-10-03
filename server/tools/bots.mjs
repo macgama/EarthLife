@@ -46,6 +46,11 @@ export async function freePort([lo, hi] = portRange(), host = '127.0.0.1') {
 }
 
 // Adresse fictive du n-ième survivant (10.x.y.z), pour X-Forwarded-For.
+// Cap du protocole (0 à 255) = celui du jeu (others.js, headingOfYaw) : yaw du personnage, 0 vers le sud (+z local),
+// 128 vers le nord. Ici le cap de marche vaut 0 au nord, sens horaire : yaw = π − cap.
+const TAU = 2 * Math.PI;
+export const headingByte = (heading) => Math.round(((((Math.PI - heading) % TAU) + TAU) % TAU) / TAU * 256) % 256;
+
 export const fakeIp = (n, base = 10) => `${base}.${(n >> 16) & 255}.${(n >> 8) & 255}.${(n & 255) || 1}`;
 
 // Un survivant simulé. `halfM` : demi-côté du carré où il marche ; `moving` : à 4 Hz, sinon immobile (une position
@@ -78,7 +83,7 @@ export function createBot({
   function position() {
     if (moving) step(1 / hz);
     const p = point();
-    const h = Math.round((((heading % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) / (2 * Math.PI) * 255);
+    const h = headingByte(heading);
     send({ t: 'p', s: ++seq, ct: Math.round(performance.now() - helloAt), a: p.a, o: p.o, h, m: moving && speed > 3 ? 1 : 0 });
   }
 

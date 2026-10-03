@@ -46,7 +46,7 @@ function seeded(seed) {
 test('constantes de la spécification 7.2', () => {
   assert.equal(PROTOCOL, 1);
   assert.equal(CLIENT_LEVEL, 1);
-  assert.deepEqual(FLAGS, { run: 1, inside: 2, carrying: 4, down: 8 });
+  assert.deepEqual(FLAGS, { run: 1, inside: 2, carrying: 4, down: 8, crown: 16 });
   assert.equal(CELL_DEG, 0.0036);
   const expected = { maxPayload: 2048, hz: 4, beatMs: 5000, tickMs: 250, nearM: 150, farM: 400, nameM: 30,
     gestureM: 50, maxNear: 24, maxFar: 3, run: 9.5, speedSlack: 1.2, speedPadM: 4, clockSlackMs: 2000,
@@ -326,6 +326,8 @@ const VALID_SERVER = [
   { t: 'sid', sid: 99 },
   { t: 'near', ts: 1791640212500, p: [[12, 45757402, 4830871, 190, 0, [3, 40, 15]], [14, 45757910, 4831622, 64, 1, 0]], f: [[2, 350]], c: 3 },
   { t: 'near', ts: 1791640212500, p: [], f: [], c: 0 },
+  // Survivant en couronne anonyme qui court : allure 1 + marque de couronne 16.
+  { t: 'near', ts: 1791640212500, p: [[15, 45757402, 4830871, 190, 17, 0]], f: [], c: 1 },
   { t: 'g', sid: 12, k: 0 },
   { t: 'mks', m: [['s', 'b45.75718_4.83049', 1791638900000, 1791660500000], ['g', 'c457561_48311', 1791639000000, 1791898200000]] },
   { t: 'rfs', r: ['b45.75902_4.83211'], x: [] },
@@ -349,6 +351,7 @@ test('parseServer : messages de l\'annexe C acceptés, le reste refusé', () => 
     { t: 'near', ts: 1, p: [[12, 45757402, 4830871, 190, 0, 'Renard']], f: [], c: 1 },
     { t: 'near', ts: 1, p: [[12, 95757402, 4830871, 190, 0, 0]], f: [], c: 1 },
     { t: 'near', ts: 1, p: [], f: [[8, 350]], c: 0 }, { t: 'near', ts: 1, p: [], f: [], c: -1 },
+    { t: 'near', ts: 1, p: [[12, 45757402, 4830871, 190, 32, 0]], f: [], c: 1 },
     { t: 'near', ts: 1, p: Array.from({ length: 65 }, () => [12, 1, 1, 1, 0, 0]), f: [], c: 0 },
     { t: 'mks', m: [['s', 'b<img>', 1, 2]] }, { t: 'mks', m: [['g', 'c457561_48311', 5, 2]] },
     { t: 'rfs', r: ['b45.75902_4.83211'] }, { t: 'rfs', r: [12], x: [] },

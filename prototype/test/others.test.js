@@ -51,11 +51,16 @@ test('prolongement de 250 ms au plus, puis arrêt ; élan plafonné', () => {
   close(eastOf(find(o.sample(T0 + 700), 5)), 1.4, 0.06, 'prolongé de 100 ms');
   close(eastOf(find(o.sample(T0 + 850), 5)), 2, 0.06, 'prolongé de 250 ms');
   close(eastOf(find(o.sample(T0 + 3000), 5)), 2, 0.06, 'arrêté après 250 ms');
-  // Deux instantanés bruités (20 m en 250 ms, 80 m/s) : l'élan est plafonné à 11,4 m/s.
+  // Deux instantanés bruités (6,5 m en 250 ms, 26 m/s, sans être un saut) : l'élan est plafonné à 11,4 m/s.
   const n = createOthers();
   n.push(near(T0, [row(6, 0)]), T0);
-  n.push(near(T0 + 250, [row(6, 20)]), T0 + 250);
-  close(eastOf(find(n.sample(T0 + 5000), 6)), 20 + 9.5 * 1.2 * 0.25, 0.06, 'prolongement plafonné');
+  n.push(near(T0 + 250, [row(6, 6.5)]), T0 + 250);
+  close(eastOf(find(n.sample(T0 + 5000), 6)), 6.5 + 9.5 * 1.2 * 0.25, 0.06, 'prolongement plafonné');
+  // En repli HTTP, 20 m en 250 ms ne sont pas un saut (moins de 30 m) : élan plafonné aussi.
+  const q = createOthers({ delayMs: OTHERS.delayPoll });
+  q.push(near(T0, [row(6, 0)]), T0);
+  q.push(near(T0 + 250, [row(6, 20)]), T0 + 250);
+  close(eastOf(find(q.sample(T0 + 5000), 6)), 20 + 9.5 * 1.2 * 0.25, 0.06, 'prolongement plafonné (repli)');
   // Un seul instantané : immobile.
   const u = createOthers();
   u.push(near(T0, [row(8, 3)]), T0);
@@ -74,11 +79,11 @@ test('saut de plus de 30 m : réapparition à la nouvelle place, en fondu', () =
   assert.equal(s.alpha, 0, 'fondu depuis 0');
   close(find(o.sample(T0 + 1250), 9).alpha, 0.5, 1e-9, 'fondu de 0,5 s');
   assert.equal(find(o.sample(T0 + 1500), 9).alpha, 1);
-  // 29 m : pas un saut, le personnage glisse.
-  const g = createOthers();
+  // Repli HTTP, 29 m en 1 s : pas un saut, le personnage glisse.
+  const g = createOthers({ delayMs: OTHERS.delayPoll });
   g.push(near(T0, [row(4, 0)]), T0);
   g.push(near(T0 + 1000, [row(4, 29)]), T0 + 1000);
-  close(eastOf(find(g.sample(T0 + 350 + 500), 4)), 14.5, 0.06, 'interpolé');
+  close(eastOf(find(g.sample(T0 + 1300 + 500), 4)), 14.5, 0.06, 'interpolé');
 });
 
 test('saut jugé aussi à la vitesse : un coureur vu toutes les 3 s glisse, 45 m en 3 s ou 31 m en 250 ms sautent', () => {
@@ -89,20 +94,59 @@ test('saut jugé aussi à la vitesse : un coureur vu toutes les 3 s glisse, 45 m
   const s = find(o.sample(T0 + 3200), 2);
   close(eastOf(s), (30.4 * 1900) / 3200, 0.06, 'interpolé entre les deux instantanés');
   assert.equal(s.alpha, 1, 'pas de fondu');
-  // 37 m en 3 s glissent encore (11,4 m/s × 3 s + 4 m = 38,2 m) ; 45 m en 3 s sautent.
-  const g = createOthers();
+  // Repli : 37 m en 3 s glissent encore (11,4 m/s × 3 s + 4 m = 38,2 m) ; 45 m en 3 s sautent.
+  const g = createOthers({ delayMs: OTHERS.delayPoll });
   g.push(near(T0, [row(3, 0)]), T0);
   g.push(near(T0 + 3000, [row(3, 37)]), T0 + 3000);
   assert.equal(find(g.sample(T0 + 3000), 3).alpha, 1);
-  const j = createOthers();
+  const j = createOthers({ delayMs: OTHERS.delayPoll });
   j.push(near(T0, [row(4, 0)]), T0);
   j.push(near(T0 + 3000, [row(4, 45)]), T0 + 3000);
   assert.equal(find(j.sample(T0 + 3000), 4).alpha, 0, 'saut : fondu depuis 0');
-  // En dessous de 30 m, jamais un saut ; au-delà, 31 m en 250 ms en est un.
-  const k = createOthers();
+  // En dessous de 30 m, jamais un saut en repli ; au-delà, 31 m en 250 ms en est un.
+  const k = createOthers({ delayMs: OTHERS.delayPoll });
   k.push(near(T0, [row(5, 0)]), T0);
   k.push(near(T0 + 250, [row(5, 31)]), T0 + 250);
   assert.equal(find(k.sample(T0 + 250), 5).alpha, 0);
+});
+
+test('WebSocket : reprise après un silence (position relayée figée), saut en fondu plutôt qu\'une glissade', () => {
+  // B marche à 3 m/s, puis son réseau coupe 6 s : le serveur relaie sa dernière position (instantanés figés à chaque
+  // tic, quelqu'un d'autre bouge autour), puis elle repart 18 m plus loin.
+  const o = createOthers();
+  let t = T0;
+  for (let i = 0; i <= 16; i++, t += 250) o.push(near(t, [row(7, 0.75 * i)]), t);
+  const frozen = 0.75 * 16;
+  for (let i = 0; i < 24; i++, t += 250) o.push(near(t, [row(7, frozen)]), t);
+  o.push(near(t, [row(7, frozen + 18.75)]), t);
+  let s = find(o.sample(t), 7);
+  assert.equal(s.alpha, 0, 'fondu depuis 0 : aucune glissade à 75 m/s');
+  close(eastOf(s), frozen + 18.75, 0.06, 'à sa nouvelle place');
+  // B seul : instantanés figés toutes les 2 s seulement ; la reprise arrive au tic suivant le changement.
+  const b = createOthers();
+  t = T0;
+  for (let i = 0; i <= 8; i++, t += 250) b.push(near(t, [row(8, 0.75 * i)]), t);
+  for (let i = 0; i < 3; i++, t += 2000) b.push(near(t, [row(8, 6)]), t);
+  b.push(near(t + 250, [row(8, 6 + 18.75)]), t + 250);
+  s = find(b.sample(t + 250), 8);
+  assert.equal(s.alpha, 0, 'seul : saut aussi');
+  // Survivant immobile qui se met à marcher (instantanés toutes les 2 s, puis à chaque tic) : il part au dernier tic,
+  // au lieu de bondir de 80 % du premier pas d'un coup.
+  const w = createOthers();
+  w.push(near(T0, [row(9, 0)]), T0);
+  w.push(near(T0 + 2000, [row(9, 0)]), T0 + 2000);
+  w.push(near(T0 + 3000, [row(9, 1)]), T0 + 3000);
+  s = find(w.sample(T0 + 3000 + 50), 9);
+  close(eastOf(s), 0, 0.06, 'encore à l\'arrêt 300 ms avant son premier pas (sans repère : 0,7 m)');
+  assert.equal(s.alpha, 1);
+  close(eastOf(find(w.sample(T0 + 3000 + 225), 9)), 0.5, 0.06, 'au milieu de son premier pas');
+  // Un coureur (2,4 m par tic) ne saute jamais ; 6,85 m en un tic est la limite (11,4 m/s × 0,25 s + 4 m).
+  const r = createOthers();
+  for (let i = 0; i <= 12; i++) r.push(near(T0 + i * 250, [row(4, 2.4 * i)]), T0 + i * 250);
+  r.push(near(T0 + 13 * 250, [row(4, 2.4 * 12 + 6.8)]), T0 + 13 * 250);
+  assert.equal(find(r.sample(T0 + 13 * 250), 4).alpha, 1);
+  r.push(near(T0 + 14 * 250, [row(4, 2.4 * 12 + 6.8 + 6.9)]), T0 + 14 * 250);
+  assert.equal(find(r.sample(T0 + 14 * 250), 4).alpha, 0);
 });
 
 test('instantané daté de plus de 60 s dans le futur : ignoré, les suivants passent', () => {

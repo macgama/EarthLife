@@ -17,9 +17,10 @@ import { createLog, cleanFields } from '../src/log.js';
 import { clientIp, ipScope, normIp } from '../src/http.js';
 import { createMemoryStore } from '../src/store-memory.js';
 import { startDevServer } from '../dev.mjs';
-import { freePort } from '../tools/bots.mjs';
+import { freePort, headingByte } from '../tools/bots.mjs';
 import { runAdmin } from '../admin.mjs';
 import { cellOf, parseServer, parseSyncReply, placeOfId, toE6 } from '../../prototype/src/net/protocol.js';
+import { headingOfYaw, yawOfHeading } from '../../prototype/src/others.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MAIN = path.join(HERE, '..', 'src', 'main.js');
@@ -1111,4 +1112,16 @@ test('TRUST_PROXY=1 sans X-Forwarded-For lisible, hors du mode local : aucune li
   } finally {
     await srv.stop();
   }
+});
+
+test('survivants simulés : cap envoyé dans la convention du jeu (dessinés tournés vers leur marche)', () => {
+  // Cap de marche des bots : 0 au nord, sens horaire (x += sin, nord += cos). Jeu : x à l'est, z au sud.
+  for (const [name, heading, dx, dz] of [['nord', 0, 0, -1], ['est', Math.PI / 2, 1, 0], ['sud', Math.PI, 0, 1],
+    ['ouest', -Math.PI / 2, -1, 0], ['nord-est', Math.PI / 4, Math.SQRT1_2, -Math.SQRT1_2]]) {
+    const h = headingByte(heading);
+    assert.equal(h, headingOfYaw(Math.atan2(dx, dz)), name);
+    const y = yawOfHeading(h);
+    assert.ok(Math.hypot(Math.sin(y) - dx, Math.cos(y) - dz) < 0.03, `${name} : dessiné tourné vers sa marche`);
+  }
+  assert.equal(headingByte(2 * Math.PI + 0.001), 128);
 });

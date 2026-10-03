@@ -518,6 +518,46 @@ test('lieu rangé par une version d’avant : arrondi et réécrit aussitôt, sa
   });
 });
 
+test('ancien « Autour de moi » (sans v: 2) : sa zone privée est créée une fois, autour du point arrondi', async () => {
+  const legacy = { lat: 45.760123, lon: 4.834567, name: 'Ma position', area: '45,7601° N, 4,8346° E' };
+  const storage = memoryStorage({ [PLACE_KEY]: JSON.stringify(legacy) });
+  await withMenu(storage, async ({ root }) => {
+    let draws = 0;
+    const picker = createPicker({ root, cities: CITIES, storage, rand: () => { draws += 1; return 0.5; }, now: () => 7 });
+    const zones = loadZones(storage);
+    assert.equal(zones.length, 1, 'une zone rangée');
+    assert.equal(draws, 2, 'un seul tirage du décalage');
+    assert.equal(zoneStatus(zones, legacy.lat, legacy.lon).kind, 'private', 'le vrai domicile est dans la zone');
+    assert.ok(margin(zones[0], legacy) >= 200);
+    assert.deepEqual(picker.getZones(), zones);
+    assert.deepEqual(JSON.parse(storage.data.get(PLACE_KEY)), { lat: 45.76, lon: 4.835, name: 'Ma position', area: '', v: 2 });
+    // Rechargement : plus rien à faire (aucun tirage, toujours une zone).
+    createPicker({ root, cities: CITIES, storage, rand: () => { draws += 1; return 0.5; } });
+    assert.equal(draws, 2);
+    assert.equal(loadZones(storage).length, 1);
+  });
+  // Zones impossibles à ranger : le lieu est arrondi, mais pas marqué ; la zone sera créée au prochain chargement.
+  const full = memoryStorage({ [PLACE_KEY]: JSON.stringify(legacy) });
+  const setItem = full.setItem;
+  let blocked = true;
+  full.setItem = (k, v) => { if (k === ZONES_KEY && blocked) throw new Error('QuotaExceededError'); setItem(k, v); };
+  await withMenu(full, async ({ root }) => {
+    const picker = createPicker({ root, cities: CITIES, storage: full, rand: () => 0.5 });
+    assert.equal(picker.getZones().length, 1, 'zone gardée le temps de la page');
+    assert.deepEqual(JSON.parse(full.data.get(PLACE_KEY)), { lat: 45.76, lon: 4.835, name: 'Ma position', area: '' }, 'arrondi, sans v');
+    blocked = false;
+    createPicker({ root, cities: CITIES, storage: full, rand: () => 0.5 });
+    assert.equal(loadZones(full).length, 1);
+    assert.equal(JSON.parse(full.data.get(PLACE_KEY)).v, 2);
+  });
+  // Un « Ma position » rangé par cette version (v: 2) dont la zone a été retirée : on ne la recrée pas.
+  const removed = memoryStorage({ [PLACE_KEY]: JSON.stringify({ lat: 45.76, lon: 4.835, name: 'Ma position', area: '', v: 2 }) });
+  await withMenu(removed, async ({ root }) => {
+    const picker = createPicker({ root, cities: CITIES, storage: removed, rand: noDraw });
+    assert.equal(picker.getZones().length, 0);
+  });
+});
+
 test('« Protéger ce lieu » : actif pour un lieu proche d’une zone mais non couvert, puis « Lieu protégé »', async () => {
   const zone = { lat: 45.758, lon: 4.832, cLat: 45.758 - 120 / (DEG * R), cLon: 4.832, r: 400, name: 'Lyon 2e', usedAt: 1 };
   const storage = memoryStorage({ [ZONES_KEY]: JSON.stringify([zone]) });
@@ -533,7 +573,7 @@ test('« Protéger ce lieu » : actif pour un lieu proche d’une zone mais non 
     btn.fire('click');
     assert.equal(btn.getAttribute('aria-disabled'), 'true');
     assert.equal(btn.text, 'Lieu protégé');
-    assert.equal(els['#picker-note'].textContent, 'Lieu protégé : personne ne te verra à moins de 400 m.');
+    assert.equal(els['#picker-note'].textContent, 'Lieu protégé : personne ne te verra à moins de 400 m', 'annexe A, mot pour mot');
     const zones = loadZones(storage);
     assert.equal(zones.length, 1);
     assert.deepEqual([zones[0].cLat, zones[0].cLon, zones[0].usedAt], [zone.cLat, zone.cLon, 50], 'même centre, aucun tirage');

@@ -639,8 +639,9 @@ test('maintenance : aucune carte, nouvel essai plus tard ; bye maintenance', asy
   h.health.maintenance = true;
   h.online.start();
   await h.clock.advance(0);
-  assert.equal(h.online.status, 'off', 'choix pas encore fait');
+  assert.equal(h.online.status, 'maintenance', 'choix pas encore fait : la pastille dit la maintenance (O14)');
   assert.equal(h.online.needsChoice(), false, 'maintenance : pas de carte');
+  assert.equal(h.WS.list.length, 0);
   h.online.choose(true);
   assert.equal(h.online.status, 'maintenance');
   assert.equal(h.WS.list.length, 0);
@@ -661,6 +662,20 @@ test('maintenance : aucune carte, nouvel essai plus tard ; bye maintenance', asy
   assert.equal(h.WS.list.length, 1);
   await h.clock.advance(1);
   assert.equal(h.WS.list.length, 2, 'santé puis nouvelle connexion');
+});
+
+test('maintenance sans choix rangé : pastille « maintenance », puis la carte quand elle finit', async () => {
+  const h = harness({ choice: null });
+  h.health.maintenance = true;
+  h.online.start();
+  await h.clock.advance(0);
+  assert.equal(h.online.status, 'maintenance');
+  assert.equal(h.online.needsChoice(), false);
+  h.health.maintenance = false;
+  await h.clock.advance(60000);
+  assert.equal(h.online.status, 'off', 'fin de la maintenance : en attente du choix');
+  assert.equal(h.online.needsChoice(), true);
+  assert.equal(h.WS.list.length, 0, 'aucune connexion sans choix');
 });
 
 test('version périmée : « Mets le jeu à jour », plus aucun essai', async () => {

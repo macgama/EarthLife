@@ -473,8 +473,10 @@ export function createRoom({
   function entryOf(o, named) {
     if (o.entryTick !== tickNo) {
       const p = o.ps.pos;
-      o.entry = [o.sid, p.a, p.o, p.h, p.m & ~FLAGS.inside, 0];
-      o.entryNamed = o.crown ? o.entry : [o.sid, p.a, p.o, p.h, p.m & ~FLAGS.inside, o.name];
+      // En couronne : marqué (FLAGS.crown), pour que les autres ne lui fassent pas de flèche, et jamais de surnom.
+      const m = (p.m & ~FLAGS.inside) | (o.crown ? FLAGS.crown : 0);
+      o.entry = [o.sid, p.a, p.o, p.h, m, 0];
+      o.entryNamed = o.crown ? o.entry : [o.sid, p.a, p.o, p.h, m, o.name];
       o.entryTick = tickNo;
     }
     return named ? o.entryNamed : o.entry;
