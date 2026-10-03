@@ -1,0 +1,12 @@
+{
+  "name": "earthlife-server",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test:probe": "node probe/essai-sonde.mjs"
+  },
+  "dependencies": {
+    "ws": "8.22.0"
+  }
+}
