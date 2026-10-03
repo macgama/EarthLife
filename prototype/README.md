@@ -116,6 +116,9 @@ Les réponses du réseau viennent de `test/fixtures/offline-routes.mjs` : de vra
 - `src/tiles.js`, `src/mvt.js`, `src/tile-worker.js` : téléchargement, cache et lecture des tuiles vectorielles
 - `src/world.js` : monde du joueur (bâtiments, lieux, butin), chargement des tuiles au fil de la marche
 - `src/chunks.js` : construction et démontage des carrés de 64 m autour du joueur
+- `src/roadway.js` : largeur de la chaussée dessinée et emprise des passages piétons, partagées par le sol et le décor
+- `src/markings.js` : passages piétons, lignes d'arrêt et lignes au sol posés en géométrie (nets sur téléphone)
+- `src/props.js` : décor tiré des vraies données (arbres, voitures garées contre la bordure, bancs sur le trottoir)
 - `src/osm.js` : ville de secours générée quand les tuiles sont injoignables
 - `src/weather.js` : météo Open-Meteo et règles de jeu qui en découlent
 - `src/sun.js` : position du soleil
