@@ -1,6 +1,8 @@
 // Rendu du décor démontable : tous les arbres, voitures et bancs visibles tiennent dans six InstancedMesh
 // globaux de capacité fixe (six appels de dessin, au lieu d'un groupe d'arbres par morceau).
 // Retirer un morceau remplace ses instances par les dernières ; un objet démonté passe à l'échelle 0.
+// Une voiture démontée laisse une tache d'huile au sol pendant 72 h, en solo comme en ligne : un septième maillage
+// instancié, rattaché au groupe à la première tache (un appel de dessin de plus, seulement s'il y a des taches).
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PROP_KINDS } from './props.js';
@@ -64,6 +66,28 @@ function benchGeometry() {
   return merged(parts);
 }
 
+// Tache d'huile : disque sombre de 2,2 × 4 m, au contour irrégulier (toujours le même), plus clair au bord pour se
+// fondre dans la chaussée. Couleurs par sommet : même matériau (et même programme) que les bancs.
+export const STAIN_SIZE = { w: 2.2, l: 4 };
+function stainGeometry() {
+  const n = 24, center = new THREE.Color(0x15181b), rim = new THREE.Color(0x2c3036);
+  const pos = [0, 0, 0], col = [center.r, center.g, center.b], idx = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const k = 1 + 0.1 * Math.sin(3 * a + 0.7) + 0.06 * Math.sin(7 * a + 2.1) - 0.04 * Math.cos(5 * a);
+    pos.push(Math.cos(a) * k * (STAIN_SIZE.w / 2) * 0.92, 0, Math.sin(a) * k * (STAIN_SIZE.l / 2) * 0.92);
+    col.push(rim.r, rim.g, rim.b);
+    idx.push(0, 1 + ((i + 1) % n), 1 + i);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(new Array(pos.length / 3).fill([0, 1, 0]).flat(), 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  g.computeBoundingSphere();
+  return g;
+}
+
 // Phares d'alarme : quelques lignes ajoutées au shader Lambert, sans texture ni lumière en plus.
 export function addCarLamps(material) {
   material.onBeforeCompile = (shader) => {
@@ -113,7 +137,8 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   bodyGeo.setAttribute('aGlow', glowAttr);
   const cabinGeo = carCabinGeometry();
   const benchGeo = benchGeometry();
-  const geometries = [crownGeo, trunkGeo, bodyGeo, cabinGeo, benchGeo];
+  const stainGeo = stainGeometry();
+  const geometries = [crownGeo, trunkGeo, bodyGeo, cabinGeo, benchGeo, stainGeo];
   const materials = [
     new THREE.MeshLambertMaterial({ color: COLORS.crown, flatShading: true }),
     new THREE.MeshLambertMaterial({ color: COLORS.crownDark, flatShading: true }),
@@ -151,6 +176,16 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   const pools = [crowns, darkCrowns, trunks, bodies, cabins, benches];
   const glow = tracker(glowAttr);
   bodies.trackers.push(glow);
+
+  // Taches d'huile : hors de `pools` (ni démontables, ni comptées par scaleOf), rattachées au groupe à la première.
+  const stainMesh = new THREE.InstancedMesh(stainGeo, materials[5], PROP_CAPACITY.car);
+  stainMesh.name = 'taches';
+  stainMesh.count = 0;
+  stainMesh.visible = false;
+  stainMesh.frustumCulled = false;
+  stainMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const stains = { mesh: stainMesh, cap: PROP_CAPACITY.car, count: 0, ids: new Array(PROP_CAPACITY.car), slots: new Map(), keyOf: new Map(), trackers: [tracker(stainMesh.instanceMatrix)] };
+  const stainChunks = new Map(); // clé de morceau → identifiants des taches
 
   const chunks = new Map(); // clé de morceau → identifiants affichés
   const owner = new Map(); // identifiant → clé de morceau
@@ -221,15 +256,57 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
     pl.slots.delete(id);
   }
 
+  // Tache à la place de la voiture `p` (identifiant, x, z, yaw), rangée avec le morceau `key`.
+  function addStain(p, key) {
+    if (!p || stains.slots.has(p.id) || stains.count >= stains.cap) return;
+    const slot = stains.count++;
+    stains.ids[slot] = p.id;
+    stains.slots.set(p.id, slot);
+    stains.keyOf.set(p.id, key);
+    if (!stainChunks.has(key)) stainChunks.set(key, []);
+    stainChunks.get(key).push(p.id);
+    _q.setFromAxisAngle(_up, p.yaw ?? 0);
+    _m.compose(_p.set(p.x, 0.015, p.z), _q, _s.set(1, 1, 1));
+    stainMesh.setMatrixAt(slot, _m);
+    touch(stains.trackers[0], slot);
+    if (!stainMesh.parent) group.add(stainMesh);
+  }
+
+  function removeStain(id) {
+    const slot = stains.slots.get(id);
+    if (slot === undefined) return;
+    const last = --stains.count;
+    if (slot !== last) {
+      stainMesh.instanceMatrix.array.copyWithin(slot * 16, last * 16, last * 16 + 16);
+      touch(stains.trackers[0], slot);
+      stains.ids[slot] = stains.ids[last];
+      stains.slots.set(stains.ids[slot], slot);
+    }
+    stains.ids[last] = undefined;
+    stains.slots.delete(id);
+    const key = stains.keyOf.get(id);
+    stains.keyOf.delete(id);
+    const list = stainChunks.get(key);
+    if (list) {
+      const i = list.indexOf(id);
+      if (i >= 0) list.splice(i, 1);
+      if (!list.length) stainChunks.delete(key);
+    }
+  }
+
   function commit() {
     for (const pl of pools) {
       pl.mesh.count = pl.count;
       pl.mesh.visible = pl.count > 0;
       for (const t of pl.trackers) flush(t);
     }
+    stainMesh.count = stains.count;
+    stainMesh.visible = stains.count > 0;
+    flush(stains.trackers[0]);
   }
 
   function dropChunkNow(key) {
+    for (const id of [...(stainChunks.get(key) ?? [])]) removeStain(id);
     const ids = chunks.get(key);
     if (!ids) return;
     for (const id of ids) {
@@ -239,8 +316,9 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
     chunks.delete(key);
   }
 
-  // props : { trees, cars, benches } (sortie de propsForChunk) ou une liste de Prop.
-  function setChunk(key, props) {
+  // props : { trees, cars, benches } (sortie de propsForChunk) ou une liste de Prop. goneCars : voitures démontées du
+  // morceau, qui ne sont pas dessinées (chunks.js les retire de props) mais laissent leur tache d'huile.
+  function setChunk(key, props, goneCars = null) {
     dropChunkNow(key);
     const list = Array.isArray(props) ? props : [...(props?.trees ?? []), ...(props?.cars ?? []), ...(props?.benches ?? [])];
     const ids = [];
@@ -252,7 +330,9 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
       for (const pl of targets) add(pl, p);
       owner.set(p.id, key);
       ids.push(p.id);
+      if (p.kind === 'car' && hidden(p.id)) addStain(p, key);
     }
+    for (const p of goneCars ?? []) if (p?.kind === 'car' && !owner.has(p.id)) addStain(p, key);
     chunks.set(key, ids);
     commit();
   }
@@ -263,6 +343,7 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   }
 
   // Démonté : échelle 0 (gardé en mémoire si l'objet n'est pas affiché, pour le prochain setChunk).
+  // Voiture affichée : sa tache d'huile apparaît (ou disparaît quand elle repousse).
   function setGone(id, gone = true) {
     if (gone) goneIds.add(id);
     else goneIds.delete(id);
@@ -270,6 +351,9 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
       const slot = pl.slots.get(id);
       if (slot !== undefined) writeMatrix(pl, slot);
     }
+    const car = bodies.slots.get(id);
+    if (gone && car !== undefined) addStain(bodies.props[car], owner.get(id));
+    else if (!gone) removeStain(id);
     commit();
   }
 
@@ -312,9 +396,14 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   function stats() {
     return {
       trees: trunks.count, cars: bodies.count, benches: benches.count,
-      drawCalls: pools.filter((pl) => pl.mesh.visible && pl.count > 0).length,
+      drawCalls: pools.filter((pl) => pl.mesh.visible && pl.count > 0).length + (stainMesh.parent && stains.count > 0 ? 1 : 0),
       chunks: chunks.size, dropped,
     };
+  }
+
+  // Taches d'huile affichées : nombre et identifiants des voitures (tests, débogage).
+  function stainList() {
+    return stains.ids.slice(0, stains.count);
   }
 
   function dispose() {
@@ -322,10 +411,12 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
     for (const pl of pools) pl.mesh.dispose();
     geometries.forEach((g) => g.dispose());
     materials.forEach((m) => m.dispose());
+    stainMesh.dispose();
     chunks.clear();
     owner.clear();
     alarms.clear();
+    stainChunks.clear();
   }
 
-  return { setChunk, dropChunk, setGone, alarm, update, dispose, stats, scaleOf, group };
+  return { setChunk, dropChunk, setGone, alarm, update, dispose, stats, scaleOf, stains: stainList, group };
 }

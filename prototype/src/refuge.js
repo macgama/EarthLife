@@ -32,6 +32,8 @@ const FIELD_MIN_GAP = 2;
 const HEAL = { normal: 0.2, infirmerie: 0.5 };
 const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const TAU = Math.PI * 2;
+// Jeu à plusieurs (spec 3.2) : bâtiment déjà refuge partagé d'un autre survivant.
+export const TAKEN_TEXT = "Déjà le refuge d'un autre survivant";
 
 // « 1er oct. », « 12 oct. » (date locale du refuge).
 export function dayLabel(ms, utcOffset) {
@@ -314,6 +316,8 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     if (!building) return { ok: false, why: 'Aucun bâtiment ici' };
     if (sourceOf() !== 'tiles') return { ok: false, why: 'Rues générées : pas de refuge dans la ville de secours' };
     if (base()?.id === building.id) return { ok: false, why: "C'est déjà ton refuge" };
+    // Jeu à plusieurs : le serveur a donné ce bâtiment à un autre survivant (premier arrivé).
+    if (ctx.taken) return { ok: false, why: TAKEN_TEXT };
     if (!searchedOf(building, ctx)) return { ok: false, why: "Il faut d'abord fouiller ce bâtiment" };
     const shape = claimableShape(building);
     if (!shape.ok) return shape;
@@ -666,7 +670,7 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
       secondary = act('trap', near.id, `Poser un piège${r} · ${TIMES.trap} s`, TIMES.trap, 'secondary');
     }
     const bd = ctx.building;
-    if (!secondary && bd && bd.id !== b?.id && sourceOf() === 'tiles' && claimableShape(bd).ok && searchedOf(bd, ctx)) {
+    if (!secondary && bd && !ctx.taken && bd.id !== b?.id && sourceOf() === 'tiles' && claimableShape(bd).ok && searchedOf(bd, ctx)) {
       secondary = b
         ? act('move', bd.index, `Déménager ici${r}`, 0, 'secondary')
         : act('claim', bd.index, `En faire mon refuge${r}`, 0, 'secondary');

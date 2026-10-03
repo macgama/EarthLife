@@ -200,8 +200,138 @@ export function cardHtml(spec = {}) {
   const buttons = (spec.buttons ?? []).map((b) => cardButton(b)).join('');
   return `<div class="rp-card rp-tone-${tone}">`
     + `<div class="rp-card-head">${ico ? `<span class="rp-card-icon">${icon(ico, { size: 32 })}</span>` : ''}<h2 class="rp-card-title" id="rp-card-title">${esc(spec.title ?? '')}</h2></div>`
-    + `${lines ? `<ul class="rp-card-lines">${lines}</ul>` : ''}${score}`
+    + `${lines ? `<ul class="rp-card-lines">${lines}</ul>` : ''}${score}${cardField(spec.field)}${cardLink(spec.link)}`
     + `${buttons ? `<div class="rp-card-btns">${buttons}</div>` : ''}</div>`;
+}
+
+// Champ de saisie d'une carte (code d'invitation) : { label, value?, maxLength?, placeholder? }. Sa valeur est
+// passée au bouton touché (onButton(id, valeur)).
+function cardField(f) {
+  if (!f) return '';
+  const max = Number.isInteger(f.maxLength) && f.maxLength > 0 ? f.maxLength : 32;
+  return `<label class="rp-card-field"><span class="rp-card-field-name">${esc(f.label)}</span>`
+    + `<input class="rp-card-input" data-card-field type="text" maxlength="${max}" autocomplete="off" autocapitalize="off" spellcheck="false"`
+    + ` value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder ?? '')}"></label>`;
+}
+
+// Lien d'une carte vers une page du jeu (« Ce que le jeu garde ») : adresse relative seulement.
+const PAGE_HREF = /^[a-z0-9-]+\.html(#[a-z0-9-]+)?$/;
+function cardLink(l) {
+  if (!l || !PAGE_HREF.test(l.href ?? '')) return '';
+  return `<p class="rp-card-link"><a class="rp-card-a" href="${esc(l.href)}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a></p>`;
+}
+
+// ---------- Jeu à plusieurs : cartes (textes de l'annexe A de la spécification) ----------
+// Purs : chaque fonction rend la spec d'une carte (cardHtml) ; main.js la montre et reçoit le bouton touché.
+
+export const PRIVACY_PAGE = 'confidentialite.html';
+export const ONLINE_TEXTS = {
+  intro: [
+    'Tu verras les autres survivants près de toi, en direct, et les traces qu\'ils laissent.',
+    'Ils voient ton personnage et ton surnom (Renard des Quais 27) de près, jamais ta vraie position.',
+    'Pas de discussion écrite : on se parle avec 6 gestes. Chacun garde ses zombies, son sac et sa partie.',
+    'Près de chez toi, une zone privée te rend invisible. Tu joues près de chez toi depuis la carte ? Protège ce lieu.',
+  ],
+  keeps: 'Ce que le jeu garde',
+  invite: "Code d'invitation",
+  inviteBad: "Code d'invitation refusé : vérifie-le.",
+  survivor: 'Survivant',
+  reportThanks: 'Merci. Vous ne vous verrez plus.',
+  follow: 'Un survivant reste près de toi depuis 5 min',
+  erase: 'Ton surnom, ton drapeau, tes masquages et tes signalements seront effacés du serveur. Ta partie reste sur cet appareil.',
+  erased: 'Données en ligne supprimées',
+  exportWarn: "Ce fichier contient les lieux où tu as joué ces derniers jours, dont ton refuge : ne le partage qu'avec toi-même (pour changer d'appareil).",
+};
+// Motifs de « Signaler » (r du protocole : 1, 2, 3).
+export const REPORT_REASONS = [
+  { r: 1, label: 'Me suit partout' },
+  { r: 2, label: 'Abuse des gestes' },
+  { r: 3, label: 'Triche (vitesse, téléportation)' },
+];
+
+// Carte du premier passage : boutons 'on' et 'off' ; avec un code demandé par le serveur, champ « Code d'invitation ».
+export function onlineChoiceCard({ invite = false, inviteRefused = false } = {}) {
+  return {
+    title: 'Jouer à plusieurs',
+    lines: [...ONLINE_TEXTS.intro, inviteRefused ? ONLINE_TEXTS.inviteBad : ''],
+    field: invite ? { label: ONLINE_TEXTS.invite, maxLength: 16 } : null,
+    link: { href: PRIVACY_PAGE, label: ONLINE_TEXTS.keeps },
+    buttons: [{ id: 'on', label: 'Jouer à plusieurs', primary: true }, { id: 'off', label: 'Jouer seul' }],
+  };
+}
+
+// Carte d'un survivant touché à 30 m ou moins : boutons 'hide', 'report', 'close'.
+export function survivorCard({ name = null } = {}) {
+  return {
+    title: name || ONLINE_TEXTS.survivor,
+    buttons: [{ id: 'hide', label: 'Masquer', primary: true }, { id: 'report', label: 'Signaler' }, { id: 'close', label: 'Fermer' }],
+  };
+}
+
+// « Pourquoi ? » : boutons 'r1', 'r2', 'r3' et 'cancel'.
+export function reportCard() {
+  return {
+    title: 'Pourquoi ?', tone: 'warn',
+    buttons: [...REPORT_REASONS.map((x) => ({ id: `r${x.r}`, label: x.label })), { id: 'cancel', label: 'Annuler' }],
+  };
+}
+
+// Alerte de suivi : carte discrète, boutons 'hide' et 'close'.
+export function followCard() {
+  return {
+    title: ONLINE_TEXTS.follow, tone: 'warn', autoHideMs: 12000,
+    buttons: [{ id: 'hide', label: 'Masquer', primary: true }, { id: 'close', label: 'Fermer' }],
+  };
+}
+
+const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+// « 2026-10-02 » → « 2 oct. 2026 » ; null si ce n'est pas une date.
+export function dayText(day) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof day === 'string' ? day : '');
+  if (!m || +m[2] < 1 || +m[2] > 12 || +m[3] < 1 || +m[3] > 31) return null;
+  return `${+m[3] === 1 ? '1er' : +m[3]} ${MONTHS[+m[2] - 1]} ${m[1]}`;
+}
+
+// « Voir mes données » : `data` = réponse de /v1/me (op show) lue par online.showMe, ou null. `name` : surnom
+// recomposé par le client (jamais un texte venu du réseau) ; `refuge` : texte du refuge partagé, composé par main.js.
+export function myDataCard(data, { name = null, refuge = '' } = {}) {
+  const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+  const lines = !data ? ['Impossible de lire tes données : le serveur ne répond pas, ou tu n\'as pas encore joué en ligne.'] : [
+    `Surnom : ${name || '—'}`,
+    dayText(data.createdOn) ? `Identité créée le ${dayText(data.createdOn)}` : '',
+    dayText(data.seenOn) ? `Dernière venue le ${dayText(data.seenOn)}` : '',
+    `Refuge partagé : ${refuge || 'aucun'}`,
+    `Masquages : ${n(data.blocks)} · signalements faits : ${n(data.reports)}`,
+    'Ta position de jeu n\'est jamais gardée : elle est oubliée 15 s après ton départ.',
+  ];
+  return { title: 'Mes données', lines, link: { href: PRIVACY_PAGE, label: ONLINE_TEXTS.keeps }, buttons: [{ id: 'close', label: 'Fermer', primary: true }] };
+}
+
+// « Supprimer mes données en ligne » : boutons 'erase' et 'cancel'.
+export function eraseCard() {
+  return {
+    title: 'Supprimer mes données en ligne', tone: 'danger', lines: [ONLINE_TEXTS.erase],
+    buttons: [{ id: 'erase', label: 'Supprimer', primary: true }, { id: 'cancel', label: 'Annuler' }],
+  };
+}
+
+// Avant « Exporter ma partie » (section 6.6) : boutons 'export' et 'cancel'.
+export function exportCard() {
+  return {
+    title: 'Exporter ma partie', tone: 'warn', lines: [ONLINE_TEXTS.exportWarn],
+    buttons: [{ id: 'export', label: 'Exporter', primary: true }, { id: 'cancel', label: 'Annuler' }],
+  };
+}
+
+// « Mes zones privées » : une ligne par zone avec « Retirer » (boutons 'z0', 'z1'…), puis 'close'.
+export function zonesCard(zones = []) {
+  const lines = zones.length
+    ? zones.map((z, i) => ({ text: z?.name || `Zone privée ${i + 1}`, button: { id: `z${i}`, label: 'Retirer' } }))
+    : ['Aucune zone privée. « Autour de moi » en crée une ; « Protéger ce lieu » aussi.'];
+  return {
+    title: 'Mes zones privées', lines: zones.length ? ['Personne ne t\'y voit, pas même le serveur.', ...lines] : lines,
+    buttons: [{ id: 'close', label: 'Fermer', primary: true }],
+  };
 }
 
 // ---------- Style ----------
@@ -446,6 +576,14 @@ body.panel-open #controls { display: none !important; }
   cursor: pointer; font: var(--fw-semibold, 600) var(--fs-sm, 13px) / 1.1 ${T.display}; letter-spacing: var(--ls-button, .08em); text-transform: uppercase; touch-action: manipulation;
   transition: background-color ${T.fast} ${T.easeStd}, transform ${T.fast} ${T.easeStd}; }
 .rp-cbtn-line { flex: 0 0 auto; min-height: ${T.touch}; }
+.rp-card-field { display: grid; gap: var(--sp-1, 4px); margin-top: var(--sp-4, 16px); }
+.rp-card-field-name { color: ${T.text2}; font: var(--fw-semibold, 600) var(--fs-2xs, 11px) / 1 ${T.display}; letter-spacing: var(--ls-label, .12em); text-transform: uppercase; }
+.rp-card-input { min-height: ${T.touch}; padding: 0 var(--sp-3, 12px); border: 1px solid ${T.lineStrong}; border-radius: ${T.rSm}; background: ${T.raised}; color: ${T.text};
+  font: var(--fw-medium, 500) var(--fs-md, 15px) / 1 ${T.textFont}; letter-spacing: .04em; }
+.rp-card-input:focus-visible { outline: 2px solid ${T.accent}; outline-offset: 1px; }
+.rp-card-link { margin: var(--sp-3, 12px) 0 0; font: var(--fw-medium, 500) var(--fs-sm, 13px) / 1.3 ${T.textFont}; }
+.rp-card-a { display: inline-flex; align-items: center; min-height: ${T.touch}; color: ${T.text2}; text-decoration: underline; text-underline-offset: 3px; }
+.rp-card-a:hover, .rp-card-a:focus-visible { color: ${T.text}; }
 .rp-cbtn-primary { --rp-btn-bg: ${T.accent}; border: 0; border-radius: 0; color: ${T.onAccent}; font-weight: var(--fw-bold, 700); font-size: var(--fs-md, 15px);
   background: linear-gradient(135deg, transparent calc(var(--chamfer, 10px) * .7071), var(--rp-btn-bg) 0) left / 51% 100% no-repeat,
     linear-gradient(-45deg, transparent calc(var(--chamfer, 10px) * .7071), var(--rp-btn-bg) 0) right / 51% 100% no-repeat; }
@@ -674,8 +812,17 @@ export function createCard(root) {
     if (!b || !root.contains(b)) return;
     const h = handler;
     const id = b.dataset.cardBtn;
+    // Champ de la carte (code d'invitation) : sa valeur suit le bouton.
+    const field = root.querySelector('[data-card-field]');
+    const value = field ? field.value : undefined;
     hide();
-    h?.(id);
+    h?.(id, value);
+  });
+  // Entrée dans le champ : comme le bouton principal.
+  root.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !e.target.matches?.('[data-card-field]')) return;
+    e.preventDefault();
+    root.querySelector('.rp-cbtn-primary')?.click();
   });
 
   return { show, hide, isOpen: () => opened, el: root };
