@@ -1,14 +1,20 @@
-// Réponses enregistrées pour jouer sans réseau dans Playwright (test/base-acceptance.mjs, test/browser-smoke.mjs) :
+// Réponses enregistrées pour jouer sans réseau dans Playwright (test/base-acceptance.mjs, test/browser-smoke.mjs,
+// test/online-acceptance.mjs) :
 //   ROUTES=test/fixtures/offline-routes.mjs node test/base-acceptance.mjs
 // - tuiles OpenFreeMap : vraies tuiles de Lyon (place Bellecour) et de Pérouges, réduites par crop-tiles.mjs
 //   (test/fixtures/tiles/z-x-y.mvt), et l'adresse des tuiles (test/fixtures/tilejson.json) ;
 // - météo Open-Meteo : test/fixtures/open-meteo-rain-night.json ;
-// - Three.js et MapLibre : node_modules (npm ci) au lieu de cdn.jsdelivr.net ;
-// - carte du menu : un style vide ; recherche Photon et Nominatim : Pérouges.
-// Toute autre adresse extérieure est refusée : rien ne sort de la machine.
+// - Three.js et MapLibre : node_modules (npm ci) au lieu de cdn.jsdelivr.net, seulement à la version demandée par
+//   l'adresse (index.html, picker.js) : une autre version installée répond 404, pour qu'aucun essai ne passe avec
+//   une bibliothèque que le jeu publié ne charge pas (montée de version par Dependabot sans les adresses) ;
+// - carte du menu : un style vide ; recherche Photon et Nominatim : Pérouges ;
+// - serveur du jeu en ligne (earthlife.needhelpapp.com) : en maintenance (spec 9.4), comme avec MAINTENANCE=1 ; le
+//   jeu reste en solo, sans carte « Jouer à plusieurs », et une WebSocket vers lui est refermée aussitôt.
+// Toute autre adresse extérieure est refusée : rien ne sort de la machine. Le faux serveur local (127.0.0.1) passe.
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PROTOCOL } from '../../src/net/protocol.js';
 
 const fixtures = path.dirname(fileURLToPath(import.meta.url));
 const cors = { 'access-control-allow-origin': '*' };
@@ -16,15 +22,52 @@ const json = (body) => ({ body: JSON.stringify(body), contentType: 'application/
 const feature = (lon, lat, properties) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties });
 const PEROUGES = { lat: 45.9034, lon: 5.1795 };
 const STYLE = { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#9db8c9' } }] };
+const GAME_SERVER = 'earthlife.needhelpapp.com';
+
+// Serveur du jeu en maintenance : mêmes réponses que room.js (health, sync) et http.js (/v1/me pendant un arrêt).
+function maintenance(route, url) {
+  const reply = (status, body) => route.fulfill({ status, body: JSON.stringify(body), contentType: 'application/json', headers: cors });
+  if (url.pathname === '/v1/health') {
+    return reply(200, { ok: true, v: PROTOCOL, minClient: 1, version: 'maintenance', ws: true, db: true, maintenance: true,
+      invite: false, online: 0, now: Date.now() });
+  }
+  if (url.pathname === '/v1/sync') return reply(200, { msgs: [{ t: 'bye', why: 'maintenance', retryMs: 60000 }] });
+  if (url.pathname === '/v1/me') return reply(503, { ok: false });
+  return reply(404, { ok: false });
+}
+
+// Version installée d'un paquet de node_modules (lue une fois), et avertissement donné une seule fois par texte.
+const versions = new Map();
+function installed(root, pkg) {
+  const key = `${root}|${pkg}`;
+  if (!versions.has(key)) {
+    let v = null;
+    try { v = JSON.parse(readFileSync(path.join(root, 'node_modules', pkg, 'package.json'), 'utf8')).version ?? null; } catch { /* absent */ }
+    versions.set(key, v);
+  }
+  return versions.get(key);
+}
+const warned = new Set();
+const warnOnce = (t) => { if (!warned.has(t)) { warned.add(t); console.error(t); } };
 
 // ctx : contexte Playwright ; root : dossier du prototype (pour node_modules).
 export default async function routes(ctx, root) {
+  // WebSocket vers le serveur du jeu : refermée (1012, comme un redémarrage) sans joindre le réseau ; celles du faux
+  // serveur local ne sont pas touchées. routeWebSocket existe depuis Playwright 1.48.
+  if (typeof ctx.routeWebSocket === 'function') {
+    await ctx.routeWebSocket((u) => u.hostname === GAME_SERVER, (ws) => ws.close({ code: 1012, reason: 'maintenance' }));
+  }
   await ctx.route('**/*', async (route) => {
     const url = new URL(route.request().url());
     if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') return route.continue();
+    if (url.hostname === GAME_SERVER) return maintenance(route, url);
     if (url.host === 'cdn.jsdelivr.net') {
-      const m = url.pathname.match(/^\/npm\/(three|maplibre-gl)@[^/]+\/(.*)$/);
-      const f = m && path.join(root, 'node_modules', m[1], m[2]);
+      const m = url.pathname.match(/^\/npm\/(three|maplibre-gl)@([^/]+)\/(.*)$/);
+      const f = m && path.join(root, 'node_modules', m[1], m[3]);
+      if (f && installed(root, m[1]) !== m[2]) {
+        warnOnce(`offline-routes : ${m[1]}@${m[2]} demandé par le jeu, ${m[1]}@${installed(root, m[1])} dans node_modules (réponse 404)`);
+        return route.fulfill({ status: 404, headers: cors });
+      }
       if (f && existsSync(f)) return route.fulfill({ body: readFileSync(f), contentType: f.endsWith('.css') ? 'text/css' : 'application/javascript', headers: cors });
       return route.fulfill({ status: 404, headers: cors });
     }
