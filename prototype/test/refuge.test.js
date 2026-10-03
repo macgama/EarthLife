@@ -6,7 +6,7 @@ import { createWorldStore, addFeatures, buildPatch } from '../src/world.js';
 import { createChunkedGrid, chunkKey, getAt, isFree, FREE, lineFree } from '../src/collision.js';
 import { claimableShape, wallSamples, countOf, KIT } from '../src/base.js';
 import { HORDE, hordeSize, frontVector, bearingOf } from '../src/horde.js';
-import { createRefuge, dayLabel, underWeather, clockLabel, durationLabel } from '../src/refuge.js';
+import { createRefuge, dayLabel, underWeather, clockLabel, durationLabel, TAKEN_TEXT } from '../src/refuge.js';
 import { createZombieDirector, createPlayer } from '../src/game.js';
 import { createFlowField, reachableFrom } from '../src/flowfield.js';
 
@@ -1405,4 +1405,36 @@ test('transversal : vague de 12 zombies sur 180 s à 30 images par seconde, brè
   assert.ok(struck.size >= 1);
   assert.ok(breachAt !== null && breachAt < 120, `première brèche à ${breachAt} s`);
   assert.equal(snapshot(grid), before, 'aucune case de patch.data ne change');
+});
+
+// ---------- Jeu à plusieurs : refuge partagé d'un autre survivant (spec 3.2, 7.4, 9.1) ----------
+
+test('jeu à plusieurs : bâtiment déjà refuge d\'un autre survivant, ni installation ni déménagement', () => {
+  const env = setup();
+  const [first, second] = houses(env.store);
+  const player = { ...besideWall(env.grid, first), health: 100, hidden: false, shield: 0, yaw: 0 };
+  const ctx = { player, searched: true, now: T0, place: { name: 'Lyon', area: '' } };
+  assert.equal(TAKEN_TEXT, "Déjà le refuge d'un autre survivant");
+  // check('claim') refusé avec le motif, même fouillé ; apply ne fait rien.
+  assert.deepEqual(env.refuge.check('claim', first.index, { ...ctx, taken: true }), { ok: false, why: TAKEN_TEXT, time: 0 });
+  const res = env.refuge.apply('claim', first.index, { ...ctx, taken: true });
+  assert.equal(res.ok, false);
+  assert.equal(res.msg, TAKEN_TEXT);
+  assert.equal(env.save.base, null);
+  // Le motif passe avant « Il faut d'abord fouiller ce bâtiment ».
+  assert.equal(env.refuge.check('claim', first.index, { ...ctx, searched: false, taken: true }).why, TAKEN_TEXT);
+  // Aucun bouton d'installation dans ce bâtiment ; sans taken, il revient.
+  const near = { building: { ...first, index: first.index ?? 0 }, searched: true };
+  assert.equal(env.refuge.actions(player, { ...near, taken: true }).secondary, null);
+  assert.equal(env.refuge.actions(player, { ...near, taken: false }).secondary.id, 'claim');
+  // Avec un refuge : aucun « Déménager ici » vers le refuge d'un autre ; check('move') refusé aussi.
+  const { player: p1, survivor } = claimNear(env, { building: second, bag: {} });
+  env.refuge.apply('exit', null, { player: p1, survivor });
+  const p2 = { ...besideWall(env.grid, first), health: 100, hidden: false, shield: 0, yaw: 0 };
+  assert.equal(env.refuge.actions(p2, { survivor, building: { ...first, index: first.index ?? 0 }, searched: true, taken: true }).secondary, null);
+  assert.equal(env.refuge.actions(p2, { survivor, building: { ...first, index: first.index ?? 0 }, searched: true }).secondary.id, 'move');
+  assert.equal(env.refuge.check('move', first.index, { ...ctx, player: p2, taken: true }).why, TAKEN_TEXT);
+  assert.equal(env.save.base.id, second.id, 'le refuge actuel ne bouge pas');
+  // Sans l'option, rien ne change (jeu solo).
+  assert.equal(env.refuge.check('move', first.index, { ...ctx, player: p2 }).ok, true);
 });

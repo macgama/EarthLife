@@ -4,9 +4,17 @@
   "type": "module",
   "engines": { "node": ">=18" },
   "scripts": {
-    "test:probe": "node probe/essai-sonde.mjs"
+    "test": "node --test test/*.test.js",
+    "test:probe": "node probe/essai-sonde.mjs",
+    "start": "node --max-old-space-size=192 src/main.js",
+    "dev": "node dev.mjs --port 8787 --bots 3 --at 45.7578,4.8320",
+    "abuse": "node tools/abuse.mjs",
+    "bots": "node tools/bots.mjs",
+    "live-check": "node tools/live-check.mjs",
+    "admin": "node admin.mjs"
   },
   "dependencies": {
+    "mysql2": "3.24.5",
     "ws": "8.22.0"
   }
 }

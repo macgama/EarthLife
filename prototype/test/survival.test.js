@@ -422,3 +422,64 @@ test('libellés : « 1 clou », « 2 clous », « 2 bois, 1 clou »', () => {
   assert.equal(countsLabel({ conserve: 1, eau: 2 }), '1 conserve, 2 eaux');
   assert.equal(countsLabel({}), 'rien');
 });
+
+// ---------- Jeu à plusieurs : butin réduit d'un bâtiment fouillé par un autre survivant (spec 3.2, 9.1) ----------
+
+// Générateur reproductible (mulberry32) : une graine, une suite de tirages.
+function seeded(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// rollLoot d'avant le jeu à plusieurs, recopié tel quel : la référence des tirages.
+function rollLootBefore(kind, rand) {
+  const table = LOOT[lootKind(kind)];
+  const found = {};
+  for (const [item, chance, max] of table) {
+    if (rand() < chance) found[item] = (found[item] ?? 0) + 1 + Math.floor(rand() * max);
+  }
+  return found;
+}
+
+test('rollLoot sans option : mêmes résultats et même suite de tirages qu\'avant, sur 1 000 graines', () => {
+  for (const kind of Object.keys(LOOT)) {
+    for (let seed = 1; seed <= 1000; seed++) {
+      const a = seeded(seed), b = seeded(seed);
+      assert.deepEqual(rollLoot(kind, a), rollLootBefore(kind, b), `${kind}, graine ${seed}`);
+      // Le tirage suivant est le même : rollLoot a consommé exactement autant de tirages.
+      assert.equal(a(), b(), `${kind}, graine ${seed} : suite de tirages`);
+    }
+  }
+  // Options vides ou par défaut : identiques aussi.
+  assert.deepEqual(rollLoot('hardware', maxRand(), {}), rollLootBefore('hardware', maxRand()));
+});
+
+test('rollLoot avec REDUCED_LOOT : 1 objet au plus par ligne, fréquence divisée par environ 2,9', async () => {
+  const { REDUCED_LOOT } = await import('../src/shared-world.js');
+  assert.deepEqual(REDUCED_LOOT, { factor: 0.35, maxPerLine: 1 });
+  const N = 20000;
+  for (const kind of ['pharmacy', 'supermarket', 'hardware', 'house']) {
+    let full = 0, reduced = 0;
+    const r1 = seeded(7), r2 = seeded(7);
+    for (let i = 0; i < N; i++) {
+      for (const n of Object.values(rollLoot(kind, r1))) full += n > 0 ? 1 : 0;
+      const got = rollLoot(kind, r2, REDUCED_LOOT);
+      for (const [k, n] of Object.entries(got)) {
+        assert.equal(n, 1, `${kind} : ${k} × ${n}, 1 au plus par ligne`);
+        reduced += 1;
+      }
+    }
+    const ratio = full / reduced;
+    assert.ok(ratio > 2.6 && ratio < 3.2, `${kind} : lignes trouvées ${full} contre ${reduced} (rapport ${ratio.toFixed(2)})`);
+  }
+  // Toujours le maximum : chaque ligne tombe sous 0,35 × chance seulement si le tirage est bas.
+  assert.deepEqual(rollLoot('house', () => 0.99, REDUCED_LOOT), {});
+  const all = rollLoot('hardware', () => 0, REDUCED_LOOT);
+  assert.ok(Object.values(all).every((n) => n === 1) && Object.keys(all).length === LOOT.hardware.length);
+});

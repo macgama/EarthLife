@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<!-- Politique de sécurité du contenu (spec 6.2) : les deux scripts en ligne (importmap et message d'erreur fatale) sont
+     autorisés par leur empreinte SHA-256 ; un changement d'un seul caractère de l'un d'eux demande de la recalculer. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'sha256-gjRsd/fgGZ+ke0ZAjm4YhOLuzwFKv0y+coY0Ga2e5C4=' 'sha256-1iIOm2hactO0ZlM3/NLmPRCobpDHq/3PaANEg3OM64U='; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://tiles.openfreemap.org https://api.open-meteo.com https://photon.komoot.io https://nominatim.openstreetmap.org https://cdn.jsdelivr.net https://earthlife.needhelpapp.com wss://earthlife.needhelpapp.com http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*; img-src 'self' data: blob: https:; worker-src 'self' blob: https://cdn.jsdelivr.net; font-src 'self'">
 <title>EarthLife</title>
 <style>
 /* Polices auto-hébergées : paquets @fontsource (sous-ensemble latin, licence OFL dans assets/fonts). */
@@ -55,6 +58,12 @@
   --c-bag: #c58bff;
   --c-horde: #ff5d5d;
   --c-horde-soft: rgba(255, 93, 93, .16);
+  /* Autres survivants (jeu à plusieurs) : sarcelle, veste, flèches, drapeaux, étiquettes */
+  --c-others: #2bb3a3;
+  --c-others-soft: rgba(43, 179, 163, .18);
+  --c-others-line: rgba(43, 179, 163, .55);
+  --c-others-text: #c9f4ee;
+  --c-others-panel: rgba(6, 22, 20, .74);
   --c-gauge-track: rgba(255, 255, 255, .10);
   /* Opacités */
   --o-disabled: .38;
@@ -760,6 +769,138 @@ body.touch #controls { display: block; }
   .vital.low::before { content: ''; position: absolute; top: 0; bottom: 0; left: -7px; width: 2px; background: var(--c-danger); }
 }
 
+/* ---------- Jeu à plusieurs (lot E) : bloc du menu, aide, pastille, étiquettes, flèches, roue des gestes ---------- */
+.online-block { display: grid; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); background: var(--c-bg-2); border: 1px solid var(--c-line); border-left: 2px solid var(--c-others); border-radius: var(--r-sm); }
+.online-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); }
+.online-line { flex: 1 1 180px; min-width: 0; margin: 0; color: var(--c-text); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+.online-line:empty { display: none; }
+.switch { position: relative; display: inline-flex; align-items: center; gap: 10px; min-height: var(--touch); color: var(--c-text); font: var(--fw-semibold) var(--fs-sm) / 1 var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
+.switch input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; }
+.switch-track { position: relative; flex: none; width: 46px; height: 26px; border: 1px solid var(--c-line-strong); border-radius: var(--r-pill); background: var(--c-field); transition: background var(--t-fast) var(--ease-std), border-color var(--t-fast) var(--ease-std); }
+.switch-track::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--c-text-2); transition: transform var(--t-fast) var(--ease-std), background var(--t-fast) var(--ease-std); }
+.switch input:checked + .switch-track { border-color: var(--c-others); background: var(--c-others-soft); }
+.switch input:checked + .switch-track::after { background: var(--c-others); transform: translateX(20px); }
+.switch input:focus-visible + .switch-track { outline: 2px solid var(--c-text); outline-offset: 2px; }
+.online-more > summary { display: flex; align-items: center; gap: 6px; min-height: var(--touch); color: var(--c-text-2); cursor: pointer; list-style: none; }
+.online-more > summary::-webkit-details-marker { display: none; }
+.online-more > summary::after { content: ''; width: 7px; height: 7px; margin: -4px 0 0 4px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); }
+.online-more[open] > summary::after { margin-top: 3px; transform: rotate(-135deg); }
+.online-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding-bottom: var(--sp-1); }
+#menu .online-actions .secondary { flex: 1 1 200px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--touch); padding: 0 var(--sp-3); font-family: var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
+#menu .online-actions .secondary:disabled { opacity: var(--o-disabled); cursor: not-allowed; }
+#menu .online-actions .icon { width: var(--icon-md); height: var(--icon-md); }
+#zones-open .icon, #online-block .online-ico .icon { color: var(--c-others); }
+#online-mute[aria-pressed="true"] { border-color: var(--c-warn); color: var(--c-warn); }
+#menu #online-erase { border-color: color-mix(in srgb, var(--c-danger) 55%, transparent); color: var(--c-danger); }
+.online-link { flex: 1 1 100%; display: inline-flex; align-items: center; justify-content: center; min-height: var(--touch); padding: 0 var(--sp-1); color: var(--c-others); font-size: var(--fs-sm); text-decoration: underline; text-underline-offset: 3px; }
+.online-link:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
+.help-sec .online-legal { margin-top: var(--sp-2); color: var(--c-text-2); }
+.help-sec .online-age { margin-top: var(--sp-2); color: var(--c-warn); font-weight: var(--fw-semibold); }
+@media (pointer: coarse) { .online-keys { display: none; } }
+@media (pointer: fine) { .online-touch { display: none; } }
+
+/* Pastille en ligne (hud.js, info.online) : sous la quête, en haut à gauche. */
+#online-pill { display: flex; align-items: center; gap: 6px; width: max-content; max-width: 100%; min-width: 0; padding: 5px 10px; background: var(--c-panel); border-left: 2px solid var(--c-text-3); color: var(--c-text-2); font: var(--fw-semibold) var(--fs-sm) / 1.25 var(--font-text); }
+#online-pill-icon { display: inline-flex; flex: none; }
+#online-pill-icon .icon { width: 16px; height: 16px; }
+#online-pill-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#online-pill[data-tone="ok"] { border-left-color: var(--c-others); color: var(--c-text); }
+#online-pill[data-tone="ok"] #online-pill-icon { color: var(--c-others); }
+#online-pill[data-tone="zone"] { border-left-color: var(--c-others); background: linear-gradient(var(--c-others-soft), var(--c-others-soft)), var(--c-panel); color: var(--c-text); }
+#online-pill[data-tone="zone"] #online-pill-icon { color: var(--c-others); }
+#online-pill[data-tone="warn"] { border-left-color: var(--c-warn); color: var(--c-text); }
+#online-pill[data-tone="warn"] #online-pill-icon { color: var(--c-warn); }
+
+/* Étiquettes et bulles des autres (others-view.js, positionnées en pixels de la fenêtre). */
+/* z-index -1 comme #hurt : sous les panneaux du HUD (éléments de grille non positionnés). */
+#others-labels { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.other-label, .other-bubble { position: absolute; left: 0; top: 0; white-space: nowrap; pointer-events: none; }
+.other-label[hidden], .other-bubble[hidden] { display: none; }
+.other-label { padding: 2px 6px; border-left: 2px solid var(--c-others); border-radius: var(--r-xs); background: var(--c-others-panel); color: var(--c-others-text); font: var(--fw-semibold) var(--fs-xs) / 1.2 var(--font-display); letter-spacing: .03em; text-shadow: var(--sh-text); }
+.other-bubble { display: inline-flex; align-items: center; gap: 5px; margin-top: -22px; padding: 4px 10px; border: 1px solid var(--c-others); border-radius: var(--r-md); background: var(--c-panel-strong); box-shadow: var(--sh-1); color: var(--c-text); font: var(--fw-semibold) var(--fs-sm) / 1.1 var(--font-text); }
+.other-bubble-icon { display: inline-flex; color: var(--c-others); }
+.other-bubble-icon .icon { width: 18px; height: 18px; }
+.other-bubble.mine { margin-top: 0; border-color: var(--c-accent-line); }
+.other-bubble.mine .other-bubble-icon { color: var(--c-accent); }
+
+/* Flèches des autres survivants (hud.js) : sarcelle, plus petites que celle de la quête. */
+#compass .arrow[data-kind="survivor"] { left: -11px; top: -11px; width: 22px; height: 22px; transform-origin: 11px 11px; color: var(--c-others); }
+.compass-dist.survivor-dist { color: var(--c-others-text); }
+
+/* Roue des 6 gestes : bouton (à droite, hors du joystick, au toucher ; en bas à gauche à la souris) et boutons en cercle
+   autour du joueur (hud.js centre #gestures sur la même zone que la boussole). Corrections de la moitié « rendu »
+   (lots/lot-e-rendu-index.html) reprises plus bas. */
+#gesture-toggle { position: absolute; left: var(--hud-l); bottom: var(--hud-b); display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; padding: 0 10px; border: 1px solid var(--c-others-line); border-radius: var(--r-sm); background: var(--c-panel); box-shadow: var(--sh-1); color: var(--c-text); font: var(--fw-semibold) var(--fs-sm) / 1 var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; pointer-events: auto; touch-action: manipulation; transition: transform var(--t-fast) var(--ease-std); }
+#gesture-toggle .gt-icon { display: inline-flex; color: var(--c-others); }
+#gesture-toggle .icon { width: var(--icon-md); height: var(--icon-md); }
+#gesture-toggle:active { transform: scale(.96); }
+#gesture-toggle:focus-visible { outline: 2px solid var(--c-others); outline-offset: 2px; }
+#gesture-toggle[aria-expanded="true"] { border-color: var(--c-others); background: color-mix(in srgb, var(--c-others) 24%, var(--c-panel-solid)); }
+body.touch #gesture-toggle { padding: 0; border-width: 2px; border-radius: 50%; }
+body.touch #gesture-toggle .gt-text, body.touch #gesture-toggle kbd { display: none; }
+body.touch #gesture-toggle .icon { width: 24px; height: 24px; }
+/* z-index 2 : au-dessus de Fouiller et de l'action secondaire (positionnés après elle dans #hud). */
+#gestures { --wr: 112px; position: fixed; left: 50%; top: 50%; z-index: 2; width: 0; height: 0; pointer-events: none; }
+.gesture { position: absolute; left: -46px; top: -28px; display: grid; place-items: center; align-content: center; gap: 3px; width: 92px; height: 56px; padding: 0 4px; border: 2px solid var(--c-others); border-radius: var(--r-md); background: var(--c-panel-strong); box-shadow: var(--sh-2); color: var(--c-text); cursor: pointer; pointer-events: auto; touch-action: manipulation; transition: transform var(--t-fast) var(--ease-std); }
+.gesture .icon { width: 22px; height: 22px; color: var(--c-others); }
+.gesture-name { max-width: 100%; overflow: hidden; font: var(--fw-semibold) var(--fs-2xs) / 1.05 var(--font-display); letter-spacing: .02em; text-align: center; text-transform: uppercase; }
+.gesture kbd { position: absolute; top: -7px; right: 2px; min-width: 18px; height: 18px; background: var(--c-panel-solid); }
+body.touch .gesture kbd { display: none; }
+.gesture:focus-visible { outline: 2px solid var(--c-text); outline-offset: 2px; }
+@media (hover: hover) { .gesture:hover { background: color-mix(in srgb, var(--c-others) 24%, var(--c-panel-solid)); } }
+.gesture[data-gesture="0"] { transform: translate(0, calc(-1 * var(--wr))); }
+.gesture[data-gesture="1"] { transform: translate(calc(.866 * var(--wr)), calc(-.5 * var(--wr))); }
+.gesture[data-gesture="2"] { transform: translate(calc(.866 * var(--wr)), calc(.5 * var(--wr))); }
+.gesture[data-gesture="3"] { transform: translate(0, var(--wr)); }
+.gesture[data-gesture="4"] { transform: translate(calc(-.866 * var(--wr)), calc(.5 * var(--wr))); }
+.gesture[data-gesture="5"] { transform: translate(calc(-.866 * var(--wr)), calc(-.5 * var(--wr))); }
+@media (max-width: 759px), (max-height: 500px) and (orientation: landscape) {
+  #gestures { --wr: 102px; }
+  .gesture { left: -43px; top: -27px; width: 86px; height: 54px; }
+  #online-pill { padding: 4px 8px; font-size: var(--fs-xs); }
+  /* « · 4 survivants autour » porte déjà son point : pas de second séparateur sur une seule ligne. */
+  #weather-line > .wx-around { margin-left: 5px; }
+  #weather-line > .wx-around::before { content: none; }
+}
+@media (max-width: 759px) {
+  #online-pill { grid-column: 1; grid-row: 3; align-self: start; }
+  /* Au toucher, la colonne de droite est vide sous les jauges : la pastille y déborde (« Zone privée · hors ligne ·
+     310 m pour en sortir » tient sur une ligne) ; au plus étroit, ou à côté du sac (souris), deux lignes. */
+  body.touch #online-pill { grid-column: 1 / -1; }
+  #online-pill-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }
+}
+/* Bandeau compact : « · N survivants autour » mangerait le nom du lieu ; la pastille porte déjà ce compte. */
+@media (max-width: 759px), (max-height: 500px) and (orientation: landscape) {
+  #hud:has(#online-pill[data-tone="ok"]:not(.hidden)) #weather-line > .wx-around { display: none; }
+}
+/* Bouton des gestes au toucher : hors de la zone du joystick (45 % de gauche, input.js) ; au-dessus de Courir
+   (portrait, tablette), au-dessus de Frapper (paysage), à gauche de Courir (paysage étroit, sac au-dessus de Frapper). */
+body.touch #gesture-toggle { left: auto; right: calc(var(--hud-r) + 114px); bottom: calc(var(--hud-b) + 86px); width: var(--btn-item); height: var(--btn-item); }
+@media (max-height: 500px) and (orientation: landscape) {
+  body.touch #gesture-toggle { right: calc(var(--hud-r) + 28px); bottom: calc(var(--hud-b) + 112px); }
+}
+@media (max-height: 500px) and (orientation: landscape) and (max-width: 729px) {
+  body.touch #gesture-toggle { right: calc(var(--hud-r) + 182px); bottom: calc(var(--hud-b) + 26px); }
+}
+/* Téléphone à l'horizontale : la pastille prend la place du toast sous la quête ; le toast descend d'autant. Feuille
+   du refuge ouverte : conditions et quête s'effacent déjà, la pastille aussi. */
+@media (max-height: 500px) and (orientation: landscape) {
+  #hud.has-online #toast, #hud.has-online.two-actions #toast { top: calc(var(--hud-t) + 136px); }
+}
+@media (max-height: 500px) and (orientation: landscape) and (max-width: 759px) {
+  body.panel-open:not(.panel-folded) #online-pill { visibility: hidden; }
+  body.panel-open:not(.panel-folded) #hud.has-online #toast { top: calc(var(--hud-t) + 56px); }
+}
+@media (max-height: 500px) and (orientation: landscape) and (min-width: 760px) {
+  body.panel-open #online-pill { visibility: hidden; }
+  body.panel-open #hud.has-online #toast, body.panel-open #hud.has-online.two-actions #toast { top: calc(var(--hud-t) + 115px); }
+}
+/* Téléphone en portrait : sous le bandeau de horde (même rangée), la pastille descend ; feuille ouverte, elle s'efface. */
+@media (max-width: 759px) {
+  #hud.has-banner #online-pill { margin-top: 48px; }
+  body.panel-open:not(.panel-folded) #online-pill { visibility: hidden; }
+}
+
 /* Cartes de jeu (#card : livraison, mort, missions, vague repoussée…) : style injecté par panels.js.
    Carte bloquante : le rendu 3D continue derrière et le HUD s'estompe ; une carte discrète (.rp-quiet) le laisse net. */
 body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
@@ -839,6 +980,27 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
           </select>
         </label>
       </div>
+      <!-- Jeu à plusieurs (annexe A) : caché tant que le jeu en ligne n'est pas actif (main.js, renderOnlineMenu). -->
+      <div class="online-block" id="online-block" hidden>
+        <div class="online-row">
+          <span class="btn-icon online-ico" data-icon="antenne"></span>
+          <p class="online-line" id="online-line" role="status" aria-live="polite"></p>
+          <label class="switch"><input type="checkbox" id="online-toggle" role="switch"><span class="switch-track" aria-hidden="true"></span><span>Jouer à plusieurs</span></label>
+        </div>
+        <details class="online-more">
+          <summary class="label">Réglages en ligne</summary>
+          <div class="online-actions">
+            <button type="button" class="secondary" id="online-rename"><span class="btn-icon" data-icon="aide"></span><span>Un autre nom (3 par jour)</span></button>
+            <button type="button" class="secondary" id="online-invite" hidden><span class="btn-icon" data-icon="position"></span><span>Inviter quelqu'un ici</span></button>
+            <button type="button" class="secondary" id="zones-open" hidden><span class="btn-icon" data-icon="bouclier"></span><span id="zones-label">Mes zones privées (0)</span></button>
+            <button type="button" class="secondary" id="online-mute" aria-pressed="false"><span class="btn-icon" data-icon="geste-salut"></span><span id="online-mute-label">Couper les gestes</span></button>
+            <button type="button" class="secondary" id="online-data"><span class="btn-icon" data-icon="cible"></span><span>Voir mes données</span></button>
+            <button type="button" class="secondary" id="online-erase"><span class="btn-icon" data-icon="fermer"></span><span>Supprimer mes données en ligne</span></button>
+            <a class="online-link" href="confidentialite.html" target="_blank" rel="noopener noreferrer">Confidentialité</a>
+          </div>
+        </details>
+        <p class="picker-note" id="online-note" role="status" aria-live="polite" hidden></p>
+      </div>
       <div class="save-line" id="save-line" hidden><span class="btn-icon" data-icon="refuge"></span><span id="save-text"></span><button type="button" class="secondary" id="save-home">Choisir mon refuge</button></div>
       <p class="picker-note warn" id="save-note" role="status" hidden></p>
       <!-- Onglet en lecture seule (partie ouverte ailleurs) : reprendre la main, même après avoir fermé la carte. -->
@@ -889,6 +1051,21 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
       <h3 class="label"><span class="btn-icon" data-icon="refuge"></span>Ton refuge</h3>
       <p>Fouille un vrai bâtiment, puis fais-en ton refuge&nbsp;: barricade ses ouvertures, fabrique avec ce que tu ramènes et tiens la nuit face aux hordes.</p>
     </section>
+    <section class="help-sec" id="help-online" hidden>
+      <h3 class="label"><span class="btn-icon" data-icon="antenne"></span>Jouer à plusieurs</h3>
+      <p>Les autres survivants portent une veste <b>sarcelle</b>&nbsp;; leur surnom s'affiche à 30&nbsp;m. Pas de discussion&nbsp;: 6 gestes seulement.</p>
+      <dl class="keys online-keys">
+        <dt><kbd>T</kbd></dt><dd>Ouvrir ou fermer la roue des gestes</dd>
+        <dt><kbd>1</kbd> à <kbd>6</kbd></dt><dd>Choisir un geste, roue ouverte</dd>
+        <dt>Clic sur un survivant</dt><dd>Le masquer ou le signaler (30&nbsp;m au plus)</dd>
+      </dl>
+      <ul class="touch-list online-touch">
+        <li><span class="btn-icon" data-icon="geste-salut"></span><span><b>Gestes</b>&nbsp;: bouton rond près de Courir et Frapper</span></li>
+        <li><span class="btn-icon" data-icon="cible"></span><span><b>Touche un survivant</b>&nbsp;: le masquer ou le signaler</span></li>
+      </ul>
+      <p class="online-legal">«&nbsp;Autour de moi&nbsp;» protège ton quartier, mais pas un lieu choisi à la main&nbsp;: si c'est chez toi et que tu y installes ton refuge, les autres verront un drapeau sans nom sur la maison et ton surnom à 30&nbsp;m quand tu en sors (sans savoir qui tu es)&nbsp;; touche alors «&nbsp;Protéger ce lieu&nbsp;».</p>
+      <p class="online-age">Déconseillé aux moins de 12&nbsp;ans.</p>
+    </section>
     <section class="help-sec">
       <h3 class="label"><span class="btn-icon" data-icon="telecharger"></span>Ta partie</h3>
       <p>Elle est enregistrée dans ce navigateur. Garde-en une copie, ou reprends-la sur un autre appareil.</p>
@@ -924,6 +1101,8 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
 <div id="hud" class="hidden">
   <!-- Voile rouge du coup reçu : premier enfant, sous les panneaux. -->
   <div id="hurt" aria-hidden="true"></div>
+  <!-- Étiquettes et bulles des autres survivants (others-view.js) : sous les panneaux, jamais cliquables. -->
+  <div id="others-labels" aria-hidden="true"></div>
   <div id="leftcol">
   <div id="conditions" class="pill">
     <div class="place" id="place"></div>
@@ -938,6 +1117,8 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <div id="quest-text"></div>
     <div class="meta"><span class="quest-val"><span data-icon="cible"></span><span class="sr-only">Distance :</span><span class="num" id="quest-dist"></span></span><span class="quest-val quest-timer-val"><span data-icon="horloge"></span><span class="sr-only">Temps restant :</span><span class="timer num" id="quest-timer"></span></span></div>
   </div>
+  <!-- Pastille du jeu en ligne (hud.js) : cachée en solo. -->
+  <div id="online-pill" class="pill hidden" data-tone="off"><span id="online-pill-icon" data-icon="antenne"></span><span id="online-pill-text"></span></div>
   </div>
   <div id="vitals" class="pill">
     <div class="vital" data-vital="health" aria-label="Santé"><span class="vital-icon" data-icon="sante"></span><span class="label vital-name">Santé</span><div class="bar" id="health"><i></i></div></div>
@@ -977,6 +1158,16 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <div id="stick-hint">Pouce gauche&nbsp;: bouger</div>
     <div class="round" id="run" role="button" aria-label="Courir"><span class="round-icon" data-icon="courir"></span><span class="round-label">Courir</span></div>
     <div class="round" id="attack" role="button" aria-label="Frapper"><span class="round-icon" data-icon="frapper"></span><span class="round-label">Frapper</span></div>
+  </div>
+  <!-- Roue des 6 gestes (input.js : T, 1 à 6, clic ; hud.js : visible en ligne seulement). -->
+  <button type="button" id="gesture-toggle" class="hidden" aria-expanded="false" aria-controls="gestures" aria-label="Gestes"><span class="gt-icon" data-icon="geste-salut"></span><span class="gt-text">Gestes</span><kbd>T</kbd></button>
+  <div id="gestures" class="hidden" role="group" aria-label="Gestes">
+    <button type="button" class="gesture" data-gesture="0"><span data-icon="geste-salut"></span><span class="gesture-name">Salut</span><kbd>1</kbd></button>
+    <button type="button" class="gesture" data-gesture="1"><span data-icon="geste-ici"></span><span class="gesture-name">Par ici</span><kbd>2</kbd></button>
+    <button type="button" class="gesture" data-gesture="2"><span data-icon="geste-attention"></span><span class="gesture-name">Attention&nbsp;!</span><kbd>3</kbd></button>
+    <button type="button" class="gesture" data-gesture="3"><span data-icon="geste-merci"></span><span class="gesture-name">Merci</span><kbd>4</kbd></button>
+    <button type="button" class="gesture" data-gesture="4"><span data-icon="geste-suivre"></span><span class="gesture-name">Suis-moi</span><kbd>5</kbd></button>
+    <button type="button" class="gesture" data-gesture="5"><span data-icon="geste-aide"></span><span class="gesture-name">Besoin d'aide</span><kbd>6</kbd></button>
   </div>
   <!-- Actions : principale (E) et secondaire (R) ; les libellés finissent par « (E) » ou « (R) » sur ordinateur. -->
   <button id="action2" class="hidden"><span class="dig-icon" id="action2-icon" data-icon="refuge"></span><span id="action2-label"></span><span class="dig-track"><i id="action2-progress"></i></span></button>

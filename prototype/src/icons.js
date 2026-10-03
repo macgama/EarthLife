@@ -72,7 +72,20 @@ const ICONS = {
   carte: '<path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/><path d="M9 4v13.5M15 6.5V20"/>',
   jouer: '<path d="M7 4.5v15l12-7.5z"/>',
   chevron: '<path d="M6 9l6 6 6-6"/>',
+
+  // Jeu à plusieurs : zone privée, connexion, et les 6 gestes (dans l'ordre de GESTURES, net/protocol.js).
+  bouclier: `<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.2 7.5 9.5 4.3-1.3 7.5-4.9 7.5-9.5V6z"/><path d="M12 12.2V15"/>${dot(12, 10.6, 1.6)}`,
+  antenne: `${dot(12, 8.5, 1.6)}<path d="M12 10.5V21M8.5 21h7M8.9 5.4a4.4 4.4 0 0 0 0 6.2M15.1 5.4a4.4 4.4 0 0 1 0 6.2M6.1 2.6a8.4 8.4 0 0 0 0 11.8M17.9 2.6a8.4 8.4 0 0 1 0 11.8"/>`,
+  'geste-salut': '<path d="M8 13V6.5a1.5 1.5 0 0 1 3 0V11M11 10.5V4.5a1.5 1.5 0 0 1 3 0V11M14 10.5V6a1.5 1.5 0 0 1 3 0v7.5c0 4-2.6 7-6.2 7-2.4 0-4-1.2-5.2-3.1l-2-3.2a1.5 1.5 0 0 1 2.5-1.7L8 14.5"/><path d="M19.5 3.5 21 2.5M20.5 7H22"/>',
+  'geste-ici': '<path d="M12 21v-9.5M12 3v2.5M4.5 5.5H16l3.5 3-3.5 3H4.5z"/>',
+  'geste-attention': `<circle cx="12" cy="12" r="9.5"/><path d="M12 6.8v6.4"/>${dot(12, 16.8, 1.2)}`,
+  'geste-merci': '<path d="M7 10.5H3.5V20H7zM7 11l3.6-7.2c1.4 0 2.4 1.3 2.1 2.7L12 10h6.3a2 2 0 0 1 2 2.4l-1.2 6A2 2 0 0 1 17.1 20H7"/>',
+  'geste-suivre': '<path d="M5 6l6 6-6 6M13 6l6 6-6 6"/>',
+  'geste-aide': '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M5.6 5.6l3.6 3.6M14.8 14.8l3.6 3.6M18.4 5.6l-3.6 3.6M9.2 14.8l-3.6 3.6"/>',
 };
+
+// Icônes des 6 gestes, par numéro de geste (0 « Salut » … 5 « Besoin d'aide »).
+export const GESTURE_ICONS = ['geste-salut', 'geste-ici', 'geste-attention', 'geste-merci', 'geste-suivre', 'geste-aide'];
 
 // Noms du code (actions du sac, besoins, météo d'Open-Meteo) vers les noms d'icônes.
 const ALIASES = {
@@ -81,6 +94,8 @@ const ALIASES = {
   run: 'courir', attack: 'frapper', search: 'fouiller', kills: 'zombie', quest: 'quete',
   clear: 'soleil', cloudy: 'nuages', rain: 'pluie', storm: 'orage', snow: 'neige', fog: 'brouillard', wind: 'vent',
   jour: 'soleil', nuit: 'lune', crane: 'zombie',
+  'geste-0': 'geste-salut', 'geste-1': 'geste-ici', 'geste-2': 'geste-attention', 'geste-3': 'geste-merci',
+  'geste-4': 'geste-suivre', 'geste-5': 'geste-aide', 'zone-privee': 'bouclier', 'en-ligne': 'antenne',
 };
 
 export const ICON_NAMES = Object.keys(ICONS);

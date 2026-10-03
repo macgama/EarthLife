@@ -83,11 +83,13 @@ export function lootKind(kind) {
   return KIND_ALIASES[kind] ?? 'house';
 }
 
-export function rollLoot(kind, rand = Math.random) {
+// Options : bâtiment fouillé par un autre survivant depuis moins de 6 h (REDUCED_LOOT de shared-world.js) : chances
+// multipliées par `factor`, quantité plafonnée à `maxPerLine`. Sans option, même suite de tirages qu'avant.
+export function rollLoot(kind, rand = Math.random, { factor = 1, maxPerLine = Infinity } = {}) {
   const table = LOOT[lootKind(kind)];
   const found = {};
   for (const [item, chance, max] of table) {
-    if (rand() < chance) found[item] = (found[item] ?? 0) + 1 + Math.floor(rand() * max);
+    if (rand() < chance * factor) found[item] = (found[item] ?? 0) + Math.min(maxPerLine, 1 + Math.floor(rand() * max));
   }
   return found;
 }
