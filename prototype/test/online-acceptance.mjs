@@ -317,10 +317,12 @@ const freeDir = (t, len) => ev(t, async (len) => {
   return null;
 }, len);
 // Marche en ligne droite à `speed` m/s (positions posées toutes les 100 ms, cap tourné vers la cible).
-const walk = (t, x, z, speed = 7.5) => ev(t, ([x, z, speed]) => new Promise((resolve) => {
+// `stopAt` : sélecteur CSS ; la marche s'arrête là (résultat false) dès qu'il trouve un élément.
+const walk = (t, x, z, speed = 7.5, stopAt = null) => ev(t, ([x, z, speed, stopAt]) => new Promise((resolve) => {
   const s = window.__earthlife.session;
   let last = performance.now();
   const id = setInterval(() => {
+    if (stopAt && document.querySelector(stopAt)) { clearInterval(id); resolve(false); return; }
     const now = performance.now(), dt = Math.min(0.3, (now - last) / 1000);
     last = now;
     const p = s.player, dx = x - p.x, dz = z - p.z, d = Math.hypot(dx, dz), step = speed * dt;
@@ -335,8 +337,8 @@ const walk = (t, x, z, speed = 7.5) => ev(t, ([x, z, speed]) => new Promise((res
     p.z += (dz / d) * step;
     p.yaw = Math.atan2(dx, dz);
   }, 100);
-}), [x, z, speed]);
-const walkTo = async (t, ll, speed) => { const p = await localOf(t, ll); return walk(t, p.x, p.z, speed); };
+}), [x, z, speed, stopAt]);
+const walkTo = async (t, ll, speed, stopAt = null) => { const p = await localOf(t, ll); return walk(t, p.x, p.z, speed, stopAt); };
 // Point (lat, lon) à `d` m de la page `ref`, libre chez elle, vers l'angle `pref`.
 async function spotNear(ref, d, pref = 0) {
   const r = await where(ref);
@@ -1242,9 +1244,11 @@ await scenario('O11', 'un survivant simulé suit A', async () => {
   let seen = null;
   cardAt.then((v) => { seen = v; });
   let walked = 0;
+  // La carte se ferme seule après 12 s (followCard, autoHideMs) : la marche en cours s'arrête dès qu'elle paraît,
+  // pour que « Masquer » soit encore là sur un exécuteur lent.
   for (let leg = 0; leg < 30 && !seen && Date.now() - t0 < 85000; leg++) {
     const to = leg % 2 === 0 ? P1 : P0;
-    await walkTo(A, to, 7.5);
+    await walkTo(A, to, 7.5, '#card:not(.hidden) [data-card-btn="hide"]');
     walked += 40;
   }
   const tCard = await cardAt;
@@ -1256,7 +1260,8 @@ await scenario('O11', 'un survivant simulé suit A', async () => {
   check(!!tCard && btns.includes('Masquer'), `A : carte « Un survivant reste près de toi depuis 5 min » avec ${JSON.stringify(btns)}`);
   await shot(A, 'o11-ordi-alerte-suivi');
   if (tCard) {
-    await A.page.click('#card [data-card-btn="hide"]');
+    note(`A : « Masquer » touché ${s1(Date.now() - tCard)} après l'apparition de la carte (fermeture seule à 12 s)`);
+    await A.page.click('#card:not(.hidden) [data-card-btn="hide"]', { timeout: 10000 });
     const toast = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => x === 'Vous ne vous verrez plus.') ?? null, null, 3000);
     const gone = await until(A, NOT_SEES, fol.st.sid, 3000);
     check(!!toast && !!gone, `A : survivant simulé masqué (« ${toast} »)`);
@@ -1297,16 +1302,18 @@ await scenario('O12', 'faux serveur arrêté, puis relancé 20 s plus tard', asy
   check(!!tD, `B : banc démonté hors ligne (${s1(tD && tD - tStop)} après l'arrêt)`);
   const q = await ev(B, () => window.__earthlife.online.debug());
   check(q.queued >= 1, `B : trace en attente (file : ${q.queued}, statut ${q.status})`);
-  await shot(B, 'o12-tel-hors-ligne');
-  // A joue seul pendant ce temps : il marche, le jeu continue.
+  // A joue seul pendant ce temps : il marche, le jeu continue. La marche et la capture de B se font pendant l'attente
+  // des 20 s, sans la repousser : sur un exécuteur lent, elles en prenaient plus que le reste.
   const spot = await spotNear(A, 12, 0);
-  if (spot) await walkTo(A, spot, 4);
+  const soloWalk = spot ? walkTo(A, spot, 4).catch(() => false) : Promise.resolve(true);
+  await shot(B, 'o12-tel-hors-ligne');
   const solo = await Promise.all([A, B].map((t) => ev(t, () => ({ ended: !!window.__earthlife.session.ended, hud: !document.getElementById('hud').classList.contains('hidden'), paused: !!window.__earthlife.session.paused }))));
   check(solo.every((s) => !s.ended && s.hud && !s.paused), `A et B jouent seuls ${JSON.stringify(solo)}`);
   await wait(Math.max(0, tStop + 20000 - Date.now()));
   srv = await devServer(port);
   const tUp = Date.now();
   check(tUp - tStop < 21000, `faux serveur relancé sur le port ${srv.port}, ${s1(tUp - tStop)} après l'arrêt (magasin neuf : nouvelles identités)`);
+  await soloWalk;
   const onAt = await Promise.all([A, B].map((t) => whenTrue(t, () => (window.__earthlife.online.status === 'en-ligne' ? Date.now() : null), null, 60000)));
   for (const [i, t] of [A, B].entries()) {
     check(!!onAt[i] && onAt[i] - tUp < 35000, `${t.tag} : de nouveau en ligne ${s1(onAt[i] && onAt[i] - tUp)} après la relance (seuil 35 s)`);
