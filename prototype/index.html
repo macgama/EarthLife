@@ -266,6 +266,8 @@ select, button { font: inherit; }
 .picker-note { margin: calc(-1 * var(--sp-1)) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
 .picker-note:empty { display: none; }
 .picker-note.warn { padding-left: 10px; border-left: 2px solid var(--c-warn); color: var(--c-warn); }
+/* Caisse d'un déménagement : collée à la ligne du départ choisi, « Jouer » reste à l'écran sur un téléphone de 360 × 740. */
+#save-move:not([hidden]) + #save-crate { margin-top: calc(2px - var(--sp-3)); }
 /* Réglages météo et heure : listes sans flèche native, chevron dessiné en CSS. */
 .options { display: grid; gap: var(--sp-2); }
 .opt { position: relative; display: grid; grid-template-columns: 76px 1fr; align-items: center; gap: var(--sp-2); }
@@ -275,7 +277,9 @@ select, button { font: inherit; }
 @media (hover: hover) { #menu select:hover { border-color: var(--c-line-strong); } }
 #menu select:focus-visible { border-color: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-soft); }
 #menu #play { width: 100%; min-height: 52px; margin-top: 2px; }
-/* Partie sauvegardée : « Ton refuge : … » avec « Choisir mon refuge », puis le message de la sauvegarde. */
+/* Partie sauvegardée : « Ton refuge : … » avec « Voir mon refuge », ce que le départ choisi veut dire pour le refuge
+   et comment en changer (#save-move), la caisse laissée par un déménagement (#save-crate), puis le message de la
+   sauvegarde. */
 .save-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); padding: var(--sp-2) var(--sp-3); background: var(--c-bg-2); border: 1px solid var(--c-line); border-left: 2px solid var(--c-refuge); border-radius: var(--r-sm); }
 .save-line > .btn-icon { color: var(--c-refuge); }
 #save-text { flex: 1 1 160px; min-width: 0; color: var(--c-text); font-size: var(--fs-sm); font-weight: var(--fw-semibold); line-height: var(--lh-snug); overflow-wrap: anywhere; }
@@ -291,6 +295,7 @@ select, button { font: inherit; }
 .help-sec h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 var(--sp-1); color: var(--c-text); }
 .help-sec h3 .icon { color: var(--c-accent); }
 .help-sec p { margin: 0; }
+.help-sec p + p { margin-top: var(--sp-1); }
 #help b { color: var(--c-text); font-weight: var(--fw-semibold); }
 .keys { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px var(--sp-3); margin: var(--sp-2) 0 0; }
 .keys dt { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; color: var(--c-text-2); font-size: var(--fs-sm); }
@@ -327,6 +332,8 @@ select, button { font: inherit; }
   #menu .logo { font-size: var(--fs-3xl); }
   .brand-tag { display: block; }
   .menu-top .lead { display: block; }
+  /* Partie avec un refuge : la présentation laisse la place aux lignes du refuge, « Jouer » reste à l'écran (1280 × 800). */
+  #menu.has-base .menu-top .lead { display: none; }
   .sheet { max-height: none; overflow: visible; padding: var(--sp-4) var(--sp-5) var(--sp-5); background: none; border: 0; border-radius: 0; box-shadow: none; }
   .sheet-label { display: flex; }
   .quick { flex-wrap: wrap; overflow: visible; -webkit-mask-image: none; mask-image: none; }
@@ -560,6 +567,9 @@ body.touch .small-text { display: none; }
 /* Secondaire : contour neutre, au-dessus de l'action principale. */
 #action2 { bottom: calc(var(--hud-b) + 148px); border-color: var(--c-line-strong); }
 #action2 .dig-icon { color: var(--c-text); }
+/* Grisé : pas possible d'ici (porte du refuge sur une autre façade) ; l'appui dit pourquoi. */
+#search.off, #action2.off { border-style: dashed; background: var(--c-panel); color: var(--c-text-2); }
+#search.off .dig-icon, #action2.off .dig-icon { color: var(--c-text-3); }
 .dig-icon { display: inline-flex; flex: none; color: var(--c-accent); }
 .dig-icon .icon { width: var(--icon-md); height: var(--icon-md); }
 #search-label, #action2-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -1001,7 +1011,10 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         </details>
         <p class="picker-note" id="online-note" role="status" aria-live="polite" hidden></p>
       </div>
-      <div class="save-line" id="save-line" hidden><span class="btn-icon" data-icon="refuge"></span><span id="save-text"></span><button type="button" class="secondary" id="save-home">Choisir mon refuge</button></div>
+      <!-- « Voir mon refuge » recentre la carte sur le refuge ; on change de refuge en jeu (« Déménager ici »), #save-move le dit. -->
+      <div class="save-line" id="save-line" hidden><span class="btn-icon" data-icon="refuge"></span><span id="save-text"></span><button type="button" class="secondary" id="save-home">Voir mon refuge</button></div>
+      <p class="picker-note" id="save-move" role="status" hidden></p>
+      <p class="picker-note" id="save-crate" hidden></p>
       <p class="picker-note warn" id="save-note" role="status" hidden></p>
       <!-- Onglet en lecture seule (partie ouverte ailleurs) : reprendre la main, même après avoir fermé la carte. -->
       <button type="button" class="secondary" id="save-take" hidden><span class="btn-icon" data-icon="importer"></span><span>Reprendre ici</span></button>
@@ -1028,7 +1041,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <dt><kbd>Maj</kbd></dt><dd>Courir</dd>
         <dt><kbd>Espace</kbd> ou clic</dt><dd>Frapper</dd>
         <dt><kbd>E</kbd></dt><dd>Fouiller, entrer au refuge, clouer, démonter</dd>
-        <dt><kbd>R</kbd></dt><dd>En faire ton refuge, poser un piège, dormir</dd>
+        <dt><kbd>R</kbd></dt><dd>En faire ton refuge, déménager, poser un piège, dormir</dd>
         <dt><kbd>1</kbd> à <kbd>4</kbd></dt><dd>Manger, boire, te soigner, te réchauffer</dd>
         <dt><kbd>5</kbd></dt><dd>Lancer un leurre</dd>
         <dt><kbd>Tab</kbd><kbd>B</kbd></dt><dd>Onglet suivant, replier le panneau du refuge</dd>
@@ -1043,13 +1056,14 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <li><span class="btn-icon" data-icon="fleche"></span><span><b>Glisse à droite</b>&nbsp;: tourner la caméra</span></li>
         <li><span class="btn-icon" data-icon="frapper"></span><span><b>Frapper</b> et <b>Courir</b>&nbsp;: boutons en bas à droite</span></li>
         <li><span class="btn-icon" data-icon="fouiller"></span><span><b>Fouiller</b>, <b>entrer</b>, <b>clouer</b>&nbsp;: bouton au centre, près d'un bâtiment</span></li>
-        <li><span class="btn-icon" data-icon="refuge"></span><span><b>En faire ton refuge</b>&nbsp;: bouton juste au-dessus, une fois le bâtiment fouillé</span></li>
+        <li><span class="btn-icon" data-icon="refuge"></span><span><b>En faire ton refuge</b>, <b>déménager</b>&nbsp;: bouton juste au-dessus, une fois le bâtiment fouillé</span></li>
         <li><span class="btn-icon" data-icon="sac"></span><span><b>Sac</b>&nbsp;: touche un objet pour l'utiliser, ou un leurre pour le lancer</span></li>
       </ul>
     </section>
     <section class="help-sec">
       <h3 class="label"><span class="btn-icon" data-icon="refuge"></span>Ton refuge</h3>
       <p>Fouille un vrai bâtiment, puis fais-en ton refuge&nbsp;: barricade ses ouvertures, fabrique avec ce que tu ramènes et tiens la nuit face aux hordes.</p>
+      <p>Pour changer de refuge, dans ton quartier ou dans une autre ville (expédition depuis le menu), fouille un autre bâtiment, puis «&nbsp;Déménager ici&nbsp;»&nbsp;: ton coffre te suit.</p>
     </section>
     <section class="help-sec" id="help-online" hidden>
       <h3 class="label"><span class="btn-icon" data-icon="antenne"></span>Jouer à plusieurs</h3>

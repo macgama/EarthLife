@@ -7,6 +7,7 @@ import { createChunkedGrid, chunkKey, getAt, isFree, FREE, lineFree } from '../s
 import { claimableShape, wallSamples, countOf, KIT } from '../src/base.js';
 import { HORDE, hordeSize, frontVector, bearingOf } from '../src/horde.js';
 import { createRefuge, dayLabel, underWeather, clockLabel, durationLabel, TAKEN_TEXT } from '../src/refuge.js';
+import { placeWhere } from '../src/refuge.js';
 import { createZombieDirector, createPlayer } from '../src/game.js';
 import { createFlowField, reachableFrom } from '../src/flowfield.js';
 
@@ -378,6 +379,126 @@ test('déménagement : le coffre et les aménagements suivent, barricades perdue
   assert.equal(env.save.profile.journal.at(-1).text, '1er oct. · Refuge déplacé : Habitation, Lyon 2e');
   // Déjà son refuge.
   assert.equal(env.refuge.canClaim(second, { searched: true }).why, "C'est déjà ton refuge");
+});
+
+test('déménagement vers un coffre plus petit : le surplus reste dans une caisse devant l\'ancienne porte', () => {
+  const env = setup();
+  const [first, second] = houses(env.store);
+  // Magasin (Arrière-boutique, 300 places) vers une maison (200 places).
+  claimNear(env, { building: { ...first, loot: 'clothes' }, bag: {} });
+  const old = env.save.base;
+  assert.equal(old.perk, 'arriere');
+  old.chest = { conserve: 120, bois: 50, eau: 88 };
+  const oldDoor = env.refuge.openingsWorld()[0];
+  env.refuge.apply('exit', null, { player: { x: 0, z: 0 } });
+  assert.equal(env.refuge.overflowFor(second), 58);
+  assert.equal(env.refuge.overflowFor({ ...second, loot: 'retail' }), 0, 'vers un autre magasin, tout tient');
+  const { r, player } = claimNear(env, { building: second, bag: {} });
+  assert.equal(r.ok, true, r.why);
+  assert.equal(r.crate, 58);
+  // Toast court (2 lignes sur téléphone à l'horizontale) ; le carnet garde la caisse.
+  assert.equal(r.msg, "Refuge déplacé. Caisse de 58 objets devant l'ancien.");
+  assert.deepEqual(env.save.profile.journal.slice(-2).map((l) => l.text),
+    ['1er oct. · Refuge déplacé : Habitation, Lyon 2e', "1er oct. · Caisse de 58 objets devant l'ancien refuge"]);
+  // Matériaux d'abord, puis l'ordre d'arrivée : rien n'est perdu, la sauvegarde ne rabotera rien au chargement.
+  assert.deepEqual(env.save.base.chest, { bois: 50, conserve: 120, eau: 30 });
+  assert.equal(countOf(env.save.base.chest), 200);
+  assert.deepEqual(env.save.orphanChest.chest, { eau: 58 });
+  // Caisse à 2 m devant l'ancienne porte, sur une case libre, hors de portée de « Fouiller » (1,6 m du mur).
+  const oc = env.store.proj.toLocal(env.save.orphanChest.lat, env.save.orphanChest.lon);
+  assert.ok(Math.hypot(oc.x - (oldDoor.x + oldDoor.nx * 2), oc.z - (oldDoor.z + oldDoor.nz * 2)) < 0.3, 'devant l\'ancienne porte');
+  assert.ok(isFree(env.grid, oc.x, oc.z));
+  // Elle se reprend à la main, refuge ou pas, dans la limite du sac.
+  env.refuge.apply('exit', null, { player });
+  const near = { ...player, x: oc.x + 1, z: oc.z };
+  assert.equal(env.refuge.orphanAction(near, { touch: true }).label, 'Récupérer le coffre');
+  const bag = {};
+  assert.equal(env.refuge.apply('orphan', null, { player: near, bag }).msg, 'Coffre récupéré : 30 eaux');
+  assert.deepEqual(env.save.orphanChest.chest, { eau: 28 });
+  // Revenir dans un magasin vide la caisse dans le coffre, comme une caisse orpheline.
+  env.refuge.apply('exit', null, { player: near });
+  claimNear(env, { building: { ...first, loot: 'clothes' }, bag: {} });
+  assert.equal(env.save.orphanChest, null);
+  assert.equal(env.save.base.chest.eau, 58);
+});
+
+test('déménagement : porte vérifiée avant la carte, bouton seulement si le bâtiment peut devenir le refuge', () => {
+  const env = setup();
+  const [first, second] = houses(env.store);
+  const { player, survivor } = claimNear(env, { building: first, bag: {} });
+  env.refuge.apply('exit', null, { player, survivor });
+  const p2 = { ...besideWall(env.grid, second) };
+  const ctx = { survivor, now: T0, building: second, searched: true };
+  assert.deepEqual(env.refuge.suitable(second, p2), { ok: true, why: '' });
+  assert.equal(env.refuge.actions(p2, ctx).secondary.id, 'move');
+  assert.deepEqual(env.refuge.check('move', second.index, { player: p2, searched: true, now: T0 }), { ok: true, why: '', time: 0 });
+  // Forme refusée : pas de bouton, le motif pour la touche R.
+  let a = env.refuge.actions(p2, { ...ctx, building: { ...second, area: 20 } });
+  assert.deepEqual([a.secondary, a.why], [null, 'Trop petit pour un refuge (moins de 25 m²)']);
+  a = env.refuge.actions(p2, { ...ctx, building: { ...second, area: 3000 } });
+  assert.equal(a.why, 'Trop grand pour être tenu (plus de 2 500 m²)');
+  // Aucune entrée atteignable d'ici, mais une façade sur la rue en a une : bouton grisé (aussi sur téléphone), son
+  // appui dit d'en faire le tour, avant toute carte.
+  const sealed = () => ({ has: () => false, count: 0 });
+  env.refuge.attach({ store: env.store, grid: env.grid, proj: env.store.proj, director: env.director, field: env.field, reachableFrom: sealed, source: 'tiles' });
+  const side = "Pas d'entrée possible d'ici : essaie un autre côté";
+  a = env.refuge.actions(p2, { ...ctx, touch: true });
+  assert.deepEqual([a.secondary?.id, a.secondary?.label, a.secondary?.off, a.secondary?.why, a.why], ['move', 'Déménager ici', true, side, undefined]);
+  assert.deepEqual(env.refuge.suitable(second, p2), { ok: false, why: side, side: true });
+  assert.deepEqual(env.refuge.check('move', second.index, { player: p2, searched: true, now: T0 }), { ok: false, why: side, time: 0 });
+  assert.equal(env.refuge.apply('move', second.index, { player: p2, searched: true, now: T0 }).ok, false);
+  assert.equal(env.save.base.id, first.id, 'refuge inchangé');
+  // Aucune façade sur la rue (bâtiment enfoui dans un autre) : ni bouton, le motif pour la touche R.
+  env.refuge.attach({ store: env.store, grid: env.grid, proj: env.store.proj, director: env.director, field: env.field, reachableFrom: fakeReachable, source: 'tiles' });
+  const buried = buriedBuilding(env, second);
+  assert.ok(buried, 'un bâtiment de 36 m² tient à l\'intérieur d\'un grand bâtiment');
+  a = env.refuge.actions(p2, { ...ctx, building: buried });
+  assert.deepEqual([a.secondary, a.why], [null, 'Aucune entrée accessible depuis la rue']);
+  assert.deepEqual(env.refuge.suitable(buried, p2), { ok: false, why: 'Aucune entrée accessible depuis la rue' });
+  // Pas encore fouillé, ou déjà le refuge : ni bouton, ni motif.
+  assert.deepEqual(env.refuge.actions(p2, { ...ctx, searched: false }), { primary: null, secondary: null });
+  assert.equal(env.refuge.actions(p2, { ...ctx, building: first }).why, undefined);
+});
+
+// Carré de 6 m sur 6 au milieu d'un grand bâtiment de la grille : aucun de ses murs ne donne sur un passage.
+function buriedBuilding(env, like) {
+  for (const b of env.store.buildings) {
+    if (b.area < 900) continue;
+    let all = true;
+    for (let dx = -6; dx <= 6 && all; dx += 1) for (let dz = -6; dz <= 6 && all; dz += 1) all = !isFree(env.grid, b.cx + dx, b.cz + dz);
+    if (!all) continue;
+    const ring = [[-3, -3], [3, -3], [3, 3], [-3, 3]].map(([x, z]) => ({ x: b.cx + x, z: b.cz + z }));
+    return { ...like, id: `enfoui-${b.id}`, rings: [ring], cx: b.cx, cz: b.cz, area: 36, minHeight: 0 };
+  }
+  return null;
+}
+
+test('carnet : lieu du refuge (quartier, ville, ou nom du village)', () => {
+  assert.equal(placeWhere({ name: 'Lyon', area: 'Lyon 2e, Rhône, France' }), 'Lyon 2e');
+  assert.equal(placeWhere({ name: 'Lyon', area: 'Place Bellecour' }), 'Place Bellecour');
+  assert.equal(placeWhere({ name: 'Pérouges', area: 'Ain, France' }), 'Pérouges');
+  assert.equal(placeWhere({ name: '12 Rue Victor Hugo', area: 'Lyon, Rhône, France' }), 'Lyon');
+  assert.equal(placeWhere({ name: 'Point choisi', area: '45.7578, 4.8320' }), 'Point choisi');
+  assert.equal(placeWhere({ name: 'Point sur la carte', area: '45,7578° N · 4,8320° E' }), 'Point sur la carte');
+  assert.equal(placeWhere(null), null);
+});
+
+test('refuge disparu après un déménagement avec caisse : coffre et caisse attendent sur place, au refuge disparu', () => {
+  const env = setup();
+  const [first, second] = houses(env.store);
+  claimNear(env, { building: { ...first, loot: 'clothes' }, bag: {} });
+  env.save.base.chest = { bois: 20, eau: 210 };
+  env.refuge.apply('exit', null, { player: { x: 0, z: 0 } });
+  claimNear(env, { building: second, bag: {} });
+  assert.deepEqual(env.save.orphanChest.chest, { eau: 30 });
+  const nb = env.save.base;
+  const store2 = createWorldStore(LYON);
+  for (const x of [8411, 8412]) addFeatures(store2, featuresFromBytes(tileBytes(x), x, 5844, 14, LYON));
+  store2.buildingIds.delete(second.id);
+  env.refuge.attach({ store: store2, grid: env.grid, proj: store2.proj, director: env.director, field: env.field, reachableFrom: fakeReachable, source: 'tiles' });
+  assert.deepEqual(env.refuge.vanishCheck(), { gone: true, msg: "Ton refuge a disparu de la carte : ton coffre t'attend sur place" });
+  // Une seule caisse, là où était le nouveau refuge (pas devant l'ancien, peut-être dans une autre ville).
+  assert.deepEqual(env.save.orphanChest, { lat: nb.lat, lon: nb.lon, chest: { eau: 210, bois: 20 } });
 });
 
 test('entrer et sortir : refus avec un zombie à moins de 2,5 m, siège de la porte, sortie la moins encerclée', () => {
@@ -1426,6 +1547,8 @@ test('jeu à plusieurs : bâtiment déjà refuge d\'un autre survivant, ni insta
   // Aucun bouton d'installation dans ce bâtiment ; sans taken, il revient.
   const near = { building: { ...first, index: first.index ?? 0 }, searched: true };
   assert.equal(env.refuge.actions(player, { ...near, taken: true }).secondary, null);
+  // R (« pourquoi pas ici ? ») le dit.
+  assert.equal(env.refuge.actions(player, { ...near, taken: true }).why, TAKEN_TEXT);
   assert.equal(env.refuge.actions(player, { ...near, taken: false }).secondary.id, 'claim');
   // Avec un refuge : aucun « Déménager ici » vers le refuge d'un autre ; check('move') refusé aussi.
   const { player: p1, survivor } = claimNear(env, { building: second, bag: {} });

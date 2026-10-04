@@ -253,7 +253,8 @@ export function createHud({ $, input }) {
     el.hud.ownerDocument.body.classList.toggle('wheel-open', open);
   }
 
-  // Bouton d'action : libellé, icône, barre d'avancement ; a = { label, icon, busy, progress } ou null.
+  // Bouton d'action : libellé, icône, barre d'avancement ; a = { label, icon, busy, progress, off } ou null. Grisé (off) :
+  // pas possible d'ici, mais son appui dit pourquoi.
   function actionButton(b, a, hide) {
     const on = !!a && !hide;
     b.btn.classList.toggle('hidden', !on);
@@ -261,6 +262,7 @@ export function createHud({ $, input }) {
     setText(b.label, a.label);
     if (b.icon.dataset.icon !== a.icon) icons.setIcon(b.icon, a.icon);
     b.btn.classList.toggle('busy', !!a.busy);
+    b.btn.classList.toggle('off', !!a.off);
     const w = a.busy ? `${Math.min(100, (a.progress ?? 0) * 100)}%` : '0';
     if (b.bar.style.width !== w) b.bar.style.width = w;
     return true;

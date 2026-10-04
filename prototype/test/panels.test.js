@@ -375,3 +375,20 @@ test('téléphone : la poignée est un vrai bouton qui replie la feuille, au-des
   assert.doesNotMatch(PANEL_CSS, /\.rp-head::before/);
   assert.match(PANEL_CSS, /\.rp-head \{ position: relative;/);
 });
+
+test('Défense : ligne « Changer de refuge » en tête, sous la ligne de nuit, échappée, absente en alerte ou sans texte', () => {
+  const hint = 'Changer de refuge : fouille un autre bâtiment, puis « Déménager ici » devant lui. Ton coffre et tes aménagements suivent.';
+  const html = panelHtml(sampleView({ hint }));
+  assert.match(html, /<p class="rp-hint" data-k="hint">/);
+  assert.ok(text(html).includes(hint));
+  // En tête de l'onglet Défense (vue dès l'ouverture, sans défiler) : après la ligne de nuit, avant les ouvertures.
+  const pane = html.slice(html.indexOf('id="rp-pane-defense"'), html.indexOf('id="rp-pane-craft"'));
+  assert.ok(pane.indexOf('rp-hint') > pane.indexOf('rp-night'));
+  assert.ok(pane.indexOf('rp-hint') < pane.indexOf('rp-list'));
+  // Horde annoncée ou en cours : les ouvertures d'abord.
+  assert.doesNotMatch(panelHtml(sampleView({ hint, night: 'Horde dans 0:42 · par le nord' })), /rp-hint/);
+  assert.doesNotMatch(panelHtml(sampleView({ hint, alert: true })), /rp-hint/);
+  assert.doesNotMatch(panelHtml(sampleView({ hint: '<script>x</script>' })), /<script/);
+  assert.doesNotMatch(panelHtml(sampleView()), /rp-hint/);
+  assert.match(PANEL_CSS, /\.rp-hint \{/);
+});

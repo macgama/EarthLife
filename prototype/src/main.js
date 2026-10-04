@@ -32,7 +32,7 @@ import {
   createRefugePanel, createCard, onlineChoiceCard, survivorCard, reportCard, followCard, myDataCard, eraseCard, exportCard,
   zonesCard, ONLINE_TEXTS,
 } from './panels.js';
-import { createHud } from './hud.js';
+import { createHud, distanceText } from './hud.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
 import { makeProjection } from './geo.js';
 // Icônes (HUD, chargement, fin) sous un espace de noms : pas de conflit avec d'autres imports nommés.
@@ -165,15 +165,26 @@ function reloadClean() {
 }
 
 // « Jouer ici » sans refuge, « Rentrer au refuge » à 1 500 m ou moins du refuge, « Partir en expédition ici » au-delà.
+// Sous la ligne du refuge, ce que ce choix veut dire pour lui : loin, on peut y déménager sur place ; tout près, on
+// repart de sa porte, et l'on change de refuge en jeu (le menu ne le déplace pas). Deux lignes au plus : « Rentrer au
+// refuge » reste à l'écran sur un téléphone de 360 × 740. (Appelée dès le chargement, avant les constantes plus bas.)
 function updatePlayLabel(place) {
   $('play').disabled = !place;
   const home = homeLatLon();
-  const label = !home || !place ? 'Jouer ici' : geoDistance(home, place) <= HOME_RADIUS ? 'Rentrer au refuge' : 'Partir en expédition ici';
+  const d = home && place ? geoDistance(home, place) : null;
+  const label = d === null ? 'Jouer ici' : d <= HOME_RADIUS ? 'Rentrer au refuge' : 'Partir en expédition ici';
   const span = $('play-label');
   if (span && span.textContent !== label) {
     span.textContent = label;
     icons.setIcon($('play-icon'), label === 'Rentrer au refuge' ? 'refuge' : 'jouer');
   }
+  const note = $('save-move');
+  if (!note) return;
+  const how = 'en jeu, fouille un autre bâtiment puis «\u00a0Déménager ici\u00a0».';
+  const text = d === null ? '' : d > HOME_RADIUS ? 'Sur place, fouille un bâtiment puis «\u00a0Déménager ici\u00a0» pour y installer ton refuge.'
+    : d > 50 ? `À moins de 1,5 km, tu repars de ton refuge. Pour en changer : ${how}` : `Pour changer de refuge : ${how}`;
+  note.textContent = text;
+  note.hidden = !text;
 }
 
 // Menu : libellé de « Jouer », repères du refuge et du sac perdu sur la carte, ligne de la sauvegarde.
@@ -186,16 +197,23 @@ function syncMenu() {
   renderOnlineMenu();
 }
 
-// « Ton refuge : Habitation · Lyon · 3 ouvertures », bouton « Choisir mon refuge », message de la sauvegarde.
+// « Ton refuge : Habitation · Lyon · 3 ouvertures », bouton « Voir mon refuge », message de la sauvegarde.
 function renderSaveLine() {
   const line = $('save-line');
   if (!line) return;
   const b = save.base;
   line.hidden = !b;
+  $('menu').classList.toggle('has-base', !!b);
   if (b) {
     const n = b.openings.length;
     $('save-text').textContent = `Ton refuge : ${[kindLabel(b.kind), b.place?.name, `${n} ouverture${n > 1 ? 's' : ''}`].filter(Boolean).join(' · ')}`;
   }
+  // Caisse d'un déménagement (ou d'un refuge disparu) : rappelée ici, avec sa distance au refuge.
+  const oc = save.orphanChest, n = countOf(oc?.chest);
+  const crate = $('save-crate');
+  crate.textContent = !n ? '' : b ? `Caisse de ${n} objet${n > 1 ? 's' : ''} devant ton ancien refuge, à ${distanceText(geoDistance(b, oc))} du nouveau.`
+    : `Caisse de ${n} objet${n > 1 ? 's' : ''} là où était ton refuge.`;
+  crate.hidden = !n;
   const note = $('save-note');
   const text = saveStore.readOnly || saveStore.reason ? saveStore.reason ?? '' : '';
   note.textContent = text;
@@ -322,7 +340,7 @@ function toMenu() {
   picker.show();
 }
 
-// Lieu du refuge, pour le menu (« Choisir mon refuge ») et le réveil après une mort en expédition.
+// Lieu du refuge, pour le menu (« Voir mon refuge » y recentre la carte) et le réveil après une mort en expédition.
 function homePlace() {
   const b = save.base;
   return { lat: b.lat, lon: b.lon, name: b.place?.name ?? kindLabel(b.kind), area: b.place?.area ?? '' };
@@ -441,6 +459,9 @@ async function launch(place, spawn) {
   const home = homeLatLon();
   const atHome = !!home && geoDistance(home, place) <= HOME_RADIUS;
   const origin = atHome ? home : { lat: place.lat, lon: place.lon };
+  // À 1 500 m ou moins, on repart de la porte du refuge : le HUD (et le nom d'un refuge installé ensuite) donne le lieu
+  // du refuge, pas celui du point choisi à côté.
+  if (atHome && save.base) place = homePlace();
   const old = session;
   if (old && samePlace(old.origin, origin) && old.store.source === 'tiles' && Date.now() - old.weatherAt < WEATHER_REFRESH_MS) {
     old.place = place;
@@ -530,6 +551,7 @@ async function launch(place, spawn) {
   saveStore.markDirty();
   if (save.base && !s.home && store.source === 'tiles') {
     const km = (geoDistance(home, origin) / 1000).toFixed(1).replace('.', ',');
+    // La consigne pour y déménager est dans la pastille de quête : le toast tient en 2 lignes à l'horizontale.
     toast(`Expédition : ton refuge est à ${km} km (flèche bleue)`, 5);
   }
   if (store.source === 'procedural' || liveWeather.source === 'unavailable') {
@@ -577,7 +599,12 @@ function restoreCharacter(s) {
   }
   // Fouilles de la ville de secours : ses identifiants ne sont pas géographiques, ils restent en mémoire.
   s.searchedLocal = new Set();
-  s.menu = { primary: null, secondary: null };
+  // Conseils de fin de fouille : « Déménager ici » une fois par partie, un refus une fois par bâtiment ; le conseil
+  // attend que le butin ait été lu (hintLater).
+  s.moveHinted = false;
+  s.refusedHints = new Set();
+  s.hintLater = null;
+  s.menu = { primary: null, secondary: null, why: '' };
   s.action = null;
   s.deathCause = null;
   s.startedAt = performance.now();
@@ -997,7 +1024,8 @@ function takenBy(s, b) {
 }
 
 // Actions proposées, par ordre de priorité : refuge (sortir, entrer, clouer, réparer), fouille, décor, caisse
-// orpheline ; le bouton R vient du refuge (piège, installation, déménagement, sommeil).
+// orpheline ; le bouton R vient du refuge (piège, installation, déménagement, sommeil). `why` : pourquoi le bâtiment
+// fouillé tout près ne peut pas devenir le refuge (R l'affiche).
 function chooseActions(s) {
   const p = s.player, r = s.refuge;
   const touch = isTouch();
@@ -1028,17 +1056,19 @@ function chooseActions(s) {
     }
   }
   if (!primary && !r.inside) primary = r.orphanAction(p, { touch, survivor: s.survivor });
-  return { primary, secondary: menu.secondary };
+  return { primary, secondary: menu.secondary, why: menu.why ?? '' };
 }
 
 // Bouton E (principal) ou R (secondaire) : lance l'action proposée. Une action chronométrée dehors s'interrompt
 // si l'on bouge, frappe ou est mordu ; au refuge, rien ne l'interrompt sauf l'alerte (sommeil) ou l'éjection.
 function updateActions(s, inp, dt, before) {
   const p = s.player;
+  tickHint(s, dt);
   if (!s.action) {
     s.menu = chooseActions(s);
     const pick = inp.interact ? s.menu.primary : inp.action2 ? s.menu.secondary : null;
     if (pick) startAction(s, pick);
+    else if (inp.action2 && s.menu.why) toast(s.menu.why, 2.5);
     return;
   }
   const a = s.action;
@@ -1107,7 +1137,41 @@ function finishSearch(s, a) {
   toast(`${a.title} : ${countsLabel(got) || 'rien'}${other ? ' · il restait peu de choses' : ''}`, 3, 'loot');
   lootNotes(res);
   if (tiles) online.mark('s', b.id);
+  claimHint(s, b, a.arg);
   saveStore.markDirty();
+}
+
+// Après une fouille (vraies rues) : ce bâtiment peut-il devenir le refuge ? Oui, et le joueur en a déjà un : le bouton
+// « Déménager ici » est montré une fois par partie (sans refuge, la mission « Trouve un refuge » le dit déjà). Non :
+// sans refuge, le motif (trop petit, trop grand, aucune entrée), une fois par bâtiment ; avec un refuge, on ne le dit
+// pas sans qu'on le demande (R), sauf une porte possible depuis une autre façade (bouton grisé : en faire le tour).
+// Le conseil attend que la notification du butin ait eu ses 3 s (sinon la file la remplace au bout de 1,2 s).
+const HINT_WAIT = 3;
+function claimHint(s, b, index) {
+  const r = s.refuge;
+  // Refuge d'un autre survivant : le toast « Déjà le refuge d'un autre survivant » suffit.
+  if (s.store.source !== 'tiles' || r.base?.id === b.id || !(r.base || s.goal) || takenBy(s, b)) return;
+  const fit = r.suitable({ ...b, index }, s.player);
+  const later = (text, seconds, move = false) => { s.hintLater = { text, seconds, index, move, wait: HINT_WAIT }; };
+  if (fit.ok) {
+    if (r.base && !s.moveHinted) later(`Ce bâtiment peut devenir ton refuge : Déménager\u00a0ici${isTouch() ? '' : '\u00a0(R)'}`, 4, true);
+  } else if (fit.side) {
+    later(fit.why, 3);
+  } else if (!r.base && !s.refusedHints.has(b.id)) {
+    s.refusedHints.add(b.id);
+    later(fit.why, 2.5);
+  }
+}
+
+// Conseil de fin de fouille, à son heure, si le joueur est encore devant le bâtiment (sinon « Déménager ici » attend
+// la fouille suivante).
+function tickHint(s, dt) {
+  const h = s.hintLater;
+  if (!h || (h.wait -= dt) > 0) return;
+  s.hintLater = null;
+  if (s.refuge.inside || buildingNear(s.grid, s.player.x, s.player.z, 1.6) !== h.index) return;
+  if (h.move) s.moveHinted = true;
+  toast(h.text, h.seconds);
 }
 
 // Après un butin : équipement porté d'office, arme usée jetée, surplus laissé sur place.
@@ -1232,9 +1296,14 @@ function pickBag(s) {
 function runRefuge(s, a) {
   const r = s.refuge;
   if (a.id === 'move' && !a.confirmed) {
+    const left = r.overflowFor(s.store.buildings[a.arg]);
     showCard({
       title: 'Déménager ici ?', tone: 'warn',
-      lines: ['Ton coffre et tes aménagements suivent.', 'Tes barricades et tes pièges actuels sont perdus.'],
+      lines: [
+        'Ton coffre et tes aménagements suivent.',
+        left ? `Coffre trop petit ici : ${left} objet${left > 1 ? 's resteront' : ' restera'} dans une caisse devant l'ancien refuge.` : '',
+        'Tes barricades et tes pièges actuels sont perdus.',
+      ],
       buttons: [{ id: 'move', label: 'Déménager', primary: true }, { id: 'cancel', label: 'Annuler' }],
     }, (id) => { if (id === 'move' && session === s) runRefuge(s, { ...a, confirmed: true }); }, { escape: 'cancel' });
     return;
@@ -1381,6 +1450,8 @@ function refugeView(s) {
         { action: 'deposit', arg: null, label: 'Tout déposer', enabled: bagN > 0 && chestN < cap, why: bagN ? 'Coffre plein' : 'Sac vide' },
       ],
     },
+    // Espaces insécables dans les guillemets : « Déménager ici » ne se coupe pas en fin de ligne sur téléphone.
+    hint: 'Changer de refuge : fouille un autre bâtiment, puis «\u00a0Déménager ici\u00a0» devant lui. Ton coffre et tes aménagements suivent.',
     footer: [
       { action: 'sleep', arg: null, label: `Dormir · ${TIMES.sleep} s`, enabled: sleep.ok && !s.action, why: s.action ? 'Action en cours' : sleep.why },
       { action: 'missions', arg: null, label: 'Missions', enabled: true },
@@ -1641,7 +1712,7 @@ function hudInfo(s) {
   } else if (!(phoneLayout.matches && panel.isOpen() && !panel.isFolded())) {
     const m = s.menu;
     if (m?.primary) primary = { label: m.primary.label, icon: actionIcon(m.primary) };
-    if (m?.secondary) secondary = { label: m.secondary.label, icon: actionIcon(m.secondary) };
+    if (m?.secondary) secondary = { label: m.secondary.label, icon: actionIcon(m.secondary), off: !!m.secondary.off };
   }
   const text = graceText(s, r.bannerText());
   return {
@@ -1831,10 +1902,14 @@ function renderConditions() {
     // Sans mission : trouver un refuge (première mission), ou explorer en attendant d'en choisir une au refuge.
     const g = s.goal;
     const dusk = s.dayChange?.toNight ? ` La nuit tombe à ${localTimeLabel(new Date(s.dayChange.at), w.utcOffsetSeconds)}.` : '';
-    $('quest-stage').textContent = g ? missionLine(g) : 'Exploration';
+    // En expédition (refuge à plus de 1 500 m), les missions sont au refuge : on dit comment s'installer ici, le mot du
+    // bouton en tête (une seule ligne sur téléphone à l'horizontale).
+    const away = !g && !!s.refuge?.base && s.store.source === 'tiles' && !s.home;
+    $('quest-stage').textContent = g ? missionLine(g) : away ? 'Expédition' : 'Exploration';
     $('quest-text').textContent = g ? `${questText(g)}${dusk}`
-      : s.refuge?.base && s.store.source === 'tiles' ? 'Pas de mission en cours : choisis-en une avec « Missions » au refuge.'
-        : 'Pas de quête disponible ici. Explore la ville et survis.';
+      : away ? "Déménager ici : fouille un bâtiment pour t'y installer."
+        : s.refuge?.base && s.store.source === 'tiles' ? 'Pas de mission en cours : choisis-en une avec « Missions » au refuge.'
+          : 'Pas de quête disponible ici. Explore la ville et survis.';
     quest.classList.remove('stage-2');
     quest.classList.add('explore');
     s.hudQuest = null;
