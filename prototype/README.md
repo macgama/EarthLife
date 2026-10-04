@@ -37,6 +37,27 @@ Paramètres d'adresse utiles pour tester :
 - `?city=lyon&weather=rain&time=night&autostart=1` : partir d'une ville de la liste (`lyon`, `paris`, `tokyo`, `newyork`, `reykjavik`…) ;
 - `weather` : `live`, `clear`, `rain`, `storm`, `snow`, `fog` ; `time` : `live`, `day`, `night`.
 
+## Jouer à plusieurs
+
+Les autres survivants passent par un petit serveur Node.js (dossier `server/` à la racine du dépôt). Tant que le vrai serveur n'est pas en service, le jeu publié reste en solo (`ONLINE.enabledByDefault = false` dans `src/online.js`). Pour essayer sur sa machine, le faux serveur local fait tourner le vrai cœur avec un magasin en mémoire (rien n'est écrit sur disque) et 3 survivants simulés qui marchent et font des gestes autour de Bellecour :
+
+```sh
+(cd ../server && npm ci --ignore-scripts)                          # une fois
+node ../server/dev.mjs --port 8787 --bots 3 --at 45.7578,4.8320    # depuis prototype/, à côté de « npx serve -l 5173 . »
+```
+
+Puis ouvrir http://127.0.0.1:5173/?server=http://127.0.0.1:8787&debug=1&lat=45.7578&lon=4.832 dans deux onglets (ou deux navigateurs) pour se voir. `?server=` n'est accepté que pour `127.0.0.1` et `localhost` : un lien vers un autre serveur est ignoré, si bien qu'un téléphone du réseau local ne peut pas s'y joindre. `?online=0` coupe tout le jeu en ligne, sans aucune requête vers le serveur. Avec `--dev`, le faux serveur ajoute `GET /__test/log` (positions reçues, pour les tests).
+
+**Tests d'acceptation du jeu à plusieurs** (`test/online-acceptance.mjs`, spec 9.3), sans réseau, dans un vrai Chromium comme ceux de la base :
+
+```sh
+npm run acceptance:online     # ou : ONLY=O1,O4 node test/online-acceptance.mjs [dossier-des-captures]
+```
+
+Le script lance le faux serveur dans le même processus, puis joue les scénarios O1 à O21 à deux, A sur ordinateur et B sur téléphone, près de la place Bellecour : présence et surnoms, flèches lointaines, gestes, fouilles et démontages partagés, refuges, zone privée, masquage, alerte de suivi, coupure du serveur, repli HTTP, maintenance, deux onglets, retour au menu, arrière-plan et absence d'erreur dans la console. Les tuiles, la météo et les bibliothèques viennent de `test/fixtures/offline-routes.mjs`, qui répond « maintenance » pour le vrai serveur de jeu : les autres tests (`npm run acceptance`, `npm run smoke:offline`) restent en solo. Three.js et MapLibre y sont servis depuis `node_modules` seulement à la version des adresses du jeu (`index.html`, `src/picker.js`) : une montée de version se fait à la main, aux deux endroits (Dependabot les laisse de côté).
+
+**Confidentialité.** `confidentialite.html` dit ce que le jeu garde, combien de temps, ce que reçoivent les autres services, et comment tout effacer ; elle s'ouvre depuis le menu (« Réglages en ligne », lien « Confidentialité ») et depuis la carte du premier passage (« Ce que le jeu garde »). Chaque durée y suit le code du serveur (`server/src`) et du jeu : un changement de règle se reporte dans la page. `src/net/build.js` vaut `'dev'` dans le dépôt ; la publication y écrit l'empreinte du commit, envoyée au serveur dans `hello` pour ses mesures.
+
 ## Commandes
 
 | Action | Ordinateur | Mobile et tablette |

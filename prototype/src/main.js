@@ -40,6 +40,7 @@ import * as icons from './icons.js';
 // Jeu à plusieurs : une couche posée à côté du jeu solo (spécification 7).
 import { createOnline, NULL_ONLINE, ONLINE, serverFromParams } from './online.js';
 import { FLAGS, nameOf, sectorOf } from './net/protocol.js';
+import { BUILD } from './net/build.js';
 import { zoneStatus, inviteCoords, removeZone, metersBetween as zoneMeters } from './privacy.js';
 import { REDUCED_LOOT, searchedLabel } from './shared-world.js';
 
@@ -91,6 +92,8 @@ let zones = picker.getZones(); // zones privées (privacy.js), rangées par pick
 const serverParam = params.get('server');
 const online = params.get('online') === '0' ? NULL_ONLINE : createOnline({
   server: serverFromParams(params, ONLINE.server), storage,
+  // Empreinte du jeu publié (net/build.js, réécrit à la publication) : champ `c` du hello, pour les mesures seulement.
+  build: BUILD,
   // Traces et refuge d'un lieu situé dans une zone privée : jamais partagés.
   isPrivate: (lat, lon) => zoneStatus(zones, lat, lon).kind === 'private',
   // Alerte de suivi accélérée pour les tests (?debug=1&followScale=60).
@@ -760,9 +763,11 @@ function applyConditions() {
 const clock = new THREE.Clock();
 const menuEl = $('menu');
 const focus = new THREE.Vector3();
-// Temps de logique par image, en ms (debug.perf), et part du jeu en ligne (debug.perf().online).
+// Temps de logique par image, en ms (debug.perf), et part du jeu en ligne (debug.perf().online : syncOnline et
+// syncOthers, dont l'affichage des autres survivants, étiquettes et bulles comprises ; scénario O18).
 const perfSamples = [];
 const onlineSamples = [];
+let othersMs = 0;
 // Point hors du champ de la caméra (image précédente) : une horde n'apparaît jamais à l'écran.
 const offscreen = (x, z) => {
   probe.center.set(x, 1, z);
@@ -794,17 +799,21 @@ renderer.setAnimationLoop(() => {
     }
   }
   // Position partagée, aussi quand une carte met le jeu en pause ou après une mort (« à terre »).
+  const sampled = DEBUG && !!s.player && !s.paused && onlineOn;
+  let onlineMs = 0;
   if (s.player && !s.paused && onlineOn) {
     const t1 = performance.now();
     syncOnline(s);
-    if (DEBUG) {
-      onlineSamples.push(performance.now() - t1);
-      if (onlineSamples.length > 600) onlineSamples.shift();
-    }
+    if (DEBUG) onlineMs = performance.now() - t1;
   }
   input.consume();
 
+  othersMs = 0;
   if (s.player) syncScene(s, dt);
+  if (sampled) {
+    onlineSamples.push(onlineMs + othersMs);
+    if (onlineSamples.length > 600) onlineSamples.shift();
+  }
   const at = s.viewAt ?? s.player;
   focus.set(at?.x ?? 0, 0, at?.z ?? 0);
   atmosphere.update(dt, focus, s.player?.yaw ?? 0);
@@ -1704,7 +1713,11 @@ function syncScene(s, dt) {
 
   syncBase(s, dt);
   propsView.update(dt);
-  if (onlineOn) syncOthers(s, dt);
+  if (onlineOn) {
+    const t0 = DEBUG ? performance.now() : 0;
+    syncOthers(s, dt);
+    if (DEBUG) othersMs = performance.now() - t0;
+  }
 }
 
 // Refuge (ouvertures, drapeau), sac perdu, caisse orpheline et leurre dans la scène : relus quand ils changent.
@@ -2326,12 +2339,13 @@ const debug = DEBUG ? {
     zone: session?.zone?.kind ?? null, others: session?.othersNow?.length ?? 0, view: !!othersView }),
   // Caméra de jeu (tests d'acceptation : apparitions de horde projetées à l'écran).
   camera: () => camera,
-  perf() {
-    const v = perfSamples.slice().sort((a, b) => a - b);
+  // last : seulement les `last` dernières images (600 au plus).
+  perf(last = 600) {
+    const v = perfSamples.slice(-last).sort((a, b) => a - b);
     const at = (q) => (v.length ? v[Math.min(v.length - 1, Math.floor(q * v.length))] : 0);
-    const o = onlineSamples.slice().sort((a, b) => a - b);
+    const o = onlineSamples.slice(-last).sort((a, b) => a - b);
     const oat = (q) => (o.length ? o[Math.min(o.length - 1, Math.floor(q * o.length))] : 0);
-    return { n: v.length, median: at(0.5), p95: at(0.95), max: v.length ? v[v.length - 1] : 0, online: { n: o.length, p95: oat(0.95) } };
+    return { n: v.length, median: at(0.5), p95: at(0.95), max: v.length ? v[v.length - 1] : 0, online: { n: o.length, median: oat(0.5), p95: oat(0.95), mean: o.length ? o.reduce((a, b) => a + b, 0) / o.length : 0 } };
   },
 } : undefined;
 

@@ -90,8 +90,11 @@ function wsClient(url, { origin = GAME, xff = null, path: p = '/v1/ws' } = {}) {
 }
 
 async function post(url, p, body, headers = {}) {
+  // Une erreur réseau garde sa cause (code et message du socket) dans le message : « fetch failed » seul ne dit rien.
   const res = await fetch(url + p, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8', ...headers },
-    body: typeof body === 'string' ? body : JSON.stringify(body) });
+    body: typeof body === 'string' ? body : JSON.stringify(body) }).catch((e) => {
+    throw new Error(`POST ${p} : ${e.message} (${e.cause?.code ?? ''} ${e.cause?.message ?? ''})`, { cause: e });
+  });
   return { status: res.status, headers: res.headers, text: await res.text() };
 }
 

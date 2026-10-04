@@ -8,6 +8,7 @@
     "start": "npx --yes serve -l 5173 .",
     "test": "node --test test/*.test.js",
     "acceptance": "node test/base-acceptance.mjs",
+    "acceptance:online": "node test/online-acceptance.mjs",
     "bench": "node test/bench-base.mjs",
     "smoke": "node test/browser-smoke.mjs",
     "smoke:offline": "ROUTES=test/fixtures/offline-routes.mjs node test/browser-smoke.mjs",

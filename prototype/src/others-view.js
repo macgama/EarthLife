@@ -120,13 +120,13 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
   }
   function labelEl(i) {
     if (!doc) return null;
-    if (!labels[i]) labels[i] = Object.assign(el('other-label'), { _text: '', _tf: '', _op: '', _w: 0 });
+    if (!labels[i]) labels[i] = Object.assign(el('other-label'), { _kind: 'label', _text: '', _tf: '', _op: '', _w: 0, _h: 0 });
     return labels[i];
   }
   function bubbleEl(i) {
     if (!doc) return null;
     if (!bubbleEls[i]) {
-      const b = Object.assign(el('other-bubble'), { _k: -1, _tf: '', _op: '', _text: '', _w: 0 });
+      const b = Object.assign(el('other-bubble'), { _kind: 'bubble', _k: -1, _tf: '', _op: '', _text: '', _w: 0, _h: 0 });
       const ic = doc.createElement('span');
       ic.className = 'other-bubble-icon';
       const tx = doc.createElement('span');
@@ -140,20 +140,48 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
     return bubbleEls[i];
   }
   const show = (e, on) => { if (e && e.hidden === on) e.hidden = !on; };
+  // Fenêtre lue une fois par image pendant sync (toScreen, clampX et offScreen la demandent pour chaque élément).
+  let rect = null;
+  const view = () => rect ?? vp();
 
   // Point de l'écran (pixels) d'un point du monde ; null derrière la caméra.
   function toScreen(x, y, z, camera) {
     _v.set(x, y, z).project(camera);
     if (!(_v.z < 1) || !Number.isFinite(_v.x)) return null;
-    const r = vp();
+    const r = view();
     return { x: r.left + ((_v.x + 1) / 2) * r.width, y: r.top + ((1 - _v.y) / 2) * r.height };
   }
+  // Tailles des étiquettes et des bulles, jamais lues au milieu de l'image : après les écritures de style de syncLabels,
+  // offsetWidth forcerait une mise en page, et les étiquettes vont aux survivants par rang de distance, si bien que deux
+  // survivants qui échangent leur rang échangent leurs textes (O18 : 1,5 à 2,5 ms par image avec 10 survivants).
+  // Largeurs gardées par texte, hauteur par sorte (une ligne) ; un texte jamais vu prend la largeur estimée pendant une
+  // image, et sa vraie taille est lue au début de l'image suivante, avant toute écriture (measurePending), quand la mise
+  // en page de l'image précédente vaut encore.
+  const widths = { label: new Map(), bubble: new Map() };
+  const heights = { label: 0, bubble: 0 };
+  const toMeasure = new Set();
+  function measurePending() {
+    for (const e of toMeasure) {
+      if (e.hidden) continue; // mesuré quand il sera affiché
+      toMeasure.delete(e);
+      const w = e.offsetWidth || 0, h = e.offsetHeight || 0;
+      if (h) heights[e._kind] = e._h = h;
+      if (!w) continue;
+      const seen = widths[e._kind];
+      if (seen.size >= 256) seen.clear();
+      seen.set(e._text, w);
+      e._w = w;
+    }
+  }
   // Abscisse bornée pour que l'élément (centré sur son point) reste entier à l'écran : au bord, un surnom coupé
-  // (« …nes 90 ») se lit mal. Largeur lue une fois quand le texte change (estimée tant que l'élément est caché).
+  // (« …nes 90 ») se lit mal. Largeur du texte déjà lue, sinon estimée (et lue à l'image suivante).
   function clampX(e, x) {
-    if (!e._w) e._w = e.offsetWidth || 0;
+    if (!e._w) {
+      e._w = widths[e._kind].get(e._text) ?? 0;
+      if (!e._w) toMeasure.add(e);
+    }
     const half = (e._w || e._text.length * 7 + 14) / 2 + 4;
-    const r = vp();
+    const r = view();
     return Math.min(Math.max(x, r.left + half), r.left + r.width - half);
   }
   // Ordonnée du bas de l'élément (centré en x, posé au-dessus de son point, remonté de `lift`) qui ne passe sous
@@ -161,7 +189,10 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
   function dodgeY(e, x, y, lift, estH) {
     const rects = avoid?.();
     if (!rects?.length) return y;
-    if (!e._h) e._h = e.offsetHeight || 0;
+    if (!e._h) {
+      e._h = heights[e._kind];
+      if (!e._h) toMeasure.add(e);
+    }
     const h = e._h || estH, half = (e._w || e._text.length * 7 + 14) / 2;
     for (let pass = 0; pass < 3; pass++) {
       let moved = false;
@@ -178,7 +209,7 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
   }
   // Point d'ancrage sorti de l'écran de plus de 40 px (l'étiquette se pose au-dessus du point).
   function offScreen(p) {
-    const r = vp();
+    const r = view();
     return p.x < r.left - 40 || p.x > r.left + r.width + 40 || p.y < r.top - 40 || p.y > r.top + r.height + 60;
   }
 
@@ -198,6 +229,9 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
   // list : online.others(now), Survivor = { sid, lat, lon, yaw, flags, name, alpha } ; me : { x, z } du joueur
   // (facultatif). Appelée à chaque image, après la caméra.
   function sync(list, proj, camera, dt = 0, daylight = 1, mePos = null) {
+    // Avant toute écriture de cette image (voir measurePending).
+    if (toMeasure.size) measurePending();
+    rect = vp();
     time += Math.max(0, dt || 0);
     lastCamera = camera ?? lastCamera;
     if (mePos && Number.isFinite(mePos.x) && Number.isFinite(mePos.z)) {
@@ -241,21 +275,41 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
     }
     syncFlags();
     syncRing();
+    rect = null;
   }
 
+  // Survivant étiqueté à l'image précédente → son étiquette : il la garde tant qu'il est étiqueté, si bien que deux
+  // survivants qui échangent leur rang de distance n'échangent pas leurs textes (texte réécrit, largeur à relire).
+  const labelOf = new Map();
+  const chosen = [];
   function syncLabels(camera) {
-    let used = 0;
     const keep = new Map();
+    chosen.length = 0;
     for (const s of drawn) {
-      if (used >= OTHERS_VIEW.maxLabels) break;
+      if (chosen.length >= OTHERS_VIEW.maxLabels) break;
       const limit = labelled.has(s.sid) ? OTHERS_VIEW.labelKeepM : OTHERS_VIEW.labelM;
       if (!me.known || s.d > limit || s.alpha < 0.2) continue;
-      const e = labelEl(used);
-      if (!e) break;
       const p = toScreen(s.x, OTHERS_VIEW.labelY, s.z, camera);
       // Hors de l'écran : pas d'étiquette (elle prendrait une des 6 places sans se voir).
       if (!p || offScreen(p)) continue;
-      used++;
+      chosen.push({ s, p, e: labelOf.get(s.sid) ?? null });
+    }
+    const taken = new Set();
+    for (const c of chosen) {
+      if (c.e && taken.has(c.e)) c.e = null;
+      if (c.e) taken.add(c.e);
+    }
+    labelOf.clear();
+    let next = 0;
+    for (const c of chosen) {
+      if (!c.e) {
+        while (next < OTHERS_VIEW.maxLabels && labelEl(next) && taken.has(labels[next])) next++;
+        c.e = next < OTHERS_VIEW.maxLabels ? labelEl(next) : null;
+        if (!c.e) break;
+        taken.add(c.e);
+      }
+      const { s, p, e } = c;
+      labelOf.set(s.sid, e);
       // Surnom envoyé par le serveur à 30 m seulement, jamais en couronne anonyme : sinon « Survivant ». Une
       // étiquette déjà posée garde son surnom jusqu'à 32 m (le serveur le retire à 30 m, l'affichage a 350 ms de
       // retard) : pas de « Survivant » d'une image en s'éloignant.
@@ -267,10 +321,10 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
       if (e._tf !== tf) { e.style.transform = tf; e._tf = tf; }
       const op = s.alpha >= 0.99 ? '' : s.alpha.toFixed(2);
       if (e._op !== op) { e.style.opacity = op; e._op = op; }
-      e.dataset.sid = String(s.sid);
+      if (e._sid !== s.sid) { e.dataset.sid = String(s.sid); e._sid = s.sid; }
       show(e, true);
     }
-    for (let i = used; i < labels.length; i++) show(labels[i], false);
+    for (const e of labels) if (e && !taken.has(e)) show(e, false);
     labelled.clear();
     for (const [sid, text] of keep) labelled.set(sid, text);
   }
@@ -288,7 +342,14 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
       const p = at ? toScreen(at.x, OTHERS_VIEW.bubbleY, at.z, camera) : null;
       if (!p) { show(e, false); continue; }
       if (e._k !== b.k) {
-        e._icon.innerHTML = icon(GESTURE_ICONS[b.k], { size: 18 });
+        // Icône lue une fois par bulle et par geste, puis reprise telle quelle : les bulles vont aux gestes par
+        // ordre d'arrivée, et chaque nouveau geste décale les autres (une analyse de SVG par bulle et par image).
+        const kept = e._icons?.[b.k];
+        if (kept && e._icon.replaceChildren) e._icon.replaceChildren(kept);
+        else {
+          e._icon.innerHTML = icon(GESTURE_ICONS[b.k], { size: 18 });
+          if (e._icon.firstElementChild) (e._icons ??= [])[b.k] = e._icon.firstElementChild;
+        }
         e._textEl.textContent = GESTURES[b.k];
         e._k = b.k;
         e._text = `-----${GESTURES[b.k]}`; // icône et marges comprises dans l'estimation de la largeur
@@ -422,6 +483,7 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
     characters?.setGuests?.([]);
     bubbles.length = 0;
     labelled.clear();
+    labelOf.clear();
     for (const e of labels) show(e, false);
     for (const e of bubbleEls) show(e, false);
     flagState.ids = [];
@@ -435,6 +497,7 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
 
   function dispose() {
     clear();
+    toMeasure.clear();
     scene?.remove(root);
     crowd.dispose();
     flagGeo.dispose();

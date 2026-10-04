@@ -1,19 +1,24 @@
 name: Prototype
 
 # Teste le prototype 3D (tests unitaires et mesures de performance, puis tests d'acceptation hors ligne dans
-# Chromium), le vérifie contre les vraies données (OpenFreeMap, Open-Meteo) et le publie sur GitHub Pages via la
-# branche gh-pages.
+# Chromium, jeu solo et jeu à plusieurs contre le faux serveur de server/), le vérifie contre les vraies données
+# (OpenFreeMap, Open-Meteo) et le publie sur GitHub Pages via la branche gh-pages.
 on:
   push:
     branches: [main, claude/prototype-3d-earthlife]
-    paths: ['prototype/**', '.github/workflows/prototype.yml']
+    paths: ['prototype/**', 'server/**', '.github/workflows/prototype.yml']
   pull_request:
-    paths: ['prototype/**', '.github/workflows/prototype.yml']
+    paths: ['prototype/**', 'server/**', '.github/workflows/prototype.yml']
   workflow_dispatch:
 
 concurrency:
   group: prototype-${{ github.ref }}
   cancel-in-progress: true
+
+# Lecture seule pour tous les travaux, qui lancent du code tiers (Playwright, modules du serveur) : seul deploy écrit,
+# sur la branche gh-pages.
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -47,10 +52,11 @@ jobs:
       - run: node test/real-data-smoke.mjs lyon paris tokyo newyork reykjavik perouges
 
   acceptance:
-    # Tests d'acceptation de la base (spec 9.2 et 9.3) dans Chromium, sans réseau : tuiles de Lyon et météo
-    # enregistrées dans test/fixtures. Ce contrôle bloque la publication.
+    # Tests d'acceptation dans Chromium, sans réseau (tuiles de Lyon et météo enregistrées dans test/fixtures) : la
+    # base (spec 9.2 et 9.3 du jeu solo), puis le jeu à plusieurs (spec multijoueur 9.3, O1 à O21) contre le faux
+    # serveur (server/dev.mjs, magasin en mémoire, lancé dans le même processus). Ce contrôle bloque la publication.
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: prototype
@@ -60,16 +66,29 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      # Dépendances du faux serveur (ws, mysql2), sans script d'installation ; server/ demande Node 18 ou plus.
+      - run: npm ci --ignore-scripts
+        working-directory: server
       - run: npm install --no-save playwright@1
       - run: npx playwright install --with-deps chromium
       - run: node test/base-acceptance.mjs browser-shots/acceptance
         env:
           ROUTES: test/fixtures/offline-routes.mjs
+      # Jeu à plusieurs : lancé même si la base a échoué, pour que les deux résultats soient connus.
+      - run: node test/online-acceptance.mjs browser-shots/online
+        if: ${{ !cancelled() }}
+        timeout-minutes: 80
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: captures-acceptation
           path: prototype/browser-shots/acceptance
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: captures-en-ligne
+          path: prototype/browser-shots/online
           retention-days: 14
 
   browser:
@@ -107,11 +126,20 @@ jobs:
         run: |
           mkdir -p _site
           cp prototype/index.html _site/
+          # Page « Ce que le jeu garde » (lien de la carte « Jouer à plusieurs ») : sans elle, pas de publication.
+          test -f prototype/confidentialite.html || { echo "prototype/confidentialite.html manquante" >&2; exit 1; }
+          cp prototype/confidentialite.html _site/
           cp -r prototype/src _site/
           cp -r prototype/assets _site/
+          # Empreinte du jeu publié (7 premiers caractères du commit), envoyée dans hello pour les mesures du serveur
+          # (section 4.8) ; remplace la valeur de développement de src/net/build.js.
+          mkdir -p _site/src/net
+          echo "export const BUILD = '${GITHUB_SHA::7}';" > _site/src/net/build.js
+          grep -Eq "^export const BUILD = '[0-9a-f]{7}';$" _site/src/net/build.js
           touch _site/.nojekyll
       - name: Publier sur la branche gh-pages
-        uses: peaceiris/actions-gh-pages@v4
+        # Action tierce qui écrit sur le dépôt : épinglée à un commit (v4.1.0), Dependabot propose les montées.
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages

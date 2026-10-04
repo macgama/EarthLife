@@ -1,0 +1,50 @@
+# Mises à jour des dépendances (section 6.1, « paquet npm compromis ») : une fois par semaine, le lundi matin, et
+# peu de demandes de fusion ouvertes à la fois (les mises à jour mineures et correctives de chaque dossier arrivent
+# groupées en une seule). Les alertes et mises à jour de sécurité s'activent dans Settings → Code security
+# (section 4.7, étape 15). Dependabot lit ce fichier sur la branche par défaut : il ne prend effet qu'une fois
+# dans main (lot G).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /server
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Paris
+    open-pull-requests-limit: 2
+    groups:
+      serveur:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /prototype
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Paris
+    open-pull-requests-limit: 2
+    # Three.js et MapLibre : le jeu publié les charge depuis jsDelivr à une version écrite dans index.html (import
+    # map) et src/picker.js ; package.json ne sert qu'aux essais hors ligne. Une montée par Dependabot ne toucherait
+    # que package.json : elles se font à la main, avec les adresses (offline-routes.mjs refuse une version qui diffère).
+    ignore:
+      - dependency-name: three
+      - dependency-name: maplibre-gl
+    groups:
+      prototype:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Paris
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ['*']
