@@ -67,7 +67,8 @@ export async function fetchTemplate({ signal } = {}) {
 }
 
 // Les tuiles déjà vues restent sur l'appareil : revenir dans un quartier ne retélécharge rien.
-export async function fetchTileBytes(url, { signal } = {}) {
+// `priority: 'low'` : le recensement d'une commune (blocks-worker.js) passe après les tuiles du jeu.
+export async function fetchTileBytes(url, { signal, priority } = {}) {
   let cache = null;
   try {
     cache = globalThis.caches ? await caches.open(TILE_CACHE) : null;
@@ -76,7 +77,7 @@ export async function fetchTileBytes(url, { signal } = {}) {
   } catch {
     cache = null;
   }
-  const res = await fetch(url, { signal });
+  const res = await fetch(url, priority ? { signal, priority } : { signal });
   if (!res.ok) throw new Error(`Tuile ${res.status}`);
   const buf = await res.arrayBuffer();
   try {
@@ -1060,3 +1061,10 @@ export function featuresFromBytes(bytes, tx, ty, z, origin) {
   const layers = decodeTile(bytes, { layers: LAYERS });
   return tileFeatures(layers, tx, ty, z, origin);
 }
+
+// Règles des bâtiments partagées avec la découpe en pâtés (blocks.js), qui les applique en coordonnées de tuile :
+// mêmes hauteurs devinées, mêmes types de bâtiment, mêmes commerces de rez-de-chaussée.
+export const BUILDING_RULES = Object.freeze({
+  squash, inferredHeight, hash32, poiUse, shopFamily,
+  POI_KIND, CLASS_FALLBACK, USE_RANK, SCHOOLS, INDUSTRY, TOWER_H, TOWER_AREA,
+});

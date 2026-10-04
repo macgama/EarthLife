@@ -4,11 +4,14 @@
 //   (test/fixtures/tiles/z-x-y.mvt), et l'adresse des tuiles (test/fixtures/tilejson.json) ;
 // - météo Open-Meteo : test/fixtures/open-meteo-rain-night.json ;
 // - Three.js et MapLibre : node_modules (npm ci) au lieu de cdn.jsdelivr.net ;
-// - carte du menu : un style vide ; recherche Photon et Nominatim : Pérouges.
+// - carte du menu : un style vide ; recherche Photon et Nominatim : Pérouges ;
+// - communes et population (lot P) : geo.api.gouv.fr, Wikidata, géocodage Open-Meteo et limites Nominatim, réponses
+//   écrites à la main (test/fixtures/communes/routes.mjs, à confirmer avec le réseau).
 // Toute autre adresse extérieure est refusée : rien ne sort de la machine.
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { communeResponse } from './communes/routes.mjs';
 
 const fixtures = path.dirname(fileURLToPath(import.meta.url));
 const cors = { 'access-control-allow-origin': '*' };
@@ -22,6 +25,8 @@ export default async function routes(ctx, root) {
   await ctx.route('**/*', async (route) => {
     const url = new URL(route.request().url());
     if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') return route.continue();
+    const commune = communeResponse(url.href);
+    if (commune) return route.fulfill(commune.status === 200 ? json(commune.body) : { status: commune.status, headers: cors });
     if (url.host === 'cdn.jsdelivr.net') {
       const m = url.pathname.match(/^\/npm\/(three|maplibre-gl)@[^/]+\/(.*)$/);
       const f = m && path.join(root, 'node_modules', m[1], m[2]);

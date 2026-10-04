@@ -1,0 +1,49 @@
+{
+ "results": [
+  {
+   "id": 2996944,
+   "name": "Lyon",
+   "latitude": 45.74846,
+   "longitude": 4.84671,
+   "elevation": 175,
+   "feature_code": "PPLA",
+   "country_code": "FR",
+   "admin1_id": 11071625,
+   "admin2_id": 2987410,
+   "admin3_id": 2996943,
+   "admin4_id": 6454573,
+   "timezone": "Europe/Paris",
+   "population": 520774,
+   "postcodes": [
+    "69001",
+    "69002"
+   ],
+   "country_id": 3017382,
+   "country": "France",
+   "admin1": "Auvergne-Rhône-Alpes",
+   "admin2": "Rhône",
+   "admin3": "Arrondissement de Lyon",
+   "admin4": "Lyon"
+  },
+  {
+   "id": 6454573,
+   "name": "Lyon",
+   "latitude": 45.76667,
+   "longitude": 4.88333,
+   "elevation": 170,
+   "feature_code": "ADM4",
+   "country_code": "FR",
+   "admin1_id": 11071625,
+   "admin2_id": 2987410,
+   "admin3_id": 2996943,
+   "timezone": "Europe/Paris",
+   "population": 513275,
+   "country_id": 3017382,
+   "country": "France",
+   "admin1": "Auvergne-Rhône-Alpes",
+   "admin2": "Rhône",
+   "admin3": "Arrondissement de Lyon"
+  }
+ ],
+ "generationtime_ms": 0.74
+}

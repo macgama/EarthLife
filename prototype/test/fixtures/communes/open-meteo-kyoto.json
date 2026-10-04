@@ -1,0 +1,36 @@
+{
+ "results": [
+  {
+   "id": 1857910,
+   "name": "Kyoto",
+   "latitude": 35.02107,
+   "longitude": 135.75385,
+   "elevation": 50,
+   "feature_code": "PPLA",
+   "country_code": "JP",
+   "admin1_id": 1857907,
+   "admin2_id": 7484853,
+   "timezone": "Asia/Tokyo",
+   "population": 1459640,
+   "country_id": 1861060,
+   "country": "Japon",
+   "admin1": "Kyoto",
+   "admin2": "Kyoto Shi"
+  },
+  {
+   "id": 1857907,
+   "name": "Kyoto",
+   "latitude": 35.25,
+   "longitude": 135.44,
+   "elevation": 300,
+   "feature_code": "ADM1",
+   "country_code": "JP",
+   "timezone": "Asia/Tokyo",
+   "population": 2578087,
+   "country_id": 1861060,
+   "country": "Japon",
+   "admin1": "Kyoto"
+  }
+ ],
+ "generationtime_ms": 0.52
+}
