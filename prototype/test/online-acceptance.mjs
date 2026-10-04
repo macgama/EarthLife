@@ -1294,6 +1294,10 @@ await scenario('O12', 'faux serveur arrêté, puis relancé 20 s plus tard', asy
   tolerate.push(win);
   const tStop = Date.now();
   await srv.stop();
+  // Relance à 20 s de l'arrêt, quelle que soit la durée des contrôles hors ligne : sur l'exécuteur de GitHub, une
+  // capture ou une lecture de la page y prend plusieurs secondes.
+  const relaunch = wait(Math.max(0, tStop + 20000 - Date.now())).then(async () => { const s = await devServer(port); return { s, t: Date.now() }; });
+  relaunch.catch(() => {}); // une exception plus haut ne laisse pas de rejet sans suite
   const offP = Promise.all([A, B].map((t) => whenTrue(t, () => (/^Hors ligne/.test(window.__pill() ?? '') ? Date.now() : null), null, 45000)));
   const pD = whenTrue(B, (id) => (window.__earthlife.save.dismantled[id] ? Date.now() : null), bench.id, 60000);
   check(await dismantle(B, bench.id), 'B : démontage du banc commencé, serveur arrêté');
@@ -1307,16 +1311,15 @@ await scenario('O12', 'faux serveur arrêté, puis relancé 20 s plus tard', asy
   check(!!tD, `B : banc démonté hors ligne (${s1(tD && tD - tStop)} après l'arrêt)`);
   const q = await ev(B, () => window.__earthlife.online.debug());
   check(q.queued >= 1, `B : trace en attente (file : ${q.queued}, statut ${q.status})`);
-  // A joue seul pendant ce temps : il marche, le jeu continue. La marche et la capture de B se font pendant l'attente
-  // des 20 s, sans la repousser : sur un exécuteur lent, elles en prenaient plus que le reste.
+  // A joue seul pendant ce temps : il marche, le jeu continue.
   const spot = await spotNear(A, 12, 0);
   const soloWalk = spot ? walkTo(A, spot, 4).catch(() => false) : Promise.resolve(true);
   await shot(B, 'o12-tel-hors-ligne');
   const solo = await Promise.all([A, B].map((t) => ev(t, () => ({ ended: !!window.__earthlife.session.ended, hud: !document.getElementById('hud').classList.contains('hidden'), paused: !!window.__earthlife.session.paused }))));
   check(solo.every((s) => !s.ended && s.hud && !s.paused), `A et B jouent seuls ${JSON.stringify(solo)}`);
-  await wait(Math.max(0, tStop + 20000 - Date.now()));
-  srv = await devServer(port);
-  const tUp = Date.now();
+  const up = await relaunch;
+  srv = up.s;
+  const tUp = up.t;
   check(tUp - tStop < 21000, `faux serveur relancé sur le port ${srv.port}, ${s1(tUp - tStop)} après l'arrêt (magasin neuf : nouvelles identités)`);
   await soloWalk;
   const onAt = await Promise.all([A, B].map((t) => whenTrue(t, () => (window.__earthlife.online.status === 'en-ligne' ? Date.now() : null), null, 60000)));
