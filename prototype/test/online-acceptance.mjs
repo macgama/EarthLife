@@ -1242,10 +1242,11 @@ await scenario('O11', 'un survivant simulé suit A', async () => {
   const t0 = Date.now();
   const cardAt = until(A, (title) => (document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent === title ? Date.now() : null), 'Un survivant reste près de toi depuis 5 min', 90000);
   let seen = null;
-  cardAt.then((v) => { seen = v; });
+  // La carte se ferme seule 12 s après son apparition (followCard, autoHideMs, setTimeout) : dès qu'elle paraît, la
+  // marche en cours et le relevé du sillage s'arrêtent, et « Masquer » est touché avant toute autre mesure. Sur
+  // l'exécuteur de GitHub (2 images par seconde), la capture et les relevés prenaient sinon ces 12 s.
+  cardAt.then((v) => { seen = v; stop = true; });
   let walked = 0;
-  // La carte se ferme seule après 12 s (followCard, autoHideMs) : la marche en cours s'arrête dès qu'elle paraît,
-  // pour que « Masquer » soit encore là sur un exécuteur lent.
   for (let leg = 0; leg < 30 && !seen && Date.now() - t0 < 85000; leg++) {
     const to = leg % 2 === 0 ? P1 : P0;
     await walkTo(A, to, 7.5, '#card:not(.hidden) [data-card-btn="hide"]');
@@ -1253,19 +1254,23 @@ await scenario('O11', 'un survivant simulé suit A', async () => {
   }
   const tCard = await cardAt;
   stop = true;
-  await sample;
-  const d = metersBetween(await where(A), behind());
-  note(`A a marché environ ${walked} m ; survivant simulé à ${d.toFixed(1)} m ; carte après ${s1(tCard && tCard - t0)}`);
-  const btns = await ev(A, () => [...document.querySelectorAll('#card [data-card-btn]')].map((b) => b.textContent.trim()));
+  const btns = await ev(A, () => [...document.querySelectorAll('#card:not(.hidden) [data-card-btn]')].map((b) => b.textContent.trim()));
   check(!!tCard && btns.includes('Masquer'), `A : carte « Un survivant reste près de toi depuis 5 min » avec ${JSON.stringify(btns)}`);
-  await shot(A, 'o11-ordi-alerte-suivi');
+  // Capture lancée en même temps que le clic : elle montre la carte si elle passe avant lui.
+  const alertShot = shot(A, 'o11-ordi-alerte-suivi').catch(() => null);
   if (tCard) {
-    note(`A : « Masquer » touché ${s1(Date.now() - tCard)} après l'apparition de la carte (fermeture seule à 12 s)`);
-    await A.page.click('#card:not(.hidden) [data-card-btn="hide"]', { timeout: 10000 });
+    const late = Date.now() - tCard;
+    // force : pas d'attente d'une image « stable » (deux images de suite à 2 images par seconde) ; le bouton est visible.
+    await A.page.click('#card:not(.hidden) [data-card-btn="hide"]', { timeout: 5000, force: true });
+    note(`A : « Masquer » touché ${s1(late)} après l'apparition de la carte (fermeture seule à 12 s)`);
     const toast = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => x === 'Vous ne vous verrez plus.') ?? null, null, 3000);
     const gone = await until(A, NOT_SEES, fol.st.sid, 3000);
     check(!!toast && !!gone, `A : survivant simulé masqué (« ${toast} »)`);
   }
+  await alertShot;
+  await sample;
+  const d = metersBetween(await where(A), behind());
+  note(`A a marché environ ${walked} m ; survivant simulé à ${d.toFixed(1)} m ; carte après ${s1(tCard && tCard - t0)}`);
   fol.stop();
 });
 
