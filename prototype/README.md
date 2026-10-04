@@ -45,15 +45,21 @@ Paramètres d'adresse utiles pour tester :
 | Courir | Maj | Bouton Courir, ou joystick poussé au bout |
 | Frapper | Espace ou clic | Bouton Frapper |
 | Caméra | Glisser la souris, J et L | Glisser à droite de l'écran |
+| Zoomer, dézoomer | Molette, + et −, boutons + et − | Pincer à deux doigts, boutons + et − |
+| Carte des environs : agrandir, réduire | C, ou clic sur la carte | Toucher la carte |
 | Action principale : fouiller, entrer au refuge, sortir, clouer, démonter, abattre | E, contre un mur ou près de l'objet | Bouton centré en bas |
 | Action secondaire : en faire mon refuge, déménager, poser un piège, dormir | R | Bouton juste au-dessus |
 | Onglet suivant du panneau du refuge | Tab (panneau ouvert) | Toucher l'onglet |
 | Replier ou déplier le panneau | B | Poignée du panneau |
-| Fermer une carte ou le panneau, puis sortir | Échap | Bouton « Fermer » ou « Sortir » |
+| Fermer une carte, la carte des environs ou le panneau, puis sortir | Échap | Bouton « Fermer » ou « Sortir » |
 | Lancer un leurre | 5 | Puce « Leurre » |
 | Manger, boire, se soigner, se réchauffer | 1, 2, 3, 4 | Boutons du sac |
 
 Une action chronométrée (fouille, clouage, démontage) s'arrête si on bouge, si on frappe ou si on est mordu.
+
+La carte des environs tourne avec la caméra (le haut de la carte est le regard, le « N » marque le nord) ; elle montre les rues, le bâti et l'eau déjà chargés, le joueur, le refuge, la mission, le sac perdu, les zombies proches et les fronts de la horde. Elle est en bas à gauche sur ordinateur et tablette ; sur téléphone tactile, en haut à droite sous les jauges, pour laisser le coin du joystick au pouce gauche. La constante `PHONE_MAP_CORNER` de `src/minimap.js` (`'haut-droite'` ou `'bas-gauche'`) choisit ce coin ; agrandie, la carte va en haut à droite à l'horizontale dans les deux cas. Sur un téléphone en portrait, la place dépend de la hauteur visible sous les barres du navigateur : 120 px et boutons dessous à partir de 780 px (735 sans leurre), puis 72 px (64 sur un écran étroit) avec les boutons à sa droite, sans boutons quand la colonne du sac monte jusqu'à eux (700 px avec le leurre, 645 sans ; le pincement reste), et rien sous 624 px (iPhone SE dans Safari : pas de place au-dessus des notifications).
+
+Pendant l'alerte et la vague, la caméra ne recule pas assez pour voir la horde apparaître (le bouton − s'estompe) ; sur un écran très large (32:9, ou téléphone à l'horizontale au refuge, tiroir ouvert), elle s'arrête avant que le brouillard ne se referme sur le joueur.
 
 ## Ta base
 
@@ -106,7 +112,7 @@ npm install --no-save playwright@1 && npx playwright install --with-deps chromiu
 npm run acceptance            # ou : ONLY=desktop (ou mobile) node test/base-acceptance.mjs [dossier-des-captures]
 ```
 
-Le script joue deux parties près de la place Bellecour, l'une sur ordinateur (1280×800) et l'autre sur téléphone (390×844), avec les crochets de `?debug=1` : installation du refuge, fabrication et clouage, rechargement et retour par le menu, alerte et vague de nuit forcée (joueur dehors face au front : chaque apparition est projetée avec la vraie caméra), mort et sac, démontage d'une voiture, deux onglets (« Reprendre ici » encore offert après « Fermer »), panneau en bas d'écran, réparation pendant une vague, leurre, déménagement (ligne du panneau vue dès l'ouverture, pas de refus non demandé avec un refuge, conseil une fois par partie et après le butin, même quartier avec un coffre trop plein pour le nouveau refuge et rechargement avec la caisse, puis expédition à Pérouges, avec les textes qui l'expliquent, entiers sur téléphone, aussi à l'horizontale), et absence d'erreur dans la console. Il mesure aussi le temps de logique par image pendant une vague (95e centile sous 6 ms sur ordinateur, 8 ms sur téléphone) et les appels de dessin ajoutés par le décor et le refuge. Sans carte graphique, le jeu tourne plus lentement que la montre : les durées (fouille, clouage, leurre) sont vérifiées en temps de jeu. Les captures vont dans `browser-shots/acceptance`. La CI lance ce script à chaque modification ; il bloque la publication.
+Le script joue deux parties près de la place Bellecour, l'une sur ordinateur (1280×800) et l'autre sur téléphone (390×844), avec les crochets de `?debug=1` : installation du refuge, fabrication et clouage, rechargement et retour par le menu, alerte et vague de nuit forcée (joueur dehors face au front : chaque apparition est projetée avec la vraie caméra), mort et sac, démontage d'une voiture, deux onglets (« Reprendre ici » encore offert après « Fermer »), panneau en bas d'écran, réparation pendant une vague, leurre, zoom de la caméra et carte des environs (entrées, bord du monde caché, aussi au refuge tiroir ouvert à l'horizontale, coin et aucun chevauchement à dix tailles d'écran dont les hauteurs visibles réelles des téléphones, garde-fou forcé, coin bas-gauche, repères, carte agrandie, découpe des murs au zoom le plus large), déménagement (ligne du panneau vue dès l'ouverture, pas de refus non demandé avec un refuge, conseil une fois par partie et après le butin, même quartier avec un coffre trop plein pour le nouveau refuge et rechargement avec la caisse, puis expédition à Pérouges, avec les textes qui l'expliquent, entiers sur téléphone, aussi à l'horizontale), et absence d'erreur dans la console. Il mesure aussi le temps de logique par image pendant une vague (95e centile sous 6 ms sur ordinateur, 8 ms sur téléphone) et les appels de dessin ajoutés par le décor et le refuge. Sans carte graphique, le jeu tourne plus lentement que la montre : les durées (fouille, clouage, leurre) sont vérifiées en temps de jeu. Les captures vont dans `browser-shots/acceptance`. La CI lance ce script à chaque modification ; il bloque la publication.
 
 Les réponses du réseau viennent de `test/fixtures/offline-routes.mjs` : de vraies tuiles OpenFreeMap de Lyon (place Bellecour) et de Pérouges réduites à un carré de 800 m (`test/fixtures/tiles/`, 207 Ko), leur `tilejson.json`, une météo enregistrée (pluie de nuit), Three.js et MapLibre pris dans `node_modules`. Toute autre adresse est refusée. `npm run tiles:crop -- <dossier des tuiles brutes>` refait les tuiles réduites à partir de tuiles téléchargées (`z-x-y.mvt`). Le même fichier sert au test de fumée : `npm run smoke:offline` (ou `npm run smoke` avec les vrais services).
 
@@ -127,7 +133,9 @@ Les réponses du réseau viennent de `test/fixtures/offline-routes.mjs` : de vra
 - `src/game.js` : joueur, zombies, combat
 - `src/survival.js` : faim, soif, température du corps, butin selon le type de lieu, inventaire
 - `src/scene.js`, `src/atmosphere.js` : rendu Three.js, façades et fenêtres, balise de quête, ciel, pluie, neige, éclairs
+- `src/minimap.js` : carte des environs (canvas 2D tourné avec la caméra, fond dessiné par tranches dans un cache, repères, garde-fou qui l'écarte des autres panneaux, carte agrandie)
+- `src/view.js` : zoom de la caméra (de 18 à 72 m, 56 m sur téléphone), tangage plancher, rayon construit et brouillard qui cache le bord du monde, réglage gardé (`localStorage['earthlife.vue']`)
 - `src/characters.js` : joueur et zombies low-poly animés (un seul appel de dessin pour tous les zombies), ombres de contact
 - `src/icons.js` : icônes de l'interface (SVG au trait, `data-icon` dans la page)
-- `src/input.js` : clavier, souris, joystick tactile
+- `src/input.js` : clavier, souris (molette), joystick tactile et pincement
 - `assets/fonts/` : polices Chakra Petch et Barlow Semi Condensed auto-hébergées (licence OFL)

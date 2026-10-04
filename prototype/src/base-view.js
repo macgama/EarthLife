@@ -45,7 +45,7 @@ export function addWallCut(material, cut, { always = false } = {}) {
     vec3 cutDir = uCutPlayer - uCutCamera;
     float cutLen = max(length(cutDir), 0.001);
     float cutT = dot(vCutWorld - uCutCamera, cutDir) / (cutLen * cutLen);
-    if (cutT > 0.0 && cutT < 0.96) {
+    if (cutT > 0.0 && cutT < 1.0 - ${sceneParts.CUT_KEEP.toFixed(2)} / cutLen) {
       vec3 cutClosest = uCutCamera + cutDir * cutT;
       if (distance(vCutWorld, cutClosest) < uCutRadius * (0.35 + 0.65 * cutT)) discard;
     }
