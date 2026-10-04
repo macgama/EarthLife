@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   tileBlocks, readBuildings, censusTile, censusPlan, censusTotals, contourInTile, edgeNeighbours, pateIndexAt, pateAt,
   packBlocks, unpackBlocks, blocksCacheUrl, blocksTransfers, createBlocksClient, homeFloor, realHeight, fixed5,
-  lonLatToTilePx, metersPerPx, blocksTileKey, BLOCK_LAYERS, BLOCKS_VERSION, censusFromBlocks, CLIENT,
+  lonLatToTilePx, metersPerPx, blocksTileKey, BLOCK_LAYERS, BLOCKS_VERSION, censusFromBlocks, CLIENT, mergeCensus,
 } from '../src/blocks.js';
 import { createBlocksJobs, CENSUS } from '../src/blocks-worker.js';
 import { ZONES_VERSION, CENSUS_MAX_TILES, lightZones } from '../src/limits.js';
@@ -494,6 +494,22 @@ test('travailleur : tuile du recensement en échec reprise trois fois puis compt
   assert.equal(prog.length, 2);
   assert.equal(prog.at(-1).done, 2);
   assert.ok(prog.some((x) => x.error && x.floor === 0));
+  assert.deepEqual(m.census.over, []); // pas le budget : à relancer
+  // Relance des tuiles en échec (le réseau est revenu), puis les deux recensements réunis : comme un recensement
+  // complet d'un seul coup.
+  const contour = square(5.1, 45.85, 5.3, 45.95);
+  const g = fakeJobs();
+  await g.jobs.handle({ type: 'census', id: 9, template: TEMPLATE, tiles: m.census.failed.map((k) => ({ x: +k.split('/')[1], y: +k.split('/')[2] })), contour });
+  const merged = mergeCensus(m.census, (await g.wait((x) => x.id === 9 && x.type === 'census')).census);
+  const h = fakeJobs();
+  await h.jobs.handle({ type: 'census', id: 10, template: TEMPLATE, tiles: [{ x: 8427, y: 5835 }, { x: 8427, y: 5834 }], contour });
+  const whole = (await h.wait((x) => x.id === 10 && x.type === 'census')).census;
+  const noMs = (c) => ({ ...c, results: c.results.map(({ ms, ...r }) => r) }); // durées mesurées : seules à différer
+  assert.deepEqual(noMs(merged), noMs(whole));
+  assert.equal(merged.complete, true);
+  // Relance encore en échec : toujours incomplet, la tuile reste manquante.
+  const still = mergeCensus(m.census, { results: [], failed: ['14/8427/5834'], over: [] });
+  assert.deepEqual([still.complete, still.failed, Object.keys(still.tiles)], [false, ['14/8427/5834'], ['14/8427/5835']]);
   // Recensement vide : réponse immédiate.
   await f.jobs.handle({ type: 'census', id: 8, template: TEMPLATE, tiles: [] });
   assert.equal((await f.wait((x) => x.id === 8)).census.floor, 0);
@@ -603,6 +619,7 @@ test('travailleur : annuler coupe le téléchargement en cours ; bornes du recen
     assert.equal(o.complete, false);
     assert.equal(o.results.length, 1);
     assert.equal(o.failed.length, 2);
+    assert.deepEqual(o.over, o.failed); // laissées par le budget : à ne pas relancer
   } finally {
     CENSUS.maxBytes = saved;
   }

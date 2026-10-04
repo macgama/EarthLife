@@ -817,11 +817,16 @@ export function censusUnit(commune) {
 // Choix figé au début de la ville. `blocks` : le nombre de pâtés de la commune, compté au recensement (census avec
 // cut du travailleur, censusBlocks de quartier.js) ; absent ou illisible pour une commune de 2 000 habitants au
 // plus : null (on ne sait pas encore), jamais « quartiers » par défaut.
-export function chapterMode(population, blocks) {
+// Repli (recensement encore incomplet après sa relance) : `partial`, les pâtés comptés dans les tuiles recensées
+// (censusBlocks(census, fn, { partial: true }), un minimum, null si rien n'a été découpé) : au-delà de 150,
+// « quartiers » (le vrai nombre est plus grand encore) ; sinon, ou sans aucun compte, « entiere », la règle d'une
+// commune de 2 000 habitants au plus. Avec l'option, le résultat n'est jamais null pour une population valide.
+export function chapterMode(population, blocks, { partial } = {}) {
   if (!isPop(population)) return null;
   if (population > COMMUNE.wholeMaxPop) return 'quartiers';
-  if (!Number.isInteger(blocks) || blocks < 0) return null;
-  return blocks <= COMMUNE.wholeMaxBlocks ? 'entiere' : 'quartiers';
+  if (Number.isInteger(blocks) && blocks >= 0) return blocks <= COMMUNE.wholeMaxBlocks ? 'entiere' : 'quartiers';
+  if (partial === undefined) return null;
+  return Number.isInteger(partial) && partial > COMMUNE.wholeMaxBlocks ? 'quartiers' : 'entiere';
 }
 
 // Au retour du réseau, une ville commencée hors ligne reçoit son vrai nom et sa vraie clé ; sa population et sa
@@ -857,17 +862,28 @@ export function populationLabel(c) {
 // - complete : toutes les tuiles du recensement sont dans le graphe (zones du recensement) ; une zone de la maison
 //   encore ouverte sort alors des tuiles du contour : les lignes ont un trou, on coupe au contour.
 // `commune` est la commune, ou directement l'unité recensée (censusUnit, avec son contour).
+// La fonction suit le graphe : après chaque graph.addTile (ou removeTile), la zone de la maison et la décision de
+// fuite sont reprises (graph.version), comme si la fonction était recréée ; fn.leak est lu au moment de la question.
 export function communeMembership(graph, home, commune = null, { leak = undefined, complete = false } = {}) {
   const contour = commune?.arrondissement?.contour ?? commune?.contour ?? null;
-  const h = graph.zoneAt(home.lat, home.lon);
-  const hid = h ? graph.idOf(h.x, h.y, h.label) : -1;
-  let cut = leak;
-  if (cut === undefined) {
-    cut = Boolean(h && hasContour(contour) && (graph.placesIn(h.id).some((p) => !p.edge && !pointInContour(contour, p.lat, p.lon))
-      || (complete && !graph.isClosed(hid))));
-  }
-  cut = cut === true && hasContour(contour);
+  // Ce qui est tiré du graphe : un numéro de zone ne vaut que jusqu'au prochain ajout de tuile (union-find, racine au
+  // plus petit indice), on le recalcule quand le graphe a changé (à chaque appel pour un graphe sans `version`).
+  let seen = NaN, h = null, hid = -1, cut = false;
+  const refresh = () => {
+    const v = graph.version;
+    if (v !== undefined && v === seen) return;
+    seen = v;
+    h = graph.zoneAt(home.lat, home.lon);
+    hid = h ? graph.idOf(h.x, h.y, h.label) : -1;
+    let c = leak;
+    if (c === undefined) {
+      c = Boolean(h && hasContour(contour) && (graph.placesIn(hid).some((p) => !p.edge && !pointInContour(contour, p.lat, p.lon))
+        || (complete && !graph.isClosed(hid))));
+    }
+    cut = c === true && hasContour(contour);
+  };
   const fn = (x, y, label, lat, lon) => {
+    refresh();
     if (cut) return isLat(lat) && isLon(lon) ? pointInContour(contour, lat, lon) : null;
     if (!h) return null;
     // Pâté sans numéro de zone (plus grand bâtiment sous une ligne) : le contour s'il est connu.
@@ -878,7 +894,7 @@ export function communeMembership(graph, home, commune = null, { leak = undefine
     return graph.isClosed(id) || graph.isClosed(hid) ? false : null;
   };
   // Décision connue seulement avec la tuile de la maison chargée ; avant, rien à figer (undefined).
-  fn.leak = h || leak !== undefined ? cut : undefined;
+  Object.defineProperty(fn, 'leak', { enumerable: true, get() { refresh(); return h || leak !== undefined ? cut : undefined; } });
   return fn;
 }
 

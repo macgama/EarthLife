@@ -10,10 +10,10 @@ import {
   finishUnit, villeLine, compactVille, rowCount, rekeyVille, watched, keyPoint, unitKeyOf,
   memberOf, censusWeights, censusBlocks, unitTilesMissing, ROW_LENGTH,
 } from '../src/quartier.js';
-import { tileBlocks, censusFromBlocks, BLOCK_LAYERS } from '../src/blocks.js';
+import { tileBlocks, censusFromBlocks, censusTotals, mergeCensus, BLOCK_LAYERS } from '../src/blocks.js';
 import { decodeTile } from '../src/mvt.js';
-import { tileZoneInput, tileZones, zoneLabelAt, createZoneGraph, lightZones, CENSUS_MAX_TILES } from '../src/limits.js';
-import { communeMembership, chapterMode, parseGeoApi, geoApiUrl } from '../src/commune.js';
+import { tileZoneInput, tileZones, zoneLabelAt, createZoneGraph, lightZones, contourTileShare, CENSUS_MAX_TILES } from '../src/limits.js';
+import { communeMembership, chapterMode, parseGeoApi, geoApiUrl, contourTiles } from '../src/commune.js';
 import { communeResponse } from './fixtures/communes/routes.mjs';
 
 // ---------- Outils ----------
@@ -31,6 +31,7 @@ function rng(seed) {
 const shuffle = (a, rand) => { const b = [...a]; for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
 const sumMap = (m) => [...m.values()].reduce((a, b) => a + b, 0);
 const rowsOf = (v) => Object.values(v.tiles).flatMap((t) => (t.b ? Object.entries(t.b) : []));
+const rowOf = (v, key) => rowsOf(v).find(([k]) => k === key)?.[1];
 const keysOf = (v) => rowsOf(v).map(([k]) => k).sort();
 const stockOf = (v) => rowsOf(v).reduce((a, [, r]) => a + r[ROW.S], 0);
 const ok = (v, why = '') => { const c = checkVille(v); assert.ok(c.ok, `${why} ${c.errors.join(' ; ')}`); return c; };
@@ -218,7 +219,7 @@ test('deux étages : la part d\'une tuile est figée au début, une tuile placé
   ok(v);
 });
 
-test('un pâté pas encore connu (zone ouverte) retient la tuile ; force : sa part attend dans la tuile', () => {
+test('un pâté pas encore connu (zone ouverte) retient la tuile ; force : il est placé à titre provisoire', () => {
   const { cuts, floors, member } = perougesCuts();
   const v = startVille({ key: 'c01290', name: 'Pérouges', population: 1387, level: 'facile', tiles: floors });
   const first = cuts[0].pates.find((p) => member(p, cuts[0])).key;
@@ -226,12 +227,13 @@ test('un pâté pas encore connu (zone ouverte) retient la tuile ; force : sa pa
   const r = placeTile(v, cuts[0], { member: unknown });
   assert.deepEqual([r.ok, r.waiting], [false, 1]);
   assert.equal(v.tiles[cuts[0].tile].b, null);
-  assert.ok(placeTile(v, cuts[0], { member: unknown, force: true }).ok);
-  assert.equal(blockInfo(v, first), null);
-  assert.ok(!zero3(v.tiles[cuts[0].tile].rest)); // sa part attend, elle n'est donnée à personne
-  assert.equal(v.tiles[cuts[0].tile].wt, 1);
+  const f = placeTile(v, cuts[0], { member: unknown, force: true });
+  assert.deepEqual([f.ok, f.waiting], [true, 1]);
+  assert.ok(blockInfo(v, first)); // compté dans la commune en attendant : ses zombies sont là, à abattre
+  assert.ok(zero3(v.tiles[cuts[0].tile].rest)); // rien n'attend dans la tuile
+  assert.equal(v.tiles[cuts[0].tile].wt, undefined);
   ok(v);
-  // Connu ensuite : il reçoit exactement la part qu'il aurait eue, comme si la tuile avait été placée d'un coup.
+  // Connu ensuite dedans : rien ne change, comme si la tuile avait été placée d'un coup.
   placeTile(v, cuts[0], { member });
   placeTile(v, cuts[1], { member });
   assert.equal(JSON.stringify(v.tiles), JSON.stringify(perougesVille('facile').tiles));
@@ -287,7 +289,55 @@ test('recensement avec les zones : appartenance connue avant le premier placemen
   for (const r of census.results) assert.equal(unknown[r.tile], r.floor);
 });
 
-test('force avant que la tuile de la maison soit connue : jamais orpheline, la part attend ses pâtés', () => {
+test('recensement incomplet après relance : repli au contour et mode par défaut, la petite commune démarre', () => {
+  // Pérouges : 8 tuiles touchent le contour, seules les 2 des fixtures se téléchargent ; la relance échoue encore.
+  const { cuts } = perougesCuts();
+  const all = contourTiles(PEROUGES_CONTOUR).map((t) => `14/${t.x}/${t.y}`);
+  assert.equal(all.length, 8);
+  const results = cuts.map((c) => ({ ...censusFromBlocks(c, { contour: PEROUGES_CONTOUR }), zones: lightZones(c.zones) }));
+  const failed = all.filter((k) => !results.some((r) => r.tile === k)).sort();
+  const census = { ...censusTotals(results), level: 8, complete: false, results, failed, over: [] };
+  const merged = mergeCensus(census, { results: [], failed, over: [] });
+  assert.deepEqual([merged.complete, merged.failed], [false, failed]);
+  const graph = (order) => {
+    const g = createZoneGraph();
+    for (const i of order) g.addTile(results[i].x, results[i].y, results[i].zones);
+    g.addTile(cuts[1].x, cuts[1].y, cuts[1].zones); // la tuile de la maison, découpée par le jeu
+    return g;
+  };
+  // Sans repli : nombre de pâtés inconnu, pas de mode, la ville ne démarre pas, et des pâtés restent inconnus.
+  const lines = communeMembership(graph([0, 1]), PEROUGES, { contour: PEROUGES_CONTOUR }, { complete: merged.complete });
+  assert.equal(chapterMode(1387, censusBlocks(merged, lines)), null);
+  assert.equal(startVille({ key: 'c01290', population: 1387, mode: null, tiles: censusWeights(merged, lines) }), null);
+  // Repli : avec un contour, la zone de la maison encore ouverte se coupe au contour (complete: true après la relance) ;
+  // le mode vient du compte des tuiles recensées ; les tuiles en échec reçoivent leur part selon leur surface.
+  const snaps = {};
+  for (const order of [[0, 1], [1, 0]]) {
+    const fn = communeMembership(graph(order), PEROUGES, { contour: PEROUGES_CONTOUR }, { complete: true });
+    assert.equal(fn.leak, true);
+    const exact = censusBlocks(merged, fn), partial = censusBlocks(merged, fn, { partial: true });
+    assert.equal(exact, null);
+    assert.ok(partial > 50 && partial <= 150, `${partial} pâtés`);
+    const mode = chapterMode(1387, exact, { partial });
+    assert.equal(mode, 'entiere');
+    for (const [level, z] of [['facile', 277], ['moyen', 485], ['difficile', 694]]) {
+      const v = startVille({ key: 'c01290', name: 'Pérouges', population: 1387, level, mode, tiles: censusWeights(merged, fn), failed: merged.failed, contour: PEROUGES_CONTOUR, at: 1 });
+      assert.ok(v, level);
+      assert.deepEqual(Object.keys(v.tiles).sort(), all.sort());
+      for (const k of failed) assert.equal(v.tiles[k].e, 1);
+      for (const i of order) {
+        const r = placeTile(v, cuts[i], { member: memberOf(fn) });
+        assert.ok(r.ok && !r.waiting, JSON.stringify(r)); // au contour, plus aucun pâté inconnu : pas de force
+      }
+      assert.equal(counters(v).zombies, z);
+      ok(v);
+      snaps[level] = (snaps[level] ?? []).concat(sameTiles(v));
+    }
+  }
+  for (const [level, [a, b]] of Object.entries(snaps)) assert.equal(a, b, level);
+});
+
+test('force avant que la tuile de la maison soit connue : jamais orpheline, refaite d\'un bloc une fois connue', () => {
   const { cuts, floors, member } = perougesCuts();
   const v = startVille({ key: 'c01290', name: 'Pérouges', population: 1387, level: 'facile', tiles: floors });
   const before = [...v.tiles[cuts[0].tile].p];
@@ -298,6 +348,75 @@ test('force avant que la tuile de la maison soit connue : jamais orpheline, la p
   placeTile(v, cuts[1], { member });
   placeTile(v, cuts[0], { member });
   assert.equal(sameTiles(v), sameTiles(perougesVille('facile')));
+});
+
+test('force puis pâtés connus dehors : même ville que placée d\'un coup, quel que soit l\'ordre', () => {
+  // Vraies tuiles de Pérouges : des pâtés de la tuile du nord sont encore inconnus au placement forcé, un sur 5 de
+  // ceux de la commune et un sur 2 de ceux du dehors ; le jeu les connaît ensuite (tuiles voisines découpées).
+  const { cuts, floors, member } = perougesCuts();
+  const ins = cuts[0].pates.filter((p) => member(p, cuts[0])), outs = cuts[0].pates.filter((p) => !member(p, cuts[0]));
+  const unknown = new Set([...ins.filter((_, i) => i % 5 === 2), ...outs.filter((_, i) => i % 2 === 0)].map((p) => p.key));
+  const early = (p, c) => (unknown.has(p.key) ? null : member(p, c));
+  const outside = cuts[0].pates.filter((p) => unknown.has(p.key) && !member(p, cuts[0])).length;
+  assert.ok(outside >= 5 && unknown.size - outside >= 5, `${unknown.size} inconnus, ${outside} dehors`);
+  const ref = sameTiles(perougesVille('facile'));
+  for (const order of [[0, 1], [1, 0]]) {
+    const v = startVille({ key: 'c01290', name: 'Pérouges', population: 1387, level: 'facile', tiles: floors, at: 1000 });
+    for (const i of order) assert.equal(placeTile(v, cuts[i], { member: i === 0 ? early : member, force: true }).ok, true);
+    assert.equal(rowsOf(v).length, rowsOf(perougesVille('facile')).length + outside); // provisoires comptés dedans
+    ok(v);
+    for (const i of order) placeTile(v, cuts[i], { member });
+    assert.equal(sameTiles(v), ref, `ordre ${order}`);
+  }
+  // Une partie jouée entre-temps dans la tuile : les rangées jouées restent, la part des pâtés intacts devenus dehors
+  // va aux pâtés rouges de la tuile ; rien ne se perd, aucun pâté dehors ne garde de rangée.
+  const v = startVille({ key: 'c01290', name: 'Pérouges', population: 1387, level: 'facile', tiles: floors, at: 1000 });
+  placeTile(v, cuts[0], { member: early, force: true });
+  placeTile(v, cuts[1], { member });
+  const known = cuts[0].pates.filter((p) => member(p, cuts[0]) && !unknown.has(p.key) && blockInfo(v, p.key).zombies >= 3).map((p) => p.key);
+  const [played, cleared] = known;
+  kill(v, played, lend(v, played, 2));
+  const n = kill(v, cleared, lend(v, cleared, 1000, { nest: true }));
+  assert.equal(blockInfo(v, cleared).state, 'nettoye');
+  const before = blockInfo(v, played);
+  placeTile(v, cuts[0], { member });
+  ok(v);
+  assert.deepEqual(keysOf(v), keysOf(perougesVille('facile')));
+  assert.equal(rowsOf(v).reduce((a, [k]) => a + blockInfo(v, k).population, 0), 1387);
+  assert.equal(counters(v).zombies, 277 - 2 - n);
+  assert.ok(blockInfo(v, played).zombies >= before.zombies); // un pâté rouge peut recevoir
+  assert.deepEqual([blockInfo(v, cleared).state, blockInfo(v, cleared).zombies], ['nettoye', 0]); // un nettoyé, jamais
+});
+
+test('force sans que les inconnus soient jamais connus : la ville se nettoie et se sauve', () => {
+  const { cuts, floors, member } = perougesCuts();
+  const unknown = new Set(cuts[0].pates.filter((_, i) => i % 3 === 0).map((p) => p.key));
+  const early = (p, c) => (unknown.has(p.key) ? null : member(p, c));
+  const v = startVille({ key: 'c01290', name: 'Pérouges', population: 1387, level: 'moyen', tiles: floors, at: 1 });
+  for (const c of cuts) placeTile(v, c, { member: early, force: true });
+  ok(v);
+  for (const t of Object.values(v.tiles)) assert.ok(zero3(t.rest) && t.wt === undefined);
+  for (const k of keysOf(v)) kill(v, k, lend(v, k, 1000, { nest: true }));
+  assert.equal(cityStatus(v), 'coeur'); // seule la réserve du cœur reste
+  const s = drawReserve(v, 'c01290', counters(v).reserve);
+  settle(v, s, s.n);
+  assert.equal(cityStatus(v), 'nettoyee');
+  assert.equal(villeLine(v, 2)[LINE.zombies], 485);
+  ok(v);
+  // Mode quartiers : une tuile placée de force ne retient jamais un quartier (unitTilesMissing).
+  const Q1 = 'q45.9034_5.1795';
+  const qc = [fakeCut(8427, 5834, 30, { qkeys: [Q1] }), fakeCut(8428, 5834, 20, { qkeys: [Q1] })];
+  const w = startVille({ key: 'c01291', population: 6000, level: 'facile', mode: 'quartiers', tiles: floorsOf(qc) });
+  placeTile(w, qc[0]);
+  assert.equal(placeTile(w, qc[1], { member: (p) => (p.lat > 45.905 ? null : true), force: true }).ok, true);
+  assert.deepEqual(unitTilesMissing(w, Q1), []);
+  assert.ok(startUnit(w, Q1, { name: 'Centre' }));
+  for (const k of keysOf(w)) kill(w, k, lend(w, k, 1000, { nest: true }));
+  const r = drawReserve(w, Q1, w.units[Q1].r);
+  settle(w, r, r.n);
+  assert.ok(finishUnit(w, Q1, 5));
+  assert.equal(cityStatus(w), 'nettoyee');
+  ok(w);
 });
 
 test('tuile orpheline : même résultat, pâté par pâté, quel que soit l\'ordre d\'arrivée des tuiles', () => {
@@ -420,7 +539,8 @@ test('bornes à l\'écriture : 400 tuiles par ville, 400 lieux, noms nettoyés, 
   const v = startVille({ key: 'c01290', name: 'Pé\u202erouges<b>', population: 1000, tiles: { '14/1/1': 300, '14/2/1': 100, '14/3/1': 200 }, failed: ['14/4/1'] });
   assert.equal(v.name, 'Pé rouges b');
   assert.equal(v.tiles['14/4/1'].e, 1);
-  assert.ok(v.tiles['14/4/1'].p[0] > 0); // part estimée (poids médian), pas zéro pour toujours
+  // Part estimée, pas zéro pour toujours : sans contour, le plus petit poids positif des tuiles recensées.
+  assert.equal(v.tiles['14/4/1'].p[0], v.tiles['14/2/1'].p[0]);
   assert.equal(Object.values(v.tiles).reduce((a, t) => a + t.p[0], 0), 1000);
   // Lieux : au-delà de la borne, le pâté va au lieu sans nom.
   const cut = fakeCut(1, 1, QUARTIER.maxPlaces + 20, { qkeys: Array.from({ length: QUARTIER.maxPlaces + 20 }, (_, i) => `q45.${String(1000 + i)}_5.0000`) });
@@ -430,6 +550,32 @@ test('bornes à l\'écriture : 400 tuiles par ville, 400 lieux, noms nettoyés, 
   assert.ok(w.qk.includes(''));
   ok(w);
   assert.equal(ROW_LENGTH, 9);
+});
+
+test('tuiles du recensement en échec : part estimée selon leur surface dans le contour, jamais la médiane', () => {
+  // Pérouges : 8 tuiles touchent le contour, seules les 2 des fixtures sont recensées ; les 6 autres sont en échec.
+  const { floors } = perougesCuts();
+  const all = ['14/8426/5834', '14/8427/5834', '14/8426/5835', '14/8427/5835', '14/8428/5835', '14/8426/5836', '14/8427/5836', '14/8428/5836'];
+  const failed = all.filter((k) => !floors[k]);
+  const v = startVille({ key: 'c01290', population: 1387, level: 'facile', tiles: floors, failed, contour: PEROUGES_CONTOUR, at: 1 });
+  const share = (k) => { const [z, x, y] = k.split('/').map(Number); return contourTileShare(PEROUGES_CONTOUR, x, y, z); };
+  // Même densité que les tuiles recensées : plancher estimé = densité × part de surface, habitants au prorata.
+  const density = (floors['14/8427/5834'] + floors['14/8427/5835']) / (share('14/8427/5834') + share('14/8427/5835'));
+  const w = { ...floors, ...Object.fromEntries(failed.map((k) => [k, Math.round(density * share(k))])) };
+  const W = Object.values(w).reduce((a, b) => a + b, 0);
+  for (const k of failed) {
+    assert.equal(v.tiles[k].e, 1);
+    assert.ok(Math.abs(v.tiles[k].p[0] - (1387 * w[k]) / W) < 1, `${k} : ${v.tiles[k].p[0]} pour ${((1387 * w[k]) / W).toFixed(1)}`);
+  }
+  assert.ok(v.tiles['14/8426/5836'].p[0] <= 1); // un coin de champ : presque rien
+  // L'ancien poids médian (ici le plus grand des deux) en donnait bien plus aux tuiles jamais recensées.
+  const onFailed = failed.reduce((a, k) => a + v.tiles[k].p[0], 0);
+  const med = Math.max(floors['14/8427/5834'], floors['14/8427/5835']);
+  const median = startVille({ key: 'c01290', population: 1387, level: 'facile', tiles: { ...floors, ...Object.fromEntries(failed.map((k) => [k, med])) }, at: 1 });
+  assert.ok(onFailed < failed.reduce((a, k) => a + median.tiles[k].p[0], 0) - 200, `${onFailed} habitants sur les tuiles en échec`);
+  assert.equal(Object.values(v.tiles).reduce((a, t) => a + t.p[0], 0), 1387);
+  assert.equal(counters(v).zombies, 277);
+  ok(v);
 });
 
 // ---------- Conservation ----------
@@ -634,6 +780,38 @@ test('autres survivants : un pâté libéré par un autre arrive avec la moitié
 });
 
 // ---------- Changer de niveau, recommencer ----------
+
+test('changer de niveau garde les tuiles canoniques : allègement, rechargement et nouvelle découpe identiques', () => {
+  const { cuts, member } = perougesCuts();
+  for (const [from, to] of [['facile', 'moyen'], ['moyen', 'difficile'], ['difficile', 'facile']]) {
+    const v = perougesVille(from);
+    const k = keysOf(v).find((x) => blockInfo(v, x).zombies >= 3);
+    kill(v, k, lend(v, k, 1));
+    assert.ok(changeLevel(v, to));
+    assert.ok(Object.values(v.tiles).every((t) => t.k === 1), `${from} → ${to}`);
+    // Chaque pâté intact vaut exactement celui d'une ville commencée au nouveau niveau.
+    const fresh = perougesVille(to);
+    for (const [key, row] of rowsOf(v)) if (key !== k) assert.deepEqual(row, rowOf(fresh, key), key);
+    // Allègement, rechargement (texte JSON), nouvelle découpe : la même ville.
+    const snap = JSON.stringify(v.tiles);
+    const copy = structuredClone(v);
+    assert.ok(compactVille(copy) > 90, `${from} → ${to}`);
+    const back = JSON.parse(JSON.stringify(copy));
+    for (const c of cuts) placeTile(back, c, { member });
+    assert.equal(JSON.stringify(back.tiles), snap);
+    ok(back);
+  }
+  // Ville relue allégée puis changée de niveau : les tuiles allégées ne sont plus canoniques jusqu'à leur découpe,
+  // qui les refait d'un bloc (rien n'y a été joué) : même ville qu'au nouveau niveau dès le départ.
+  const v = perougesVille('facile');
+  const copy = structuredClone(v);
+  compactVille(copy);
+  const back = JSON.parse(JSON.stringify(copy));
+  assert.ok(changeLevel(back, 'difficile'));
+  for (const c of cuts) placeTile(back, c, { member });
+  assert.equal(sameTiles(back), sameTiles(perougesVille('difficile')));
+  ok(back);
+});
 
 test('changer de niveau avant le premier fanion : zombies recomptés, abattus reportés ; ensuite, niveau figé', () => {
   const v = perougesVille('facile');

@@ -8,7 +8,7 @@ import {
 } from '../src/territory-store.js';
 import {
   startVille, placeTile, kill, lend, giveBack, liberate, plantFlag, drawReserve, settle, counters, checkVille, blockInfo, rowCount,
-  restartVille, LINE, ROW, ROW_LENGTH, QUARTIER,
+  restartVille, changeLevel, LINE, ROW, ROW_LENGTH, QUARTIER,
 } from '../src/quartier.js';
 import { SAVE_KEY, SAVE_VERSION, SAVE_MESSAGES, emptySave, createSaveStore, memoryStorage, parseSave, validateSave } from '../src/save.js';
 import { parseGeoApi, geoApiUrl } from '../src/commune.js';
@@ -493,6 +493,28 @@ test('écriture d\'un grand territoire : allégé sur une copie, la ville du jeu
   assert.ok(rowCount(back) < rowCount(t.play.c01000));
   for (const c of cutsOf(600, 8427)) placeTile(back, c);
   assert.deepEqual(back.tiles, t.play.c01000.tiles);
+  assert.ok(checkVille(back).ok);
+});
+
+test('grande ville changée de niveau : toujours allégée à l\'écriture, relue et redécoupée à l\'identique', () => {
+  const cuts = Array.from({ length: 6 }, (_, i) => fakeCut(8427 + i, 5834, 400, { lat0: 45.9, lon0: 5.17 + i * 0.05 }));
+  const tiles = Object.fromEntries(cuts.map((c) => [c.tile, c.pates.reduce((a, p) => a + p.floor, 0)]));
+  const v = startVille({ key: 'c01290', name: 'Grande ville', population: 60000, source: 'insee', level: 'facile', mode: 'quartiers', tiles, at: NOW });
+  for (const c of cuts) placeTile(v, c);
+  const k = withZombies(v)[7];
+  kill(v, k, lend(v, k, 1));
+  assert.ok(changeLevel(v, 'moyen'));
+  const t = emptyTerritory(NOW);
+  beginVille(t, v);
+  const b = boundTerritory(t);
+  assert.ok(rowCount(JSON.parse(b.text).play.c01290) < 10, `${rowCount(JSON.parse(b.text).play.c01290)} rangées écrites`);
+  const r = parseTerritory(b.text, NOW);
+  assert.deepEqual(r.fixes, []);
+  const back = r.territory.play.c01290;
+  for (const c of cuts) placeTile(back, c);
+  assert.deepEqual(back.tiles, v.tiles);
+  assert.equal(counters(back).zombies, counters(v).zombies);
+  assert.equal(counters(back).zombies0, 21000);
   assert.ok(checkVille(back).ok);
 });
 

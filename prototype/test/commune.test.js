@@ -5,9 +5,11 @@ import {
   contourPointCount, contourAreaM2, contourTiles, neighbourSamplePoints, parseGeoApi, parseNominatim, parseWikidata,
   parseOpenMeteo, geoApiUrl, wikidataUrl, openMeteoUrl, nominatimParams, fetchJsonSafe, findCommune, offlineCommune,
   offlineKey, estimatePopulation, fitEstimate, withEstimate, censusUnit, chapterMode, rekeyCommune, populationLabel, communeMembership,
-  findNeighbours, createCommuneCache, validateCommune, CACHE_KEY, CACHE, tileZones, createZoneGraph,
+  findNeighbours, createCommuneCache, validateCommune, CACHE_KEY, CACHE, tileZones, tileZoneInput, zoneLabelAt, createZoneGraph,
   offlinePlace, hasContour, inFrance, SERVICES, CENSUS_MAX_TILES,
 } from '../src/commune.js';
+import { tileBlocks, BLOCK_LAYERS } from '../src/blocks.js';
+import { decodeTile } from '../src/mvt.js';
 import { memoryStorage } from '../src/save.js';
 import { communeResponse, fixtureFetch } from './fixtures/communes/routes.mjs';
 import { readFileSync, existsSync } from 'node:fs';
@@ -485,6 +487,12 @@ test('chapitre : la commune d\'un bloc jusqu\'à 2 000 habitants et 150 pâtés'
   for (const blocks of [undefined, NaN, null, -1, 1.5, '100']) assert.equal(chapterMode(1387, blocks), null, String(blocks));
   assert.equal(chapterMode(2001, undefined), 'quartiers'); // la population suffit
   assert.equal(chapterMode(null, 100), null);
+  // Repli d'un recensement resté incomplet : le compte des tuiles recensées, sinon la règle d'une petite commune.
+  assert.equal(chapterMode(1387, null, { partial: 151 }), 'quartiers');
+  assert.equal(chapterMode(1387, null, { partial: 103 }), 'entiere');
+  assert.equal(chapterMode(1387, null, { partial: null }), 'entiere');
+  assert.equal(chapterMode(1387, 160, { partial: 10 }), 'quartiers'); // le compte exact l'emporte
+  assert.equal(chapterMode(null, null, { partial: 10 }), null);
 });
 
 test('texte de population', () => {
@@ -538,6 +546,48 @@ test('appartenance : recensement complet et zone de la maison encore ouverte, on
   assert.equal(complete(x, y, 1, PEROUGES.lat, PEROUGES.lon), true);
   // Sans contour, rien à couper.
   assert.equal(communeMembership(g, PEROUGES, null, { complete: true }).leak, false);
+});
+
+test('appartenance : la même fonction suit le graphe après chaque ajout ou retrait de tuile (vraies tuiles de Pérouges)', () => {
+  // Les deux vraies tuiles de Pérouges (test/fixtures/blocs), découpées avec leurs zones : la maison est dans 8427/5835.
+  const tiles = [[8427, 5834], [8427, 5835]].map(([x, y]) => {
+    const bytes = new Uint8Array(readFileSync(new URL(`./fixtures/blocs/14-${x}-${y}.mvt`, import.meta.url)));
+    const layers = decodeTile(bytes, { layers: BLOCK_LAYERS });
+    const tz = tileZones(tileZoneInput(layers));
+    return { x, y, tz, pates: tileBlocks(bytes, x, y, 14, { layers, zoneAt: (px, py) => zoneLabelAt(tz, px, py) }).pates };
+  });
+  const [north, home] = tiles;
+  const per = parseGeoApi(geoPerouges());
+  const answers = (fn) => tiles.flatMap((t) => t.pates.map((p) => fn(t.x, t.y, p.zl, p.lat, p.lon)));
+  for (const [commune, opts] of [[null, {}], [per, {}], [per, { complete: true }], [per, { leak: false }]]) {
+    const why = `${commune ? 'contour' : 'sans contour'} ${JSON.stringify(opts)}`;
+    const g = createZoneGraph();
+    const fresh = () => communeMembership(g, PEROUGES, commune, opts);
+    g.addTile(north.x, north.y, north.tz);
+    const fn = communeMembership(g, PEROUGES, commune, opts); // créée avant la tuile de la maison
+    assert.ok(answers(fn).every((a) => a === null), why);
+    assert.equal(fn.leak, opts.leak, why);
+    g.addTile(home.x, home.y, home.tz);
+    const h = g.zoneAt(PEROUGES.lat, PEROUGES.lon);
+    assert.equal(fn(h.x, h.y, h.label, PEROUGES.lat, PEROUGES.lon), true, why);
+    assert.deepEqual(answers(fn), answers(fresh()), why);
+    assert.equal(fn.leak, fresh().leak, why);
+    assert.ok(answers(fn).filter((a) => a === true).length > 50, why);
+    // Tuile du nord retirée puis rechargée (cache vidé, nouvelle version) : la zone de la maison change de numéro
+    // (la racine de l'union est le plus petit indice, désormais dans la tuile de la maison), la réponse ne change pas.
+    const before = answers(fn), id0 = h.id;
+    g.removeTile(north.x, north.y);
+    g.addTile(north.x, north.y, north.tz);
+    assert.notEqual(g.zoneAt(PEROUGES.lat, PEROUGES.lon).id, id0, why);
+    assert.deepEqual(answers(fn), before, why);
+    assert.deepEqual(answers(fn), answers(fresh()), why);
+  }
+  // Graphe sans compteur de version (essais, autre graphe) : tout est relu à chaque question.
+  const g = createZoneGraph();
+  const bare = { zoneAt: g.zoneAt, idOf: g.idOf, isClosed: g.isClosed, placesIn: g.placesIn };
+  const fn = communeMembership(bare, PEROUGES, null);
+  for (const t of tiles) g.addTile(t.x, t.y, t.tz);
+  assert.deepEqual(answers(fn), answers(communeMembership(g, PEROUGES, null)));
 });
 
 test('hors ligne : clé du lieu nommé de la zone, ou point arrondi à 100 m pour « Autour de moi »', () => {

@@ -19,7 +19,8 @@
 //        cut: true (petites communes), chaque tuile est découpée (censusFromBlocks : planchers sans biais, nombre de
 //        pâtés, `zonePates`) et la découpe va au cache : la découpe demandée ensuite par le jeu est immédiate.
 //        Plus de CENSUS_MAX_TILES tuiles : refusé ({ id, error }). Budget de 20 Mo téléchargés : au-delà, les tuiles
-//        restantes sont comptées manquantes (complete: false).
+//        restantes sont comptées manquantes (complete: false) et listées aussi dans `over` (à ne pas relancer : le
+//        jeu relance seulement failed moins over, puis réunit les deux recensements avec mergeCensus de blocks.js).
 //   { type: 'commune', id, place }                    -> { id, type: 'commune', commune }   (findCommune, lot P)
 //   { type: 'neighbours', id, commune }               -> { id, type: 'neighbours', neighbours } (findNeighbours)
 //   { type: 'cancel', id }                            -> { id, type: 'cancelled' } (téléchargement en cours coupé)
@@ -198,6 +199,7 @@ export function createBlocksJobs({
       for (const q of job.queue.splice(0)) {
         const k = blocksTileKey(q.x, q.y, q.z);
         job.failed.push(k);
+        job.over.push(k);
         job.done++;
         post({ id: job.id, type: 'census-progress', done: job.done, total: job.total, tile: k, floor: 0, error: 'budget du recensement dépassé' });
       }
@@ -205,7 +207,7 @@ export function createBlocksJobs({
     if (job.done < job.total) return;
     censuses.splice(censuses.indexOf(job), 1);
     job.results.sort((a, b) => (a.tile < b.tile ? -1 : a.tile > b.tile ? 1 : 0));
-    post({ id: job.id, type: 'census', census: { ...censusTotals(job.results), level: job.level, complete: !job.failed.length, results: job.results, failed: job.failed.sort() } });
+    post({ id: job.id, type: 'census', census: { ...censusTotals(job.results), level: job.level, complete: !job.failed.length, results: job.results, failed: job.failed.sort(), over: job.over.sort() } });
     settled();
   }
 
@@ -271,11 +273,11 @@ export function createBlocksJobs({
       const tiles = (msg.tiles ?? []).map((t) => ({ x: t.x, y: t.y, z: t.z ?? 14 }));
       const level = zoneLevel(msg.level);
       if (tiles.length > CENSUS_MAX_TILES) post({ id: msg.id, error: `recensement trop grand : ${tiles.length} tuiles pour ${CENSUS_MAX_TILES} au plus` });
-      else if (!tiles.length) post({ id: msg.id, type: 'census', census: { ...censusTotals([]), level, complete: true, results: [], failed: [] } });
+      else if (!tiles.length) post({ id: msg.id, type: 'census', census: { ...censusTotals([]), level, complete: true, results: [], failed: [], over: [] } });
       else {
         censuses.push({
           id: msg.id, template: msg.template, contour: msg.contour ?? null, level, cut: msg.cut === true, queue: tiles, total: tiles.length,
-          done: 0, results: [], failed: [], inflight: 0, bytes: 0, ctrls: new Set(),
+          done: 0, results: [], failed: [], over: [], inflight: 0, bytes: 0, ctrls: new Set(),
         });
         schedule();
       }

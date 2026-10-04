@@ -222,15 +222,59 @@ export function tilePxToLonLat(x, y, px, py, z = TILE_ZOOM) {
   return { lon: (fx / n) * 360 - 180, lat: (Math.atan(Math.sinh(Math.PI * (1 - (2 * fy) / n))) * 180) / Math.PI };
 }
 
+// Part de la tuile (x, y) couverte par un contour de commune (format du lot P : polygones -> anneaux plats
+// [lon, lat, …], extérieur puis trous), de 0 à 1, en surface dans la projection des tuiles : chaque anneau est
+// découpé au carré de la tuile (Sutherland-Hodgman), extérieurs moins trous. 0 sans contour lisible. Sert à estimer
+// le poids d'une tuile du recensement en échec (startVille du lot B).
+export function contourTileShare(contour, x, y, z = TILE_ZOOM) {
+  if (!Array.isArray(contour)) return 0;
+  const E = ZONE_GRID.extent;
+  let s = 0;
+  for (const poly of contour) {
+    if (!Array.isArray(poly) || !Array.isArray(poly[0]) || poly[0].length < 6) continue; // extérieur dégénéré
+    poly.forEach((ring, k) => {
+      if (!Array.isArray(ring) || ring.length < 6) return;
+      let pts = [];
+      for (let i = 0; i + 1 < ring.length; i += 2) {
+        const p = lonLatToTilePx(ring[i], ring[i + 1], z);
+        pts.push([(p.x - x) * E + p.px, (p.y - y) * E + p.py]);
+      }
+      for (const [axis, lim, keepBelow] of [[0, 0, false], [0, E, true], [1, 0, false], [1, E, true]]) pts = clipHalf(pts, axis, lim, keepBelow);
+      let a = 0;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) a += pts[j][0] * pts[i][1] - pts[i][0] * pts[j][1];
+      s += (k === 0 ? 1 : -1) * Math.abs(a / 2);
+    });
+  }
+  return Number.isFinite(s) ? Math.min(1, Math.max(0, s / (E * E))) : 0;
+}
+
+// Polygone coupé au demi-plan coord[axis] >= lim (ou <= lim avec keepBelow).
+function clipHalf(pts, axis, lim, keepBelow) {
+  const out = [];
+  const inside = (p) => (keepBelow ? p[axis] <= lim : p[axis] >= lim);
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const ia = inside(a), ib = inside(b);
+    if (ia) out.push(a);
+    if (ia !== ib) {
+      const t = (lim - a[axis]) / (b[axis] - a[axis]);
+      out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+    }
+  }
+  return out;
+}
+
 // ---------- Zones des tuiles chargées ----------
 
 // Réunit les zones des tuiles chargées par leurs bords communs (union-find). Un numéro de zone (`id`) ne vaut que
 // jusqu'au prochain ajout de tuile : on compare des zones au moment de la question, on ne garde pas leurs numéros.
 // Charger une tuile ne fait que réunir des zones, jamais en couper une : « même zone » reste vrai pour toujours.
+// `version` compte les changements du graphe (ajout, nouvelle version ou retrait d'une tuile) : ce qui a été tiré
+// du graphe (numéro de la zone de la maison, décision de fuite) est à recalculer dès qu'elle change.
 export function createZoneGraph({ z = TILE_ZOOM } = {}) {
   const tiles = new Map(); // 'x/y' -> { x, y, tz, base, places }
   const wrap = 2 ** z;
-  let parent = new Int32Array(0), size = 0, grid = null, openCache = null;
+  let parent = new Int32Array(0), size = 0, grid = null, openCache = null, version = 0;
   const keyOf = (x, y) => `${x}/${y}`;
   const find = (a) => {
     while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; }
@@ -279,6 +323,7 @@ export function createZoneGraph({ z = TILE_ZOOM } = {}) {
       if (!tz.labels && tiles.get(key).tz.labels && tiles.get(key).tz.count === tz.count) return;
       tiles.set(key, { x, y, tz, base: 0, places });
       rebuild();
+      version++;
       return;
     }
     const t = { x, y, tz, base: size, places };
@@ -286,10 +331,11 @@ export function createZoneGraph({ z = TILE_ZOOM } = {}) {
     grow(size + tz.count);
     link(t);
     openCache = null;
+    version++;
   }
 
   function removeTile(x, y) {
-    if (tiles.delete(keyOf(x, y))) rebuild();
+    if (tiles.delete(keyOf(x, y))) { rebuild(); version++; }
   }
 
   function idOf(x, y, label) {
@@ -376,6 +422,7 @@ export function createZoneGraph({ z = TILE_ZOOM } = {}) {
   return {
     addTile, removeTile, idOf, zoneAt, isClosed, frontier, placesIn, neighbours, placeNames,
     get size() { return tiles.size; },
+    get version() { return version; },
     has: (x, y) => tiles.has(keyOf(x, y)),
   };
 }

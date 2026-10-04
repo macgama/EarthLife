@@ -199,7 +199,8 @@ export function validateVille(raw, c, path, budget) {
         budget.rows--;
       }
     }
-    // Tuile canonique (t.k, signature t.n), lieux qu'elle porte (t.q), pâtés en attente (t.wt) : une tuile qui a perdu
+    // Tuile canonique (t.k, signature t.n), lieux qu'elle porte (t.q), pâtés en attente (t.wt, ancien format : une
+    // tuile placée de force n'en a plus, ses pâtés inconnus sont placés à titre provisoire) : une tuile qui a perdu
     // une rangée n'est plus canonique (sa prochaine découpe passera par le chemin des versions).
     const sig = Array.isArray(t.n) && t.n.length === 2 && t.n.every((x) => Number.isInteger(x) && x >= 0 && x <= 1e12) ? [...t.n] : null;
     if (t.k === 0 || t.k === 1) out.k = t.k === 1 && sig && !lost ? 1 : 0;

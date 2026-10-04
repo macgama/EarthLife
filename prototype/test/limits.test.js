@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { tileZoneInput, tileZones, zoneLabelAt, edgeLabelAt, createZoneGraph, lonLatToTilePx, tilePxToLonLat, ZONE_GRID } from '../src/limits.js';
+import { tileZoneInput, tileZones, zoneLabelAt, edgeLabelAt, createZoneGraph, lonLatToTilePx, tilePxToLonLat, contourTileShare, ZONE_GRID } from '../src/limits.js';
 import { communeMembership, neighboursFromZones, zoneTiles } from '../src/commune.js';
 
 // Lignes de limite et lieux des vraies tuiles de Pérouges et de Lyon (test/fixtures/communes/make-limites.mjs).
@@ -214,4 +214,36 @@ test('le graphe refuse des zones de grilles différentes', () => {
   g.addTile(1, 1, tileZones({ lines: [], places: [] }));
   assert.throws(() => g.addTile(2, 1, tileZones({ lines: [], places: [] }, { maxLevel: 9 })), /grilles différentes/);
   assert.throws(() => g.addTile(3, 1, null), /illisibles/);
+});
+
+test('version du graphe : comptée à chaque ajout, nouvelle version ou retrait de tuile', () => {
+  const g = createZoneGraph();
+  const tz = tileZones({ lines: [], places: [] });
+  assert.equal(g.version, 0);
+  g.addTile(1, 1, tz);
+  g.addTile(2, 1, tz);
+  assert.equal(g.version, 2);
+  g.addTile(2, 1, tileZones({ lines: [line(8, 2048, -64, 2048, 4160)], places: [] })); // nouvelle version
+  assert.equal(g.version, 3);
+  g.removeTile(9, 9); // absente : rien ne change
+  assert.equal(g.version, 3);
+  g.removeTile(1, 1);
+  assert.equal(g.version, 4);
+});
+
+test('part d\'une tuile couverte par un contour : découpe au carré de la tuile, trous retirés', () => {
+  const corner = (x, y, px, py) => { const p = tilePxToLonLat(x, y, px, py); return [p.lon, p.lat]; };
+  const ring = (x, y, pts) => pts.flatMap(([px, py]) => corner(x, y, px, py));
+  const E = ZONE_GRID.extent;
+  // Carré qui couvre la moitié ouest de la tuile 8427/5835 et déborde sur sa voisine de l'ouest.
+  const half = [[ring(8427, 5835, [[-E / 2, 0], [E / 2, 0], [E / 2, E], [-E / 2, E]])]];
+  assert.ok(Math.abs(contourTileShare(half, 8427, 5835) - 0.5) < 1e-6);
+  assert.ok(Math.abs(contourTileShare(half, 8426, 5835) - 0.5) < 1e-6);
+  assert.equal(contourTileShare(half, 8428, 5835), 0);
+  // Un trou d'un quart de la tuile.
+  const holed = [[half[0][0], ring(8427, 5835, [[0, 0], [E / 2, 0], [E / 2, E / 2], [0, E / 2]])]];
+  assert.ok(Math.abs(contourTileShare(holed, 8427, 5835) - 0.25) < 1e-6);
+  // Tuile entièrement dedans ; contour illisible ou absent.
+  assert.ok(Math.abs(contourTileShare([[ring(8427, 5835, [[-10, -10], [E + 10, -10], [E + 10, E + 10], [-10, E + 10]])]], 8427, 5835) - 1) < 1e-6);
+  for (const bad of [null, [], [[[1, 2]]], 'x']) assert.equal(contourTileShare(bad, 8427, 5835), 0);
 });

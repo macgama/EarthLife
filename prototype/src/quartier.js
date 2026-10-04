@@ -6,7 +6,7 @@
 // Une ville est un objet JSON simple, rangé tel quel par territory-store.js. Les zombies prêtés au jeu (à l'écran,
 // dans une horde, une contre-attaque) ne sont pas rangés : au rechargement, ils sont rentrés dans leur pâté.
 // Module pur : ni DOM, ni réseau, ni horloge (les instants sont passés en paramètre) ; il tourne sous node.
-import { lonLatToTilePx, cleanText, zoneLevel as zoneLevelOf, CENSUS_MAX_TILES } from './limits.js';
+import { lonLatToTilePx, cleanText, contourTileShare, zoneLevel as zoneLevelOf, CENSUS_MAX_TILES } from './limits.js';
 
 // Niveaux (section 5) : part de la population devenue zombie (20 % dans le message de Gaël, 35 et 50 % par défaut,
 // question 3), taille des hordes, coureurs en plus, 4e vague quand la 3e atteint le plafond, tirages de butin en plus
@@ -174,7 +174,10 @@ const origin = (row) => row[S0] + row[R] + row[H0];
 // Début d'une ville (ou d'un arrondissement à Paris, Lyon et Marseille : ce que censusUnit du lot P recense).
 // tiles : poids du recensement par tuile (censusWeights : plancher des zones de la commune par les lignes, ou plancher
 // dans le contour, m² par clé z/x/y). failed : tuiles du recensement en échec (census.failed) : elles reçoivent une
-// part estimée (le poids médian des autres tuiles), au lieu de rester sans habitant pour toujours. mode : 'entiere'
+// part estimée au lieu de rester sans habitant pour toujours, marquée t.e : avec le contour (censusUnit(…).contour),
+// leur part de surface dans le contour (contourTileShare) multipliée par la densité moyenne des tuiles recensées
+// (leur plancher pour la surface du contour qu'elles couvrent) ; une tuile de bord, souvent des champs, reçoit donc
+// peu ; sans contour, le plus petit poids positif des tuiles recensées. mode : 'entiere'
 // (une seule Nuit du cœur, réserve prise dès le départ) ou 'quartiers' (réserve de chaque quartier prise à son début,
 // startUnit). zoneLevel : niveau des lignes de la commune (censusUnit(…).level du lot P), gardé avec la ville pour
 // retracer les mêmes zones. Population, niveau et mode sont figés jusqu'au bout. Rend null sans recensement (aucune
@@ -182,18 +185,15 @@ const origin = (row) => row[S0] + row[R] + row[H0];
 // invalide.
 export function startVille({
   key, name = '', parent = null, population, source = null, approx = false, level = NIVEAU_DEFAUT, mode = 'entiere', tiles,
-  failed = [], zoneLevel = 8, at = 0,
+  failed = [], contour = null, zoneLevel = 8, at = 0,
 } = {}) {
   if (typeof key !== 'string' || !key || !NIVEAUX[level] || !MODES.includes(mode)) return null;
   if (!Number.isInteger(population) || population < 0) return null;
   const weights = {};
   for (const [k, w] of Object.entries(isObj(tiles) ? tiles : {})) if (TILE.test(k)) weights[k] = w;
-  const estimated = (Array.isArray(failed) ? failed : []).filter((k) => typeof k === 'string' && TILE.test(k) && !Object.hasOwn(weights, k));
-  if (estimated.length) {
-    const pos = Object.values(weights).filter((w) => Number.isFinite(w) && w > 0).sort((a, b) => a - b);
-    const med = pos.length ? pos[pos.length >> 1] : 1;
-    for (const k of estimated) weights[k] = med;
-  }
+  const estimated = [...new Set((Array.isArray(failed) ? failed : []).filter((k) => typeof k === 'string' && TILE.test(k) && !Object.hasOwn(weights, k)))];
+  if (estimated.length > QUARTIER.maxTiles) return null;
+  if (estimated.length) Object.assign(weights, failedWeights(weights, estimated, contour));
   if (Object.keys(weights).length > QUARTIER.maxTiles) return null;
   const pools = tilePools(population, 0, 0, weights);
   if (population > 0 && !Object.keys(pools).length) return null;
@@ -217,6 +217,27 @@ export function startVille({
 }
 const TILE = /^\d{1,2}\/\d{1,7}\/\d{1,7}$/;
 
+// Poids estimés des tuiles du recensement en échec (voir startVille) : densité moyenne des tuiles recensées qui
+// touchent le contour × part de surface de la tuile dans le contour, en m² entiers ; sans contour (ou sans aucune
+// surface), le plus petit poids positif des tuiles recensées (1 s'il n'y en a aucun).
+function failedWeights(weights, estimated, contour) {
+  const share = (k) => { const { z, x, y } = tileXY(k); return contourTileShare(contour, x, y, z); };
+  const out = {};
+  const mine = estimated.map((k) => [k, share(k)]);
+  if (mine.some(([, s]) => s > 0)) {
+    let floor = 0, area = 0;
+    for (const [k, w] of Object.entries(weights)) { const s = share(k); if (s > 0) { floor += nat(w); area += s; } }
+    // Aucune tuile recensée dans le contour : les tuiles en échec se partagent selon leur seule surface.
+    const density = area > 0 ? floor / area : 1e6;
+    for (const [k, s] of mine) out[k] = Math.round(density * s);
+    return out;
+  }
+  const pos = Object.values(weights).filter((w) => Number.isFinite(w) && w > 0);
+  const least = pos.length ? Math.min(...pos) : 1;
+  for (const k of estimated) out[k] = least;
+  return out;
+}
+
 function newUnit(name, reserve, z0, at) {
   return { name, r: reserve, r0: reserve, coeur: null, start: at, end: null, z0, k: [0, 0, 0], sv: 0 };
 }
@@ -238,14 +259,15 @@ export function restartVille(ville, level, at = 0) {
 
 // Appartenance d'un pâté pour placeTile, d'après la fonction de communeMembership du lot P : numéro de zone du pâté
 // (zl) et point de son plus grand bâtiment (celui de sa clé, keyPoint), comme le veut la règle de fuite.
-// La décision de fuite (fn.leak) passe avec : placeTile la fige dans la ville au premier placement (ville.leak), à
-// redonner ensuite à communeMembership (option leak).
+// La décision de fuite (fn.leak, lue au moment du placement : la fonction suit le graphe des zones) passe avec :
+// placeTile la fige dans la ville au premier placement (ville.leak), à redonner ensuite à communeMembership (option
+// leak).
 export function memberOf(fn) {
   const m = (p, cut) => {
     const pt = keyPoint(p.key) ?? p;
     return fn(cut.x, cut.y, p.zl, pt.lat, pt.lon);
   };
-  m.leak = fn.leak;
+  Object.defineProperty(m, 'leak', { enumerable: true, get: () => fn.leak });
   return m;
 }
 
@@ -275,9 +297,12 @@ export function censusWeights(census, fn = null) {
 // Nombre de pâtés de la commune compté au recensement par découpe (census avec cut, zonePates) : par les lignes, ou
 // dans le contour (blocks) en cas de fuite. null si une tuile n'a pas été découpée, si une zone à pâtés n'est pas
 // encore connue ou si le recensement est incomplet. Pour chapterMode du lot P.
-export function censusBlocks(census, fn = null) {
-  const results = census?.results ?? [];
-  if (!results.length || census.complete === false || results.some((r) => !r.cut)) return null;
+// partial : repli d'un recensement resté incomplet après sa relance : les pâtés comptés dans les tuiles découpées et
+// recensées, les zones encore inconnues laissées de côté (un minimum) ; null si aucune tuile n'a été découpée. À passer
+// à chapterMode(population, exact, { partial }).
+export function censusBlocks(census, fn = null, { partial = false } = {}) {
+  const results = (census?.results ?? []).filter((r) => !partial || r.cut);
+  if (!results.length || (!partial && (census.complete === false || results.some((r) => !r.cut)))) return null;
   if (typeof fn !== 'function' || fn.leak === true) return results.reduce((a, r) => a + nat(r.blocks), 0);
   let n = 0;
   for (const r of results) {
@@ -286,7 +311,7 @@ export function censusBlocks(census, fn = null) {
       if (!(label > 0)) continue;
       const m = fn(r.x, r.y, label);
       if (m === true) n += nat(c);
-      else if (m !== false) return null;
+      else if (m !== false && !partial) return null;
     }
   }
   return n;
@@ -500,69 +525,82 @@ function rehome(ville, fromKey, pool) {
 
 // Place une tuile découpée (tileBlocks du lot A) : ses pâtés de la commune reçoivent leur part, au plus fort reste,
 // de la part de la tuile fixée au début de la ville. member(pâté, découpe) -> true | false | null (memberOf de la
-// fonction de communeMembership du lot P ; null = pas encore connu). Tant qu'un pâté est inconnu, rien n'est placé ;
-// avec force, les pâtés connus sont placés et la part des inconnus attend dans la tuile (t.rest) : ils la reçoivent
-// quand on les connaît (placeTile à nouveau), et la tuile n'est jamais déclarée orpheline tant qu'il en reste.
-// Répartition canonique : la part de la tuile va à tous ses pâtés (de la commune et en attente) selon leur poids, d'un
-// seul calcul ; tant que la tuile reste canonique (t.k, même ensemble t.n), une rangée retirée par l'allègement
-// (compactVille) est recréée à l'identique. Après une nouvelle version des tuiles, une rangée dont le pâté a disparu
-// rejoint celui qui contient son point (ou le plus proche), et les nouveaux pâtés se partagent ce qui restait.
-// Une tuile hors du recensement n'a ni zombie ni habitant. Rend { ok, waiting?, added, moved, rows }.
+// fonction de communeMembership du lot P ; null = pas encore connu). Tant qu'un pâté est inconnu, rien n'est placé
+// (waiting : le jeu fait découper les tuiles voisines, puis replace). Avec force, les pâtés inconnus sont placés à
+// titre provisoire, comptés dans la commune : ils ont leurs zombies et leurs habitants, si bien que la ville peut être
+// nettoyée et sauvée même s'ils ne sont jamais connus ; un pâté provisoire connu ensuite dedans ne change pas, connu
+// dehors il rend sa part (ci-dessous).
+// Répartition canonique : la part de la tuile va à tous ses pâtés selon leur poids, d'un seul calcul ; tant que la
+// tuile reste canonique (t.k, même ensemble t.n), une rangée retirée par l'allègement (compactVille) est recréée à
+// l'identique. Une tuile dont toutes les rangées sont intactes (rien n'y a été joué) est refaite d'un bloc quand son
+// ensemble de pâtés change (pâtés provisoires connus dehors, nouvelle version des tuiles, tuile non canonique) : le
+// résultat ne dépend alors ni de l'ordre ni du moment. Sinon (chemin des versions), les rangées jouées restent : une
+// rangée dont le pâté a disparu rejoint celui qui contient son point (ou le plus proche) ; un pâté intact devenu dehors
+// rend sa part à la tuile ; les nouveaux pâtés reçoivent la part du calcul d'un bloc tant que le reste de la tuile y
+// suffit ; ce qui reste va aux pâtés rouges de la tuile (à défaut, à ses pâtés non libérés), sinon à une voisine.
+// Une tuile hors du recensement n'a ni zombie ni habitant. Rend { ok, waiting?, added, moved, rows } ; avec force,
+// waiting compte les pâtés placés à titre provisoire.
 export function placeTile(ville, cut, { member = () => true, force = false } = {}) {
   const tk = cut?.tile;
   const t = tk ? ville.tiles[tk] : null;
   if (typeof member.leak === 'boolean' && ville.leak == null) ville.leak = member.leak; // figée au premier placement
   if (!t) return { ok: true, outside: true, added: 0, moved: 0, rows: 0 };
   if (t.o) return { ok: true, orphan: true, added: 0, moved: 0, rows: 0 };
-  const inside = [], waitingList = [];
+  const inside = [], outKeys = new Set();
+  let waiting = 0;
   for (const p of cut.pates ?? []) {
     const m = member(p, cut);
     if (m === true) inside.push(p);
-    else if (m !== false) waitingList.push(p);
+    else if (m === false) outKeys.add(p.key);
+    else { waiting++; if (force) inside.push(p); }
   }
-  const waiting = waitingList.length;
   if (waiting && !force) return { ok: false, waiting, added: 0, moved: 0, rows: t.b ? Object.keys(t.b).length : 0 };
-  const byPKey = (a, b) => byKey(a.key, b.key);
-  inside.sort(byPKey);
-  waitingList.sort(byPKey);
-  const union = [...inside, ...waitingList].sort(byPKey);
-  const wOf = blockWeights(union);
-  const sig = sigOf(union, wOf);
+  inside.sort((a, b) => byKey(a.key, b.key));
+  const wOf = blockWeights(inside);
+  const sig = sigOf(inside, wOf);
   const insideKeys = new Set(inside.map((p) => p.key));
   const isDone = (p) => ville.mode === 'quartiers' && Object.hasOwn(ville.done, p.qkey);
-  const old = t.b ?? {};
-  const oldKeys = Object.keys(old).sort(byKey);
+  const cores = coresOf(ville);
+  let old = t.b ?? {}, oldKeys = Object.keys(old).sort(byKey), base = t.rest;
   let added = 0, moved = 0, canonical = false;
-  let rows = null, strays = [];
+  let rows = null;
+  const strays = [];
 
-  // Chemin canonique : première découpe (ou rien encore de réparti), ou même ensemble de pâtés qu'au dernier calcul
-  // (rangées allégées, inconnus devenus connus).
-  const untouched = !oldKeys.length && t.rest.every((v, i) => v === t.p[i]);
-  if (!t.b || untouched || (t.k === 1 && sameSig(t.n, sig) && oldKeys.every((k) => insideKeys.has(k)))) {
-    const sh = shares(union, wOf, t.p);
-    const rest = [...t.rest], create = [];
+  // Même ensemble de pâtés qu'au dernier calcul d'une tuile canonique (rangées allégées, provisoires connus dedans).
+  const same = t.k === 1 && sameSig(t.n, sig) && oldKeys.every((k) => insideKeys.has(k));
+  // Ensemble changé, mais rien de joué dans la tuile et rien de retiré par un quartier repris : refaite d'un bloc
+  // depuis sa part, comme si cette découpe était la première (aucune rangée intacte n'est désignée ailleurs : ni
+  // maison, ni cœur, ni prêt).
+  if (t.b && !same && oldKeys.length && oldKeys.every((k) => pristine(ville, k, old[k], cores)) && wholeTile(ville, t)) {
+    old = {}; oldKeys = []; base = t.p;
+  }
+  // Chemin canonique : première découpe (ou rien encore de réparti), tuile refaite, ou même ensemble de pâtés.
+  const untouched = !oldKeys.length && base.every((v, i) => v === t.p[i]);
+  if (!t.b || untouched || same) {
+    const sh = shares(inside, wOf, t.p);
+    const rest = [...base], create = [];
     for (const p of inside) {
       if (old[p.key] || isDone(p)) continue;
       const part = sh.get(p.key);
       addTo(rest, part, -1);
       create.push([p, part]);
     }
-    const pending = [0, 0, 0];
-    for (const p of waitingList) addTo(pending, sh.get(p.key));
-    const extra = rest.map((v, i) => v - pending[i]);
-    if (rest.every((v) => v >= 0) && extra.every((v) => v >= 0)) {
+    if (rest.every((v) => v >= 0)) {
       rows = { ...old };
       for (const [p, part] of create) { rows[p.key] = newRow(ville, part, p, wOf(p)); added++; }
       t.rest = rest;
-      canonical = zero(extra);
+      canonical = zero(rest);
     }
   }
   if (!rows) {
-    // Chemin des versions : rangées gardées, réunies ou errantes ; le reste partagé entre les nouveaux pâtés.
+    // Chemin des versions : rangées gardées, réunies ou errantes ; pâtés intacts devenus dehors ; nouveaux pâtés.
     rows = {};
+    const rest = [...t.rest];
     for (const k of oldKeys) if (insideKeys.has(k)) rows[k] = old[k];
     for (const k of oldKeys) {
       if (insideKeys.has(k)) continue;
+      // Pâté toujours là mais connu dehors (placé à titre provisoire), jamais joué : sa part revient à la tuile.
+      if (outKeys.has(k) && pristine(ville, k, old[k], cores)) { addTo(rest, poolOf(ville, old[k])); continue; }
       const target = locate(k, cut, inside, insideKeys);
       if (!target) { strays.push([k, old[k]]); continue; }
       rows[target.key] = rows[target.key] ? mergeRows(rows[target.key], old[k]) : old[k];
@@ -571,34 +609,37 @@ export function placeTile(ville, cut, { member = () => true, force = false } = {
     }
     const fresh = inside.filter((p) => !rows[p.key] && !isDone(p));
     if (fresh.length) {
-      const items = [...fresh, ...waitingList];
-      const fw = blockWeights(items);
-      const sh = shares(items, fw, t.rest);
-      const pending = [0, 0, 0];
-      for (const p of waitingList) addTo(pending, sh.get(p.key));
-      for (const p of fresh) { rows[p.key] = newRow(ville, sh.get(p.key), p, fw(p)); added++; }
-      t.rest = pending;
+      // Leur part du calcul d'un bloc de la tuile si le reste y suffit ; sinon ce qui reste (sans jamais laisser au
+      // reste plus de zombies que d'habitants), partagé entre eux selon leur poids.
+      const sh = shares(inside, wOf, t.p);
+      const want = [0, 0, 0];
+      for (const p of fresh) addTo(want, sh.get(p.key));
+      const pool = fitPool(want, rest);
+      const exact = pool.every((v, i) => v === want[i]);
+      const fw = exact ? wOf : blockWeights(fresh);
+      const part = exact ? sh : shares(fresh, fw, pool);
+      for (const p of fresh) { rows[p.key] = newRow(ville, part.get(p.key), p, fw(p)); added++; }
+      addTo(rest, pool, -1);
     }
+    t.rest = rest;
   }
   t.b = rows;
   absorbAll(ville, rows);
   reindex(ville);
-  if (!waiting) {
-    const live = liveKeys(rows);
-    if (!zero(t.rest) && live.length) { spreadInto(rows, live, t.rest); absorbAll(ville, rows); t.rest = [0, 0, 0]; canonical = false; }
-    if (!zero(t.rest)) {
-      // Personne pour recevoir le reste dans cette tuile (aucun pâté de la commune, ou tous libérés) : il passe à une
-      // voisine. Sans aucun pâté de la commune ni rangée, la tuile est orpheline et ne recevra plus rien.
-      const pool = [...t.rest];
-      addTo(t.p, pool, -1);
-      t.rest = [0, 0, 0];
-      if (rehome(ville, tk, pool) === null) {
-        addTo(t.p, pool);
-        t.rest = pool;
-        if (!inside.length && !oldKeys.length) t.b = null; // rien ne la reçoit encore : on réessaiera
-      } else if (!inside.length && !oldKeys.length) t.o = 1;
-      canonical = false;
-    }
+  const to = receivers(rows);
+  if (!zero(t.rest) && to.length) { spreadInto(rows, to, t.rest); absorbAll(ville, rows); t.rest = [0, 0, 0]; canonical = false; }
+  if (!zero(t.rest)) {
+    // Personne pour recevoir le reste dans cette tuile (aucun pâté de la commune, ou tous libérés) : il passe à une
+    // voisine. Sans aucun pâté de la commune ni rangée, la tuile est orpheline et ne recevra plus rien.
+    const pool = [...t.rest];
+    addTo(t.p, pool, -1);
+    t.rest = [0, 0, 0];
+    if (rehome(ville, tk, pool) === null) {
+      addTo(t.p, pool);
+      t.rest = pool;
+      if (!inside.length && !oldKeys.length) t.b = null; // rien ne la reçoit encore : on réessaiera
+    } else if (!inside.length && !oldKeys.length) t.o = 1;
+    canonical = false;
   }
   // Rangées sans aucun pâté de la commune dans la nouvelle découpe : réunies au pâté le plus proche de la ville.
   for (const [k, row] of strays) {
@@ -619,9 +660,32 @@ export function placeTile(ville, cut, { member = () => true, force = false } = {
   t.k = canonical ? 1 : 0;
   t.n = sig;
   t.q = [...new Set(inside.filter((p) => !isDone(p)).map((p) => qIndex(ville, p.qkey)))].sort((a, b) => a - b);
-  if (waiting) t.wt = waiting; else delete t.wt;
+  delete t.wt; // ancien format : pâtés en attente dans t.rest (avant les pâtés provisoires)
   reindex(ville);
   return { ok: true, added, moved, rows: t.b ? Object.keys(t.b).length : 0, ...(waiting ? { waiting } : {}) };
+}
+
+// Tuile entière : ses rangées et son reste font exactement sa part (aucun quartier repris n'en a retiré de pâté).
+function wholeTile(ville, t) {
+  const sum = [...t.rest];
+  for (const row of Object.values(t.b ?? {})) addTo(sum, poolOf(ville, row));
+  return sum.every((v, i) => v === t.p[i]);
+}
+
+// Part prise sur un reste [habitants, zombies, réserve] : au plus `want`, et ce qui reste garde zombies ≤ habitants et
+// réserve ≤ zombies.
+function fitPool(want, rest) {
+  const p0 = Math.min(want[0], rest[0]);
+  const p1 = Math.min(Math.max(want[1], p0 - (rest[0] - rest[1]), 0), p0, rest[1]);
+  const p2 = Math.min(Math.max(want[2], p1 - (rest[1] - rest[2]), 0), p1, rest[2]);
+  return [p0, p1, p2];
+}
+
+// Pâtés qui reçoivent un reste : les rouges (il y a encore des zombies, rien ne change pour un pâté nettoyé ou sous
+// fanion), sinon tous les pâtés non libérés.
+function receivers(rows) {
+  const red = Object.keys(rows).filter((k) => rows[k][E] <= ETAT.nid).sort(byKey);
+  return red.length ? red : liveKeys(rows);
 }
 
 function nearestRow(ville, pt, exceptTile) {
@@ -638,8 +702,9 @@ function nearestRow(ville, pt, exceptTile) {
 }
 
 // Tuiles à découper avant de commencer ou de déclarer repris un quartier (mode quartiers) : celles qui peuvent encore
-// porter de ses pâtés, pas encore placées ou avec des pâtés en attente, voisines (8 directions) d'une tuile placée
-// qui en porte. Le jeu les fait découper, puis rappelle startUnit ou finishUnit. Rend ['z/x/y'…], triées.
+// porter de ses pâtés, pas encore placées (ou, ancien format, avec des pâtés en attente t.wt), voisines
+// (8 directions) d'une tuile placée qui en porte. Une tuile placée de force (pâtés provisoires) ne retient rien. Le jeu
+// les fait découper, puis rappelle startUnit ou finishUnit. Rend ['z/x/y'…], triées.
 export function unitTilesMissing(ville, ukey) {
   const qi = ville.qk.indexOf(ukey);
   if (qi < 0) return [];
@@ -1104,6 +1169,12 @@ export function changeLevel(ville, level) {
     const t = v.tiles[k];
     t.p = [t.p[0], zt.get(k), rt.get(k)];
     if (!t.b) { t.rest = [...t.p]; continue; }
+    // Tuile canonique entière (reste nul : ni rangée allégée ni pâté en attente) : ses rangées sont tout l'ensemble du
+    // calcul d'un bloc et leurs habitants sa première étape ; les zombies et la réserve répartis ici sont donc
+    // exactement ceux du calcul d'un bloc avec la nouvelle part. Elle reste canonique : l'allègement et la découpe
+    // suivante restent exacts. Avec un reste (rangées allégées d'une ville relue), elle ne l'est plus jusqu'à sa
+    // prochaine découpe, qui la refait d'un bloc si rien n'y a été joué (placeTile).
+    const keep = t.k === 1 && zero(t.rest) && !t.wt;
     const items = Object.keys(t.b).sort(byKey).map((key) => ({ key, w: origin(t.b[key]) }));
     if (t.rest[0] > 0) items.push({ key: REST, w: t.rest[0] });
     const z = apportion(items, (it) => it.w, t.p[1], (it) => it.key);
@@ -1127,7 +1198,7 @@ export function changeLevel(ville, level) {
         live.push({ key: it.key, row });
       }
     }
-    t.k = 0;
+    t.k = keep ? 1 : 0;
   }
   if (surplus > 0) {
     if (!live.length) return false;
@@ -1199,8 +1270,10 @@ export function villeLine(ville, at = 0) {
 // Retire les rangées intactes des tuiles canoniques (t.k : chaque rangée vaut exactement sa part du calcul d'un bloc
 // de la tuile) : leur part revient au reste de la tuile, et la découpe suivante (même version, même ensemble de pâtés)
 // les recrée à l'identique par le même calcul. Jamais ta maison, un cœur, un pâté prêté, un pâté de `keep` (autour du
-// joueur) ni un pâté d'un quartier commencé ; jamais dans une tuile qui attend des pâtés inconnus. À appliquer à une
-// copie de la ville à ranger (boundTerritory), jamais à la ville du jeu. Rend le nombre de rangées retirées.
+// joueur) ni un pâté d'un quartier commencé ; jamais dans une tuile de l'ancien format qui attend des pâtés (t.wt).
+// Une tuile placée de force est canonique (ses pâtés provisoires comptent dans le calcul d'un bloc) : la découpe
+// suivante avec force les recrée à l'identique. À appliquer à une copie de la ville à ranger (boundTerritory), jamais
+// à la ville du jeu. Rend le nombre de rangées retirées.
 export function compactVille(ville, { keep = new Set() } = {}) {
   const cores = coresOf(ville);
   let n = 0;

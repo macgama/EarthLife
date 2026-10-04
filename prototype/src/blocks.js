@@ -586,6 +586,18 @@ export function censusTotals(results) {
   return out;
 }
 
+// Recensement relancé sur ses tuiles en échec (census.failed moins census.over : les tuiles laissées par le budget en
+// octets ne se relancent pas) : les deux recensements réunis comme un seul, au format du message 'census' du
+// travailleur. Une tuile réussie à la relance remplace son échec ; complete quand plus rien ne manque.
+export function mergeCensus(first, retry) {
+  const byTile = new Map();
+  for (const r of [...(first?.results ?? []), ...(retry?.results ?? [])]) byTile.set(r.tile, r);
+  const results = [...byTile.values()].sort((a, b) => (a.tile < b.tile ? -1 : a.tile > b.tile ? 1 : 0));
+  const keys = (field) => [...new Set([...(first?.[field] ?? []), ...(retry?.[field] ?? [])])].filter((k) => !byTile.has(k)).sort();
+  const failed = keys('failed'), over = keys('over').filter((k) => failed.includes(k));
+  return { ...censusTotals(results), level: first?.level ?? retry?.level ?? 8, complete: !failed.length, results, failed, over };
+}
+
 // ---------- Découpe ----------
 
 const N = UNIT / BLOCKS.cell, NN = N * N;
