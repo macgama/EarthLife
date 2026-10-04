@@ -174,14 +174,15 @@ export async function runLoad({
     if (sample) samples.push(await sample());
   }
   const lat = [];
-  for (const b of bots) lat.push(...b.stats.latencies);
+  // Sans étalement (...) : à 1 000 survivants, des centaines de milliers de mesures dépassent la pile.
+  for (const b of bots) for (const v of b.stats.latencies) lat.push(v);
   const lost = bots.filter((b) => b.stats.lost).length;
-  const seenMax = Math.max(0, ...bots.map((b) => b.stats.seenMax));
+  const seenMax = bots.reduce((m, b) => Math.max(m, b.stats.seenMax), 0);
   for (const b of bots) b.stop();
   await new Promise((r) => setTimeout(r, 300));
   return {
     n, moving, connected, lost, seenMax, nears: lat.length,
-    nearP50: percentile(lat, 0.5), nearP95: percentile(lat, 0.95), nearMax: lat.length ? Math.max(...lat) : null, samples,
+    nearP50: percentile(lat, 0.5), nearP95: percentile(lat, 0.95), nearMax: lat.length ? lat.reduce((m, v) => (v > m ? v : m), -Infinity) : null, samples,
   };
 }
 
