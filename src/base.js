@@ -200,10 +200,12 @@ export function createBase(building, openings, info = {}) {
 }
 
 // Déménagement : le coffre, les aménagements et les minuteries suivent ; barricades et pièges sont perdus.
+// Le coffre suit dans la limite de la place du nouveau refuge (300 places vers 200) : le surplus, donné par
+// splitChest, reste devant l'ancien refuge (refuge.js), sans quoi la sauvegarde le raboterait au chargement.
 export function relocateBase(old, building, openings, info = {}) {
   const base = createBase(building, openings, info);
   if (old) {
-    base.chest = { ...(old.chest ?? {}) };
+    base.chest = splitChest(old.chest, chestCap(base)).kept;
     base.upgrades = [...(old.upgrades ?? [])];
     base.sirenAt = old.sirenAt ?? 0;
     base.lastReserve = old.lastReserve ?? null;
@@ -323,6 +325,20 @@ export function countOf(c) {
   let n = 0;
   for (const k in c ?? {}) n += c[k] > 0 ? c[k] : 0;
   return n;
+}
+
+// Coffre ramené à `cap` places : les matériaux d'abord, puis le reste dans l'ordre d'arrivée ; le surplus à part.
+export function splitChest(chest, cap) {
+  const kept = {}, left = {};
+  const keys = Object.keys(chest ?? {}).filter((k) => chest[k] > 0).sort((a, b) => rankOf(a) - rankOf(b));
+  let room = Math.max(0, cap);
+  for (const k of keys) {
+    const take = Math.min(chest[k], room);
+    if (take) kept[k] = take;
+    if (chest[k] > take) left[k] = chest[k] - take;
+    room -= take;
+  }
+  return { kept, left };
 }
 
 // Déplace jusqu'à n unités de `key`, dans la limite de la place de `to`. Renvoie le nombre déplacé.
