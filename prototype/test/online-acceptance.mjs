@@ -16,7 +16,9 @@
 // Lectures des seuils (le détail est dans la note de chaque scénario) :
 // - « ne voit plus en moins de 1 s » (O8, O10, O20, O21) : l'effacement dure 1 s par conception (others.js,
 //   fadeOutMs) ; on vérifie qu'il commence en moins de 1 s et que l'autre a disparu en moins de 2 s ; en O10 le
-//   retrait chez A (local) se lit en moins de 1 s plus la durée d'une image de A ;
+//   retrait chez A (local) se lit en moins de 1 s plus la durée d'une image de A ; de même, les seuils lus sur les
+//   stats ou les traces de deux pages (O1, O8, O13, O20 et les démontages) valent leur durée plus une image de
+//   chacune des pages en cause (slackOf) ;
 // - O1 : la première position d'une identité est un saut (invisible 3 s, RULES.jumpHideMs) ; « en moins de 2 s » se
 //   mesure quand B revient à pied de 300 m, depuis son passage à 130 m (rayon d'affichage, OTHERS_VIEW.drawM) ; O13
 //   de même, en 3 s ;
@@ -386,6 +388,10 @@ const fpsOf = (t) => ev(t, () => new Promise((resolve) => {
   const f = () => { n++; if (performance.now() - t0 < 3000) requestAnimationFrame(f); else resolve(+((n * 1000) / (performance.now() - t0)).toFixed(1)); };
   requestAnimationFrame(f);
 }));
+// Somme des durées d'une image des pages données (3 s d'échantillon chacune, en parallèle) : les stats lues ne changent
+// qu'à l'image suivante et les traces sont échantillonnées par image, d'où une marge d'une image par page en cause
+// (0,3 à 0,7 s sans carte graphique, sur un exécuteur lent).
+const slackOf = async (...ts) => (await Promise.all(ts.map(fpsOf))).reduce((sum, f) => sum + Math.round(1000 / Math.max(0.5, f)), 0);
 const cardTitle = (t) => ev(t, () => {
   const c = document.getElementById('card');
   return c && !c.classList.contains('hidden') ? c.querySelector('.rp-card-title')?.textContent ?? '' : null;
@@ -727,7 +733,8 @@ await scenario('O3', 'B court', async () => {
   const runFrames = ta.filter((r) => r[4] === 1 && r[5] > 3);
   const vmax = Math.max(0, ...ta.map((r) => r[5]));
   note(`B a couru ${Math.hypot(b1.x - b0.x, b1.z - b0.z).toFixed(1)} m (course : ${ran}, ${fpsIn(tb)} images/s : le temps du jeu avance de 0,05 s par image au plus) ; chez A (${fpsIn(ta)} images/s) : ${runFrames.length} relevés avec B en course animée, vitesse animée max ${vmax.toFixed(1)} m/s`);
-  check(!!go && !!moved && moved[0] - go[0] < 1000, `A : B bouge ${s1(go && moved && moved[0] - go[0])} après son départ (seuil 1 s)`);
+  const slack8 = await slackOf(A, B);
+  check(!!go && !!moved && moved[0] - go[0] < 1000 + slack8, `A : B bouge ${s1(go && moved && moved[0] - go[0])} après son départ (seuil 1 s + images de A et B, ${slack8} ms)`);
   check(ran && runFrames.length > 0, `A : B dessiné en course (drapeau run, animation à ${vmax.toFixed(1)} m/s)`);
 });
 
@@ -804,7 +811,8 @@ await scenario('O20', 'A retourne au menu, puis reprend au même endroit', async
   const f = fadeOf(r.tr.filter((x) => x[0] < r.tPlay), r.tMenu);
   check(r.same, 'A : reprise par le chemin rapide (même session, sans rechargement)');
   check(f.start !== null && f.start < 1000 && f.gone !== null && f.gone < 2000 && !r.during, `B : pendant le menu, ${fadeText(f)}`);
-  check(!!r.seenAt && r.seenAt - r.tPlay < 2000, `B : revoit A ${s1(r.seenAt && r.seenAt - r.tPlay)} après la reprise (seuil 2 s) ; A replacé à ${r.moved.toFixed(1)} m de là où il était`);
+  const slack20 = await slackOf(A, B);
+  check(!!r.seenAt && r.seenAt - r.tPlay < 2000 + slack20, `B : revoit A ${s1(r.seenAt && r.seenAt - r.tPlay)} après la reprise (seuil 2 s + images de A et B, ${slack20} ms) ; A replacé à ${r.moved.toFixed(1)} m de là où il était`);
   await shot(B, 'o20-tel-a-revenu');
   // Variante : A s'éloigne de 90 m du départ de sa session avant le menu. Le chemin rapide le replace au départ
   // (« à la porte du refuge, sinon au départ de la session »), pas là où il a quitté : noté comme écart. Le serveur
@@ -888,8 +896,9 @@ await scenario('O1', 'A et B à 20 m l’un de l’autre', async () => {
   const tr = await traceStop(B);
   const drawM = await drawMOf(B);
   const cross = tr.find((r) => r[8] !== null && r[8] <= drawM)?.[0] ?? null;
-  check(!!cross && !!tA && tA - cross < 2000, `A voit B ${s1(cross && tA && tA - cross)} après son passage à ${drawM} m (seuil 2 s)`);
-  check(!!cross && !!tB && tB - cross < 2000, `B voit A ${s1(cross && tB && tB - cross)} après son passage à ${drawM} m (seuil 2 s)`);
+  const slack1 = await slackOf(A, B);
+  check(!!cross && !!tA && tA - cross < 2000 + slack1, `A voit B ${s1(cross && tA && tA - cross)} après son passage à ${drawM} m (seuil 2 s + images de A et B, ${slack1} ms)`);
+  check(!!cross && !!tB && tB - cross < 2000 + slack1, `B voit A ${s1(cross && tB && tB - cross)} après son passage à ${drawM} m (seuil 2 s + images de A et B, ${slack1} ms)`);
   await face(A, await where(B));
   await face(B, await where(A));
   await wait(2500);
@@ -990,7 +999,8 @@ await scenario('O6', 'A démonte une voiture', async () => {
   const pA = whenTrue(A, (id) => (window.__earthlife.save.dismantled[id] ? Date.now() : null), car.id, 150000);
   check(await dismantle(A, car.id), 'A : démontage commencé');
   const [tA, tB] = await Promise.all([pA, pB]);
-  check(!!tA && !!tB && tB - tA < 1000, `B : voiture cachée ${s1(tA && tB && tB - tA)} après la fin du démontage chez A (seuil 1 s)`);
+  const slackCar = await slackOf(A, B);
+  check(!!tA && !!tB && tB - tA < 1000 + slackCar, `B : voiture cachée ${s1(tA && tB && tB - tA)} après la fin du démontage chez A (seuil 1 s + images de A et B, ${slackCar} ms)`);
   const stain = await ev(B, ([x, z]) => {
     const m = window.__earthlife.session.root.parent.getObjectByName('taches');
     const arr = m?.instanceMatrix.array ?? [];
@@ -1384,8 +1394,9 @@ await scenario('O13', 'WebSocket bloquées : repli HTTP', async () => {
   }
   const drawM = await drawMOf(C);
   const cross = tr.find((r) => r[8] !== null && r[8] <= drawM)?.[0] ?? null;
-  check(!!cross && !!tA && tA - cross < 3000, `A voit C ${s1(cross && tA && tA - cross)} après son passage à ${drawM} m (seuil 3 s)`);
-  check(!!cross && !!tC && tC - cross < 3000, `C voit A ${s1(cross && tC && tC - cross)} après son passage à ${drawM} m (seuil 3 s)`);
+  const slack13 = await slackOf(A, C);
+  check(!!cross && !!tA && tA - cross < 3000 + slack13, `A voit C ${s1(cross && tA && tA - cross)} après son passage à ${drawM} m (seuil 3 s + images de A et C, ${slack13} ms)`);
+  check(!!cross && !!tC && tC - cross < 3000 + slack13, `C voit A ${s1(cross && tC && tC - cross)} après son passage à ${drawM} m (seuil 3 s + images de A et C, ${slack13} ms)`);
   await shot(C, 'o13-ordi-repli-lent');
   // Démontages : A près de lui, vu par C ; puis C près de lui, vu par A (2,5 s au plus).
   for (const [actor, viewer] of [[A, C], [C, A]]) {
@@ -1406,7 +1417,8 @@ await scenario('O13', 'WebSocket bloquées : repli HTTP', async () => {
     const pD = whenTrue(actor, (id) => (window.__earthlife.save.dismantled[id] ? Date.now() : null), prop.id, 150000);
     await dismantle(actor, prop.id);
     const [tD, tV] = await Promise.all([pD, pV]);
-    check(!!tD && !!tV && tV - tD < 2500, `${viewer.tag.split(' ')[0]} : démontage de ${actor.tag.split(' ')[0]} arrivé ${s1(tD && tV && tV - tD)} après (seuil 2,5 s)`);
+    const slackDem = await slackOf(actor, viewer);
+    check(!!tD && !!tV && tV - tD < 2500 + slackDem, `${viewer.tag.split(' ')[0]} : démontage de ${actor.tag.split(' ')[0]} arrivé ${s1(tD && tV && tV - tD)} après (seuil 2,5 s + images des deux, ${slackDem} ms)`);
   }
   await closeCtx(C);
 });
