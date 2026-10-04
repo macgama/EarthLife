@@ -352,18 +352,23 @@ async function postAccount(dev, path, body, xff) {
   return { status: res.status, text };
 }
 
-// 30 connexions fausses de suite : pour une même adresse e-mail (adresses IP différentes), 429 dès la 11e ; depuis
-// une même adresse IP (adresses e-mail différentes), 429 dès la 21e.
+// 30 connexions fausses de suite : depuis une même adresse IP et pour une même adresse e-mail, 429 dès la 11e ;
+// pour une même adresse e-mail depuis des adresses IP différentes, aucun blocage (un tiers ne peut pas verrouiller
+// le compte d'un autre, le plafond de 100 échecs par heure est loin) ; depuis une même adresse IP (adresses e-mail
+// différentes), 429 dès la 21e.
 async function connexions(dev, row) {
   const pw = ['mauvais', 'mot', 'de', 'passe'].join('-');
-  const byMail = [], byIp = [];
+  const byPair = [], byMail = [], byIp = [];
+  for (let i = 0; i < 30; i++) byPair.push((await postAccount(dev, '/v1/account/login', { email: 'paire@exemple.test', password: pw, tok: null }, '10.19.0.1')).status);
   for (let i = 0; i < 30; i++) byMail.push((await postAccount(dev, '/v1/account/login', { email: 'cible@exemple.test', password: pw, tok: null }, `10.20.${i}.1`)).status);
   for (let i = 0; i < 30; i++) byIp.push((await postAccount(dev, '/v1/account/login', { email: `essai${i}@exemple.test`, password: pw, tok: null }, '10.21.0.1')).status);
   const first = (l) => l.indexOf(429) + 1 || null;
-  const okMail = byMail.slice(0, ACCOUNT_RULES.loginFailsPerHour).every((x) => x === 401) && byMail.slice(ACCOUNT_RULES.loginFailsPerHour).every((x) => x === 429);
+  const n = ACCOUNT_RULES.loginFailsPerHour;
+  const okPair = byPair.slice(0, n).every((x) => x === 401) && byPair.slice(n).every((x) => x === 429);
+  const okMail = byMail.every((x) => x === 401);
   const okIp = byIp.slice(0, 20).every((x) => x === 401) && byIp.slice(20).every((x) => x === 429);
-  row('30 connexions fausses de suite', '429 dès la 11e par adresse e-mail, dès la 21e par adresse IP',
-    `même adresse e-mail : premier 429 à la ${first(byMail) ?? 'JAMAIS'}e ; même adresse IP : premier 429 à la ${first(byIp) ?? 'JAMAIS'}e`, okMail && okIp);
+  row('30 connexions fausses de suite', '429 dès la 11e pour la même adresse e-mail et la même adresse IP, jamais depuis des adresses IP différentes, dès la 21e par adresse IP',
+    `même couple : premier 429 à la ${first(byPair) ?? 'JAMAIS'}e ; même adresse e-mail, adresses IP différentes : ${first(byMail) ? `429 dès la ${first(byMail)}e` : 'aucun blocage'} ; même adresse IP : premier 429 à la ${first(byIp) ?? 'JAMAIS'}e`, okPair && okMail && okIp);
 }
 
 // 20 demandes de code pour la même adresse (adresses IP différentes) : 3 e-mails dans la boîte, réponses identiques.

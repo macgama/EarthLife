@@ -822,7 +822,7 @@ async function waitUntil(fn, ms = 3000) {
     await sleep(2);
   }
 }
-const SECRET = Buffer.alloc(32, 7);
+const TEST_KEY = Buffer.alloc(32, 7);
 
 test('course : une connexion faite avec l\'ancien mot de passe pendant son changement ne garde aucune session', async () => {
   const w = rig();
@@ -870,13 +870,13 @@ test('course : une connexion faite avec l\'ancien mot de passe pendant son chang
 });
 
 test('course : le rehachage d\'une connexion (paramètres changés) n\'annule pas un changement de mot de passe passé entretemps', async () => {
-  const w = rig({ accountOpts: { secret: SECRET } });                 // comptes créés aux paramètres rapides (logN 10)
+  const w = rig({ accountOpts: { secret: TEST_KEY } });                 // comptes créés aux paramètres rapides (logN 10)
   await w.signup();
   const acc = await w.accounts.debug.byEmail(EMAIL);
   const before = (await w.store.accountById(acc.accountId)).pwHash;
   // Serveur aux nouveaux paramètres (logN 11, comme le réglage p 5 → 3 de la mise en service) sur le même magasin.
   const cur = createAccounts({ store: w.store, room: w.room, config: { dev: true }, mailer: w.mailer, now: () => w.clock.t,
-    hashParams: { logN: 11, r: 8, p: 1 }, secret: SECRET });
+    hashParams: { logN: 11, r: 8, p: 1 }, secret: TEST_KEY });
   const call = async (route, body) => {
     const r = await cur.handle(route, JSON.stringify({ v: 1, ...body }), { ip: '' });
     return { status: r.status, body: JSON.parse(r.raw ?? JSON.stringify(r.body)) };
@@ -903,10 +903,10 @@ test('course : le rehachage d\'une connexion (paramètres changés) n\'annule pa
   assert.equal((await call('/v1/account/login', { email: EMAIL, password: PW2, tok: null })).status, 200);
   w.store.setPassword = real;
   // Sans course : la connexion réécrit l'empreinte aux nouveaux paramètres (le rehachage reste en service).
-  const w2 = rig({ accountOpts: { secret: SECRET } });
+  const w2 = rig({ accountOpts: { secret: TEST_KEY } });
   await w2.signup();
   const cur2 = createAccounts({ store: w2.store, room: w2.room, config: { dev: true }, mailer: w2.mailer, now: () => w2.clock.t,
-    hashParams: { logN: 11, r: 8, p: 1 }, secret: SECRET });
+    hashParams: { logN: 11, r: 8, p: 1 }, secret: TEST_KEY });
   const acc2 = await w2.accounts.debug.byEmail(EMAIL);
   assert.match((await w2.store.accountById(acc2.accountId)).pwHash, /^s1\$10\$8\$1\$/);
   const r2 = await cur2.handle('/v1/account/login', JSON.stringify({ v: 1, email: EMAIL, password: PW, tok: null }), { ip: '' });
@@ -916,10 +916,10 @@ test('course : le rehachage d\'une connexion (paramètres changés) n\'annule pa
 });
 
 test('connexion : trois connexions en même temps après un changement de paramètres réussissent toutes (la perdante revérifie)', async () => {
-  const w = rig({ accountOpts: { secret: SECRET } });
+  const w = rig({ accountOpts: { secret: TEST_KEY } });
   await w.signup();
   const cur = createAccounts({ store: w.store, room: w.room, config: { dev: true }, mailer: w.mailer, now: () => w.clock.t,
-    hashParams: { logN: 11, r: 8, p: 1 }, secret: SECRET });
+    hashParams: { logN: 11, r: 8, p: 1 }, secret: TEST_KEY });
   const go = () => cur.handle('/v1/account/login', JSON.stringify({ v: 1, email: EMAIL, password: PW, tok: null }), { ip: '' });
   const rs = await Promise.all([go(), go(), go()]);
   assert.deepEqual(rs.map((r) => r.status), [200, 200, 200]);

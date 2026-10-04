@@ -258,7 +258,7 @@ cmd_build() {
   mkdir -p "$out"
   # Le contenu du commit HEAD, tel que commité : aucun fichier local égaré (.env, journaux, node_modules) ni
   # changement non commité ne peut partir.
-  git -C "$REPO" archive --format=tar HEAD server prototype/src/net/protocol.js | tar -x -C "$out"
+  git -C "$REPO" archive --format=tar HEAD server prototype/src/net/protocol.js prototype/src/net/account.js | tar -x -C "$out"
   rm -rf -- "$out/server/test" "$out/server/tools" "$out/server/probe"
   # Sans ce fichier, Node 18 et 20 liraient protocol.js comme du CommonJS et refuseraient « export ».
   printf '{"type":"module"}\n' > "$out/prototype/package.json"
