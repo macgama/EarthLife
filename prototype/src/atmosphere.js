@@ -2,11 +2,12 @@
 import * as THREE from 'three';
 import { daylight } from './sun.js';
 import { setWorldWeather } from './scene.js';
+import { ZOOM, fogRange } from './view.js';
 
 const DEG = Math.PI / 180;
 
-// `maxDistance` : la ville n'est construite qu'autour du joueur, le brouillard en cache le bord.
-export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
+// La ville n'est construite qu'autour du joueur : le brouillard en cache le bord, à toute distance de la caméra (setView).
+export function createAtmosphere(scene, { lowPower }) {
   let groundMaterials = null;
   const hemi = new THREE.HemisphereLight(0xdfefff, 0x8a7f6a, 1.2);
   const sun = new THREE.DirectionalLight(0xfff1d6, 2.2);
@@ -27,6 +28,10 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
 
   scene.fog = new THREE.Fog(0xa9cde8, 150, 700);
   scene.background = new THREE.Color(0xa9cde8);
+  // Vue de la caméra (zoom, src/view.js) ; avec la visibilité selon le temps (state.visibility), elle donne le
+  // brouillard (applyFog).
+  const view = { dist: ZOOM.base, pitch: 1, aspect: 1.6, radius: ZOOM.radius, covered: ZOOM.radius };
+  let shadowHalf = 60;
 
   const rainCount = lowPower ? 1800 : 4500;
   const rainPos = new Float32Array(rainCount * 6);
@@ -59,7 +64,7 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
   const rainDrops = new Float32Array(rainCount * 3);
   seedParticles(rainDrops, 3);
 
-  const state = { weather: null, daylight: 1, flash: 0, nextFlash: 4, onLightning: null, isNight: false, sunDir: new THREE.Vector3(0, 1, 0) };
+  const state = { weather: null, daylight: 1, flash: 0, nextFlash: 4, onLightning: null, isNight: false, sunDir: new THREE.Vector3(0, 1, 0), visibility: 650 };
   // Palette du guide de style (§ 9.1) : un peu moins saturée et plus froide, pour que l'orange ressorte.
   const colors = {
     day: new THREE.Color(0x9cc3dc), overcast: new THREE.Color(0x9aa4ad), night: new THREE.Color(0x0e1626),
@@ -93,10 +98,8 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
     if (w.kind === 'snow') far = 200 - 80 * w.intensity;
     if (w.kind === 'fog') far = Math.max(35, Math.min(160, (w.visibility ?? 200) * 0.35));
     if (state.isNight) far = Math.min(far, 260);
-    // Le brouillard cache le bord du quartier construit, sans descendre sous une distance jouable.
-    far = Math.max(Math.min(far, maxDistance), Math.min(55, maxDistance));
-    scene.fog.near = Math.min(far * 0.4, 60);
-    scene.fog.far = far;
+    state.visibility = far;
+    applyFog();
 
     // Soleil placé selon sa vraie position (azimut depuis le nord, -z = nord). La nuit, la même lumière devient
     // un clair de lune froid et haut (opposé au soleil), qui détache les silhouettes sans nouvelle lumière.
@@ -132,6 +135,33 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
     snow.visible = w.kind === 'snow';
     const visibleRain = Math.floor(rainCount * Math.max(0.3, w.intensity ?? 0.5));
     rainGeo.setDrawRange(0, visibleRain * 2);
+  }
+
+  // Le brouillard cache le bord du quartier construit, sans descendre sous une distance jouable ; il garde le même voile
+  // autour du joueur quand la caméra recule (fogRange).
+  function applyFog() {
+    const f = fogRange({ visibility: state.visibility, ...view });
+    scene.fog.near = f.near;
+    scene.fog.far = f.far;
+  }
+
+  // Ombre du soleil : sa boîte suit la distance de la caméra (±60 m jusqu'à 28 m, ±120 m au plus) ; carte de 1024
+  // inchangée, les ombres sont plus floues de loin, où tout est plus petit à l'écran.
+  function shadowFor(dist) {
+    const half = Math.max(60, Math.min(120, Math.round((60 * dist) / ZOOM.base / 10) * 10));
+    if (half === shadowHalf) return;
+    shadowHalf = half;
+    Object.assign(sun.shadow.camera, { left: -half, right: half, top: half, bottom: -half });
+    sun.shadow.camera.updateProjectionMatrix();
+  }
+
+  // Vue de la caméra à chaque image : { dist, pitch, aspect, radius, covered } (main.js, syncScene) ; rien à refaire
+  // quand elle n'a pas bougé.
+  function setView(v) {
+    if (v.dist === view.dist && v.pitch === view.pitch && v.aspect === view.aspect && v.radius === view.radius && v.covered === view.covered) return;
+    view.dist = v.dist; view.pitch = v.pitch; view.aspect = v.aspect; view.radius = v.radius; view.covered = v.covered;
+    applyFog();
+    shadowFor(view.dist);
   }
 
   function update(dt, focus, playerYaw) {
@@ -208,7 +238,7 @@ export function createAtmosphere(scene, { lowPower, maxDistance = Infinity }) {
     groundMaterials = mats.map((m) => [m, m.color.getHex()]);
   }
 
-  return { state, setConditions, update, endFrame, setGroundMaterials };
+  return { state, setConditions, setView, update, endFrame, setGroundMaterials };
 }
 
 function flakeTexture() {

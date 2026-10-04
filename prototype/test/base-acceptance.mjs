@@ -2,7 +2,8 @@
 // hors ligne : vraies tuiles de Lyon et météo enregistrées (test/fixtures/offline-routes.mjs), crochets ?debug=1.
 //   npm run acceptance       (ou : node test/base-acceptance.mjs [dossier-des-captures], browser-shots/acceptance par défaut)
 // Variables : ROUTES (réponses enregistrées, test/fixtures/offline-routes.mjs par défaut ; ROUTES=none : réseau réel),
-// PLAYWRIGHT_MODULE (chemin du module playwright), PORT (0 : port libre), ONLY (desktop ou mobile).
+// PLAYWRIGHT_MODULE (chemin du module playwright), PORT (0 : port libre), ONLY (desktop ou mobile ; vue : la section 13,
+// zoom et carte des environs, seule sur une partie neuve).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
@@ -739,6 +740,9 @@ async function desktop() {
     check(after.menu !== car.id && after.near !== car.id && !after.listed, `${tag} 6 : aucune action ne la propose (bouton : ${after.label ?? 'aucun'})`);
   }
 
+  // 13. Vue : zoom de la caméra.
+  await vueEtCarte(page, 'desktop', tag);
+
   // 9.3 : logique par image pendant une vague, sur ordinateur (fenêtre de perf remise à zéro par le rechargement).
   await wavePerf(page, 'desktop', `${tag} 9.3`, 6);
 
@@ -960,9 +964,804 @@ async function mobile() {
     check(false, `${tag} 11 : suivi du leurre incomplet (${t === null ? 'leurre non lancé' : `${round(t, 1)} s de temps de jeu sur 21,5`} en ${round((Date.now() - t1) / 1000, 1)} s à la montre, ${await state(page)})`);
   }
 
+  // 13. Vue : zoom de la caméra.
+  await vueEtCarte(page, 'mobile', tag);
+
   // 9.3 : logique par image pendant une vague, en émulation téléphone.
   await ev(page, () => { window.__earthlife.session.player.shield = 0; });
   await wavePerf(page, 'mobile', `${tag} 9.3`, 8);
+  await ctx.close();
+}
+
+// ---------- Vue : zoom de la caméra et carte des environs (section 13, sur ordinateur et sur téléphone) ----------
+// Après le décor (ordinateur) ou le leurre (téléphone), avant la mesure de la vague. Le joueur est dehors, le refuge
+// existe. Zoom : 13.1 à 13.4 ; carte des environs : 13.5 à 13.8 ; coût : 13.9 ; remise à zéro : 13.10 ; découpe des
+// murs au zoom le plus large : 13.11.
+
+const view = (page) => debug(page, 'view');
+// Images dessinées (sous swiftshader chargé, une image peut prendre plus de 400 ms).
+const frames = (page, n = 3) => ev(page, (k) => new Promise((res) => { let i = 0; const f = () => (++i >= k ? res() : requestAnimationFrame(f)); requestAnimationFrame(f); }), n);
+// Rayon construit atteint (aucun trou), caméra à la distance visée (voulue, plafonds de l'alerte et du bord du monde
+// compris, et ×34/28 au refuge) ; renvoie view(), ou null après `timeout` ms. Le rayon, le tangage et le brouillard
+// suivent à l'image d'après un changement : on en laisse passer trois avant.
+async function settled(page, timeout = 20000) {
+  await frames(page, 3);
+  return until(page, () => {
+    const v = window.__earthlife.debug.view();
+    return v && v.covered >= v.radius && v.dist === v.goal ? v : null;
+  }, null, timeout);
+}
+const near = (a, b, eps) => Math.abs(a - b) <= eps;
+
+// Toucher par le protocole de Chrome : chaque pas donne tous les doigts posés ([x, y, id]), Chrome en déduit les
+// doigts posés, déplacés ou levés.
+async function touchSteps(page, cdp, steps) {
+  for (const [type, points] of steps) {
+    await cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points.map(([x, y, id]) => ({ x, y, id, radiusX: 4, radiusY: 4, force: 1 })) });
+    await wait(40);
+  }
+  await frames(page, 2);
+}
+// Deux doigts l'un au-dessus de l'autre (x, centre cy), d'un écart `from` à `to` en 6 pas ; ids a et b ; `others` :
+// doigts déjà posés qui restent immobiles.
+function pinchSteps(x, cy, from, to, { a = 1, b = 2, others = [] } = {}) {
+  const at = (d) => [[x, cy - d / 2, a], [x, cy + d / 2, b]];
+  const steps = [['touchStart', [...others, ...at(from)]]];
+  for (let k = 1; k <= 6; k++) steps.push(['touchMove', [...others, ...at(from + ((to - from) * k) / 6)]]);
+  steps.push(['touchEnd', others]);
+  return steps;
+}
+
+async function zoomInputs(page, device, tag) {
+  const want = async () => (await view(page)).want;
+  // Attend que la distance voulue ait changé par rapport à `before` (l'entrée est lue à l'image suivante).
+  const changed = (before) => until(page, (b) => { const w = window.__earthlife.debug.view().want; return Math.abs(w - b) > 1e-6 ? w : null; }, before, 5000);
+  if (device === 'desktop') {
+    await debug(page, 'zoom', 28, { now: true });
+    await page.mouse.move(640, 400);
+    for (let i = 0; i < 3; i++) await page.mouse.wheel(0, 100);
+    const w3 = await until(page, () => { const w = window.__earthlife.debug.view().want; return w > 42 ? w : null; }, null, 5000);
+    const after = await until(page, () => {
+      const v = window.__earthlife.debug.view();
+      return v.dist === v.want ? { ...v, floor: window.__view.pitchFloor(v.dist) } : null;
+    }, null, 10000);
+    check(!!w3 && near(w3, 42.58, 0.5) && !!after && after.pitch >= after.floor - 1e-9,
+      `${tag} 13.1 : 3 crans de molette depuis 28 m : distance voulue ${w3 && round(w3)} m (42,58 attendus), atteinte (${after ? round(after.dist) : '?'} m), tangage ${after ? round(after.pitch) : '?'} ≥ plancher ${after ? round(after.floor) : '?'}`);
+    for (let i = 0; i < 20; i++) await page.mouse.wheel(0, 100);
+    const max = await until(page, () => (window.__earthlife.debug.view().want === 72 ? 72 : null), null, 5000);
+    await frames(page, 1);
+    const outOff = await ev(page, () => document.getElementById('zoom-out').getAttribute('aria-disabled'));
+    check(max === 72 && outOff === 'true', `${tag} 13.1 : 20 crans de plus : ${max ?? await want()} m (72 au plus), bouton − en butée (aria-disabled ${outOff})`);
+    await hit(page, device, '#zoom-in');
+    const b1 = await changed(72);
+    await hit(page, device, '#zoom-out');
+    const b2 = await changed(b1 ?? 72);
+    check(!!b1 && near(b1, 72 / 1.25, 0.01) && b2 === 72, `${tag} 13.1 : boutons + puis − : ${b1 && round(b1)} m (57,6 attendus) puis ${b2 && round(b2)} m`);
+    await hit(page, device, '#zoom-in');
+    const w0 = await changed(72);
+    await page.keyboard.press('-');
+    const k1 = await changed(w0);
+    await page.keyboard.press('=');
+    const k2 = await changed(k1);
+    await page.keyboard.press('Control+-');
+    await frames(page, 3);
+    const k3 = await want();
+    check(!!w0 && !!k1 && near(k1, w0 * 1.15, 0.01) && near(k2, w0, 0.01) && k3 === k2,
+      `${tag} 13.1 : touches − puis = : ${w0 && round(w0)} → ${k1 && round(k1)} → ${k2 && round(k2)} m (×1,15 puis ÷1,15), Ctrl − sans effet (${k3 && round(k3)} m)`);
+    const kept = await until(page, (w) => {
+      try { return JSON.parse(localStorage.getItem('earthlife.vue'))?.zoom === Math.round(w * 10) / 10 ? localStorage.getItem('earthlife.vue') : null; } catch { return null; }
+    }, k3, 5000);
+    check(!!kept, `${tag} 13.1 : réglage gardé : localStorage['earthlife.vue'] = ${kept ?? await ev(page, () => localStorage.getItem('earthlife.vue'))}`);
+    return;
+  }
+  // Téléphone : pincement et toucher (Input.dispatchTouchEvent).
+  const cdp = await page.context().newCDPSession(page);
+  const yaw = () => ev(page, () => window.__earthlife.session.cameraYaw);
+  await debug(page, 'zoom', 40, { now: true });
+  const y0 = await yaw();
+  await touchSteps(page, cdp, pinchSteps(260, 400, 60, 120));
+  const out1 = await want(), y1 = await yaw();
+  check(out1 < 35 && near(y1, y0, 0.01), `${tag} 13.1 : deux doigts à droite qui s'écartent : ${round(out1)} m depuis 40 (20 attendus), lacet ${round(y0)} → ${round(y1)}`);
+  await touchSteps(page, cdp, pinchSteps(260, 400, 120, 60));
+  const in1 = await want();
+  check(in1 > out1 + 5, `${tag} 13.1 : doigts qui se rapprochent : ${round(out1)} → ${round(in1)} m`);
+  await touchSteps(page, cdp, [['touchStart', [[260, 400, 1]]], ...[1, 2, 3, 4].map((k) => ['touchMove', [[260 + 15 * k, 400, 1]]]), ['touchEnd', []]]);
+  const y2 = await yaw();
+  check(Math.abs(y2 - y1) > 0.1, `${tag} 13.1 : un doigt qui glisse tourne la caméra (lacet ${round(y1)} → ${round(y2)})`);
+  // Joystick tenu, puis pincement à droite : on bouge et on zoome.
+  const stick = [60, 700, 0];
+  await touchSteps(page, cdp, [['touchStart', [stick]]]);
+  await wait(200);
+  const before = await want();
+  const steps = pinchSteps(260, 360, 60, 120, { others: [stick] });
+  steps.pop(); // on garde les doigts posés pour lire l'état
+  await touchSteps(page, cdp, steps);
+  const both = await ev(page, () => ({ want: window.__earthlife.debug.view().want, stick: document.getElementById('stick-base').classList.contains('active') }));
+  await touchSteps(page, cdp, [['touchEnd', []]]);
+  check(both.want < before - 2 && both.stick, `${tag} 13.1 : joystick tenu et pincement à droite : ${round(before)} → ${round(both.want)} m, joystick ${both.stick ? 'actif' : 'inactif'}`);
+  // Deux doigts posés ensemble à gauche : pincement, pas de joystick.
+  await debug(page, 'zoom', 40, { now: true });
+  const before2 = await want();
+  const left = [['touchStart', [[60, 600, 3], [120, 600, 4]]]];
+  for (let k = 1; k <= 6; k++) left.push(['touchMove', [[60 - 5 * k, 600, 3], [120 + 5 * k, 600, 4]]]);
+  await touchSteps(page, cdp, left);
+  const lp = await ev(page, () => ({ want: window.__earthlife.debug.view().want, move: window.__earthlife.debug.input().move, stick: document.getElementById('stick-base').classList.contains('active') }));
+  await touchSteps(page, cdp, [['touchEnd', []]]);
+  check(lp.want < before2 - 2 && lp.move.x === 0 && lp.move.y === 0 && !lp.stick,
+    `${tag} 13.1 : deux doigts posés ensemble à gauche : pincement (${round(before2)} → ${round(lp.want)} m), joystick annulé (move ${lp.move.x}, ${lp.move.y}, ${lp.stick ? 'actif' : 'inactif'})`);
+  await cdp.detach().catch(() => {});
+  await debug(page, 'zoom', 40, { now: true });
+  const before3 = await want();
+  await page.tap('#zoom-in');
+  const tapped = await changed(before3);
+  check(!!tapped && near(tapped, before3 / 1.25, 0.01), `${tag} 13.1 : bouton + au toucher : ${round(before3)} → ${tapped && round(tapped)} m`);
+}
+
+// 13.2 et 13.9 : rayon construit, brouillard et appels de dessin, au zoom de défaut puis au plus loin.
+async function radiusAndFog(page, device, tag) {
+  await debug(page, 'zoom', 28, { now: true });
+  const v28 = await settled(page);
+  // Brouillard d'avant le zoom (rayon de 110 m) : à 28 m, sol construit, il ne change pas.
+  const far0 = v28 && Math.max(Math.min(v28.visibility, 120), 55), near0 = v28 && Math.min(far0 * 0.4, 60);
+  check(!!v28 && v28.radius === 110 && near(v28.fog.far, far0, 1e-6) && near(v28.fog.near, near0, 1e-6),
+    `${tag} 13.2 : à 28 m, rayon ${v28?.radius} m, brouillard ${v28 ? `${round(v28.fog.near, 1)}–${round(v28.fog.far, 1)}` : '?'} m, comme avant le zoom (${v28 ? `${round(near0, 1)}–${round(far0, 1)}, visibilité ${round(v28.visibility)} m` : '?'})`);
+  const calls28 = await drawCalls(page);
+  const t0 = Date.now();
+  await debug(page, 'zoom', 100, { now: true });
+  const vMax = await settled(page);
+  const phone = device === 'mobile';
+  const expect = vMax && await ev(page, ([v, low]) => window.__view.viewRadius(v.dist, v.aspect, low), [vMax, phone]);
+  // Brouillard recalculé avec les valeurs de la même image (rayon sans trou lissé, comme la scène).
+  const fogNow = vMax && await ev(page, (v) => window.__view.fogRange({ visibility: v.visibility, dist: v.dist, pitch: v.pitch, aspect: v.aspect, radius: v.radius, covered: v.coveredFog }), vMax);
+  check(!!vMax && vMax.want === (phone ? 56 : 72) && vMax.radius === (phone ? 110 : expect) && vMax.fog.far > v28.fog.far,
+    `${tag} 13.2 : au plus loin (${vMax?.want} m), rayon ${vMax?.radius} m (${phone ? '110' : expect} attendus), atteint en ${round((Date.now() - t0) / 1000, 1)} s, brouillard ${vMax ? `${round(vMax.fog.near, 1)}–${round(vMax.fog.far, 1)}` : '?'} m (au-delà de ${round(v28?.fog.far ?? 0, 1)})`);
+  check(!!fogNow && near(fogNow.far, vMax.fog.far, 1e-6) && near(fogNow.near, vMax.fog.near, 1e-6) && fogNow.far <= fogNow.edge + 1e-6, `${tag} 13.2 : brouillard de la scène égal à fogRange (${fogNow ? round(fogNow.far, 1) : '?'} m), devant le premier sol non construit (${fogNow ? round(fogNow.edge, 1) : '?'} m)`);
+  const callsMax = await drawCalls(page);
+  const ratio = callsMax.all / Math.max(1, calls28.all);
+  if (phone) check(ratio <= 2.5, `${tag} 13.9 : appels de dessin ${calls28.all} à 28 m, ${callsMax.all} à ${vMax?.want} m : ×${round(ratio)} (≤ 2,5)`);
+  else note(`${tag} 13.9 : appels de dessin ${calls28.all} à 28 m, ${callsMax.all} à ${vMax?.want} m : ×${round(ratio)}`);
+}
+
+// 13.4 : pendant l'alerte, la caméra ne recule pas au-delà du plafond ; il disparaît au retour du jour. Dans le
+// déroulé complet, la vague du scénario 4 a déjà été jouée : l'horloge est mise 1 s avant la prochaine alerte
+// (clockTargets), et non à 179 s comme pour la première nuit.
+async function alertCap(page, tag) {
+  await clearZombies(page);
+  await debug(page, 'zoom', 100, { now: true });
+  await ev(page, () => { const sel = document.getElementById('time-mode'); sel.value = 'night'; sel.dispatchEvent(new Event('change')); });
+  await until(page, () => window.__earthlife.session.isNight, null, 5000);
+  const next = await ev(page, async () => {
+    const { clockTargets } = await import('/src/horde.js');
+    const { save, debug: d } = window.__earthlife;
+    const t = clockTargets(save.horde);
+    if (t) d.nightClock(t.alert - 1);
+    return t;
+  });
+  const banner = await until(page, () => { const b = document.getElementById('horde-banner'); return b.classList.contains('hidden') ? null : b.textContent.trim(); }, null, 20000);
+  check(!!next && !!banner, `${tag} 13.4 : nuit forcée, horloge à ${next ? next.alert - 1 : '?'} s : bandeau « ${banner ?? 'absent'} » (phase ${await ev(page, () => window.__earthlife.refuge.phase)})`);
+  const expected = await ev(page, () => {
+    const { session: s, debug: d } = window.__earthlife;
+    const v = d.view();
+    return { v, cap: window.__view.waveCap(28, s.cameraPitch, v.aspect), pitch: s.cameraPitch, inside: s.refuge.inside };
+  });
+  const capped = await until(page, () => { const v = window.__earthlife.debug.view(); return v.dist <= v.cap + 0.5 ? v : null; }, null, 10000);
+  check(!expected.inside && expected.v.cap === expected.cap && !!capped,
+    `${tag} 13.4 : alerte : plafond ${expected.v.cap} m (${expected.cap} attendus au tangage ${round(expected.pitch)}), distance ${capped ? round(capped.dist) : round((await view(page)).dist)} m pour ${expected.v.want} m voulus`);
+  await ev(page, () => { const sel = document.getElementById('time-mode'); sel.value = 'day'; sel.dispatchEvent(new Event('change')); });
+  const free = await until(page, () => (window.__earthlife.debug.view().cap === Infinity ? window.__earthlife.refuge.phase : null), null, 10000);
+  check(!!free, `${tag} 13.4 : retour du jour (${free ?? (await ev(page, () => window.__earthlife.refuge.phase))}) : plus de plafond`);
+}
+
+// 13.3 : au plus loin et au tangage le plus bas, le plan de base (au-delà du monde construit) ne se voit qu'à travers
+// le brouillard : deux captures, plan magenta puis vert, comparées pixel à pixel dans la page.
+async function edgeHidden(page, tag, size) {
+  await page.setViewportSize(size);
+  await wait(800);
+  await ev(page, () => { window.__earthlife.session.cameraPitch = 0.6; });
+  await debug(page, 'zoom', 100, { now: true });
+  const v = await settled(page);
+  const { info, seen } = await basePlaneSeen(page);
+  check(!!v && info.users === 1 && seen.n <= 64,
+    `${tag} 13.3 : ${size.width}×${size.height}, ${v ? `${v.want} m, tangage ${round(v.pitch)}, rayon ${v.radius} m` : 'rayon pas atteint'} : ${seen.n} pixels où le plan de base perce le brouillard (≤ 64, capture ${seen.w}×${seen.h}), matériau propre au plan (${info.users} maillage)`);
+  await shot(page, `${tag.replace(/\s.*/, '')}-13-bord-${size.width}x${size.height}`);
+}
+
+// Pixels où le plan de base (au-delà du monde construit) perce le brouillard : deux captures, plan magenta puis vert,
+// comparées pixel à pixel dans la page, jeu en pause. Renvoie aussi le nombre de maillages qui portent son matériau.
+async function basePlaneSeen(page) {
+  await frames(page, 3);
+  const info = await ev(page, () => {
+    const s = window.__earthlife.session;
+    const mat = s.chunks.root.children[0].material;
+    let users = 0;
+    s.root.parent.traverse((o) => { if (o.material === mat) users++; });
+    s.paused = true;
+    window.__basePlane = { mat, hex: mat.color.getHex() };
+    return { users, hex: mat.color.getHex() };
+  });
+  const capture = async (hex) => {
+    await ev(page, (h) => window.__basePlane.mat.color.setHex(h), hex);
+    await frames(page, 2);
+    return (await page.screenshot()).toString('base64');
+  };
+  const a = await capture(0xff00ff), b = await capture(0x00ff00);
+  await ev(page, () => { const p = window.__basePlane; p.mat.color.setHex(p.hex); window.__earthlife.session.paused = false; });
+  const seen = await ev(page, async ([pa, pb]) => {
+    const load = (src) => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = `data:image/png;base64,${src}`; });
+    const [ia, ib] = await Promise.all([load(pa), load(pb)]);
+    const c = Object.assign(document.createElement('canvas'), { width: ia.width, height: ia.height });
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(ia, 0, 0);
+    const da = ctx.getImageData(0, 0, c.width, c.height).data;
+    ctx.drawImage(ib, 0, 0);
+    const db = ctx.getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 0; i < da.length; i += 4) if (da[i] - db[i] > 24 && db[i + 1] - da[i + 1] > 24 && da[i + 2] - db[i + 2] > 24) n++;
+    return { n, w: c.width, h: c.height };
+  }, [a, b]);
+  return { info, seen };
+}
+
+// 13.3 : téléphone à l'horizontale, au refuge, tiroir ouvert (il s'ouvre en entrant) : la vue décalée va plus loin d'un
+// côté (aspect effectif 3,2). Au zoom le plus large, la caméra s'arrête avant que le brouillard ne se referme sur le
+// refuge (plafond du bord du monde : 48 m au lieu de 56), et le plan de base ne perce pas.
+async function edgeAtRefuge(page, device, tag) {
+  const size = page.viewportSize();
+  await page.setViewportSize({ width: 844, height: 390 });
+  await wait(800);
+  const inside = await enterRefuge(page, device);
+  const drawer = await until(page, () => document.body.classList.contains('panel-open'), null, 5000);
+  await wait(600);
+  await debug(page, 'zoom', 100, { now: true });
+  const v = await settled(page);
+  // Brouillard par temps clair à la distance atteinte, et à celle demandée sans le plafond : profondeur où il finit,
+  // moins la distance (40 m au moins voulus).
+  const fog = await ev(page, () => {
+    const V = window.__view, v2 = window.__earthlife.debug.view();
+    const at = (dist) => V.fogRange({ visibility: Infinity, dist, pitch: Math.max(1.1, V.pitchFloor(dist, true)), aspect: v2.aspect, radius: v2.radius, covered: v2.covered }).far - dist;
+    return { margin: at(v2.dist), uncapped: at(Math.min(V.zoomMax(true), Math.max(30, (v2.want * 34) / 28))) };
+  });
+  const { seen } = await basePlaneSeen(page);
+  check(inside && !!drawer && !!v && v.aspect > 3 && v.dist < 56 && v.limited === 'bord' && fog.margin >= 40 && v.fog.near > v.dist && seen.n <= 64,
+    `${tag} 13.3 : 844×390 au refuge, tiroir ${drawer ? 'ouvert' : 'fermé'} (aspect ${v ? round(v.aspect) : '?'}) : ${v ? `${round(v.dist)} m pour ${v.want} m voulus (plafond ${v.edgeCap}, vue ${v.limited || 'libre'}), brouillard ${round(v.fog.near, 1)}–${round(v.fog.far, 1)} m` : 'pas posée'}, ${round(fog.margin, 1)} m derrière le refuge (${round(fog.uncapped, 1)} sans plafond, 40 voulus), ${seen.n} pixels de plan de base`);
+  await shot(page, `${tag}-13-bord-refuge-tiroir`);
+  await leave(page, device);
+  await page.setViewportSize(size);
+  await wait(600);
+  await debug(page, 'zoom', 28, { now: true });
+}
+
+// ---------- Carte des environs (13.5 à 13.9) ----------
+
+const mapState = (page) => debug(page, 'minimap');
+// Images dessinées puis état de la carte (elle redessine ses repères à 15 Hz au moins).
+const mapAfter = async (page, n = 4) => { await frames(page, n); return mapState(page); };
+// Repère attendu sur la carte, plutôt qu'un nombre d'images (sur téléphone, les repères seuls sont redessinés à 15 Hz) :
+// au moins un repère `kind` ('any'), un repère dedans ('inside') ou plaqué au bord ('clipped'), ou exactement n repères.
+// Renvoie l'état de la carte, ou celui d'après `timeout` ms si l'attente échoue (pour le message du contrôle).
+async function mapMarker(page, kind, want = 'any', timeout = 3000) {
+  const st = await until(page, ([k, w]) => {
+    const s = window.__earthlife.debug.minimap();
+    const list = s.markers.filter((m) => m.kind === k);
+    const ok = w === 'any' ? list.length > 0 : w === 'inside' ? list.some((m) => !m.clipped) : w === 'clipped' ? list.some((m) => m.clipped) : list.length === w;
+    return ok ? s : null;
+  }, [kind, want], timeout);
+  return st ?? mapState(page);
+}
+
+// État attendu au 13.5, avec le leurre puis sans : [coin, côté (px), boutons], ou null quand la carte est masquée.
+// besideBag : téléphone étroit à l'horizontale, carte à gauche de la grille du sac.
+const MAP_LAYOUTS = {
+  desktop: [
+    { width: 1280, height: 800, lure: ['bas-gauche', 176, true], none: ['bas-gauche', 176, true] },
+    { width: 1024, height: 768, lure: ['bas-gauche', 176, true], none: ['bas-gauche', 176, true] },
+    { width: 768, height: 1024, lure: ['bas-gauche', 152, true], none: ['bas-gauche', 152, true] },
+  ],
+  mobile: [
+    { width: 390, height: 844, lure: ['haut-droite', 120, true], none: ['haut-droite', 120, true] },
+    // Hauteurs visibles sous les barres du navigateur : iPhone 12 à 15 dans Safari (390 × 664), petit Android (360 ×
+    // 640), iPhone SE (375 × 553, la carte n'a pas la place au-dessus du plus haut toast).
+    { width: 390, height: 664, lure: ['haut-droite', 72, false], none: ['haut-droite', 72, true] },
+    { width: 360, height: 640, lure: ['haut-droite', 64, false], none: ['haut-droite', 64, false] },
+    { width: 375, height: 553, lure: null, none: null },
+    { width: 844, height: 390, lure: ['haut-droite', 128, true], none: ['haut-droite', 128, true] },
+    { width: 667, height: 375, lure: null, none: ['haut-droite', 88, false], besideBag: true },
+    { width: 768, height: 1024, lure: ['bas-gauche', 152, true], none: ['bas-gauche', 152, true] },
+  ],
+};
+
+// États forcés du HUD (figé le temps de la mesure) : toast de 3 lignes, deux actions aux libellés longs, bandeau de
+// horde, objectif visible, leurre visible ou non. Renvoie de quoi les rendre (ce que hud.render ne réécrit pas seul).
+const forceHud = (page, lure) => ev(page, (withLure) => {
+  const $ = (id) => document.getElementById(id);
+  window.__earthlife.debug.freezeHud(true);
+  const keep = {
+    toast: $('toast').style.opacity, toastText: $('toast-text').textContent, objective: $('objective').style.opacity,
+    lureHidden: $('use-lure').classList.contains('hidden'),
+  };
+  $('toast-text').textContent = 'Un errant rôde près de la pharmacie du coin : fouille vite, reste à l’écart des grandes avenues et garde ton endurance pour fuir';
+  $('toast').style.opacity = '1';
+  for (const [id, label] of [['search', 'Fouiller : Pharmacie de la place Bellecour et ses réserves (E)'], ['action2', 'En faire mon refuge : grand immeuble de bureaux (R)']]) {
+    $(id).classList.remove('hidden');
+    $(`${id}-label`).textContent = label;
+  }
+  $('hud').classList.add('two-actions', 'has-banner');
+  $('horde-banner').classList.remove('hidden');
+  $('horde-text').textContent = 'Horde dans 1:00 · 2 fronts, barricade la porte';
+  $('objective').style.opacity = '1';
+  $('use-lure').classList.toggle('hidden', !withLure);
+  return keep;
+}, lure);
+const releaseHud = (page, keep) => ev(page, (k) => {
+  const $ = (id) => document.getElementById(id);
+  $('toast').style.opacity = k.toast;
+  $('toast-text').textContent = k.toastText;
+  $('objective').style.opacity = k.objective;
+  $('use-lure').classList.toggle('hidden', k.lureHidden);
+  window.__earthlife.debug.freezeHud(false);
+}, keep);
+
+// Garde-fou relancé, puis rectangles de #mapbox (et de ses enfants visibles) et des panneaux visibles.
+const mapLayout = (page) => ev(page, () => {
+  const st = window.__earthlife.debug.minimapFit();
+  const vis = (e) => {
+    if (!e) return null;
+    const cs = getComputedStyle(e), r = e.getBoundingClientRect();
+    const ok = cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0 && r.width > 0 && r.height > 0;
+    return ok ? { id: e.id || e.className, left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null;
+  };
+  const box = document.getElementById('mapbox');
+  const parts = [box, ...box.children].map(vis).filter(Boolean);
+  const ids = ['conditions', 'quest', 'vitals', 'inventory', 'topbuttons', 'horde-banner', 'objective', 'toast', 'search', 'action2', 'run', 'attack'];
+  const others = ids.map((id) => vis(document.getElementById(id))).filter(Boolean);
+  const hud = document.getElementById('hud'), hr = hud.getBoundingClientRect(), pad = getComputedStyle(hud);
+  const btn = vis(document.querySelector('#mapbox .zoom-btns .small'));
+  return {
+    st, parts, others, map: vis(document.getElementById('minimap')), vitals: vis(document.getElementById('vitals')), inv: vis(document.getElementById('inventory')),
+    edge: { left: hr.left + parseFloat(pad.paddingLeft), right: hr.right - parseFloat(pad.paddingRight), bottom: hr.bottom - parseFloat(pad.paddingBottom) },
+    btn: btn ? Math.round(btn.right - btn.left) : 0,
+  };
+});
+
+// 13.5 : coin, taille et aucun chevauchement, pour chaque taille d'écran, avec puis sans le leurre.
+async function mapCorners(page, device, tag) {
+  const size = page.viewportSize();
+  const touch = device === 'mobile';
+  for (const lay of MAP_LAYOUTS[device]) {
+    await page.setViewportSize({ width: lay.width, height: lay.height });
+    await wait(600);
+    for (const lure of [true, false]) {
+      const want = lure ? lay.lure : lay.none;
+      const keep = await forceHud(page, lure);
+      await frames(page, 2);
+      const m = await mapLayout(page);
+      const hits = [];
+      for (const a of m.parts) for (const b of m.others) if (overlap(a, b)) hits.push(`${a.id} × #${b.id}`);
+      let where = true;
+      if (want && m.map) {
+        const box = m.parts[0];
+        if (lay.besideBag) where = !!m.inv && m.map.right <= m.inv.left && m.inv.left - m.map.right <= 10;
+        else if (want[0] === 'bas-gauche') where = near(box.left, m.edge.left, 2) && near(box.bottom, m.edge.bottom, 2);
+        // Haut-droite : juste sous les jauges, dans leur colonne (calée à droite, ou à gauche quand l'écran est bas).
+        else where = !!m.vitals && box.top >= m.vitals.bottom && box.top - m.vitals.bottom <= 12 && box.left >= m.vitals.left - 1 && box.right <= m.edge.right + 1;
+      }
+      const got = m.st.visible ? `${m.st.corner}, ${m.st.size} px, ${m.st.buttons ? `boutons${touch ? ` de ${m.btn} px` : ''}` : 'sans boutons'}, étape ${m.st.step}` : `masquée (${m.st.step})`;
+      const ok = want
+        ? m.st.visible && m.st.corner === want[0] && m.st.size === want[1] && m.st.buttons === want[2] && m.st.step === 'plein' && (!touch || !want[2] || m.btn >= 44) && where
+        : !m.st.visible;
+      check(ok && !hits.length,
+        `${tag} 13.5 : ${lay.width}×${lay.height} ${lure ? 'avec' : 'sans'} leurre : ${got}${want ? (where ? ', dans son coin' : ', hors de son coin') : ''}, aucun chevauchement${hits.length ? ` : ${hits.join(', ')}` : ''}`);
+      if (!lure) await shot(page, `${tag}-13-carte-${lay.width}x${lay.height}`);
+      await releaseHud(page, keep);
+    }
+  }
+  await page.setViewportSize(size);
+  await wait(600);
+  await debug(page, 'minimapFit');
+}
+
+// 13.5 : garde-fou forcé. Un panneau fixe gonflé jusque sur la carte (la quête sur ordinateur, au-dessus d'elle ; la
+// colonne du sac sur téléphone, en dessous) : carte réduite dans son coin (côté × 0,75, sans boutons), puis masquée, sans
+// rien chevaucher ; le chemin du DOM de fit(), re-mesure comprise, est ainsi parcouru.
+async function mapGuard(page, device, tag) {
+  const id = device === 'desktop' ? 'quest' : 'inventory';
+  const natural = (await debug(page, 'minimapFit')).size;
+  for (const want of ['reduite', 'masquee']) {
+    await ev(page, ([bid, w, desk]) => {
+      const el = document.getElementById(bid);
+      el.style.minHeight = '';
+      const m = document.getElementById('minimap').getBoundingClientRect(), b = el.getBoundingClientRect();
+      // Ordinateur : bas de la quête 16 px dans le haut de la carte (réduite), ou 10 px au-dessus de son bas (masquée).
+      // Téléphone : haut de la colonne du sac 16 px dans le bas de la carte, ou 10 px sous son haut.
+      const h = desk ? (w === 'reduite' ? m.top + 16 : m.bottom - 10) - b.top : b.bottom - (w === 'reduite' ? m.bottom - 16 : m.top + 10);
+      el.style.minHeight = `${Math.ceil(h)}px`;
+    }, [id, want, device === 'desktop']);
+    await frames(page, 2);
+    const m = await mapLayout(page);
+    const hits = [];
+    for (const a of m.parts) for (const b of m.others) if (overlap(a, b)) hits.push(`${a.id} × #${b.id}`);
+    const cls = await ev(page, () => document.getElementById('mapbox').className);
+    const small = Math.floor(natural * 0.75);
+    const ok = want === 'reduite'
+      ? m.st.visible && m.st.step === 'reduite' && m.st.size === small && !m.st.buttons
+      : !m.st.visible && m.st.step === 'masquee' && /\boff\b/.test(cls);
+    check(ok && !hits.length,
+      `${tag} 13.5 : #${id} gonflé jusque sur la carte : ${m.st.visible ? `${m.st.size} px (${small} attendus), ${m.st.buttons ? 'boutons' : 'sans boutons'}` : 'masquée'}, étape ${m.st.step} (${want} attendue), classes « ${cls} »${hits.length ? `, chevauchements : ${hits.join(', ')}` : ', aucun chevauchement'}`);
+    if (want === 'reduite') await shot(page, `${tag}-13-carte-reduite`);
+  }
+  await ev(page, (bid) => { document.getElementById(bid).style.minHeight = ''; }, id);
+  await frames(page, 2);
+  const back = await debug(page, 'minimapFit');
+  check(back.visible && back.step === 'plein' && back.size === natural, `${tag} 13.5 : #${id} rendu à sa taille : carte pleine de nouveau (${back.size} px, étape ${back.step})`);
+}
+
+// 13.5 : coin 'bas-gauche' sur téléphone (PHONE_MAP_CORNER, encore au choix de Gaël), forcé par debug.minimapCorner :
+// carte de 96 px en bas à gauche, sans chevauchement, HUD au pire ; à l'horizontale, la carte agrandie va en haut à
+// droite, hors de la zone du joystick (45 % de gauche) et sans toucher Frapper ni Courir.
+const BL_LAYOUTS = [{ width: 390, height: 844 }, { width: 390, height: 664 }, { width: 844, height: 390 }, { width: 667, height: 375 }];
+async function mapCornerBl(page, tag) {
+  const size = page.viewportSize();
+  await debug(page, 'minimapCorner', 'bas-gauche');
+  for (const lay of BL_LAYOUTS) {
+    await page.setViewportSize(lay);
+    await wait(600);
+    const keep = await forceHud(page, true);
+    await frames(page, 2);
+    const m = await mapLayout(page);
+    const hits = [];
+    for (const a of m.parts) for (const b of m.others) if (overlap(a, b)) hits.push(`${a.id} × #${b.id}`);
+    const box = m.parts[0];
+    const where = !!box && near(box.left, m.edge.left, 2) && near(box.bottom, m.edge.bottom, 2);
+    check(m.st.visible && m.st.corner === 'bas-gauche' && m.st.size === 96 && m.st.step === 'plein' && where && !hits.length,
+      `${tag} 13.5 : coin bas-gauche, ${lay.width}×${lay.height} avec leurre : ${m.st.visible ? `${m.st.size} px, ${m.st.buttons ? 'boutons' : 'sans boutons'}, étape ${m.st.step}` : 'masquée'}${where ? ', dans son coin' : ', hors de son coin'}${hits.length ? `, chevauchements : ${hits.join(', ')}` : ', aucun chevauchement'}`);
+    await releaseHud(page, keep);
+    if (lay.height > 500) continue;
+    await page.tap('#minimap');
+    await frames(page, 3);
+    const big = await ev(page, () => {
+      const r = (id) => { const b = document.getElementById(id).getBoundingClientRect(); return { left: b.left, top: b.top, right: b.right, bottom: b.bottom }; };
+      const hud = document.getElementById('hud').getBoundingClientRect(), pad = getComputedStyle(document.getElementById('hud'));
+      return { st: window.__earthlife.debug.minimap(), map: r('minimap'), attack: r('attack'), run: r('run'), right: hud.right - parseFloat(pad.paddingRight), W: window.innerWidth };
+    });
+    const clear = !overlap(big.map, big.attack) && !overlap(big.map, big.run) && big.map.left >= big.W * 0.45;
+    check(big.st.open && near(big.map.right, big.right, 2) && clear,
+      `${tag} 13.7 : coin bas-gauche, ${lay.width}×${lay.height} : carte agrandie (${big.st.size} px) en haut à droite (${round(big.map.left)}–${round(big.map.right)} × ${round(big.map.top)}–${round(big.map.bottom)}), ${clear ? 'hors du joystick, de Frapper et de Courir' : 'sur le joystick, Frapper ou Courir'}`);
+    await shot(page, `${tag}-13-bas-gauche-agrandie-${lay.width}x${lay.height}`);
+    await page.tap('#minimap');
+    await frames(page, 2);
+  }
+  await debug(page, 'minimapCorner');
+  await page.setViewportSize(size);
+  await wait(600);
+  await debug(page, 'minimapFit');
+}
+
+// 13.6 : repères de la carte, jeu en pause (rien ne bouge) : joueur au centre, refuge, mission de la couleur de la
+// balise, sac perdu à 20 m devant puis à 400 m (plaqué au bord), zombies proches seulement (25 m listé, 80 m non).
+async function mapMarkersCheck(page, tag) {
+  const setup = await ev(page, () => {
+    const { session: s, save } = window.__earthlife;
+    s.paused = true;
+    s.director.zombies.length = 0;
+    window.__mapKeep = { quest: s.quest, dropBag: save.dropBag };
+    return { home: !!s.refuge.anchor() };
+  });
+  const m0 = await mapMarker(page, 'player');
+  const player = m0.markers.find((m) => m.kind === 'player');
+  const home = m0.markers.find((m) => m.kind === 'home');
+  check(!!player && near(player.u, 0, 0.5) && near(player.v, 0, 0.5) && (!!home === setup.home),
+    `${tag} 13.6 : joueur en (${player ? `${round(player.u, 1)}, ${round(player.v, 1)}` : '?'}), refuge ${home ? `à (${round(home.u)}, ${round(home.v)})${home.clipped ? ', plaqué au bord' : ''}` : 'absent'} (${setup.home ? 'refuge installé' : 'pas de refuge'})`);
+  const quest = await ev(page, () => {
+    const { session: s, debug: d } = window.__earthlife;
+    const t = d.quest();
+    return t && { stage: s.quest.stage };
+  });
+  const m1 = await mapMarker(page, 'mission');
+  const mission = m1.markers.find((m) => m.kind === 'mission');
+  check(!!quest && mission?.color === (quest.stage === 'toPickup' ? 'warn' : 'success'),
+    `${tag} 13.6 : mission (${quest?.stage ?? 'aucune'}) : repère ${mission ? `${mission.color}${mission.clipped ? ', plaqué au bord' : ''}` : 'absent'}`);
+  // Sac perdu à 20 m devant la caméra, puis à 400 m : position attendue recalculée avec mapPoint.
+  const bagAt = async (d) => {
+    const want = await ev(page, async (dist) => {
+      const { mapPoint, edgePoint } = await import('/src/minimap.js');
+      const { session: s, save, debug: dbg } = window.__earthlife;
+      const p = s.player, x = p.x + Math.sin(s.cameraYaw) * dist, z = p.z + Math.cos(s.cameraYaw) * dist;
+      const ll = s.store.proj.toLatLon(x, z);
+      save.dropBag = { lat: ll.lat, lon: ll.lon, at: Date.now(), bag: { bois: 1 } };
+      const st = dbg.minimap();
+      const q = mapPoint(x - p.x, z - p.z, s.cameraYaw, st.k);
+      return edgePoint(q.u, q.v, st.canvas / 2);
+    }, d);
+    const m = await mapMarker(page, 'bag', d > 100 ? 'clipped' : 'inside');
+    return { want, got: m.markers.find((k) => k.kind === 'bag') };
+  };
+  const b20 = await bagAt(20), b400 = await bagAt(400);
+  check(!!b20.got && !b20.got.clipped && near(b20.got.u, b20.want.u, 1) && near(b20.got.v, b20.want.v, 1) && b20.got.v < 0,
+    `${tag} 13.6 : sac à 20 m devant : repère en (${b20.got ? `${round(b20.got.u, 1)}, ${round(b20.got.v, 1)}` : '?'}), attendu (${round(b20.want.u, 1)}, ${round(b20.want.v, 1)}), en haut de la carte`);
+  check(!!b400.got && b400.got.clipped && near(b400.got.u, b400.want.u, 1) && near(b400.got.v, b400.want.v, 1),
+    `${tag} 13.6 : sac à 400 m : ${b400.got?.clipped ? 'plaqué au bord' : 'non plaqué'} en (${b400.got ? `${round(b400.got.u, 1)}, ${round(b400.got.v, 1)}` : '?'})`);
+  // Zombies : un à 25 m, un à 80 m (au-delà des 60 m montrés).
+  const placed = await ev(page, async () => {
+    const col = await import('/src/collision.js');
+    const { session: s } = window.__earthlife;
+    const p = s.player, out = [];
+    for (const dist of [25, 80]) {
+      for (let k = 0; k < 36; k++) {
+        const a = (k / 36) * Math.PI * 2;
+        const spot = col.nearestFree(s.grid, p.x + Math.sin(a) * dist, p.z + Math.cos(a) * dist, 3);
+        if (!spot || Math.abs(Math.hypot(spot.x - p.x, spot.z - p.z) - dist) > 2) continue;
+        if (s.director.spawnAt(spot.x, spot.z, 'errant')) { out.push(Math.round(Math.hypot(spot.x - p.x, spot.z - p.z))); break; }
+      }
+    }
+    return out;
+  });
+  const m2 = await mapMarker(page, 'zombie', 1);
+  const zs = m2.markers.filter((m) => m.kind === 'zombie');
+  const zd = zs.map((z) => Math.hypot(z.u, z.v) / m2.k);
+  check(placed.length === 2 && zs.length === 1 && near(zd[0], placed[0], 2),
+    `${tag} 13.6 : zombies posés à ${placed.join(' et ')} m : ${zs.length} repère(s)${zd.length ? ` à ${zd.map((d) => round(d, 1)).join(', ')} m` : ''} (seul le plus proche attendu)`);
+  await shot(page, `${tag}-13-reperes`);
+  await ev(page, () => {
+    const { session: s, save } = window.__earthlife;
+    s.director.removeWhere(() => true);
+    s.quest = window.__mapKeep.quest;
+    save.dropBag = window.__mapKeep.dropBag;
+    s.paused = false;
+  });
+}
+
+// Entrée au refuge par la porte (E ou toucher « Entrer au refuge »).
+async function enterRefuge(page, device) {
+  await ev(page, () => { const { refuge: r, debug: d } = window.__earthlife; const o = r.openingsWorld()[0]; d.teleport(o.ax, o.az); });
+  await until(page, (id) => window.__label(id)?.startsWith('Entrer au refuge') ?? null, 'search', 10000);
+  await clearZombies(page);
+  await press(page, device, 'KeyE', 'search');
+  return !!(await until(page, () => window.__earthlife.refuge.inside, null, 5000));
+}
+const mapVisible = (page) => ev(page, () => {
+  const st = window.__earthlife.debug.minimapFit();
+  const b = document.getElementById('mapbox'), cs = getComputedStyle(b), r = b.getBoundingClientRect();
+  return st.visible && cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0;
+});
+
+// 13.7 et 13.8 : agrandir et refermer (clic, C, Échap ; toucher sur téléphone), sans pause ; carte masquée quand le
+// panneau du refuge prend sa place.
+async function mapOpenClose(page, device, tag) {
+  // Le jeu continue carte agrandie : le directeur des zombies avance (appels comptés pendant 1 s).
+  const running = async () => {
+    await ev(page, () => {
+      const d = window.__earthlife.session.director, orig = d.update;
+      window.__steps = 0;
+      d.update = (...a) => { window.__steps++; return orig(...a); };
+      window.__unwrap = () => { d.update = orig; };
+    });
+    await wait(1000);
+    return ev(page, () => { window.__unwrap(); return window.__steps; });
+  };
+  const hasRefuge = await ev(page, () => !!window.__earthlife.refuge.anchor());
+  if (device === 'desktop') {
+    await page.click('#minimap');
+    const big = await mapAfter(page);
+    const aria = await ev(page, () => document.getElementById('minimap').getAttribute('aria-expanded'));
+    const steps = await running();
+    check(big.open && aria === 'true' && big.radius === 320 && steps > 0,
+      `${tag} 13.7 : clic : carte agrandie (aria-expanded ${aria}, ${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur en 1 s)`);
+    await shot(page, `${tag}-13-carte-agrandie`);
+    const inside0 = await ev(page, () => window.__earthlife.refuge.inside);
+    await page.keyboard.press('Escape');
+    const esc = await mapAfter(page);
+    const inside1 = await ev(page, () => window.__earthlife.refuge.inside);
+    await page.keyboard.press('c');
+    const c1 = (await mapAfter(page)).open;
+    await page.keyboard.press('c');
+    const c2 = (await mapAfter(page)).open;
+    check(!esc.open && inside0 === inside1 && c1 && !c2, `${tag} 13.7 : Échap la referme (refuge ${inside1 ? 'dedans' : 'dehors'}, inchangé), C l'agrandit puis la referme`);
+    if (!hasRefuge) { note(`${tag} 13.7 et 13.8 : pas de refuge, contrôles au refuge passés`); return; }
+    // Au refuge : panneau ouvert (13.8), masquée de 1024 à 1199 px ; puis Échap ferme la carte avant la sortie.
+    const size = page.viewportSize();
+    const inside = await enterRefuge(page, device);
+    if (!(await ev(page, () => document.body.classList.contains('panel-open')))) await page.keyboard.press('b');
+    await until(page, () => document.body.classList.contains('panel-open'), null, 5000);
+    await page.setViewportSize({ width: 1100, height: 800 });
+    await wait(600);
+    const hid = await mapVisible(page);
+    await page.setViewportSize(size);
+    await wait(600);
+    const shown = await mapVisible(page);
+    check(inside && !hid && shown, `${tag} 13.8 : panneau du refuge ouvert : carte ${hid ? 'visible' : 'masquée'} en 1100×800, ${shown ? 'visible' : 'masquée'} en ${size.width}×${size.height}`);
+    await page.keyboard.press('Escape');
+    await until(page, () => !document.body.classList.contains('panel-open'), null, 5000);
+    await page.keyboard.press('c');
+    const open = (await mapAfter(page)).open;
+    await page.keyboard.press('Escape');
+    const first = await mapAfter(page);
+    const still = await ev(page, () => window.__earthlife.refuge.inside);
+    await page.keyboard.press('Escape');
+    const out = await until(page, () => !window.__earthlife.refuge.inside, null, 5000);
+    check(open && !first.open && still && !!out, `${tag} 13.7 : au refuge, carte agrandie : 1er Échap la referme (toujours dedans : ${still}), 2e Échap fait sortir (${out ? 'dehors' : 'toujours dedans'})`);
+    return;
+  }
+  await page.tap('#minimap');
+  const big = await mapAfter(page);
+  const steps = await running();
+  check(big.open && big.radius === 240 && steps > 0, `${tag} 13.7 : toucher : carte agrandie (${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur en 1 s)`);
+  await shot(page, `${tag}-13-carte-agrandie`);
+  await page.tap('#minimap');
+  const closed = await mapAfter(page);
+  check(!closed.open, `${tag} 13.7 : second toucher : carte refermée`);
+  if (!hasRefuge) { note(`${tag} 13.8 : pas de refuge, contrôle au refuge passé`); return; }
+  // 13.8 : carte agrandie, puis entrée au refuge : la feuille s'ouvre, la carte se referme et s'efface.
+  await page.tap('#minimap');
+  const inside = await enterRefuge(page, device);
+  await until(page, () => document.body.classList.contains('panel-open'), null, 5000);
+  const during = await mapAfter(page);
+  const hid = await mapVisible(page);
+  await page.tap('#refuge-panel .rp-close');
+  await until(page, () => !document.body.classList.contains('panel-open'), null, 5000);
+  const shown = await mapVisible(page);
+  check(inside && !during.open && !hid && shown,
+    `${tag} 13.8 : feuille du refuge ouverte : carte ${hid ? 'visible' : 'masquée'} et ${during.open ? 'toujours agrandie' : 'refermée'} ; feuille fermée : ${shown ? 'visible' : 'masquée'}`);
+  await leave(page, device);
+}
+
+// 13.9 : coût du dessin de la carte pendant 120 images où la vue bouge (caméra qui tourne, saut de 40 m à mi-course,
+// qui reconstruit le cache). Dans swiftshader, contrôle large ; le vrai budget se mesure sur un vrai téléphone.
+async function mapCost(page, tag) {
+  await debug(page, 'perf', 'carte', { reset: true });
+  const spot = await ev(page, () => { const p = window.__earthlife.session.player; return { x: p.x, z: p.z }; });
+  const jump = await openSpot(page, spot.x, spot.z, 35, 60);
+  await ev(page, (to) => new Promise((res) => {
+    const { session: s, debug: d } = window.__earthlife;
+    let i = 0;
+    const f = () => {
+      s.cameraYaw += 0.02;
+      if (++i === 60 && to) d.teleport(to.x, to.z);
+      if (i >= 120) res(); else requestAnimationFrame(f);
+    };
+    requestAnimationFrame(f);
+  }), jump);
+  const perf = await debug(page, 'perf', 'carte');
+  const label = `${perf.n} dessins : médiane ${round(perf.median)} ms, 95e centile ${round(perf.p95)} ms ; reconstruction ${perf.rebuild.n} tranche(s), au plus ${round(perf.rebuild.max)} ms`;
+  check(perf.n >= 30 && perf.median <= 4, `${tag} 13.9 : carte des environs, ${label} (médiane ≤ 4 ms dans swiftshader)`);
+}
+
+async function carte(page, device, tag) {
+  await debug(page, 'zoom', 28, { now: true });
+  await ev(page, () => { window.__earthlife.session.cameraPitch = 1; });
+  await mapCorners(page, device, tag);
+  await mapGuard(page, device, tag);
+  if (device === 'mobile') await mapCornerBl(page, tag);
+  await mapMarkersCheck(page, tag);
+  await mapOpenClose(page, device, tag);
+  await mapCost(page, tag);
+}
+
+async function vueEtCarte(page, device, tag) {
+  const size = page.viewportSize();
+  // Fonctions pures du zoom, pour recalculer dans la page ce que le jeu doit montrer.
+  await ev(page, async () => { window.__view = await import('/src/view.js'); });
+  await clearZombies(page);
+  const shield = await ev(page, () => { const p = window.__earthlife.session.player; const old = p.shield; p.shield = 600; return old; });
+  await zoomInputs(page, device, tag);
+  await radiusAndFog(page, device, tag);
+  await shot(page, `${tag}-13-zoom-max`);
+  if (device === 'desktop') await alertCap(page, tag);
+  const sizes = device === 'desktop' ? [{ width: 1280, height: 800 }, { width: 1280, height: 560 }] : [{ width: 390, height: 844 }, { width: 844, height: 390 }];
+  for (const sz of sizes) await edgeHidden(page, tag, sz);
+  await page.setViewportSize(size);
+  await wait(600);
+  if (device === 'mobile' && (await ev(page, () => !!window.__earthlife.refuge.anchor()))) await edgeAtRefuge(page, device, tag);
+  await carte(page, device, tag);
+  await cutawayAtMax(page, device, tag);
+  // 13.10 : remise à zéro.
+  await page.setViewportSize(size);
+  await ev(page, (old) => {
+    const { session: s, debug: d } = window.__earthlife;
+    d.zoom(28, { now: true });
+    s.cameraPitch = 1;
+    s.player.shield = old;
+    localStorage.removeItem('earthlife.vue');
+  }, shield);
+  await wait(500);
+  const end = await view(page);
+  const map = await mapState(page);
+  check(end.want === 28 && end.dist === 28 && (await ev(page, () => localStorage.getItem('earthlife.vue'))) === null && !map.open && map.visible,
+    `${tag} 13.10 : vue remise à 28 m, réglage effacé, carte des environs ${map.open ? 'agrandie' : 'réduite'} et ${map.visible ? 'visible' : 'masquée'}, ${size.width}×${size.height}`);
+}
+
+// 13.11 : découpe des murs au zoom le plus large. Joueur dehors, à 1 m d'une façade, caméra du côté du bâtiment (le mur
+// est entre elle et lui, traversé tout près du joueur : sans découpe à longueur fixe, il n'était plus découpé). Deux
+// captures, joueur visible puis caché, jeu en pause : elles diffèrent autour du joueur à l'écran.
+async function cutawayAtMax(page, device, tag) {
+  await clearZombies(page);
+  const spot = await ev(page, async () => {
+    const col = await import('/src/collision.js');
+    const { session: s } = window.__earthlife;
+    const p = s.player;
+    const list = s.store.buildings.map((b) => ({ b, d: Math.hypot(b.cx - p.x, b.cz - p.z) }))
+      .filter((e) => e.d < 120 && e.b.height >= 6 && !e.b.hide3d && e.b.rings?.[0]?.length >= 3).sort((a, b) => a.d - b.d);
+    for (const { b } of list) {
+      const ring = b.rings[0];
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i], c = ring[(i + 1) % ring.length], len = Math.hypot(c.x - a.x, c.z - a.z);
+        if (len < 8) continue;
+        const mx = (a.x + c.x) / 2, mz = (a.z + c.z) / 2;
+        let nx = (c.z - a.z) / len, nz = -(c.x - a.x) / len;
+        if ((mx - b.cx) * nx + (mz - b.cz) * nz < 0) { nx = -nx; nz = -nz; } // normale vers l'extérieur
+        // Libre devant la façade (1 à 4 m), plein derrière elle (le bâtiment est côté caméra).
+        if (![1, 2.5, 4].every((k) => col.isFree(s.grid, mx + nx * k, mz + nz * k))) continue;
+        if (col.isFree(s.grid, mx - nx * 2, mz - nz * 2)) continue;
+        return { x: mx + nx, z: mz + nz, mx, mz, nx, nz, height: b.height, id: b.id };
+      }
+    }
+    return null;
+  });
+  if (!spot) { note(`${tag} 13.11 : pas de façade libre près du joueur, contrôle passé`); return; }
+  await debug(page, 'teleport', spot.x, spot.z);
+  await clearZombies(page);
+  await ev(page, (sp) => { const s = window.__earthlife.session; s.cameraYaw = Math.atan2(sp.nx, sp.nz); s.cameraPitch = 0.6; }, spot);
+  await debug(page, 'zoom', 100, { now: true });
+  await settled(page);
+  await ev(page, () => { window.__earthlife.session.paused = true; });
+  await frames(page, 3);
+  // Où la ligne caméra → joueur (1,2 m) traverse le plan de la façade : part de la ligne t, hauteur ; et le joueur à
+  // l'écran (px CSS).
+  const geo = await ev(page, (sp) => {
+    const { session: s, debug: d } = window.__earthlife;
+    const cam = d.camera(), C = cam.position, p = s.player;
+    const P = { x: p.x, y: 1.2, z: p.z };
+    const t = ((sp.mx - C.x) * sp.nx + (sp.mz - C.z) * sp.nz) / ((P.x - C.x) * sp.nx + (P.z - C.z) * sp.nz);
+    const v = cam.position.clone().set(p.x, 1, p.z).project(cam);
+    return {
+      t, y: C.y + t * (P.y - C.y), len: Math.hypot(P.x - C.x, P.y - C.y, P.z - C.z), dist: s.cameraDist,
+      wall: (p.x - sp.mx) * sp.nx + (p.z - sp.mz) * sp.nz, sx: ((v.x + 1) / 2) * window.innerWidth, sy: ((1 - v.y) / 2) * window.innerHeight,
+    };
+  }, spot);
+  const capture = async (hidden) => {
+    await ev(page, (h) => { window.__earthlife.session.player.hidden = h; }, hidden);
+    await frames(page, 3);
+    return (await page.screenshot()).toString('base64');
+  };
+  const a = await capture(false), b = await capture(true);
+  await ev(page, () => { const s = window.__earthlife.session; s.player.hidden = false; s.paused = false; });
+  const diff = await ev(page, async ([pa, pb, cx, cy]) => {
+    const load = (src) => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = `data:image/png;base64,${src}`; });
+    const [ia, ib] = await Promise.all([load(pa), load(pb)]);
+    const k = ia.width / window.innerWidth, half = Math.round(40 * k);
+    const c = Object.assign(document.createElement('canvas'), { width: 2 * half, height: 2 * half });
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    const x0 = Math.round(cx * k) - half, y0 = Math.round(cy * k) - half;
+    ctx.drawImage(ia, -x0, -y0);
+    const da = ctx.getImageData(0, 0, c.width, c.height).data;
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.drawImage(ib, -x0, -y0);
+    const db = ctx.getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 0; i < da.length; i += 4) if (Math.abs(da[i] - db[i]) + Math.abs(da[i + 1] - db[i + 1]) + Math.abs(da[i + 2] - db[i + 2]) > 60) n++;
+    return { n, k };
+  }, [a, b, geo.sx, geo.sy]);
+  const crosses = geo.t > 0 && geo.t < 1 && geo.y > 0 && geo.y < spot.height;
+  check(crosses && diff.n >= 20,
+    `${tag} 13.11 : joueur à ${round(geo.wall, 2)} m d'une façade de ${round(spot.height, 1)} m côté caméra, ${round(geo.dist)} m : ligne traversée à t = ${round(geo.t, 3)} (${round(geo.y, 1)} m de haut ; non découpée avant au-delà de 0,96), découpée jusqu'à ${round(1 - 1.13 / geo.len, 3)} : ${diff.n} pixels du joueur visibles (≥ 20)`);
+  await shot(page, `${tag}-13-decoupe-zoom-max`);
+  await debug(page, 'zoom', 28, { now: true });
+  await ev(page, () => { window.__earthlife.session.cameraPitch = 1; });
+}
+
+// Section 13 seule (ONLY=vue) : partie neuve, refuge installé puis joueur dehors (l'alerte du 13.4 et la carte au
+// refuge, 13.7 et 13.8, en ont besoin).
+async function vueSeule(device) {
+  const tag = device === 'mobile' ? 'tel' : 'pc';
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, tag);
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  const claim = await install(page, device, `${tag} ${device === 'mobile' ? 9 : 1}`);
+  if (!check(!!claim, `${tag} : refuge installé`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  await leave(page, device);
+  await vueEtCarte(page, device, tag);
   await ctx.close();
 }
 
@@ -1424,10 +2223,15 @@ async function relocation(device) {
 // ---------- Déroulé ----------
 
 try {
-  if (only !== 'mobile') await desktop();
-  if (only !== 'desktop') await mobile();
-  if (only !== 'mobile') await relocation('desktop');
-  if (only !== 'desktop') await relocation('mobile');
+  if (only === 'vue') {
+    await vueSeule('desktop');
+    await vueSeule('mobile');
+  } else {
+    if (only !== 'mobile') await desktop();
+    if (only !== 'desktop') await mobile();
+    if (only !== 'mobile') await relocation('desktop');
+    if (only !== 'desktop') await relocation('mobile');
+  }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {
   check(false, `exception du test : ${err?.stack ?? err}`);
