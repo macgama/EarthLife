@@ -15,7 +15,8 @@
 // relevés en sondant l'état du client toutes les 25 ms (online.others, décor, DOM), sans attendre l'image suivante.
 // Lectures des seuils (le détail est dans la note de chaque scénario) :
 // - « ne voit plus en moins de 1 s » (O8, O10, O20, O21) : l'effacement dure 1 s par conception (others.js,
-//   fadeOutMs) ; on vérifie qu'il commence en moins de 1 s et que l'autre a disparu en moins de 2 s ;
+//   fadeOutMs) ; on vérifie qu'il commence en moins de 1 s et que l'autre a disparu en moins de 2 s ; en O10 le
+//   retrait chez A (local) se lit en moins de 1 s plus la durée d'une image de A ;
 // - O1 : la première position d'une identité est un saut (invisible 3 s, RULES.jumpHideMs) ; « en moins de 2 s » se
 //   mesure quand B revient à pied de 300 m, depuis son passage à 130 m (rayon d'affichage, OTHERS_VIEW.drawM) ; O13
 //   de même, en 3 s ;
@@ -1142,17 +1143,22 @@ await scenario('O10', 'A masque B', async () => {
     window.__hideDown = null;
     document.addEventListener('pointerdown', (e) => { if (e.target.closest?.('[data-card-btn="hide"]')) window.__hideDown ??= Date.now(); }, true);
   });
+  const fcA0 = await ev(A, () => window.__fc), tfA0 = Date.now();
   const tCall = Date.now();
   await A.page.click('#card [data-card-btn="hide"]');
   const tClick = (await ev(A, () => window.__hideDown)) ?? tCall;
   note(`A : clic sur « Masquer » ${s1(tClick - tCall)} après la demande à Playwright`);
   const tA = await goneAtA;
+  // Le retrait est local (online.hide) mais la liste ne se met à jour qu'à l'image suivante de A : seuil de 1 s plus
+  // la durée d'une image de A (16 ms à 60 images par seconde, 0,3 à 0,7 s sans carte graphique), comme en O4.
+  const fpsA = +(((await ev(A, () => window.__fc)) - fcA0) * 1000 / Math.max(1, Date.now() - tfA0)).toFixed(1);
+  const frameA = Math.round(1000 / Math.max(0.5, fpsA));
   const sent = A.frames.find((f) => f.dir === 'up' && f.m?.t === 'hide' && f.at >= tClick - 20);
   await wait(3000);
   const tr = await traceStop(B);
   const toastA = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => x === 'Vous ne vous verrez plus.') ?? null, null, 3000);
   check(sent?.m?.sid === sidB && !!toastA, `A : hide envoyé pour B, toast « ${toastA} »`);
-  check(!!tA && tA - tClick < 1000, `A : B retiré ${s1(tA && tA - tClick)} après le clic (seuil 1 s)`);
+  check(!!tA && tA - tClick < 1000 + frameA, `A : B retiré ${s1(tA && tA - tClick)} après le clic (seuil 1 s + une image de A, ${frameA} ms)`);
   const f = fadeOf(tr, sent?.at ?? tClick);
   check(f.start !== null && f.start < 1000 && f.gone !== null && f.gone < 2000, `B : ${fadeText(f)} après l'envoi du masquage`);
   // Rechargement des deux pages (A garde ?followScale=10 pour O11), puis B à 8 m de A.
