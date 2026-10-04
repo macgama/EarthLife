@@ -72,6 +72,8 @@ const ICONS = {
   carte: '<path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/><path d="M9 4v13.5M15 6.5V20"/>',
   jouer: '<path d="M7 4.5v15l12-7.5z"/>',
   chevron: '<path d="M6 9l6 6 6-6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  moins: '<path d="M5 12h14"/>',
 };
 
 // Noms du code (actions du sac, besoins, météo d'Open-Meteo) vers les noms d'icônes.

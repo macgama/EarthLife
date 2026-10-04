@@ -11,9 +11,11 @@ import { buildingsGeometry, buildingMaterial, treesInstanced, followTreeWeather 
 import { groundGeometry } from './markings.js';
 import { SETTING_INDEX, SIDEWALK, carriageway, markBoxes } from './roadway.js';
 
-export const VIEW_RADIUS = 110; // rayon construit et visible autour du joueur (Gaël : environ 100 m)
+// Rayon construit et visible autour du joueur (Gaël : environ 100 m) ; la caméra reculée en demande parfois plus, sans
+// dépasser la grille de collision (src/view.js, update({ radius })).
+export const VIEW_RADIUS = 110;
 export const GRID_RADIUS = 150; // collisions un peu plus loin, pour les zombies qui arrivent
-const DROP_VIEW = 170, DROP_GRID = 230;
+const DROP_VIEW = 170, DROP_GRID = 230; // retrait : au-delà du rayon construit + 60 m (170 au moins), de la grille + 80 m
 const PLAN_CACHE = 96; // plans du sol gardés pour les morceaux qui reviennent
 // Portée d'action la plus longue du décor (voiture : 2,2 m).
 const PROP_ACT = Math.max(...Object.values(PROP_KINDS).map((k) => k.reach));
@@ -37,8 +39,8 @@ const AREA_ORDER = ['farmland', 'square', 'platform', 'pier', 'bridge', 'grass',
   'railway', 'quarry', 'garages', 'cemetery', 'stadium', 'playground', 'pitch', 'track'];
 const OVER_WATER = new Set(['pier', 'bridge']);
 const AREA_COLOR = { square: 'pave', platform: 'platform', pier: 'pier', bridge: 'bridge' };
-const ROAD_ORDER = { path: 0, track: 1, service: 2, minor: 3, tertiary: 4, secondary: 5, primary: 6, trunk: 7, motorway: 8, raceway: 4, busway: 4, bus_guideway: 4 };
-const MAJOR = new Set(['primary', 'secondary', 'trunk', 'motorway']);
+export const ROAD_ORDER = { path: 0, track: 1, service: 2, minor: 3, tertiary: 4, secondary: 5, primary: 6, trunk: 7, motorway: 8, raceway: 4, busway: 4, bus_guideway: 4 };
+export const MAJOR = new Set(['primary', 'secondary', 'trunk', 'motorway']);
 
 // Accotement, en mètres, selon le contexte [ville, village, campagne] (5.10) ; trottoir de classe : roadway.js.
 const VERGE = {
@@ -1273,7 +1275,11 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
   // Construit ce qui manque autour du joueur, du plus proche au plus loin, dans un budget de temps par image : une
   // étape (sol, ou bâtiments et décor) ne commence que si moins de la moitié du budget est consommée ; le sol d'un
   // morceau et ses bâtiments sont faits à deux images d'écart (sauf budget infini, écran de chargement).
-  function update(x, z, { budgetMs = 6 } = {}) {
+  // `radius` : rayon construit voulu (caméra reculée), entre VIEW_RADIUS et GRID_RADIUS. Renvoie aussi `covered`, la
+  // distance du premier morceau visible pas encore prêt (le trou le plus proche, que le brouillard doit cacher), ou le
+  // rayon si tout est prêt.
+  function update(x, z, { budgetMs = 6, radius = VIEW_RADIUS } = {}) {
+    const R = Math.max(VIEW_RADIUS, Math.min(radius, GRID_RADIUS)); // jamais au-delà de la grille de collision
     base.position.x = x;
     base.position.z = z;
     const t0 = performance.now();
@@ -1286,16 +1292,23 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
       if (performance.now() - t0 > budgetMs) break;
     }
     const fresh = new Set();
-    for (const c of around(x, z, VIEW_RADIUS)) {
+    // Morceaux triés du plus proche au plus loin : le premier qui reste pas prêt donne la distance du trou le plus proche.
+    let covered = null;
+    for (const c of around(x, z, R)) {
       const v = views.get(c.key);
       if (v?.done) continue;
-      if (!v && !chunkReady(store, c.cx, c.cz)) { waiting++; continue; }
-      if (performance.now() - t0 > start) break;
-      if (v) { if (!fresh.has(c.key)) finishView(c.key, v); continue; }
+      if (!v && !chunkReady(store, c.cx, c.cz)) { waiting++; covered ??= c.d; continue; }
+      if (performance.now() - t0 > start) { covered ??= c.d; break; }
+      if (v) {
+        if (!fresh.has(c.key)) finishView(c.key, v);
+        if (!v.done) covered ??= c.d;
+        continue;
+      }
       const nv = buildView(c.cx, c.cz, c.key);
       views.set(c.key, nv);
       if (budgetMs === Infinity) finishView(c.key, nv);
       else fresh.add(c.key);
+      if (!nv.done) covered ??= c.d;
     }
     // Décor en attente : posé dès que les tuiles voisines sont arrivées.
     for (const key of pending) {
@@ -1304,23 +1317,25 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
       if (!v) pending.delete(key);
       else if (decorReady(v.cx, v.cz)) placeDecor(key, v);
     }
+    const dropAt = Math.max(DROP_VIEW, R + 60);
     for (const key of [...views.keys()]) {
       const cx = Math.floor(key / 65536) - 32768, cz = (key % 65536) - 32768;
-      if (distance(cx, cz, x, z) > DROP_VIEW) dropView(key);
+      if (distance(cx, cz, x, z) > dropAt) dropView(key);
     }
     for (const key of [...grid.chunks.keys()]) {
       const cx = Math.floor(key / 65536) - 32768, cz = (key % 65536) - 32768;
       if (distance(cx, cz, x, z) > DROP_GRID) grid.chunks.delete(key);
     }
-    return { waiting, built: views.size };
+    return { waiting, built: views.size, covered: covered ?? R, radius: R };
   }
 
   // Construit d'un coup tout le voisinage (écran de chargement).
-  function buildAll(x, z) {
-    return update(x, z, { budgetMs: Infinity });
+  function buildAll(x, z, { radius } = {}) {
+    return update(x, z, { budgetMs: Infinity, radius });
   }
 
-  // Missing = morceaux visibles pas encore prêts (tuile en cours de téléchargement, bâtiments pas encore posés).
+  // Missing = morceaux visibles pas encore prêts (tuile en cours de téléchargement, bâtiments pas encore posés), dans le
+  // rayon par défaut : le voyant « ville en cours de chargement » ne clignote pas quand on zoome.
   function missing(x, z) {
     return around(x, z, VIEW_RADIUS).filter((c) => !views.get(c.key)?.done).length;
   }

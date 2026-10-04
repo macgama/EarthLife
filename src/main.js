@@ -15,6 +15,10 @@ import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
 import { createCharacters } from './characters.js';
 import { createAtmosphere } from './atmosphere.js';
 import { createInput } from './input.js';
+import {
+  ZOOM, clampZoom, zoomMax, pitchFloor, viewRadius, waveCap, edgeCap, smoothZoom, effectiveAspect, readViewPrefs,
+  writeViewPrefs,
+} from './view.js';
 import { createPlayer, createZombieDirector, updatePlayer, playerAttack, urbanDensity, targetZombieCount } from './game.js';
 import {
   planDelivery, questText, updateQuest, currentTarget, placeWith, refugeQuest, offerMissions, questReward, missionLine,
@@ -30,6 +34,7 @@ import { createPropsView } from './props-view.js';
 import { createBaseView } from './base-view.js';
 import { createRefugePanel, createCard } from './panels.js';
 import { createHud, distanceText } from './hud.js';
+import { createMinimap } from './minimap.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
 import { makeProjection } from './geo.js';
 // Icônes (HUD, chargement, fin) sous un espace de noms : pas de conflit avec d'autres imports nommés.
@@ -174,12 +179,26 @@ try {
 }
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000);
-// Caméra isométrique, comme Project Zomboid, Dysmantle ou HumanitZ.
-const CAM = { dist: 28, pitch: 1.0, minPitch: 0.6, maxPitch: 1.35, steep: 1.3 };
+// Caméra isométrique, comme Project Zomboid, Dysmantle ou HumanitZ ; sa distance (zoom) et son tangage plancher : ZOOM
+// de src/view.js.
+const CAM = { pitch: 1.0, minPitch: 0.6, maxPitch: 1.35, steep: 1.3 };
 const SEARCH_TIME = 2.2;
 const BUILDING_LABELS = { house: 'Habitation', retail: 'Commerce', commercial: 'Bureaux', industrial: 'Entrepôt', school: 'École', station: 'Gare', pharmacy: 'Pharmacie', clinic: 'Clinique', hospital: 'Hôpital', supermarket: 'Supermarché', convenience: 'Épicerie', hardware: 'Quincaillerie', police: 'Commissariat', fire_station: 'Caserne de pompiers' };
-const atmosphere = createAtmosphere(scene, { lowPower, maxDistance: VIEW_RADIUS + 10 });
-const input = createInput(canvas, { stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'), action2Button: $('action2'), useButtons: [...document.querySelectorAll('#inventory .chip')], autoRun: true });
+const atmosphere = createAtmosphere(scene, { lowPower });
+const input = createInput(canvas, {
+  stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'),
+  action2Button: $('action2'), useButtons: [...document.querySelectorAll('#inventory .chip')], autoRun: true,
+  zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), wheelTargets: [$('mapbox')],
+});
+// Zoom gardé d'une partie et d'une visite à l'autre, hors de la sauvegarde (src/view.js) ; écrit 800 ms après le
+// dernier changement.
+const viewStorage = (() => { try { return window.localStorage; } catch { return null; } })();
+const viewPrefs = readViewPrefs(viewStorage);
+let viewPrefsTimer = 0;
+// Aspect effectif de la vue (tiroir ouvert : décalée, un côté va plus loin), pour le zoom et le brouillard ; vue donnée
+// au brouillard à chaque image (le même objet, sans allocation).
+let viewAspect = 1;
+const fogView = { dist: ZOOM.base, pitch: CAM.pitch, aspect: 1, radius: ZOOM.radius, covered: ZOOM.radius };
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -196,6 +215,7 @@ function frameView() {
   const shift = zone > 0 && zone < w - 1 ? (w - zone) / 2 : 0;
   if (shift) camera.setViewOffset(w, h, shift, 0, w, h);
   else if (camera.view?.enabled) camera.clearViewOffset();
+  viewAspect = effectiveAspect(w / Math.max(1, h), shift, w);
 }
 window.addEventListener('resize', resize);
 if (typeof ResizeObserver === 'function') new ResizeObserver(() => frameView()).observe(document.getElementById('hud'));
@@ -215,6 +235,16 @@ let cardInfo = null; // { blocking, escape, onButton } de la carte affichée
 const panel = createRefugePanel(document.body, { onAction: (action, arg) => onPanelAction(action, arg) });
 // Téléphone, en portrait ou à l'horizontale : panneau ouvert, « Sortir » et « Dormir » sont en pied de panneau.
 const phoneLayout = window.matchMedia('(max-width: 759px), (max-height: 500px) and (orientation: landscape)');
+// Carte des environs (src/minimap.js) : dans le coin du HUD, avec les boutons de zoom ; temps par image (debug.perf).
+const minimap = createMinimap({
+  hud: $('hud'), box: $('mapbox'), button: $('minimap'), canvas: $('minimap-canvas'), zoomBtns: document.querySelector('#mapbox .zoom-btns'),
+  lowPower, phoneLayout,
+});
+const mapSamples = [];
+// Ce que montre la carte, lu par minimap.render seulement quand elle va dessiner (rien quand elle est masquée).
+const mapSource = () => mapInfo(session);
+// HUD figé (debug.freezeHud) : les tests forcent ses états (toast, bandeaux, actions) le temps d'une mesure.
+let hudFrozen = false;
 // Champ de la caméra : une horde n'apparaît jamais à l'écran.
 const frustum = new THREE.Frustum();
 const frustumMatrix = new THREE.Matrix4();
@@ -240,6 +270,7 @@ else picker.show();
 function toMenu() {
   hideCard();
   panel.close();
+  minimap.close();
   $('hud').classList.add('hidden');
   $('menu').classList.remove('hidden');
   if (session) {
@@ -607,6 +638,8 @@ function disposeSession() {
   scene.remove(session.root);
   // Balise propre à la partie : géométries et matériaux rendus au GPU (les personnages, eux, sont réutilisés).
   session.beacon.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
+  // Carte des environs : l'ancien monde et ses caches sont lâchés pendant le chargement du suivant.
+  minimap.reset(null);
   session = null;
 }
 
@@ -625,15 +658,23 @@ function buildSession(place, origin, home, store, grid, loader, chunks, start, l
   // Expédition : le refuge est loin, on n'y est pas.
   if (!home) refuge.inside = false;
   hud.reset();
+  minimap.reset(store);
 
   session = {
     place, origin, home, store, grid, loader, chunks, root, liveWeather, start, director, field, refuge,
     player: null, quest: null, goal: null, mods: null, weather: null, beacon,
-    cameraYaw: Math.PI / 4, cameraPitch: CAM.pitch, cameraDist: CAM.dist, paused: false, ended: false,
+    cameraYaw: Math.PI / 4, cameraPitch: CAM.pitch, paused: false, ended: false,
+    // Zoom : distance voulue et distance amortie (m), rayon construit, rayon sans trou (brut et lissé pour le
+    // brouillard), plafonds de l'alerte et de la vague puis du bord du monde, distance visée ; vue plafonnée ('horde',
+    // 'bord' ou '') et distance vue, en distance voulue dehors.
+    zoomWant: clampZoom(viewPrefs.zoom, lowPower), cameraDist: clampZoom(viewPrefs.zoom, lowPower),
+    viewRadius: ZOOM.radius, covered: ZOOM.radius, coveredFog: ZOOM.radius, zoomCap: Infinity, edgeCap: Infinity,
+    zoomGoal: clampZoom(viewPrefs.zoom, lowPower), zoomLimited: '', zoomSeen: clampZoom(viewPrefs.zoom, lowPower),
     isNight: false, nextPrefetch: 0, actionMul: 1, respawnedAt: null, lastPanel: 0,
     sessionStart: Date.now(), weatherAt: liveWeather.fetchedAt ?? Date.now(),
     nextWeatherCheck: performance.now() + (liveWeather.source === 'live' ? WEATHER_REFRESH_MS : WEATHER_RETRY_MS),
   };
+  syncZoomButtons(session);
   atmosphere.state.onLightning = () => {
     if (!session?.player) return;
     session.director.alertAll(session.player, 60);
@@ -695,7 +736,11 @@ renderer.setAnimationLoop(() => {
   if (!menuEl.classList.contains('hidden')) { input.consume(); return; }
   const s = session;
   const inp = input.poll();
-  if (s.player) handleUiKeys(s, inp);
+  if (s.player) {
+    handleUiKeys(s, inp);
+    // Zoom hors de step() : il marche aussi pendant une pause ou une carte bloquante.
+    applyZoom(s, inp);
+  }
   // Une carte qui attend une réponse (mort, livraison, missions, déménagement, absence) met le jeu en pause.
   const blocked = card.isOpen() && !!cardInfo?.blocking;
   if (!s.paused && !s.ended && s.player && !blocked) {
@@ -714,20 +759,27 @@ renderer.setAnimationLoop(() => {
   atmosphere.update(dt, focus, s.player?.yaw ?? 0);
   renderer.render(scene, camera);
   atmosphere.endFrame();
-  if (s.player) hud.render(s, dt, hudInfo(s));
+  if (s.player && !hudFrozen) hud.render(s, dt, hudInfo(s));
+  if (s.player) {
+    minimap.render(mapSource, dt);
+    if (DEBUG) { mapSamples.push(minimap.timing()); if (mapSamples.length > 600) mapSamples.shift(); }
+  }
   // Panneau du refuge relu toutes les 150 ms (PV, nuit, coffre).
   if (panel.isOpen() && performance.now() - s.lastPanel > 150) renderPanel(s);
 });
 
-// Touches d'interface : Échap (carte, puis panneau, puis sortie du refuge), Tab (onglet suivant), B (replier,
-// ou rouvrir le panneau au refuge).
+// Touches d'interface : Échap (carte de jeu, puis carte des environs agrandie, puis panneau, puis sortie du refuge),
+// Tab (onglet suivant), B (replier, ou rouvrir le panneau au refuge), C (agrandir ou réduire la carte des environs).
 function handleUiKeys(s, inp) {
   if (inp.escape) {
     if (card.isOpen() && cardInfo?.blocking) pressCard(cardInfo.escape);
     else if (card.isOpen()) hideCard();
+    else if (minimap.isOpen()) minimap.close();
     else if (panel.isOpen()) panel.close();
     else if (s.refuge.inside && !s.action && !s.ended && !s.paused) runRefuge(s, { id: 'exit', arg: null });
   }
+  // Une carte de jeu qui attend une réponse garde la main : la carte des environs ne s'ouvre pas par-dessus.
+  if (inp.map && !(card.isOpen() && cardInfo?.blocking)) minimap.toggle();
   if (inp.tab) panel.nextTab();
   if (inp.fold) {
     if (panel.isOpen()) panel.toggleFold();
@@ -735,12 +787,59 @@ function handleUiKeys(s, inp) {
   }
 }
 
+// Zoom demandé pendant l'image (molette, touches, boutons, pincement) : distance voulue, bornée à l'appareil et gardée.
+// Vue plafonnée (alerte, vague, bord du monde) : reculer ne change rien, s'approcher part de la distance vue.
+function applyZoom(s, inp) {
+  const delta = inp.cameraZoomDelta;
+  if (!delta || (delta > 0 && s.zoomLimited)) return;
+  const from = s.zoomLimited ? Math.min(s.zoomWant, s.zoomSeen) : s.zoomWant;
+  const want = clampZoom(from * Math.exp(delta), lowPower);
+  if (want === s.zoomWant) return;
+  s.zoomWant = want;
+  syncZoomButtons(s);
+  viewPrefs.zoom = want;
+  clearTimeout(viewPrefsTimer);
+  viewPrefsTimer = setTimeout(() => writeViewPrefs(viewStorage, viewPrefs), 800);
+}
+
+// Boutons − et + : estompés en butée (aria-disabled, ils gardent le focus) ; − aussi quand la vue est plafonnée, avec la
+// raison dans son titre pendant l'alerte et la vague.
+function syncZoomButtons(s) {
+  const zoomIn = $('zoom-in'), zoomOut = $('zoom-out');
+  zoomIn?.setAttribute('aria-disabled', String(s.zoomWant <= ZOOM.min + 1e-6));
+  zoomOut?.setAttribute('aria-disabled', String(!!s.zoomLimited || s.zoomWant >= zoomMax(lowPower) - 1e-6));
+  zoomOut?.setAttribute('title', s.zoomLimited === 'horde' ? 'Horde en approche : vue limitée' : 'Dézoomer (−)');
+}
+
+// Plafonds de la distance (src/view.js) : recalculés seulement quand leurs arguments changent (tangage et aspect
+// arrondis à 0,01, sans allocation à chaque image).
+function capMemo(fn) {
+  const key = { base: NaN, pitch: NaN, aspect: NaN, limit: NaN };
+  let value = Infinity;
+  return (base, pitch, limit = 0) => {
+    const p = Math.round(pitch * 100), a = Math.round(viewAspect * 100);
+    if (key.base !== base || key.pitch !== p || key.aspect !== a || key.limit !== limit) {
+      key.base = base; key.pitch = p; key.aspect = a; key.limit = limit;
+      value = fn(base, pitch, viewAspect, limit);
+    }
+    return value;
+  };
+}
+// Alerte et vague : empreinte limitée (la horde apparaît hors écran) ; bord du monde : brouillard qui reste derrière le
+// joueur.
+const waveCapFor = capMemo((base, pitch, aspect, limit) => waveCap(base, pitch, aspect, lowPower, limit));
+const edgeCapFor = capMemo((base, pitch, aspect) => edgeCap(base, pitch, aspect, lowPower));
+
 // Une image de jeu, dans l'ordre de la spec (7.3).
 function step(s, inp, dt) {
   const p = s.player, r = s.refuge, sv = s.survivor;
-  // 1. Caméra.
+  // 1. Caméra. Dehors, le glissé vertical part du tangage vu (le plancher quand la caméra recule) : pas de course à vide
+  // sous le plancher. Au refuge, le tangage voulu est fixé (1,1).
   s.cameraYaw += inp.cameraYawDelta;
-  s.cameraPitch = Math.min(CAM.maxPitch, Math.max(CAM.minPitch, s.cameraPitch + inp.cameraPitchDelta));
+  if (inp.cameraPitchDelta) {
+    const floor = r.inside ? CAM.minPitch : Math.max(CAM.minPitch, pitchFloor(s.cameraDist, lowPower));
+    s.cameraPitch = Math.min(CAM.maxPitch, Math.max(floor, Math.max(s.cameraPitch, floor) + inp.cameraPitchDelta));
+  }
   // 2. Besoins vitaux : la température du corps suit la vraie météo ; au refuge, on est au chaud et on se repose.
   const w = s.weather;
   const inside = r.inside;
@@ -764,8 +863,10 @@ function step(s, inp, dt) {
   if (effects.hyperthermia) mods.staminaDrain = (mods.staminaDrain ?? 1) * 1.6;
   // 4. Objets du sac (1 à 4) et leurre (5).
   if (inp.use) useItem(s, inp.use);
-  // 5. Monde au fil de la marche : morceaux proches construits, tuiles suivantes demandées à l'avance.
-  s.chunks.update(p.x, p.z, { budgetMs: lowPower ? 4 : 6 });
+  // 5. Monde au fil de la marche : morceaux proches construits (plus loin quand la caméra recule), tuiles suivantes
+  // demandées à l'avance ; distance du trou le plus proche, pour le brouillard.
+  const built = s.chunks.update(p.x, p.z, { budgetMs: lowPower ? 4 : 6, radius: s.viewRadius });
+  s.covered = built.covered;
   s.nextPrefetch -= dt;
   if (s.nextPrefetch <= 0) {
     s.nextPrefetch = 0.5;
@@ -1307,6 +1408,8 @@ function refugeView(s) {
 // Ouvre le panneau du refuge (onglet Défense), ou le met à jour s'il l'est déjà.
 function openPanel(s) {
   if (!s.refuge.base || !s.refuge.inside) return;
+  // Sur téléphone, la feuille du refuge prend la place de la carte des environs.
+  if (phoneLayout.matches) minimap.close();
   panel.render(refugeView(s));
   if (!panel.isOpen()) panel.open('defense');
   s.lastPanel = performance.now();
@@ -1498,6 +1601,8 @@ function onDeath(s) {
 function showCard(spec, onButton = null, { escape = null } = {}) {
   const info = { blocking: !(spec.autoHideMs > 0), escape, onButton };
   cardInfo = info;
+  // Une carte qui attend une réponse passe devant la carte des environs : elle se referme.
+  if (info.blocking) minimap.close();
   card.show(spec, (id) => {
     if (cardInfo === info) cardInfo = null;
     onButton?.(id);
@@ -1563,6 +1668,22 @@ function hudInfo(s) {
   };
 }
 
+// Ce que montre la carte des environs : centrée sur le point visé par la caméra (l'ancre du refuge quand on y est),
+// tournée avec elle ; refuge, mission (couleur de la balise), sac perdu, zombies proches et fronts de la horde.
+function mapInfo(s) {
+  const p = s.player, r = s.refuge, at = s.viewAt ?? p;
+  const target = s.quest ? currentTarget(s.quest) : null;
+  const centre = r.base ? r.anchor() : null;
+  return {
+    x: at.x, z: at.z, yaw: s.cameraYaw, player: p, playerYaw: p.yaw, playerHidden: !!p.hidden,
+    home: centre, homeId: r.base?.id ?? null,
+    target: target && { x: target.x, z: target.z, kind: s.quest.stage === 'toPickup' ? 'warn' : 'success' },
+    bag: save.dropBag ? s.store.proj.toLocal(save.dropBag.lat, save.dropBag.lon) : null,
+    zombies: s.director.zombies, fog: s.weather?.kind === 'fog',
+    fronts: centre ? r.hordeArrows().map((a) => { const v = frontVector(a); return { x: centre.x + v.x * 60, z: centre.z + v.z * 60 }; }) : [],
+  };
+}
+
 // Points de quête génériques (campagne) : recalés sur une case libre quand leur quartier est construit.
 function snapQuestTargets(s) {
   for (const t of [s.quest.pickup, s.quest.dropoff]) {
@@ -1589,14 +1710,32 @@ function syncScene(s, dt) {
     s.beacon.userData.update(performance.now() / 1000, characters.reduceMotion.matches);
   }
 
-  // Caméra isométrique fixe ; les murs qui cachent le joueur sont découpés par le shader des bâtiments.
-  // Au refuge, elle recule (34 m) et vise le bâtiment, tangage 1,1 ; la lampe et la pluie suivent ce point.
+  // Caméra isométrique ; les murs qui cachent le joueur sont découpés par le shader des bâtiments.
+  // Au refuge, elle recule (zoom × 34/28, 30 m au moins) et vise le bâtiment, tangage 1,1 ; la lampe et la pluie suivent
+  // ce point. Pendant l'alerte et la vague, elle ne recule pas au-delà de 52 m d'empreinte (33 m dans le brouillard, où
+  // la horde apparaît de 35 à 50 m) : la horde apparaît hors écran. Sur un écran très large (32:9, tiroir ouvert à
+  // l'horizontale), elle ne recule pas au point de refermer le brouillard sur le joueur. Elle se redresse quand elle
+  // recule (tangage plancher), et le monde est construit avant qu'elle y soit.
   const r = s.refuge;
   const home = r.inside ? r.anchor() : null;
   const at = home ?? p;
   s.viewAt = at;
-  s.cameraDist = home ? 34 : CAM.dist;
-  s.camPitchEff = home ? 1.1 : s.cameraPitch;
+  const want = home ? Math.max(ZOOM.refugeMin, Math.min(zoomMax(lowPower), (s.zoomWant * ZOOM.refugeBase) / ZOOM.base)) : s.zoomWant;
+  const pitchWant = home ? ZOOM.refugePitch : s.cameraPitch;
+  const capBase = home ? ZOOM.refugeBase : ZOOM.base;
+  const danger = r.phase === 'alerte' || r.phase === 'vague';
+  const fogWave = r.wave ? !!r.wave.fog : s.weather?.kind === 'fog';
+  s.zoomCap = danger ? waveCapFor(capBase, pitchWant, fogWave ? HORDE.fogBand[0] - 2 : ZOOM.waveFootprint) : Infinity;
+  s.edgeCap = edgeCapFor(capBase, pitchWant);
+  const goal = Math.min(want, s.zoomCap, s.edgeCap);
+  s.zoomGoal = goal;
+  // Vue plafonnée : le bouton − s'estompe ; distance vue, en distance voulue dehors (pour s'approcher depuis elle).
+  s.zoomSeen = home ? (goal * ZOOM.base) / ZOOM.refugeBase : goal;
+  const limited = goal < want - 1e-6 ? (goal === s.zoomCap ? 'horde' : 'bord') : '';
+  if (limited !== s.zoomLimited) { s.zoomLimited = limited; syncZoomButtons(s); }
+  s.cameraDist = smoothZoom(s.cameraDist, goal, dt, characters.reduceMotion.matches);
+  s.camPitchEff = Math.max(pitchWant, pitchFloor(s.cameraDist, lowPower));
+  s.viewRadius = viewRadius(goal, viewAspect, lowPower); // sur la distance visée : on construit avant d'y être
   const d = s.cameraDist, pitch = s.camPitchEff;
   camera.position.set(
     at.x - Math.sin(s.cameraYaw) * Math.cos(pitch) * d,
@@ -1606,6 +1745,15 @@ function syncScene(s, dt) {
   camera.lookAt(at.x, 1.6, at.z);
   cutaway.player.value.set(at.x, 1.2, at.z);
   cutaway.camera.value.copy(camera.position);
+  // Brouillard : même voile autour du joueur à toute distance, ramené devant le premier sol non construit visible. Le
+  // trou le plus proche est rattrapé tout de suite et ne se relâche qu'en douceur (τ = 0,3 s). Au refuge, la caméra vise
+  // le bâtiment alors que le monde est construit autour du joueur : l'écart est retiré du rayon couvert.
+  s.coveredFog = s.covered < s.coveredFog ? s.covered : s.coveredFog + (s.covered - s.coveredFog) * (1 - Math.exp(-dt / 0.3));
+  if (Math.abs(s.covered - s.coveredFog) < 0.01) s.coveredFog = s.covered; // posé : le brouillard n'est plus recalculé
+  const off = Math.hypot(at.x - p.x, at.z - p.z);
+  fogView.dist = d; fogView.pitch = pitch; fogView.aspect = viewAspect; fogView.radius = s.viewRadius;
+  fogView.covered = s.coveredFog - off;
+  atmosphere.setView(fogView);
 
   // Joueur et zombies : marche, coups, éclairs, ombres de contact ; puis petite secousse de caméra
   // quand un coup porte ou qu'un zombie mord (aucune en mouvement réduit). Au refuge, le joueur est caché.
@@ -1854,10 +2002,69 @@ const debug = DEBUG ? {
   spawnLog: () => session?.refuge.spawnLog.slice() ?? [],
   // Caméra de jeu (tests d'acceptation : apparitions de horde projetées à l'écran).
   camera: () => camera,
-  perf() {
-    const v = perfSamples.slice().sort((a, b) => a - b);
-    const at = (q) => (v.length ? v[Math.min(v.length - 1, Math.floor(q * v.length))] : 0);
-    return { n: v.length, median: at(0.5), p95: at(0.95), max: v.length ? v[v.length - 1] : 0 };
+  // Zoom : distance voulue et réelle, tangage effectif, rayon construit et rayon sans trou, plafonds de l'alerte et du
+  // bord du monde, distance visée, vue plafonnée, aspect effectif, visibilité selon le temps et brouillard.
+  view() {
+    const s = session;
+    if (!s) return null;
+    return {
+      want: s.zoomWant, dist: s.cameraDist, pitch: s.camPitchEff, radius: s.viewRadius, covered: s.covered, coveredFog: s.coveredFog,
+      cap: s.zoomCap, edgeCap: s.edgeCap, goal: s.zoomGoal, limited: s.zoomLimited,
+      aspect: viewAspect, visibility: atmosphere.state.visibility, fog: { near: scene.fog.near, far: scene.fog.far },
+    };
+  },
+  // Distance voulue (bornée à l'appareil) ; avec now, la caméra y est tout de suite (le tangage suit à l'image suivante).
+  zoom(d, { now = false } = {}) {
+    const s = session;
+    if (!s) return null;
+    s.zoomWant = clampZoom(d, lowPower);
+    if (now) s.cameraDist = s.zoomWant;
+    syncZoomButtons(s);
+    return debug.view();
+  },
+  // Livraison vers les lieux du quartier, démarrée tout de suite ; renvoie sa cible.
+  quest() {
+    const s = session;
+    if (!s?.player) return null;
+    startMission(s, planDelivery(s.store.pois, { x: s.player.x, z: s.player.z }));
+    return s.quest ? currentTarget(s.quest) : null;
+  },
+  // Commandes de l'image en cours (copie).
+  input: () => ({ ...input.state, move: { ...input.state.move } }),
+  // Carte des environs : coin, taille, étape du garde-fou, repères dessinés (px depuis le centre), cache.
+  minimap: () => minimap.state(),
+  // Garde-fou relancé tout de suite (sans attendre son tic de 500 ms) ; renvoie l'état.
+  minimapFit() {
+    minimap.fit();
+    return minimap.state();
+  },
+  // Coin de la carte sur téléphone tactile, comme PHONE_MAP_CORNER ('haut-droite' ou 'bas-gauche'), le temps d'un test ;
+  // sans argument, celui de la constante. Renvoie l'état.
+  minimapCorner(corner) {
+    minimap.setPhoneCorner(corner);
+    minimap.fit();
+    return minimap.state();
+  },
+  // HUD figé : ses états forcés par un test (toast, bandeaux, actions) ne sont pas réécrits par hud.render.
+  freezeHud(on = true) {
+    hudFrozen = !!on;
+    return hudFrozen;
+  },
+  // Temps par image (ms, 600 dernières images) : 'step' (logique du jeu) ; 'carte' (dessin de la carte des environs,
+  // hors reconstruction du cache ; rebuild : images où le cache se reconstruisait, et leur tranche). Avec reset, les
+  // échantillons sont vidés après lecture.
+  perf(kind = 'step', { reset = false } = {}) {
+    const stats = (list) => {
+      const v = list.slice().sort((a, b) => a - b);
+      const at = (q) => (v.length ? v[Math.min(v.length - 1, Math.floor(q * v.length))] : 0);
+      return { n: v.length, median: at(0.5), p95: at(0.95), max: v.length ? v[v.length - 1] : 0 };
+    };
+    const samples = kind === 'carte' ? mapSamples : perfSamples;
+    const list = samples.slice();
+    if (reset) samples.length = 0;
+    if (kind !== 'carte') return stats(list);
+    const draws = list.filter((t) => t.draw > 0).map((t) => t.draw), jobs = list.filter((t) => t.job > 0).map((t) => t.job);
+    return { ...stats(draws), rebuild: stats(jobs) };
   },
 } : undefined;
 
