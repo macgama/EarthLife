@@ -371,5 +371,9 @@ export function createHud({ $, input }) {
     st.last = 0;
   }
 
-  return { render, toast, showObjective, reset };
+  // Temps de jeu qu'il faut avant que la file des notifications soit passée : de quoi faire attendre un conseil qui
+  // doit laisser au butin son temps de lecture même quand un autre message (plan trouvé…) l'a retardé.
+  const toastBacklog = () => st.queue.length * TOAST_MIN;
+
+  return { render, toast, toastBacklog, showObjective, reset };
 }

@@ -1094,13 +1094,14 @@ function finishSearch(s, a) {
 // « Déménager ici » est montré une fois par partie (sans refuge, la mission « Trouve un refuge » le dit déjà). Non :
 // sans refuge, le motif (trop petit, trop grand, aucune entrée), une fois par bâtiment ; avec un refuge, on ne le dit
 // pas sans qu'on le demande (R), sauf une porte possible depuis une autre façade (bouton grisé : en faire le tour).
-// Le conseil attend que la notification du butin ait eu ses 3 s (sinon la file la remplace au bout de 1,2 s).
+// Le conseil attend que la notification du butin ait eu ses 3 s (sinon la file la remplace au bout de 1,2 s), plus le
+// retard que la file a déjà pris (un plan trouvé, par exemple, passe avant le butin).
 const HINT_WAIT = 3;
 function claimHint(s, b, index) {
   const r = s.refuge;
   if (s.store.source !== 'tiles' || r.base?.id === b.id || !(r.base || s.goal)) return;
   const fit = r.suitable({ ...b, index }, s.player);
-  const later = (text, seconds, move = false) => { s.hintLater = { text, seconds, index, move, wait: HINT_WAIT }; };
+  const later = (text, seconds, move = false) => { s.hintLater = { text, seconds, index, move, wait: HINT_WAIT + hud.toastBacklog() }; };
   if (fit.ok) {
     if (r.base && !s.moveHinted) later(`Ce bâtiment peut devenir ton refuge : Déménager\u00a0ici${isTouch() ? '' : '\u00a0(R)'}`, 4, true);
   } else if (fit.side) {
