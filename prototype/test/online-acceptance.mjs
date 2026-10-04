@@ -1,12 +1,14 @@
-// Scénarios Playwright du jeu à plusieurs (spec 9.3, O1 à O21), hors ligne : A sur ordinateur (1280 × 800) et B sur
-// téléphone (390 × 844), près de la place Bellecour, contre le faux serveur lancé dans ce processus (server/dev.mjs :
-// vrai cœur, magasin en mémoire, /__test/log), avec le choix « on » déjà rangé ; puis d'autres contextes pour le
-// repli HTTP (C), les deux onglets (D), la maintenance (E, F) et le jeu seul (G, H). Tuiles, météo et bibliothèques
-// viennent de test/fixtures/offline-routes.mjs : rien ne sort de la machine.
+// Scénarios Playwright du jeu à plusieurs (spec 9.3, O1 à O21) et du compte facultatif (spécification des comptes 7.3,
+// O22 à O27), soit O1 à O27, hors ligne : A sur ordinateur (1280 × 800) et B sur téléphone (390 × 844), près de la
+// place Bellecour, contre le faux serveur lancé dans ce processus (server/dev.mjs : vrai cœur, magasin en mémoire,
+// /__test/log, comptes avec la fausse boîte aux lettres), avec le choix « on » déjà rangé ; puis d'autres contextes
+// pour le repli HTTP (C), les deux onglets (D), la maintenance (E, F), le jeu seul (G, H) et le compte (K, L, M).
+// Tuiles, météo et bibliothèques viennent de test/fixtures/offline-routes.mjs : rien ne sort de la machine.
 //   node test/online-acceptance.mjs [dossier-des-captures] [portJeu] [portServeur]       (npm run acceptance:online)
 // Ports libres par défaut (0) ; le serveur en maintenance de O14 prend portServeur + 1 quand portServeur est donné.
 // Playwright : PLAYWRIGHT_MODULE (chemin du module) ou le paquet « playwright ». ONLY=O4,O3 : ces scénarios
-// seulement (mise au point : certains s'appuient sur les précédents). Sortie non nulle au moindre échec.
+// seulement (mise au point : certains s'appuient sur les précédents ; O22 à O27 s'enchaînent, ONLY=O22,O23,… les
+// lance ensemble). Sortie non nulle au moindre échec.
 // Déplacements à pied, à 8 m/s au plus (le serveur admet 9,5 m/s × 1,2 + 4 m) ; les sauts d'un même survivant sont
 // espacés de 21 s au moins (RULES.jumpEveryMs). Les temps mesurés comprennent la cadence d'images de Chromium sans
 // carte graphique (swiftshader : 2 à 15 images par seconde selon la machine) des deux côtés ; les instants sont donc
@@ -246,7 +248,9 @@ const calm = (t) => ev(t, () => {
   sv.fatigue = Math.min(sv.fatigue, 20);
   s.player.health = Math.max(s.player.health, 90);
 }).catch(() => {});
-setInterval(() => { for (const t of active) calm(t); }, 1500).unref();
+// La promesse est gardée sur la page : menuOf attend celle en cours avant « Menu » (sinon elle remet les besoins à
+// neuf après l'écriture du menu, et la partie change sans que le joueur ait joué).
+setInterval(() => { for (const t of active) t.calming = calm(t); }, 1500).unref();
 
 const where = (t) => ev(t, () => {
   const s = window.__earthlife.session, p = s.player;
@@ -1544,6 +1548,10 @@ await scenario('O15', '?online=0, puis « Jouer seul »', async () => {
   const reqG = toServer(G, srv.port), ov = G.requests.filter((r) => /others-view\.js/.test(r.url));
   const st = await ev(G, () => ({ status: window.__earthlife.online?.status ?? null, pill: window.__pill() }));
   check(reqG.length === 0 && G.wsUrls.length === 0 && ov.length === 0, `G : ${reqG.length} requête vers le faux serveur, ${G.wsUrls.length} WebSocket, others-view.js chargé ${ov.length} fois (${G.requests.length} requêtes en tout, statut ${st.status})`);
+  // Compte facultatif : inactif avec ?online=0 (bloc caché, aucune route de compte ni de sauvegarde demandée).
+  const accG = await ev(G, () => ({ block: !document.getElementById('account-block')?.hidden, state: window.__earthlife.account?.state ?? null }));
+  const accReq = G.requests.filter((r) => /^\/v1\/(account|save)\//.test(new URL(r.url).pathname));
+  check(!accG.block && accG.state === 'off' && accReq.length === 0, `G : bloc Compte ${accG.block ? 'affiché' : 'caché'} (compte ${accG.state}), ${accReq.length} requête vers /v1/account ou /v1/save`);
   await closeCtx(G);
   // H : aucun choix rangé ; la carte « Jouer à plusieurs » paraît (santé lue), « Jouer seul », puis rechargement.
   // La carte paraît avant le départ (main.js, startGame → onlineChoice) : la partie se lance après la réponse.
@@ -1614,14 +1622,410 @@ await scenario('O14', 'serveur en maintenance', async () => {
 });
 
 // =====================================================================================================
+// O22 à O27 : compte facultatif (spécification des comptes, 7.3), enchaînés (chacun s'appuie sur les précédents).
+// K (ordinateur), L (téléphone) et M (ordinateur) s'ouvrent sur le menu, sans ?autostart=1, comme un joueur qui
+// ouvre le jeu : la reprise de la partie du compte se fait au menu (jamais en partie), et les rechargements qu'elle
+// demande reviennent au menu. Adresse et mots de passe d'essai visiblement factices ; le code est lu dans la fausse
+// boîte (srv.mailbox, même processus), l'état du serveur dans srv.accounts.debug et dans le magasin en mémoire.
+// =====================================================================================================
+const ACC = { email: 'k.essai@exemple.test', mask: 'k•••@exemple.test', pw1: 'essai-renard-viaduc-1', pw2: 'essai-pluie-quai-2', bad: 'essai-faux-portail-3' };
+const ACC_TEXT = {
+  out: 'Sauvegarde ta partie en ligne et reprends-la sur un autre appareil (facultatif).',
+  wrong: 'Adresse ou mot de passe incorrect.',
+  adopted: 'Partie du compte reprise.',
+  elsewhere: 'Ton compte joue en ligne ailleurs (autre appareil ou onglet)',
+  offline: 'Hors ligne : partie gardée sur cet appareil, envoi au retour du réseau',
+  lost: 'Tu as été déconnecté de ton compte. Ta partie reste sur cet appareil.',
+  deleted: 'Compte supprimé. Ta partie reste sur cet appareil.',
+  conflict: 'Deux parties différentes',
+};
+const accUrl = () => `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&server=http://127.0.0.1:${srv.port}`;
+const tokKey = () => `earthlife.online.v1@http://127.0.0.1:${srv.port}`;
+const accKey = () => `earthlife.account.v1@http://127.0.0.1:${srv.port}`;
+let K = null, L = null, M = null;
+const accIds = { account: null, player: null, nameK: null, nameL: null };
+// Refus voulus (401, 403, 409, envois coupés) : Chromium les note « Failed to load resource » en console. Tolérés
+// dans leur fenêtre et pour leur page seulement (O19) ; expectNet(t) ouvre la fenêtre et rend de quoi la fermer.
+const netOk = [];
+function expectNet(t) {
+  const w = { t, from: Date.now(), to: Infinity };
+  netOk.push(w);
+  return () => { w.to = Date.now() + 2000; };
+}
+const netExpected = (t, e) => /Failed to load resource|net::ERR_FAILED/.test(e.text) && netOk.some((w) => w.t === t && e.at >= w.from && e.at <= w.to);
+
+// Posé avant chaque page de K, L et M : envois de la partie (/v1/save/put) et violations de la politique de sécurité
+// relevés dans sessionStorage, qui survit aux rechargements et aux navigations du même onglet (heure, keepalive,
+// empreinte de la partie envoyée ; ni la session ni le texte ne sont gardés).
+function acctProbe() {
+  const keep = (key, item, max) => {
+    try {
+      const list = JSON.parse(sessionStorage.getItem(key) || '[]');
+      list.push(item);
+      sessionStorage.setItem(key, JSON.stringify(list.slice(-max)));
+    } catch { /* relevé seulement */ }
+  };
+  document.addEventListener('securitypolicyviolation', (e) => keep('__csp', { at: Date.now(), v: `${e.violatedDirective} ${e.blockedURI}` }, 50));
+  const real = window.fetch;
+  if (typeof real !== 'function') return;
+  window.fetch = function probe(input, init) {
+    try {
+      const url = new URL(typeof input === 'string' ? input : input?.url ?? '', location.href);
+      if (url.pathname === '/v1/save/put') {
+        let stamp = null;
+        try {
+          const d = JSON.parse(String(init?.body ?? '')).data;
+          stamp = [d.writer, d.rev, d.savedAt];
+        } catch { /* corps illisible */ }
+        keep('__puts', { at: Date.now(), keepalive: init?.keepalive === true, stamp }, 20);
+      }
+    } catch { /* adresse illisible */ }
+    return real.call(window, input, init);
+  };
+}
+
+// État du compte vu par la page : bloc du menu, panneau, carte, partie et jeu en ligne.
+const accView = (t) => ev(t, () => {
+  const $ = (id) => document.getElementById(id);
+  const vis = (id) => !!$(id) && !$(id).hidden;
+  const txt = (id) => (vis(id) ? $(id).textContent.replace(/\s+/g, ' ').trim() : null);
+  const el = window.__earthlife;
+  const d = el?.account?.debug?.() ?? null;
+  return {
+    menu: !$('menu').classList.contains('hidden'), loading: !$('loading').classList.contains('hidden'),
+    block: vis('account-block'), line: txt('account-line'), save: txt('account-save'), note: txt('account-note'),
+    out: vis('account-out'), here: vis('account-here'), panel: vis('account'), title: txt('account-title'),
+    state: el?.account?.state ?? null, cloud: d?.cloud ?? null, plan: d?.plan ?? null, nights: el?.saveStore?.save?.profile?.nightsHeld ?? null,
+    online: el?.online?.status ?? null, name: el?.online?.me?.name ?? null, onlineLine: txt('online-line'),
+    card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null,
+  };
+});
+// Sondage de cet état, rechargements compris (contexte détruit : nouvel essai) ; { ok, v } (v : dernier état lu).
+async function accWait(t, pred, timeout = 20000) {
+  const end = Date.now() + timeout;
+  let v = null;
+  for (;;) {
+    try {
+      v = await accView(t);
+      if (pred(v)) return { ok: true, v };
+    } catch { /* page en cours de rechargement */ }
+    if (Date.now() > end) return { ok: false, v };
+    await wait(250);
+  }
+}
+// Message d'erreur affiché d'un formulaire du panneau : texte, rôle, champ qui a le focus.
+const formError = (t, id, timeout = 15000) => until(t, (id) => {
+  const e = document.getElementById(id);
+  return e && !e.hidden && e.textContent ? { text: e.textContent, role: e.getAttribute('role'), focus: document.activeElement?.id ?? null } : null;
+}, id, timeout);
+// Empreinte [writer, rev, savedAt] de la partie rangée par la page.
+const pageStamp = (t) => ev(t, () => {
+  try { const d = JSON.parse(window.__earthlife.saveStore.storedText); return [d.writer, d.rev, d.savedAt]; } catch { return null; }
+});
+const sameStamp = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === 3 && a.every((x, i) => x === b[i]);
+const srvAcc = () => srv.accounts.debug.byEmail(ACC.email);
+async function srvWait(pred, timeout = 15000) {
+  const end = Date.now() + timeout;
+  for (;;) {
+    const a = await srvAcc();
+    if (pred(a)) return { ok: true, a, at: Date.now() };
+    if (Date.now() > end) return { ok: false, a, at: null };
+    await wait(100);
+  }
+}
+// Partie marquée par l'essai : nuits tenues, puis écriture (motif `why`).
+const setNights = (t, n, why = 'essai') => ev(t, ([n, why]) => {
+  const s = window.__earthlife.saveStore;
+  s.save.profile.nightsHeld = n;
+  return s.flush(why).ok;
+}, [n, why]);
+const mails = () => srv.mailbox?.list(ACC.email) ?? [];
+// Nouveau message de la fausse boîte pour l'adresse d'essai (après les `n` déjà là) ; null au bout de 15 s.
+async function newMail(n, timeout = 15000) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    const l = mails();
+    if (l.length > n) return l[n];
+    await wait(200);
+  }
+  return null;
+}
+const syncNow = (t) => ev(t, () => window.__earthlife.account.syncNow().then(() => true)).catch(() => false);
+async function openAcc(tag, device) {
+  const t = await open(tag, device, accUrl(), { waitGame: false, before: (ctx) => ctx.addInitScript(acctProbe) });
+  const r = await accWait(t, (v) => v.menu && v.block, 60000);
+  check(r.ok, `${tag} : menu affiché, bloc Compte présent`);
+  return t;
+}
+async function play(t) {
+  await click(t, '#play');
+  t.started = !!(await started(t));
+  if (t.started) active.add(t);
+  return t.started;
+}
+async function menuOf(t) {
+  active.delete(t);
+  await t.calming;
+  await click(t, '#quit');
+  return (await accWait(t, (v) => v.menu)).ok;
+}
+// Fermeture : violations relevées sur toutes les pages de l'onglet (sessionStorage), puis contexte fermé.
+async function closeAcc(t) {
+  if (!t || t.closed) return;
+  t.closed = true;
+  active.delete(t);
+  t.csp = await ev(t, () => {
+    try { return JSON.parse(sessionStorage.getItem('__csp') || '[]'); } catch { return window.__csp.slice(); }
+  }).catch(() => t.csp ?? []);
+  await t.ctx.close().catch(() => {});
+}
+
+// O22 : inscription sur K, après une partie commencée sans compte (rattachement de la partie et de l'identité)
+await scenario('O22', 'inscription', async () => {
+  K = await openAcc('K (ordinateur, compte)', desktop);
+  check(await play(K), 'K : partie lancée');
+  check(await waitLive(K), 'K : en ligne, identité anonyme reçue');
+  accIds.nameK = await nameOf(K);
+  check(!!(await ev(K, (k) => localStorage.getItem(k), tokKey())), `K : jeton anonyme rangé (surnom « ${accIds.nameK} »)`);
+  check(await setNights(K, 12), 'K : 12 nuits tenues écrites');
+  check(await menuOf(K), 'K : « Menu »');
+  const v0 = await accView(K);
+  check(v0.block && v0.out && v0.state === 'out' && v0.line === ACC_TEXT.out, `K : bloc Compte sans compte, « ${v0.line} »`);
+  await shot(K, 'o22-ordi-bloc-compte');
+  const n0 = mails().length;
+  await click(K, '#account-signup');
+  check((await accWait(K, (v) => v.panel && v.title === 'Créer un compte')).ok, 'K : panneau « Créer un compte »');
+  await K.page.fill('#account-email', ACC.email);
+  await K.page.check('#account-age');
+  await click(K, '#account-form-email .account-submit');
+  const atCode = await accWait(K, (v) => v.panel && v.title === 'Saisis le code' && v.state === 'code');
+  check(atCode.ok, `K : étape du code, ligne « ${atCode.v?.line} »`);
+  const mail = await newMail(n0);
+  const code = mail?.code ?? '';
+  const auto = await ev(K, () => ['account-email', 'account-code', 'account-new-password'].map((id) => document.getElementById(id)?.getAttribute('autocomplete')));
+  check(auto.join(',') === 'username,one-time-code,new-password', `K : autocomplete ${auto.join(', ')}`);
+  await shot(K, 'o22-ordi-code');
+  await K.page.fill('#account-code', code);
+  await K.page.fill('#account-new-password', ACC.pw1);
+  const tIn = Date.now();
+  await click(K, '#account-code-submit');
+  const inK = await accWait(K, (v) => !v.panel && v.state === 'in');
+  check(inK.ok && inK.v.line === `Connecté : ${ACC.mask}`, `K : panneau fermé, ligne « ${inK.v?.line} », note « ${inK.v?.note} »`);
+  const sv = await accWait(K, (v) => /^Partie sauvegardée sur le serveur/.test(v.save ?? ''), 15000);
+  const tSv = Date.now();
+  check(sv.ok && tSv - tIn < 15000, `K : « ${sv.v?.save} » ${s1(tSv - tIn)} après « Créer mon compte » (seuil 15 s)`);
+  const sent = mails().slice(n0);
+  check(sent.length === 1 && /^Ton code EarthLife : \d{6}$/.test(sent[0]?.subject ?? '') && /^\d{6}$/.test(code), `fausse boîte : ${sent.length} e-mail ${JSON.stringify(sent.map((m) => m.subject))}`);
+  const stK = await pageStamp(K);
+  const a = await srvWait((x) => !!x && sameStamp(x.save?.stamp, stK));
+  check(a.ok && !!a.a?.playerId, `serveur : compte, partie d'empreinte égale à celle de K (${JSON.stringify(a.a?.save?.stamp)}), identité ${a.a?.playerId ? 'rattachée' : 'absente'}`);
+  accIds.account = a.a?.accountId ?? null;
+  accIds.player = a.a?.playerId ?? null;
+  // Même identité après la reconnexion avec la session (le serveur répond avec l'identité rattachée).
+  const back = await accWait(K, (v) => !!v.name, 30000);
+  check(back.ok && back.v.name === accIds.nameK, `K : surnom après la reconnexion « ${back.v?.name} » (avant : « ${accIds.nameK} »)`);
+  const ls = await ev(K, ([tk, ak, pw]) => {
+    const vals = [];
+    for (const st of [localStorage, sessionStorage]) for (let i = 0; i < st.length; i++) vals.push(st.getItem(st.key(i)) ?? '');
+    return { tok: localStorage.getItem(tk), acc: !!localStorage.getItem(ak), leak: vals.some((v) => v.includes(pw)) };
+  }, [tokKey(), accKey(), ACC.pw1]);
+  check(ls.tok === null && ls.acc && !ls.leak, `K : jeton anonyme ${ls.tok === null ? 'retiré' : 'encore rangé'}, clé du compte ${ls.acc ? 'présente' : 'absente'}, mot de passe ${ls.leak ? 'TROUVÉ' : 'absent'} du stockage`);
+});
+
+// O23 : connexion sur L (téléphone, partie vide) : reprise de la partie du compte, surnom du compte
+await scenario('O23', 'connexion ailleurs et reprise', async () => {
+  L = await openAcc('L (téléphone, compte)', mobile);
+  check(await play(L), 'L : partie lancée');
+  check(await waitLive(L), 'L : en ligne');
+  accIds.nameL = await nameOf(L);
+  const blank = await ev(L, async () => (await import('/src/save.js')).isBlankSave(window.__earthlife.saveStore.save));
+  check(!!accIds.nameL && accIds.nameL !== accIds.nameK && blank, `L : identité anonyme à lui (« ${accIds.nameL} »), partie ${blank ? 'vide' : 'déjà jouée'}`);
+  check(await menuOf(L), 'L : « Menu »');
+  await click(L, '#account-login');
+  check((await accWait(L, (v) => v.panel && v.title === 'Me connecter')).ok, 'L : panneau « Me connecter »');
+  await L.page.fill('#account-login-email', ACC.email);
+  await L.page.fill('#account-login-password', ACC.bad);
+  const done = expectNet(L);
+  await click(L, '#account-form-login .account-submit');
+  const err = await formError(L, 'account-login-error');
+  done();
+  check(err?.text === ACC_TEXT.wrong && err.role === 'alert' && err.focus === 'account-login-password', `L : « ${err?.text} » (role ${err?.role}, focus sur ${err?.focus})`);
+  await shot(L, 'o23-tel-erreur');
+  // Écran de chargement de la reprise, gardé dans sessionStorage (la page recharge aussitôt après).
+  await ev(L, () => {
+    window.__avant = true;
+    const box = document.getElementById('loading');
+    new MutationObserver(() => {
+      try { if (!box.classList.contains('hidden')) sessionStorage.setItem('__loading', document.getElementById('loading-text').textContent); } catch { /* relevé seulement */ }
+    }).observe(box, { attributes: true, childList: true, characterData: true, subtree: true });
+  });
+  await L.page.fill('#account-login-password', ACC.pw1);
+  await click(L, '#account-form-login .account-submit');
+  const after = await accWait(L, (v) => v.state === 'in' && v.menu && !v.loading && v.nights === 12 && v.note === ACC_TEXT.adopted, 60000);
+  const seen = await ev(L, () => ({ loading: sessionStorage.getItem('__loading'), reloaded: window.__avant !== true })).catch(() => ({}));
+  check(seen.loading === 'Reprise de ta partie…' && seen.reloaded, `L : « ${seen.loading} », page ${seen.reloaded ? 'rechargée' : 'pas rechargée'}`);
+  check(after.ok, `L : après rechargement, ${after.v?.nights} nuits tenues, note « ${after.v?.note} », ligne « ${after.v?.line} »`);
+  const nameL2 = await accWait(L, (v) => !!v.name, 30000);
+  check(nameL2.v?.name === accIds.nameK, `L : surnom du compte « ${nameL2.v?.name} » (celui de K : « ${accIds.nameK} »)`);
+  const kOut = await accWait(K, (v) => v.online === 'autre-onglet' && v.here && v.onlineLine === ACC_TEXT.elsewhere, 30000);
+  check(kOut.ok, `K : « ${kOut.v?.onlineLine} » (statut ${kOut.v?.online}), « Jouer en ligne ici » ${kOut.v?.here ? 'affiché' : 'absent'}`);
+  check(!!(await ev(L, (k) => localStorage.getItem(k), tokKey())), 'L : jeton anonyme toujours rangé');
+  await shot(L, 'o23-tel-reprise');
+  await shot(K, 'o23-ordi-ailleurs');
+});
+
+// O24 : L écrit puis la page se ferme aussitôt : envoi keepalive à pagehide, reconnu à la réouverture
+await scenario('O24', 'envoi à la fermeture', async () => {
+  const before = await srvAcc();
+  await ev(L, () => {
+    const s = window.__earthlife.saveStore;
+    s.save.profile.nightsHeld = 15;
+    s.markDirty();
+  });
+  const tGo = Date.now();
+  await L.page.goto('about:blank');
+  const got = await srvWait((x) => (x?.save?.rev ?? 0) > (before?.save?.rev ?? 0), 5000);
+  check(got.ok && got.at - tGo < 5000, `serveur : partie de L reçue ${s1(got.at && got.at - tGo)} après la fermeture (seuil 5 s), révision ${got.a?.save?.rev}`);
+  const tBack = Date.now();
+  await L.page.goto(accUrl());
+  const v = await accWait(L, (x) => x.menu && !x.loading && x.state === 'in' && x.cloud === 'egal' && /^Partie sauvegardée sur le serveur/.test(x.save ?? ''), 40000);
+  const puts = await ev(L, () => { try { return JSON.parse(sessionStorage.getItem('__puts') || '[]'); } catch { return []; } }).catch(() => []);
+  const last = puts.filter((p) => p.at < tBack).at(-1) ?? null;
+  check(!!last && last.keepalive && sameStamp(last.stamp, got.a?.save?.stamp), `L : envoi de fermeture ${last?.keepalive ? 'en keepalive' : 'sans keepalive'}, empreinte ${sameStamp(last?.stamp, got.a?.save?.stamp) ? 'égale à' : 'différente de'} celle du serveur`);
+  check(v.ok && v.v.nights === 15 && v.v.card === null, `L rouvert : « ${v.v?.save} », ${v.v?.nights} nuits, ${v.v?.cloud}, carte ${JSON.stringify(v.v?.card ?? null)}`);
+});
+
+// O25 : K et L jouent chacun de leur côté : carte de conflit sur L, partie de L gardée, reprise sur K
+await scenario('O25', 'conflit', async () => {
+  const done = expectNet(L);
+  await L.ctx.route('**/v1/save/**', (r) => r.abort());
+  const tReload = Date.now();
+  await K.page.reload();
+  const k15 = await accWait(K, (v) => v.menu && !v.loading && v.state === 'in' && v.nights === 15 && v.cloud === 'egal', 60000);
+  // Envois de K depuis le rechargement : aucun attendu (la partie n'a pas changé, seule l'heure de where est réécrite).
+  const kPuts = (await ev(K, () => { try { return JSON.parse(sessionStorage.getItem('__puts') || '[]'); } catch { return []; } }).catch(() => []))
+    .filter((p) => p.at >= tReload);
+  check(k15.ok, `K rechargé : ${k15.v?.nights} nuits (partie envoyée par L reprise), ${k15.v?.cloud} (plan ${k15.v?.plan}), note « ${k15.v?.note} », ${kPuts.length} envoi(s) depuis le rechargement`);
+  check(await setNights(K, 13, 'menu'), 'K : 13 nuits écrites');
+  const stK = await pageStamp(K);
+  const s13 = await srvWait((x) => sameStamp(x?.save?.stamp, stK), 20000);
+  check(s13.ok, `K : envoi accepté (serveur : révision ${s13.a?.save?.rev})`);
+  check(await setNights(L, 20, 'menu'), 'L : 20 nuits écrites, envois de L coupés');
+  const off = await accWait(L, (v) => v.cloud === 'hors-ligne' && v.save === ACC_TEXT.offline, 30000);
+  check(off.ok, `L : « ${off.v?.save} », ligne « ${off.v?.line} »`);
+  await shot(L, 'o25-tel-hors-ligne');
+  await L.ctx.unroute('**/v1/save/**');
+  await syncNow(L);
+  const card = await accWait(L, (v) => v.card === ACC_TEXT.conflict, 30000);
+  const lines = await ev(L, () => [...document.querySelectorAll('#card .rp-card-line')].map((l) => l.textContent.replace(/\s+/g, ' ').trim()));
+  const cloudLine = lines.find((l) => l.startsWith('Celle du compte')) ?? '';
+  const localLine = lines.find((l) => l.startsWith('Celle de cet appareil')) ?? '';
+  check(card.ok && /13 nuits tenues/.test(cloudLine) && /20 nuits tenues/.test(localLine), `L : carte « ${card.v?.card} » : « ${cloudLine} » ; « ${localLine} »`);
+  await shot(L, 'o25-tel-conflit');
+  const [dl] = await Promise.all([L.page.waitForEvent('download', { timeout: 15000 }).catch(() => null), click(L, '#card [data-card-btn="dl-local"]')]);
+  check(!!dl && /^earthlife-sauvegarde-\d{4}-\d{2}-\d{2}\.json$/.test(dl.suggestedFilename()), `L : « Exporter » (ligne de l'appareil) : ${dl ? dl.suggestedFilename() : 'aucun téléchargement'}`);
+  check((await accWait(L, (v) => v.card === ACC_TEXT.conflict, 10000)).ok, 'L : la carte revient après « Exporter »');
+  await click(L, '#card [data-card-btn="keep-local"]');
+  const stL = await pageStamp(L);
+  const won = await srvWait((x) => sameStamp(x?.save?.stamp, stL), 20000);
+  const vL = await accWait(L, (v) => v.cloud === 'egal' && v.card === null, 15000);
+  done();
+  check(won.ok && vL.ok, `L : « Garder celle de cet appareil » : serveur = partie de L (révision ${won.a?.save?.rev}), ${vL.v?.cloud}`);
+  await K.page.reload();
+  const k20 = await accWait(K, (v) => v.menu && !v.loading && v.state === 'in' && v.nights === 20 && v.cloud === 'egal', 60000);
+  await wait(3000);
+  const kc = await accView(K).catch(() => null);
+  check(k20.ok && kc?.card === null, `K rechargé : ${k20.v?.nights} nuits, ${k20.v?.cloud}, carte ${JSON.stringify(kc?.card ?? null)}`);
+});
+
+// O26 : mot de passe oublié sur M : M reprend la partie, K et L sortent du compte, l'ancien mot de passe ne marche plus
+await scenario('O26', 'mot de passe oublié', async () => {
+  M = await openAcc('M (ordinateur, compte)', desktop);
+  await click(M, '#account-login');
+  await accWait(M, (v) => v.panel && v.title === 'Me connecter');
+  await click(M, '#account [data-go="reset"]');
+  check((await accWait(M, (v) => v.panel && v.title === 'Mot de passe oublié')).ok, 'M : « Mot de passe oublié ? »');
+  await M.page.fill('#account-email', ACC.email);
+  const n0 = mails().length;
+  await click(M, '#account-form-email .account-submit');
+  const atCode = await accWait(M, (v) => v.panel && v.title === 'Saisis le code');
+  const mail = await newMail(n0);
+  check(atCode.ok && /^\d{6}$/.test(mail?.code ?? ''), `M : étape du code, e-mail « ${mail?.subject} »`);
+  const label = await ev(M, () => [document.getElementById('account-new-password-label')?.textContent, document.getElementById('account-code-submit')?.textContent]);
+  check(label[0] === 'Nouveau mot de passe' && label[1] === 'Changer mon mot de passe', `M : « ${label[0]} », bouton « ${label[1]} »`);
+  await M.page.fill('#account-code', mail?.code ?? '');
+  await M.page.fill('#account-new-password', ACC.pw2);
+  const n1 = mails().length;
+  await click(M, '#account-code-submit');
+  const m20 = await accWait(M, (v) => v.menu && !v.loading && v.state === 'in' && v.nights === 20, 60000);
+  check(m20.ok && m20.v.line === `Connecté : ${ACC.mask}`, `M : connecté, partie du compte reprise (${m20.v?.nights} nuits), ligne « ${m20.v?.line} »`);
+  const changed = await newMail(n1);
+  check(changed?.subject === 'Ton mot de passe EarthLife a changé', `fausse boîte : « ${changed?.subject} »`);
+  for (const t of [K, L]) {
+    const doneT = expectNet(t);
+    await syncNow(t);
+    const out = await accWait(t, (v) => v.state === 'out' && v.out && v.note === ACC_TEXT.lost, 20000);
+    doneT();
+    check(out.ok && out.v.nights === 20, `${t.tag} : sorti du compte (« ${out.v?.note} »), ligne « ${out.v?.line} », ${out.v?.nights} nuits gardées`);
+  }
+  const lName = await accWait(L, (v) => v.name === accIds.nameL, 40000);
+  check(lName.ok, `L : identité anonyme reprise (« ${lName.v?.name} », avant la connexion : « ${accIds.nameL} »)`);
+  await click(K, '#account-login');
+  await accWait(K, (v) => v.panel && v.title === 'Me connecter');
+  await K.page.fill('#account-login-email', ACC.email);
+  await K.page.fill('#account-login-password', ACC.pw1);
+  const doneK = expectNet(K);
+  await click(K, '#account-form-login .account-submit');
+  const err = await formError(K, 'account-login-error');
+  doneK();
+  check(err?.text === ACC_TEXT.wrong, `K : ancien mot de passe : « ${err?.text} »`);
+  await click(K, '#account-close');
+  await shot(M, 'o26-ordi-connecte');
+});
+
+// O27 : suppression du compte depuis M
+await scenario('O27', 'suppression', async () => {
+  const before = await srvAcc();
+  await click(M, '#account-more > summary');
+  await click(M, '#account-delete');
+  check((await accWait(M, (v) => v.panel && v.title === 'Supprimer mon compte')).ok, 'M : panneau « Supprimer mon compte »');
+  await M.page.fill('#account-delete-password', ACC.bad);
+  const done = expectNet(M);
+  await click(M, '#account-form-delete .account-submit');
+  const err = await formError(M, 'account-delete-error');
+  done();
+  check(err?.text === ACC_TEXT.wrong && err.focus === 'account-delete-password', `M : mauvais mot de passe : « ${err?.text} » (focus sur ${err?.focus})`);
+  await shot(M, 'o27-ordi-suppression');
+  const n0 = mails().length;
+  await M.page.fill('#account-delete-password', ACC.pw2);
+  await click(M, '#account-form-delete .account-submit');
+  const gone = await accWait(M, (v) => !v.panel && v.state === 'out' && v.out && v.note === ACC_TEXT.deleted, 20000);
+  check(gone.ok && gone.v.nights === 20, `M : « ${gone.v?.note} », ligne « ${gone.v?.line} », ${gone.v?.nights} nuits gardées`);
+  const id = before?.accountId ?? accIds.account;
+  const pid = before?.playerId ?? accIds.player;
+  const [after, account, sessions, save, player] = await Promise.all([srvAcc(), id ? srv.store.accountById(id) : null,
+    id ? srv.store.sessionsOf(id) : [], id ? srv.store.saveMeta(id) : null, pid ? srv.store.playerById(pid) : null]);
+  check(!!id && !!pid && after === null && !account && sessions.length === 0 && !save && !player,
+    `serveur : compte ${account ? 'encore là' : 'effacé'}, ${sessions.length} session, partie ${save ? 'encore là' : 'effacée'}, identité rattachée (surnom « ${accIds.nameK} ») ${player ? 'encore là' : 'effacée'}`);
+  const bye = await newMail(n0);
+  check(bye?.subject === 'Ton compte EarthLife est supprimé', `fausse boîte : « ${bye?.subject} »`);
+  await shot(M, 'o27-ordi-sans-compte');
+});
+// K, L et M fermés même si un scénario a échoué (violations relevées pour O19).
+for (const t of [K, L, M]) await closeAcc(t);
+
+// =====================================================================================================
 // O19 : toute la séance : aucune erreur de console, aucune exception, aucune violation de la politique de
-// sécurité (hors fenêtre de O12), aucune requête vers earthlife.needhelpapp.com (sauf F, voulue)
+// sécurité (hors fenêtre de O12), aucune requête vers earthlife.needhelpapp.com (sauf F, voulue) ; K, L et M compris
+// (refus voulus des scénarios du compte tolérés dans leur fenêtre : netExpected)
 // =====================================================================================================
 await scenario('O19', 'toute la séance', async () => {
   const inWindow = (at) => tolerate.some((w) => at >= w.from && at <= w.to);
   for (const t of all) {
     const csp = (t.csp ?? []).filter((c) => !inWindow(c.at));
-    const errs = t.errors.filter((e) => !inWindow(e.at));
+    const errs = t.errors.filter((e) => !inWindow(e.at) && !netExpected(t, e));
+    const expected = t.errors.filter((e) => netExpected(t, e)).length;
+    if (expected) note(`${t.tag} : ${expected} refus voulu(s) noté(s) en console (« Failed to load resource »), tolérés`);
     const nh = t.requests.filter((r) => /(^|\.)needhelpapp\.com$/i.test(new URL(r.url).hostname));
     check(errs.length === 0, `${t.tag} : ${errs.length} erreur de console ou exception ${errs.slice(0, 3).map((e) => e.text).join(' | ')}`);
     check(csp.length === 0, `${t.tag} : ${csp.length} violation de la politique de sécurité ${csp.slice(0, 3).map((c) => c.v).join(' | ')}`);

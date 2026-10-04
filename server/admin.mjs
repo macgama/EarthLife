@@ -4,14 +4,23 @@
 //   node admin.mjs hide <identité> <heures>  masquer pour tous
 //   node admin.mjs ban <identité> <jours>    bannir l'identité, et 7 jours les adresses connectées avec elle
 //   node admin.mjs erase <identité>          tout effacer (refuge, masquages, signalements)
+//   node admin.mjs erase-account <adresse>   compte effacé sur demande reçue par e-mail (RGPD), avec sa partie
+//                                            sauvegardée et son identité en ligne
+//   node admin.mjs mail-test <adresse>       vérification SMTP (connexion, EHLO, AUTH) puis message d'essai
 // L'outil écrit la base lui-même (même hors service), puis dépose une demande dans <application>/admin/ pour le
 // serveur en marche, qui l'applique à sa mémoire dans les 5 s (main.js). Aucune commande n'affiche de position ni
-// d'adresse IP : le serveur n'en a d'ailleurs que les empreintes HMAC.
+// d'adresse IP : le serveur n'en a d'ailleurs que les empreintes HMAC. L'adresse e-mail saisie n'est jamais affichée
+// en retour ni écrite au journal. Ne jamais changer ACCOUNT_SECRET une fois les comptes ouverts : toutes les adresses
+// deviendraient introuvables et illisibles (comptes perdus).
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './src/config.js';
+import { accountCrypto } from './src/accounts.js';
+import { buildMessage, smtpSend } from './src/mail.js';
+import { mailTest } from './src/mail-texts.js';
+import { normEmail } from '../prototype/src/net/account.js';
 
 const H = 3600000, DAY = 86400000;
 const ID = /^[0-9a-f]{32}$/;
@@ -19,7 +28,8 @@ const REASONS = { 1: 'me suit partout', 2: 'abuse des gestes', 3: 'triche' };
 
 const USAGE = [
   'Usage : node admin.mjs stats [n] | reports | hide <identité> <heures> | ban <identité> <jours> | erase <identité>',
-  '  <identité> : 32 caractères hexadécimaux, lus dans « reports ».',
+  '                        | erase-account <adresse> | mail-test <adresse>',
+  '  <identité> : 32 caractères hexadécimaux, lus dans « reports ». <adresse> : adresse e-mail, jamais affichée en retour.',
 ].join('\n');
 
 const when = (ms) => (ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '—');
@@ -58,10 +68,16 @@ function formatStats(s) {
     + `mémoire ${s.rssMo ?? '?'} Mo (tas ${s.tasMo ?? '?'}), tic p95 ${s.tickP95 ?? '?'} ms`
     + `${s.ecritures ? ` + ${s.ecritures.parTic} écritures (${s.ecritures.moyMs} ms en moyenne, ${s.ecritures.maxMs} au plus)` : ''}`
     + `, base ${s.db ? 'oui' : 'NON'}`
-    + `${s.dbMs !== null && s.dbMs !== undefined ? ` (${s.dbMs} ms)` : ''}`;
+    + `${s.dbMs !== null && s.dbMs !== undefined ? ` (${s.dbMs} ms)` : ''}`
+    + `${s.comptes ? `, comptes ${s.comptes.comptes ?? '?'} (sessions ${s.comptes.sessions ?? '?'}, parties ${s.comptes.parties ?? '?'}, `
+      + `${s.comptes.creations ?? 0} créés, ${s.comptes.connexions ?? 0} connexions, ${s.comptes.courriels ?? 0} e-mails`
+      + `${s.comptes.courrielsEchoues ? `, ${s.comptes.courrielsEchoues} ÉCHOUÉS` : ''})` : ''}`;
 }
 
-export async function runAdmin(argv, { store, appDir = null, logDir = null, out = (s) => console.log(s), now = Date.now } = {}) {
+// `config` : réglages de config.js (ACCOUNT_SECRET, envoi d'e-mails) pour erase-account et mail-test ; `connect` et
+// `tlsOptions` : essais contre un faux serveur SMTP.
+export async function runAdmin(argv, { store, appDir = null, logDir = null, out = (s) => console.log(s), now = Date.now, config = null,
+  connect, tlsOptions } = {}) {
   const [cmd, id, amount] = argv;
   const t = now();
   const needId = () => {
@@ -120,6 +136,44 @@ export async function runAdmin(argv, { store, appDir = null, logDir = null, out 
     tell({ op: 'ban', id, untilMs: until, ipUntilMs: t + 7 * DAY });
     return 0;
   }
+  if (cmd === 'erase-account') {
+    const email = normEmail(id ?? '');
+    if (!email) { out(`Adresse e-mail invalide.\n${USAGE}`); return 2; }
+    if (!config?.accountSecret) { out('ACCOUNT_SECRET manque dans ~/.config/earthlife/env : impossible de retrouver le compte.'); return 1; }
+    const account = await store.accountByEmailHash(accountCrypto(config.accountSecret).emailHashOf(email));
+    if (!account) { out('Aucun compte pour cette adresse.'); return 1; }
+    await store.dropSessions(account.id);
+    const gone = await store.eraseAccount(account.id);
+    out('Compte effacé, avec sa partie sauvegardée et son identité en ligne.');
+    if (gone?.playerId) tell({ op: 'erase', id: gone.playerId });
+    return 0;
+  }
+  if (cmd === 'mail-test') {
+    const to = normEmail(id ?? '');
+    if (!to) { out(`Adresse e-mail invalide.\n${USAGE}`); return 2; }
+    const m = config?.mail;
+    if (!m || m.transport !== 'smtp') { out('Envoi d\'e-mails non réglé (MAIL=smtp, SMTP_HOST, SMTP_USER, SMTP_PASSWORD, MAIL_FROM).'); return 1; }
+    if (!m.host || !m.user || !m.password || !m.from) { out('Réglages SMTP incomplets (SMTP_HOST, SMTP_USER, SMTP_PASSWORD, MAIL_FROM).'); return 1; }
+    const opts = { host: m.host, port: m.port, user: m.user, password: m.password, from: m.from,
+      ...(connect ? { connect } : {}), ...(tlsOptions ? { tlsOptions } : {}) };
+    const failed = (e) => `Échec à l'étape ${e?.etape ?? 'connexion'}${Number.isInteger(e?.reponse) ? ` (réponse ${e.reponse})` : ''}.`;
+    try {
+      await smtpSend(opts);
+      out('Connexion SMTP : bonne (EHLO et AUTH acceptés).');
+    } catch (e) {
+      out(`Connexion SMTP : ${failed(e)}`);
+      return 1;
+    }
+    try {
+      const text = mailTest({ gameUrl: config.gameUrl, contact: m.from });
+      await smtpSend({ ...opts, to, message: buildMessage({ from: m.from, to, subject: text.subject, text: text.text, replyTo: m.replyTo, dateMs: t }) });
+      out('Message d\'essai envoyé : à chercher dans la boîte de réception (et les indésirables).');
+      return 0;
+    } catch (e) {
+      out(`Envoi du message d'essai : ${failed(e)}`);
+      return 1;
+    }
+  }
   if (cmd === 'erase') {
     if (!needId()) return 2;
     if (!(await store.erase(id))) { out('Identité inconnue (déjà effacée, ou faute de frappe).'); return 1; }
@@ -134,7 +188,9 @@ export async function runAdmin(argv, { store, appDir = null, logDir = null, out 
 async function cli() {
   const argv = process.argv.slice(2);
   const config = loadConfig();
-  if (argv[0] === 'stats') process.exit(await runAdmin(argv, { store: null, appDir: config.appDir, logDir: config.logDir }));
+  if (argv[0] === 'stats' || argv[0] === 'mail-test') {
+    process.exit(await runAdmin(argv, { store: null, appDir: config.appDir, logDir: config.logDir, config }));
+  }
   if (config.store !== 'mysql' || !config.db) {
     console.log('Base absente : DB_HOST manque dans ~/.config/earthlife/env.');
     process.exit(1);
@@ -143,7 +199,7 @@ async function cli() {
   const store = createMysqlStore({ ...config.db, connectionLimit: 1, refugeDays: config.refugeDays, playerDays: config.playerDays });
   let code = 1;
   try {
-    code = await runAdmin(argv, { store, appDir: config.appDir, logDir: config.logDir });
+    code = await runAdmin(argv, { store, appDir: config.appDir, logDir: config.logDir, config });
   } catch (err) {
     console.log(`Erreur de la base : ${err?.code ?? err?.name}`);
   } finally {

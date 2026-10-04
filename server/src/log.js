@@ -1,7 +1,7 @@
 // Journal du serveur (sections 4.9 et 6.9) : une ligne par événement, sur la sortie standard et dans
 // <dossier>/serveur-AAAA-MM-JJ.log (jour UTC), fichiers effacés après 14 jours. Forme : « heure événement {champs} ».
 // Jamais de position, de jeton, d'adresse IP en clair ni de surnom : les champs qui en portent le nom sont retirés,
-// et les textes qui y ressemblent sont masqués, quel que soit l'appelant. Débit borné : les refus, qu'un tiers
+// et les textes qui y ressemblent sont masqués, quel que soit l'appelant (adresses e-mail comprises). Débit borné : les refus, qu'un tiers
 // provoque à volonté (origine, taille, corps…), ont leur propre budget (120 lignes par minute, le surplus résumé par
 // motif) ; les autres lignes 600 par minute ; les événements du serveur lui-même, rares (mesures, modération,
 // démarrage, arrêt, base…), ne sont jamais retenus, pour qu'un flot de refus n'efface pas leur trace.
@@ -10,8 +10,11 @@ import path from 'node:path';
 
 const DAY = 86400000;
 const FILE_RE = /^serveur-(\d{4}-\d{2}-\d{2})\.log$/;
-// Noms de champs interdits : positions, jetons, adresses, surnoms, secrets.
-const DROP = /^(a|o|lat|lon|lng|latitude|longitude|pos|position|positions|coords?|tok|token|jeton|tokens|ip|ips|addr|address|adresse|remote|xff|forwarded|nm|name|names|surnom|nick|password|passwd|secret|hmac|key|cle)$/i;
+// Noms de champs interdits : positions, jetons, adresses, surnoms, secrets ; pour les comptes, adresses e-mail,
+// mots de passe, sessions et codes envoyés par e-mail.
+const DROP = /^(a|o|lat|lon|lng|latitude|longitude|pos|position|positions|coords?|tok|token|jeton|tokens|ip|ips|addr|address|adresse|remote|xff|forwarded|nm|name|names|surnom|nick|password|passwd|secret|hmac|key|cle|email|emails|e-mail|mail|courriel|rcpt|to|from|replyto|reply_to|user|ses|mdp|pw|pwhash|old|code_mail)$/i;
+// Adresse e-mail (texte d'une réponse SMTP, par exemple) : masquée.
+const EMAIL = /[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
 const IPV4 = /\b\d{1,3}(?:\.\d{1,3}){3}\b/g;
 const IPV6 = /\b(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}\b/gi;
 const TOKEN = /\b[A-Za-z0-9_-]{43}\b/g;
@@ -24,7 +27,7 @@ const dayName = (ms) => new Date(ms).toISOString().slice(0, 10);
 
 function cleanString(s) {
   let v = String(s).slice(0, 200);
-  v = v.replace(HASH, '[empreinte]').replace(TOKEN, '[jeton]').replace(IPV4, '[ip]');
+  v = v.replace(EMAIL, '[e-mail]').replace(HASH, '[empreinte]').replace(TOKEN, '[jeton]').replace(IPV4, '[ip]');
   if (v.includes(':')) v = v.replace(IPV6, (m) => ((m.match(/:/g) || []).length >= 2 && /[0-9a-f]/i.test(m) ? '[ip]' : m));
   return v;
 }

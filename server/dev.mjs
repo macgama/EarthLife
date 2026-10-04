@@ -2,16 +2,23 @@
 // des survivants simulés qui marchent et font des gestes.
 //   node server/dev.mjs --port 8787 --bots 3 --at 45.7578,4.8320 [--dev] [--ws 0] [--maintenance]
 //                       [--origin http://…] [--max-conn 100] [--create-per-hour 300] [--min-client 1] [--invite CODE]
+//                       [--no-accounts] [--quiet]
 // Le jeu servi en local l'utilise avec ?server=http://127.0.0.1:8787&debug=1. Avec --dev (et seulement avec le
 // magasin en mémoire), GET /__test/log rend les positions reçues (scénario O9) ; ?clear=1 les oublie.
+// Comptes actifs (spécification des comptes, 4.8) : secret tiré au démarrage, fausse boîte aux lettres (aucun e-mail
+// ne part) ; chaque faux e-mail est écrit sur la sortie (sans --quiet) ; avec --dev, GET /__test/mail?to=<adresse>
+// rend les messages de la boîte, &clear=1 la vide. --no-accounts : serveur sans comptes (routes en 404).
 // startDevServer() sert aussi dans le même processus (test Playwright), forkDevServer() dans un processus à part
 // (mesures de abuse.mjs et bots.mjs : mémoire et tic du serveur seul).
 import { fork } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './src/main.js';
+import { originAllowed } from './src/http.js';
 import { createLog } from './src/log.js';
 import { createMemoryStore } from './src/store-memory.js';
+import { createMailer } from './src/mail.js';
 import { DEV_ORIGINS, PUBLISHED_ORIGIN } from './src/config.js';
 import { createBot, freePort, portRange } from './tools/bots.mjs';
 import { parseClient, parseSync } from '../prototype/src/net/protocol.js';
@@ -23,6 +30,7 @@ export async function startDevServer({
   port = 0, host = '127.0.0.1', store = 'memory', origins = DEV_ORIGINS, bots = 0, at = '45.7578,4.8320', dev = false,
   ws = true, maintenance = false, trustProxy = true, maxConn = 100, createPerHour = 300, minClient = 1, inviteCode = '',
   cfg = {}, quiet = true, log = null, timers = {}, onTick = null, appDir = null, portRange: range = null,
+  accounts = true, mail = 'boite', hashParams = null, accountOpts = {}, mailer = null,
 } = {}) {
   const memory = store === 'memory';
   const theStore = memory ? createMemoryStore() : store;
@@ -31,8 +39,19 @@ export async function startDevServer({
     port, host, store: memory ? 'memory' : 'autre', db: null, hmacSecret: null, origins: [...origins], dev: true,
     trustProxy, maxConn, ws, maintenance, minClient, inviteCode, searchHours: 6, goneHours: 72, refugeDays: 30,
     playerDays: 180, createPerHour, appDir, logDir: null, version: 'dev', warnings: [], errors: [],
+    // Comptes : secret tiré à chaque démarrage (comptes perdus à l'arrêt, comme le reste du magasin en mémoire),
+    // budget d'envoi large (la boîte ne part nulle part).
+    accounts: !!accounts, accountSecret: randomBytes(32), gameUrl: 'https://macgama.github.io/EarthLife/',
+    mail: { transport: 'boite', host: null, port: 465, user: null, password: null, from: 'earthlife@exemple.test', replyTo: null,
+      perHour: 1000, perDay: 10000 },
   };
   log ??= createLog({ dir: null, stdout: quiet ? null : process.stdout });
+  if (mail !== 'boite') throw new Error('faux serveur : fausse boîte seulement');
+  // Fausse boîte : chaque message est écrit sur la sortie (jamais par le journal), sans --quiet.
+  if (accounts) {
+    mailer ??= createMailer({ transport: 'boite', from: config.mail.from, perHour: config.mail.perHour, perDay: config.mail.perDay,
+      log, gameUrl: config.gameUrl, onBox: quiet ? null : (m) => console.log(`Faux e-mail → ${m.to} : « ${m.subject} »`) });
+  }
 
   // Journal des positions reçues (O9) : seulement avec --dev et le magasin en mémoire, jamais sur disque.
   const testLog = dev && memory ? [] : null;
@@ -50,11 +69,23 @@ export async function startDevServer({
       if (r.ok) for (const m of r.body.msgs) record('poll', r.body.sid ?? 0, m);
     }
   } : null;
+  const box = testLog && mailer?.box ? mailer.box : null;
   const extra = testLog ? async (req, res, p) => {
-    if (p !== '/__test/log') return false;
-    if (req.url.includes('clear=1')) testLog.length = 0;
-    const text = JSON.stringify({ positions: testLog });
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+    if (p !== '/__test/log' && !(p === '/__test/mail' && box)) return false;
+    const q = new URL(req.url, 'http://local').searchParams;
+    let text;
+    if (p === '/__test/log') {
+      if (q.get('clear') === '1') testLog.length = 0;
+      text = JSON.stringify({ positions: testLog });
+    } else {
+      text = JSON.stringify({ messages: box.list(q.get('to') || null) });
+      if (q.get('clear') === '1') box.clear();
+    }
+    // CORS : l'origine du jeu en développement seulement (jamais « * » : les codes de la fausse boîte ne doivent pas être lisibles
+    // par une page quelconque ouverte dans le même navigateur pendant que le faux serveur tourne).
+    const headers = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', Vary: 'Origin' };
+    if (originAllowed(origins, req.headers.origin)) headers['Access-Control-Allow-Origin'] = req.headers.origin;
+    res.writeHead(200, headers);
     res.end(text);
     return true;
   } : null;
@@ -64,7 +95,8 @@ export async function startDevServer({
   for (let attempt = 0; ; attempt++) {
     if (range) config.port = await freePort(range, host);
     try {
-      srv = await startServer({ config, store: theStore, log, exit: () => {}, tap, extra, roomCfg: cfg, timers, onTick });
+      srv = await startServer({ config, store: theStore, log, exit: () => {}, tap, extra, roomCfg: cfg, timers, onTick, mailer,
+        accountOpts: { ...(hashParams ? { hashParams } : {}), ...accountOpts } });
       break;
     } catch (e) {
       if (!range || e.code !== 'EADDRINUSE' || attempt > 20) throw e;
@@ -79,7 +111,7 @@ export async function startDevServer({
   }
   return {
     url: srv.url, port: srv.port, room: srv.room, server: srv.server, store: theStore, bots: list, testLog, log,
-    measure: srv.measure,
+    measure: srv.measure, accounts: srv.accounts, mailbox: srv.mailer?.box ?? null,
     async stop() {
       for (const b of list) b.stop();
       await srv.stop('arret');
@@ -147,6 +179,8 @@ function parseArgs(argv) {
     else if (k === '--ipc') o.ipc = true;
     else if (k === '--port-range') o.portRange = v().split('-').map(Number);
     else if (k === '--quiet') o.quiet = true;
+    else if (k === '--no-accounts') o.accounts = false;
+    else if (k === '--fast-hash') o.hashParams = { logN: 10, r: 8, p: 1 };
   }
   if (!o.origins.length) delete o.origins;
   return o;
@@ -173,6 +207,12 @@ async function cli() {
       if (!m) return;
       if (m.cmd === 'stop') return stop();
       if (m.cmd === 'tick-reset') { ticks.length = 0; return process.send({ id: m.id, ok: true }); }
+      // Fausse boîte : messages (d'une adresse, ou tous), vidée avec clear.
+      if (m.cmd === 'mail') {
+        const messages = srv.mailbox ? srv.mailbox.list(m.to ?? null) : [];
+        if (m.clear) srv.mailbox?.clear();
+        return process.send({ id: m.id, messages });
+      }
       // Compteurs de la salle et des refus WebSocket depuis la dernière « measure », mémoire (remis à zéro).
       if (m.cmd === 'measure') return process.send({ id: m.id, ...(await srv.measure()) });
       if (m.cmd === 'stats') {
@@ -190,7 +230,9 @@ async function cli() {
     });
     process.send({ ready: true, port: srv.port });
   } else {
-    console.log(`Faux serveur EarthLife : ${srv.url} (magasin en mémoire${o.dev ? ', /__test/log' : ''}${o.bots ? `, ${o.bots} survivants simulés` : ''})`);
+    const extras = [o.dev ? ', /__test/log' : '', o.dev && srv.mailbox ? ', /__test/mail' : '', srv.accounts ? ', comptes (fausse boîte)' : ', sans comptes',
+      o.bots ? `, ${o.bots} survivants simulés` : ''].join('');
+    console.log(`Faux serveur EarthLife : ${srv.url} (magasin en mémoire${extras})`);
   }
 }
 

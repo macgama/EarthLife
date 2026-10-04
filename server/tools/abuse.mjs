@@ -1,14 +1,17 @@
 // Attaques simulées et charge (section 9.5), contre le faux serveur seulement (dev.mjs : vrai cœur, magasin en
 // mémoire, TRUST_PROXY=1), lancé dans un processus à part pour mesurer sa mémoire et son tic. Chaque client présente
 // sa propre adresse fictive dans X-Forwarded-For, sauf quand l'attaque vient justement d'une seule adresse.
-//   node tools/abuse.mjs [--only rafale,pings,adresse,creations,invalides,sauts,origine,hello,charge] [--bots 200]
-//                        [--moving 150] [--seconds 120]
+//   node tools/abuse.mjs [--only rafale,pings,adresse,creations,invalides,sauts,origine,hello,connexions,codes,partie,charge]
+//                        [--bots 200] [--moving 150] [--seconds 120]
 // En plus du tableau : pings WebSocket envoyés sans jamais lire les pongs (cas trouvé par la sonde, section 4.3).
+// Comptes (spécification des comptes, 4.9) : connexions fausses en rafale, demandes de code pour une même adresse,
+// partie trop grosse ; faux serveur avec sa fausse boîte et un hachage rapide (les limites sont les mêmes).
 // Tableau des résultats sur la sortie et dans $GITHUB_STEP_SUMMARY ; code 1 si une ligne échoue.
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { PROTOCOL, CLIENT_LEVEL, RULES, toE6 } from '../../prototype/src/net/protocol.js';
+import { ACCOUNT_RULES } from '../../prototype/src/net/account.js';
 import { DEV_ORIGINS } from '../src/config.js';
 import { forkDevServer } from '../dev.mjs';
 import { LOAD_LIMITS, percentile, runLoad, wsUrlOf } from './bots.mjs';
@@ -340,6 +343,53 @@ async function hello(dev, row) {
     ms !== null && ms >= RULES.helloTimeoutMs - 300 && ms < RULES.helloTimeoutMs + 1500 && c.closed === 1008);
 }
 
+// ---------- Comptes ----------
+
+async function postAccount(dev, path, body, xff) {
+  const res = await fetch(`${dev.url}${path}`, { method: 'POST', headers: { Origin: ORIGIN, 'X-Forwarded-For': xff, 'Content-Type': 'text/plain' },
+    body: typeof body === 'string' ? body : JSON.stringify({ v: PROTOCOL, ...body }) });
+  const text = await res.text();
+  return { status: res.status, text };
+}
+
+// 30 connexions fausses de suite : pour une même adresse e-mail (adresses IP différentes), 429 dès la 11e ; depuis
+// une même adresse IP (adresses e-mail différentes), 429 dès la 21e.
+async function connexions(dev, row) {
+  const pw = ['mauvais', 'mot', 'de', 'passe'].join('-');
+  const byMail = [], byIp = [];
+  for (let i = 0; i < 30; i++) byMail.push((await postAccount(dev, '/v1/account/login', { email: 'cible@exemple.test', password: pw, tok: null }, `10.20.${i}.1`)).status);
+  for (let i = 0; i < 30; i++) byIp.push((await postAccount(dev, '/v1/account/login', { email: `essai${i}@exemple.test`, password: pw, tok: null }, '10.21.0.1')).status);
+  const first = (l) => l.indexOf(429) + 1 || null;
+  const okMail = byMail.slice(0, ACCOUNT_RULES.loginFailsPerHour).every((x) => x === 401) && byMail.slice(ACCOUNT_RULES.loginFailsPerHour).every((x) => x === 429);
+  const okIp = byIp.slice(0, 20).every((x) => x === 401) && byIp.slice(20).every((x) => x === 429);
+  row('30 connexions fausses de suite', '429 dès la 11e par adresse e-mail, dès la 21e par adresse IP',
+    `même adresse e-mail : premier 429 à la ${first(byMail) ?? 'JAMAIS'}e ; même adresse IP : premier 429 à la ${first(byIp) ?? 'JAMAIS'}e`, okMail && okIp);
+}
+
+// 20 demandes de code pour la même adresse (adresses IP différentes) : 3 e-mails dans la boîte, réponses identiques.
+async function codes(dev, row) {
+  const email = 'k.essai@exemple.test';
+  await dev.call('mail', { clear: true });
+  const answers = [];
+  for (let i = 0; i < 20; i++) answers.push(await postAccount(dev, '/v1/account/code', { email, why: 'signup' }, `10.22.${i}.1`));
+  await sleep(50);
+  const box = await dev.call('mail', { to: email });
+  const same = answers.every((a) => a.status === answers[0].status && a.text === answers[0].text);
+  row('20 demandes de code pour la même adresse', `${ACCOUNT_RULES.codesPerHour} e-mails, réponses toutes identiques`,
+    `${box.messages.length} e-mails dans la fausse boîte ; réponses ${same ? `identiques (HTTP ${answers[0].status})` : 'DIFFÉRENTES'}`,
+    box.messages.length === ACCOUNT_RULES.codesPerHour && same && answers[0].status === 200);
+}
+
+// Partie de 300 Ko envoyée : 413 (corps trop grand), sans lire la suite.
+async function partie(dev, row) {
+  const filler = 'x'.repeat(300 * 1024);
+  const body = JSON.stringify({ v: PROTOCOL, ses: 'A'.repeat(43), base: 0, data: { v: 1, writer: null, rev: 0, savedAt: 0, pad: filler } });
+  const r = await postAccount(dev, '/v1/save/put', body, '10.23.0.1');
+  let code = null;
+  try { code = JSON.parse(r.text).code ?? null; } catch { code = null; }
+  row('Partie de 300 Ko', '413', `HTTP ${r.status}${code ? ` (${code})` : ''}`, r.status === 413 && code === 'taille');
+}
+
 // Charge : 200 survivants pendant 2 min, dont 150 en marche à 4 Hz, sur 4 km² à Lyon.
 async function charge(dev, row, { bots, moving, seconds }) {
   await dev.call('tick-reset');
@@ -379,6 +429,7 @@ const GROUPS = [
   // Un faux serveur par groupe : les compteurs par adresse et le compteur global des créations repartent de zéro.
   { args: [], list: [['rafale', rafale], ['pings', pings], ['adresse', adresse], ['invalides', invalides], ['sauts', sauts], ['origine', origine], ['hello', hello]] },
   { args: ['--create-per-hour', '300'], list: [['creations', creations]] },
+  { args: ['--fast-hash'], list: [['connexions', connexions], ['codes', codes], ['partie', partie]] },
   { args: (o) => ['--max-conn', String(o.bots + 50), '--create-per-hour', String(o.bots + 100)], list: [['charge', charge]] },
 ];
 

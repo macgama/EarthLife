@@ -20,7 +20,7 @@ import {
   planDelivery, questText, updateQuest, currentTarget, placeWith, refugeQuest, offerMissions, questReward, missionLine,
   durationLabel as questDuration,
 } from './quest.js';
-import { createSaveStore, LIMITS, exportFileName, SAVE_MESSAGES } from './save.js';
+import { createSaveStore, LIMITS, exportFileName, SAVE_MESSAGES, isBlankSave } from './save.js';
 import { createRefuge, clockLabel, durationLabel, TAKEN_TEXT } from './refuge.js';
 import { kindLabel, countsLabel, countOf, chestCap, moveItems, depositAll, prepareBag, storeItems, refugeWarmth, TIMES } from './base.js';
 import { frontVector, nextNightChange, nightKey, utcOffsetFor, clockTargets, HORDE } from './horde.js';
@@ -30,7 +30,7 @@ import { createPropsView } from './props-view.js';
 import { createBaseView } from './base-view.js';
 import {
   createRefugePanel, createCard, onlineChoiceCard, survivorCard, reportCard, followCard, myDataCard, eraseCard, exportCard,
-  zonesCard, ONLINE_TEXTS,
+  zonesCard, ONLINE_TEXTS, ACCOUNT_TEXTS,
 } from './panels.js';
 import { createHud, distanceText } from './hud.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
@@ -43,6 +43,9 @@ import { FLAGS, nameOf, sectorOf } from './net/protocol.js';
 import { BUILD } from './net/build.js';
 import { zoneStatus, inviteCoords, removeZone, metersBetween as zoneMeters } from './privacy.js';
 import { REDUCED_LOOT, searchedLabel } from './shared-world.js';
+// Compte facultatif (spécification des comptes, 5.8) : partie sauvegardée sur le serveur, autre appareil.
+import { createAccount, NULL_ACCOUNT } from './account.js';
+import { createAccountUi } from './account-ui.js';
 
 const PREFETCH_RADIUS = 600; // tuiles demandées à l'avance autour du joueur
 const QUEST_RADIUS = 700;
@@ -66,11 +69,17 @@ let session = null;
 let starting = false;
 let firstLaunch = true; // récupération hors ligne : une seule fois par page
 let homePending = true; // refuge disparu, siège d'absence : une fois par page, à la première session au refuge
+// Compte (account.js), créé plus bas après le jeu à plusieurs ; NULL_ACCOUNT d'ici là et avec ?online=0.
+let account = NULL_ACCOUNT;
+let accountUi = null;
 const saveStore = createSaveStore({
   fresh: params.get('fresh') === '1',
   // Différé : la carte, le HUD et les cartes de jeu n'existent pas encore pendant la création du magasin.
   onExternal: (e) => setTimeout(() => onSaveExternal(e), 0),
   beforeWrite: copyLive,
+  // Copie de la partie sur le serveur, si un compte est connecté (différé comme onExternal : le compte n'existe pas
+  // encore quand ?fresh=1 écrit la partie neuve).
+  onWrite: (e) => setTimeout(() => account.onSaveWrite(e), 0),
 });
 const save = saveStore.save;
 // Ses propres démontages (72 h, sauvegarde) ; ceux des autres viennent du jeu en ligne.
@@ -98,6 +107,8 @@ const online = params.get('online') === '0' ? NULL_ONLINE : createOnline({
   isPrivate: (lat, lon) => zoneStatus(zones, lat, lon).kind === 'private',
   // Alerte de suivi accélérée pour les tests (?debug=1&followScale=60).
   followScale: DEBUG ? Math.min(600, Math.max(1, Number(params.get('followScale')) || 1)) : 1,
+  // Connecté à un compte : sa session remplace le jeton anonyme (lue à chaque hello, jamais montrée au débogage).
+  session: () => account.session,
 });
 // Jeu en ligne actif sur cette page (le transport n'existe que si un serveur est utilisable).
 const onlineOn = online.transport !== null;
@@ -120,10 +131,34 @@ online.on('follow', ({ sid }) => showFollow(sid));
 online.on('ack', (e) => {
   if (!e.ok && e.why === 'taken' && e.notify) toast("Refuge non partagé : un autre survivant s'y était installé avant toi", 6);
 });
-window.addEventListener('pagehide', () => online.bye());
+// Compte facultatif : même serveur que le jeu à plusieurs ; inactif avec ?online=0 ou sans jeu en ligne.
+if (onlineOn) {
+  account = createAccount({
+    server: serverFromParams(params, ONLINE.server), enabled: true, storage,
+    save: {
+      storedText: () => saveStore.storedText, readOnly: () => saveStore.readOnly, isBlank: blankSaveText,
+      importText: (text) => saveStore.importText(text), wipe: () => saveStore.wipe(),
+    },
+    online: { anonToken: () => online.anonToken(), forgetIdentity: () => online.forgetIdentity(), relink: (o) => online.relink(o),
+      get accountsOpen() { return online.accountsOpen; } },
+    // Reprise et carte de conflit seulement au menu (section 5.8).
+    menuShown: () => !$('menu').classList.contains('hidden'),
+    onReload: (o) => reloadPage(o),
+  });
+  online.on('session', () => account.sessionRefused());
+}
+// Écouteurs posés après ceux de save.js (créé plus haut) : la partie est écrite d'abord, puis envoyée. Une erreur du
+// jeu en ligne n'empêche pas l'envoi de la partie.
+window.addEventListener('pagehide', () => {
+  try { online.bye(); } catch (e) { console.warn('online.bye', e); }
+  account.pagehide();
+});
 // Page rendue par le cache de navigation (retour arrière) : le client fermé à pagehide repart.
 window.addEventListener('pageshow', (e) => { if (e.persisted) online.start(); });
-document.addEventListener('visibilitychange', () => online.hidden(document.hidden));
+document.addEventListener('visibilitychange', () => {
+  try { online.hidden(document.hidden); } catch (e) { console.warn('online.hidden', e); }
+  account.hidden(document.hidden);
+});
 // Le refuge actuel (ou aucun, après ?fresh=1) est renvoyé à chaque welcome ; hors zone privée seulement.
 online.refuge(save.base?.id ?? null);
 
@@ -162,6 +197,33 @@ function urlWithout(name) {
 // Après un import ou une reprise (« Reprendre ici ») : la partie en mémoire a changé, on recharge sans ?fresh.
 function reloadClean() {
   location.replace(urlWithout('fresh'));
+}
+
+// Rechargement demandé par le compte : reprise de la partie du compte, ou ?fresh=1 après « Me déconnecter et
+// effacer la partie ici ».
+function reloadPage({ fresh = false } = {}) {
+  if (!fresh) { reloadClean(); return; }
+  const u = new URL(location.href);
+  u.searchParams.set('fresh', '1');
+  location.replace(u.toString());
+}
+
+// Partie vide (save.js, isBlankSave) d'un texte rangé ou reçu du serveur ; illisible : pas vide (jamais écrasée).
+function blankSaveText(text) {
+  try {
+    return isBlankSave(JSON.parse(text));
+  } catch {
+    return false;
+  }
+}
+
+// Résumé d'une partie pour la carte de conflit : refuge, nuits tenues, heure de la sauvegarde. La partie du serveur
+// n'est pas encore validée : chaque champ est vérifié ici.
+function describeSave(data) {
+  const b = data && typeof data === 'object' ? data.base : null;
+  const name = b && typeof b === 'object' ? (typeof b.place?.name === 'string' && b.place.name ? b.place.name.slice(0, 60) : kindLabel(b.kind) || 'refuge') : '';
+  const nights = Number.isInteger(data?.profile?.nightsHeld) && data.profile.nightsHeld >= 0 ? data.profile.nightsHeld : 0;
+  return { refuge: name, nights, savedAt: Number.isFinite(data?.savedAt) ? data.savedAt : null };
 }
 
 // « Jouer ici » sans refuge, « Rentrer au refuge » à 1 500 m ou moins du refuge, « Partir en expédition ici » au-delà.
@@ -282,6 +344,12 @@ const probe = new THREE.Sphere(new THREE.Vector3(), 1.2);
 
 // Jeu en ligne lancé une fois input, HUD et cartes créés (le premier état arrive tout de suite).
 online.start();
+// Compte : son interface s'abonne avant le lancement (note « Partie du compte reprise. » au premier état).
+if (account !== NULL_ACCOUNT) {
+  accountUi = createAccountUi({ $, account, online, saveStore, showCard, hideCard, toast, setLoading, describeSave,
+    download: downloadText });
+  account.start();
+}
 onOnlineStatus();
 
 $('play').addEventListener('click', () => startGame(picker.getPlace()));
@@ -338,6 +406,8 @@ function toMenu() {
   input.closeWheel();
   syncMenu();
   picker.show();
+  // Compte : reprise différée (jamais en partie) ou carte de conflit en attente.
+  accountUi?.atMenu();
 }
 
 // Lieu du refuge, pour le menu (« Voir mon refuge » y recentre la carte) et le réveil après une mort en expédition.
@@ -353,10 +423,15 @@ function exportSave() {
 }
 
 function downloadSave() {
-  const blob = new Blob([saveStore.exportText()], { type: 'application/json' });
+  downloadText(exportFileName(Date.now()), saveStore.exportText());
+}
+
+// Fichier JSON téléchargé (partie, version d'une carte de conflit, données du compte).
+function downloadText(name, text) {
+  const blob = new Blob([text], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = exportFileName(Date.now());
+  a.download = name;
   document.body.append(a);
   a.click();
   a.remove();
@@ -2169,7 +2244,7 @@ function onlineStatusText(st, s = session) {
     }
     case 'maintenance': return 'Maintenance du jeu en ligne';
     case 'perime': return 'Mets le jeu à jour : recharge la page';
-    case 'autre-onglet': return 'Partie en ligne ouverte dans un autre onglet';
+    case 'autre-onglet': return account.state === 'in' ? ACCOUNT_TEXTS.onlineElsewhere : 'Partie en ligne ouverte dans un autre onglet';
     case 'complet': return "Jeu en ligne complet : tu joues seul pour l'instant";
     case 'secours': return 'Hors ligne : ville de secours';
     case 'invite': return "Code d'invitation demandé";
@@ -2222,6 +2297,7 @@ function renderOnlineMenu() {
     mute.setAttribute('aria-pressed', String(online.muted()));
     setText($('online-mute-label'), online.muted() ? 'Rétablir les gestes' : 'Couper les gestes');
   }
+  accountUi?.render();
 }
 
 function setText(el, text) {
@@ -2270,14 +2346,20 @@ async function inviteHere() {
 }
 
 // « Voir mes données » (droit d'accès, section 6.8) : le surnom est recomposé ici, jamais lu comme un texte du réseau.
+// Connecté à un compte : la vue du compte d'abord (spécification des comptes, 6.2), puis l'identité rattachée.
 async function showMyData() {
   setOnlineNote('Lecture de tes données…');
-  const data = await online.showMe();
+  const signedIn = account.state === 'in';
+  const r = signedIn ? await account.me() : null;
+  const data = signedIn ? (r.ok ? r.account?.player ?? null : null) : await online.showMe();
   setOnlineNote('');
+  // Session perdue pendant la lecture : la note du compte le dit, pas de carte.
+  if (signedIn && !r.ok && r.code === 'session') return;
   const name = data && Array.isArray(data.nm) ? nameOf(data.nm) : null;
   const id = typeof data?.refuge === 'string' ? data.refuge : null;
   const refuge = !id ? '' : id === save.base?.id ? `ton refuge (${kindLabel(save.base.kind)})` : 'un autre bâtiment';
-  showCard(myDataCard(data, { name, refuge }), null, { escape: 'close' });
+  const view = signedIn && r.ok ? r.account : null;
+  showCard(myDataCard(view ? null : (signedIn ? null : data), { name, refuge, account: view }), null, { escape: 'close' });
 }
 
 function askErase() {
@@ -2428,6 +2510,8 @@ const debug = DEBUG ? {
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
   saveStore, picker, renderer, ...(debug ? { debug, online } : {}),
+  // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
+  ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
 };
 // others-view.js arrive plus tard (import dynamique) : lu à la demande, pas recopié au chargement.
 if (debug) Object.defineProperty(window.__earthlife, 'othersView', { get: () => othersView, enumerable: true });

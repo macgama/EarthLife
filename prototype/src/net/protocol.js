@@ -23,7 +23,9 @@ export const RULES = {
 };
 export const GESTURES = ['Salut', 'Par ici', 'Attention !', 'Merci', 'Suis-moi', "Besoin d'aide"];
 export const REPORT_REASONS = { 1: 'Me suit partout', 2: 'Abuse des gestes', 3: 'Triche (vitesse, téléportation)' };
-export const ERR_CODES = ['dup', 'full', 'old', 'banned', 'invite', 'bad'];
+// 'session' : session de compte inconnue, échue ou supprimée (spécification des comptes, 4.3) ; envoyé seulement à un
+// hello qui portait `ses`, ou à une connexion ouverte avec une session supprimée depuis.
+export const ERR_CODES = ['dup', 'full', 'old', 'banned', 'invite', 'bad', 'session'];
 export const ACK_WHY = ['taken', 'far', 'rate'];
 export const BYE_WHY = ['restart', 'maintenance'];
 
@@ -193,7 +195,9 @@ export function markIdOk(k, id) {
 
 // ---------- Validation des messages (section 6.3) ----------
 
-const TOKEN = /^[A-Za-z0-9_-]{43}$/;
+// Jeton anonyme et clé de session de compte : 32 octets aléatoires en base64url (43 caractères).
+export const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+const TOKEN = TOKEN_RE;
 const INVITE = /^[A-Za-z0-9-]{1,16}$/;
 const BUILD = /^([0-9a-f]{7}|dev)$/;
 const MAX_U31 = 2 ** 31;
@@ -221,7 +225,8 @@ function tooBig(text, max) {
 }
 
 // Lecture d'un texte JSON : taille en octets, objet à la racine, aucune clé dangereuse à la racine.
-function readJson(text, max) {
+// → { obj } | { why: 'type' | 'size' | 'json' | 'root' | 'proto' } (aussi utilisée par net/account.js).
+export function readJson(text, max) {
   if (typeof text !== 'string') return { why: 'type' };
   if (tooBig(text, max)) return { why: 'size' };
   let obj;
@@ -260,6 +265,9 @@ const CLIENT = {
     if (tok === undefined || tok === null) out.tok = null;
     else if (typeof tok === 'string' && TOKEN.test(tok)) out.tok = tok;
     else bad('tok');
+    // Session de compte (spécification des comptes, 4.3) : recopiée seulement si elle est donnée.
+    const ses = get(o, 'ses');
+    if (ses !== undefined && ses !== null) out.ses = typeof ses === 'string' && TOKEN.test(ses) ? ses : bad('ses');
     const c = get(o, 'c');
     if (c !== undefined) out.c = typeof c === 'string' && BUILD.test(c) ? c : bad('c');
     const inv = get(o, 'inv');
@@ -422,15 +430,17 @@ export function parseServer(text) {
 
 // ---------- Repli HTTP (section 5.7) ----------
 
-// Corps de POST /v1/sync : { v, tok, sid?, msgs }. `sid` (facultatif) est le numéro de passage reçu dans welcome :
-// il distingue deux onglets qui présentent le même jeton. Les messages invalides sont comptés, pas bloquants.
+// Corps de POST /v1/sync : { v, tok, ses?, sid?, msgs }. `sid` (facultatif) est le numéro de passage reçu dans
+// welcome : il distingue deux onglets qui présentent le même jeton. `ses` (facultatif) : session de compte, qui tient
+// lieu de jeton quand elle est donnée. Les messages invalides sont comptés, pas bloquants.
 export function parseSync(text) {
   const r = readJson(text, RULES.maxBody);
   if (!r.obj) return { ok: false, why: r.why };
   const o = r.obj;
-  const v = get(o, 'v'), tok = get(o, 'tok'), sid = get(o, 'sid'), msgs = get(o, 'msgs');
+  const v = get(o, 'v'), tok = get(o, 'tok'), ses = get(o, 'ses'), sid = get(o, 'sid'), msgs = get(o, 'msgs');
   if (!inRange(v, 1, 1000)) return { ok: false, why: 'field:v' };
   if (!(tok === null || tok === undefined || (typeof tok === 'string' && TOKEN.test(tok)))) return { ok: false, why: 'field:tok' };
+  if (!(ses === null || ses === undefined || (typeof ses === 'string' && TOKEN.test(ses)))) return { ok: false, why: 'field:ses' };
   if (!(sid === undefined || sid === null || inRange(sid, 1, MAX_U31 - 1))) return { ok: false, why: 'field:sid' };
   if (!Array.isArray(msgs) || msgs.length > RULES.syncMaxMsgs) return { ok: false, why: 'field:msgs' };
   const out = [], bads = [];
@@ -439,7 +449,7 @@ export function parseSync(text) {
     if (one.ok) out.push(one.msg);
     else bads.push(one.why);
   }
-  return { ok: true, body: { v, tok: tok ?? null, sid: sid ?? null, msgs: out }, bad: bads };
+  return { ok: true, body: { v, tok: tok ?? null, ses: ses ?? null, sid: sid ?? null, msgs: out }, bad: bads };
 }
 
 // Réponse de POST /v1/sync, lue par le client : { msgs }.

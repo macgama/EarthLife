@@ -3,13 +3,15 @@
 // test jetable : ses tables el_* sont effacées) ; la CI la lance avec un service mariadb:10.11. Sans elle, cette
 // partie est sautée avec un message. Hors suite : base injoignable (salle en maintenance), méthode
 // d'authentification inconnue, découpage du schéma et requêtes préparées (valeurs liées, jamais indéfinies).
+// Comptes (spécification des comptes, 4.5 et 7.1) : méthodes de 4.5 dans la suite de contrat ; migration de 001 seul
+// à 001 et 002 (MariaDB seulement).
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
 import mysql from 'mysql2/promise';
 import { createMemoryStore } from '../src/store-memory.js';
-import { createMysqlStore, dbFromUrl, splitSql, SCHEMA_FILE } from '../src/store-mysql.js';
+import { createMysqlStore, dbFromUrl, splitSql, SCHEMA_FILE, SCHEMA_FILES } from '../src/store-mysql.js';
 import { createRoom } from '../src/room.js';
 import { dayOf } from '../src/rules.js';
 import { freePort } from '../tools/bots.mjs';
@@ -22,11 +24,14 @@ const th = (n) => (n + 1000).toString(16).padStart(64, 'a');
 const ipHash = (n) => n.toString(16).padStart(64, 'c');
 const day = (ms) => dayOf(ms);
 const TEST_DB = process.env.EARTHLIFE_TEST_DB || '';
-const TABLES = ['el_reports', 'el_blocks', 'el_refuges', 'el_ip_bans', 'el_marks', 'el_players', 'el_meta'];
+const TABLES = ['el_codes', 'el_saves', 'el_sessions', 'el_accounts', 'el_reports', 'el_blocks', 'el_refuges', 'el_ip_bans', 'el_marks',
+  'el_players', 'el_meta'];
+const eh = (n) => n.toString(16).padStart(64, 'e');            // empreinte d'adresse
+const sh = (n) => n.toString(16).padStart(64, '5');            // empreinte de session
+const box = (n) => Buffer.from(`boite-${n}-`.padEnd(40, 'x'));
 
-async function freshMysql(opts = {}) {
-  const db = dbFromUrl(TEST_DB);
-  const admin = await mysql.createConnection(db);
+async function dropAll() {
+  const admin = await mysql.createConnection(dbFromUrl(TEST_DB));
   try {
     await admin.query('SET FOREIGN_KEY_CHECKS = 0');
     for (const t of TABLES) await admin.query(`DROP TABLE IF EXISTS ${t}`);
@@ -34,7 +39,11 @@ async function freshMysql(opts = {}) {
   } finally {
     await admin.end();
   }
-  const store = createMysqlStore({ ...db, ...opts });
+}
+
+async function freshMysql(opts = {}) {
+  await dropAll();
+  const store = createMysqlStore({ ...dbFromUrl(TEST_DB), ...opts });
   await store.init();
   return store;
 }
@@ -239,7 +248,7 @@ for (const B of BACKENDS) {
       await s.banIp(ipHash(1), now);
       await s.banIp(ipHash(2), now + 1);
       const out = await s.purge(now);
-      assert.deepEqual(out, { marks: 2, refuges: 1, players: 1, reports: 1, bans: 1 });
+      assert.deepEqual(out, { marks: 2, refuges: 1, players: 1, reports: 1, bans: 1, sessions: 0, codes: 0 });
       assert.deepEqual((await s.activeMarks(0)).map((x) => x.target), ['c3_3']);
       assert.deepEqual((await s.refuges()).map((x) => x.owner), [id(3)]);
       assert.equal(await s.exportPlayer(id(1)), null);
@@ -248,7 +257,7 @@ for (const B of BACKENDS) {
       assert.deepEqual(await s.reportStats(id(2), 0, now + DAY), { distinctOldEnough: 1 });
       assert.deepEqual(await s.reportStats(id(3), 0, now + DAY), { distinctOldEnough: 0 });
       assert.deepEqual([...(await s.ipBans()).keys()], [ipHash(2)]);
-      assert.deepEqual(await s.purge(now), { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0 });
+      assert.deepEqual(await s.purge(now), { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0 });
     });
 
     test('la salle sur ce magasin : identité, refuge écrit puis relu au redémarrage', async () => {
@@ -306,6 +315,218 @@ for (const B of BACKENDS) {
       });
     }
 
+    // ---------- Comptes (4.5) ----------
+
+    test('comptes : création, lecture, doublons, mot de passe, activité, prévenance, nombres', async () => {
+      const s = await make();
+      const a = await s.createAccount({ id: id(1), emailHash: eh(1), emailBox: box(1), pwHash: 's1$10$8$1$sel$empreinte', today: day(T0) });
+      const want = { id: id(1), emailHash: eh(1), emailBox: box(1), pwHash: 's1$10$8$1$sel$empreinte', playerId: null, createdOn: day(T0),
+        seenOn: day(T0), warnedOn: null };
+      assert.deepEqual(a, want);
+      assert.deepEqual(await s.accountByEmailHash(eh(1)), want);
+      assert.deepEqual(await s.accountById(id(1)), want);
+      assert.equal(await s.accountByEmailHash(eh(2)), null);
+      assert.equal(await s.accountById(id(2)), null);
+      await assert.rejects(s.createAccount({ id: id(2), emailHash: eh(1), emailBox: box(2), pwHash: 'x', today: day(T0) }), (e) => e.code === 'DUP');
+      await assert.rejects(s.createAccount({ id: id(1), emailHash: eh(3), emailBox: box(3), pwHash: 'x', today: day(T0) }), (e) => e.code === 'DUP');
+      assert.equal(await s.setPassword(id(1), 's1$10$8$1$sel2$autre'), true);
+      assert.equal((await s.accountById(id(1))).pwHash, 's1$10$8$1$sel2$autre');
+      assert.equal(await s.setPassword(id(9), 'x'), false);
+      await s.markWarned(id(1), day(T0 + DAY));
+      assert.equal((await s.accountById(id(1))).warnedOn, day(T0 + DAY));
+      await s.touchAccount(id(1), day(T0 + 2 * DAY));
+      const t = await s.accountById(id(1));
+      assert.deepEqual([t.seenOn, t.warnedOn], [day(T0 + 2 * DAY), null]);
+      // Inactifs : prévenance (jamais prévenus, plus vieux d'abord), effacement (prévenus assez tôt), chaque liste bornée.
+      for (let i = 2; i <= 5; i++) {
+        await s.createAccount({ id: id(i), emailHash: eh(i), emailBox: box(i), pwHash: 'x', today: day(T0 - (10 - i) * DAY) });
+      }
+      await s.markWarned(id(2), day(T0 - 5 * DAY));
+      await s.markWarned(id(3), day(T0 - DAY));
+      const r = await s.inactiveAccounts({ warnBefore: day(T0), eraseBefore: day(T0), noticeBefore: day(T0 - 2 * DAY), limit: 1 });
+      assert.deepEqual(r, { warn: [{ id: id(4), emailBox: box(4), seenOn: day(T0 - 6 * DAY) }], erase: [id(2)] });
+      const all = await s.inactiveAccounts({ warnBefore: day(T0), eraseBefore: day(T0), noticeBefore: day(T0), limit: 10 });
+      assert.deepEqual(all.warn.map((x) => x.id), [id(4), id(5)]);
+      assert.deepEqual(all.erase, [id(2), id(3)]);
+      assert.deepEqual(await s.countAccounts(), { accounts: 5, sessions: 0, saves: 0 });
+    });
+
+    test('comptes : rattachement d\'identité (une transaction), jeton remplacé, effacements en cascade dans les deux sens', async () => {
+      const s = await make();
+      await players(s, 3);
+      await s.createAccount({ id: id(11), emailHash: eh(11), emailBox: box(11), pwHash: 'x', today: day(T0) });
+      await s.createAccount({ id: id(12), emailHash: eh(12), emailBox: box(12), pwHash: 'x', today: day(T0) });
+      assert.equal(await s.linkPlayer({ accountId: id(11), playerId: id(1), newTokenHash: th(91) }), true);
+      assert.equal(await s.playerByTokenHash(th(1)), null, 'jeton anonyme inutilisable');
+      assert.equal((await s.playerByTokenHash(th(91))).id, id(1));
+      assert.equal((await s.playerById(id(1))).tokenHash, th(91));
+      assert.equal(await s.playerById(id(9)), null);
+      assert.equal((await s.accountById(id(11))).playerId, id(1));
+      assert.equal(await s.linkPlayer({ accountId: id(11), playerId: id(2), newTokenHash: th(92) }), false, 'compte qui a déjà une identité');
+      assert.equal(await s.linkPlayer({ accountId: id(12), playerId: id(1), newTokenHash: th(93) }), false, 'identité déjà rattachée');
+      assert.equal(await s.linkPlayer({ accountId: id(12), playerId: id(9), newTokenHash: th(94) }), false, 'identité inconnue');
+      assert.equal(await s.linkPlayer({ accountId: id(19), playerId: id(2), newTokenHash: th(95) }), false, 'compte inconnu');
+      assert.ok(await s.playerByTokenHash(th(2)), 'refus : rien de changé');
+      // Identité effacée (« Supprimer mes données en ligne ») : le compte la perd.
+      assert.equal(await s.linkPlayer({ accountId: id(12), playerId: id(2), newTokenHash: th(96) }), true);
+      assert.equal(await s.erase(id(2)), true);
+      assert.equal((await s.accountById(id(12))).playerId, null);
+      // Compte effacé : identité (refuge, masquages, signalements), sessions et partie avec lui.
+      await s.flush({ refuges: [{ building: 'b45.00001_4.00001', owner: id(1), cy: 1, cx: 1, claimedAt: T0 }], nowMs: T0 });
+      await s.addBlock(id(1), id(3), day(T0));
+      await s.addReport({ reporter: id(3), target: id(1), reason: 2, atMs: T0 });
+      await s.createSession({ tokenHash: sh(1), accountId: id(11), nowMs: T0, expiresMs: T0 + DAY, today: day(T0), max: 10 });
+      await s.putSave({ accountId: id(11), base: 0, blob: Buffer.from([1, 2, 3]), bytes: 3, stamp: [null, 0, 0], nowMs: T0 });
+      assert.deepEqual(await s.eraseAccount(id(11)), { playerId: id(1) });
+      assert.equal(await s.accountById(id(11)), null);
+      assert.equal(await s.accountByEmailHash(eh(11)), null);
+      assert.equal(await s.exportPlayer(id(1)), null);
+      assert.deepEqual(await s.refuges(), []);
+      assert.equal((await s.blocksOf(id(3))).size, 0);
+      assert.equal(await s.sessionByTokenHash(sh(1), T0), null);
+      assert.equal(await s.getSave(id(11)), null);
+      assert.deepEqual(await s.countAccounts(), { accounts: 1, sessions: 0, saves: 0 });
+      assert.equal(await s.eraseAccount(id(11)), null);
+      assert.deepEqual(await s.eraseAccount(id(12)), { playerId: null });
+    });
+
+    test('sessions : création (échues et plus anciennes au-delà de max retirées), lecture, renouvellement, retraits', async () => {
+      const s = await make();
+      await players(s, 1);
+      await s.createAccount({ id: id(21), emailHash: eh(21), emailBox: box(21), pwHash: 'x', today: day(T0) });
+      await s.linkPlayer({ accountId: id(21), playerId: id(1), newTokenHash: th(81) });
+      await s.markWarned(id(21), day(T0));
+      const mk = (n, at, exp = at + 60 * DAY, max = 3) => s.createSession({ tokenHash: sh(n), accountId: id(21), nowMs: at, expiresMs: exp,
+        today: day(at), max });
+      assert.deepEqual(await mk(1, T0, T0 + H), { dropped: [] });
+      assert.deepEqual(await mk(2, T0 + 1000), { dropped: [] });
+      assert.deepEqual(await s.sessionByTokenHash(sh(2), T0 + 2000), { tokenHash: sh(2), accountId: id(21), playerId: id(1), createdMs: T0 + 1000,
+        seenOn: day(T0), expiresMs: T0 + 1000 + 60 * DAY });
+      assert.equal(await s.sessionByTokenHash(sh(1), T0 + H), null, 'échue à expiresMs');
+      assert.ok(await s.sessionByTokenHash(sh(1), T0 + H - 1));
+      assert.deepEqual(await mk(3, T0 + 2 * H), { dropped: [sh(1)] }, 'session échue du compte retirée');
+      assert.deepEqual(await mk(4, T0 + 3 * H), { dropped: [] });
+      assert.deepEqual(await mk(5, T0 + 4 * H), { dropped: [sh(2)] }, 'au-delà de 3 : la plus ancienne');
+      await assert.rejects(mk(5, T0 + 5 * H), (e) => e.code === 'DUP');
+      await assert.rejects(s.createSession({ tokenHash: sh(9), accountId: id(29), nowMs: T0, expiresMs: T0 + DAY, today: day(T0), max: 3 }),
+        (e) => e.code === 'NO_ACCOUNT');
+      assert.deepEqual((await s.sessionsOf(id(21))).map((x) => x.createdMs), [T0 + 2 * H, T0 + 3 * H, T0 + 4 * H]);
+      await s.touchSession(sh(3), day(T0 + DAY), T0 + 61 * DAY);
+      assert.deepEqual((await s.sessionsOf(id(21)))[0], { createdMs: T0 + 2 * H, seenOn: day(T0 + DAY), expiresMs: T0 + 61 * DAY });
+      const acc = await s.accountById(id(21));
+      assert.deepEqual([acc.seenOn, acc.warnedOn], [day(T0 + DAY), null], 'compte noté actif');
+      assert.equal(await s.dropSession(sh(4)), true);
+      assert.equal(await s.dropSession(sh(4)), false);
+      await mk(6, T0 + 5 * H);
+      assert.deepEqual((await s.dropSessions(id(21), sh(6))).sort(), [sh(3), sh(5)].sort());
+      assert.deepEqual((await s.sessionsOf(id(21))).length, 1);
+      assert.deepEqual(await s.dropSessions(id(21)), [sh(6)]);
+      assert.deepEqual(await s.dropSessions(id(21)), []);
+      // Purge : sessions échues seulement.
+      await mk(7, T0, T0 + DAY);
+      await mk(8, T0 + 1, T0 + 3 * DAY);
+      const out = await s.purge(T0 + 2 * DAY);
+      assert.equal(out.sessions, 1);
+      assert.ok(await s.sessionByTokenHash(sh(8), T0 + 2 * DAY));
+    });
+
+    test('mot de passe : compare-et-écris (setPassword avec l\'empreinte attendue), session créée seulement si l\'empreinte vérifiée est encore la bonne', async () => {
+      const s = await make();
+      const H0 = 's1$10$8$1$sel0$premiere', H1 = 's1$10$8$1$sel1$seconde', H2 = 's1$10$8$1$sel2$troisieme';
+      await s.createAccount({ id: id(41), emailHash: eh(41), emailBox: box(41), pwHash: H0, today: day(T0) });
+      const mk = (n, pwHash) => s.createSession({ tokenHash: sh(n), accountId: id(41), nowMs: T0, expiresMs: T0 + DAY, today: day(T0), max: 10,
+        ...(pwHash === undefined ? {} : { pwHash }) });
+      // Sans empreinte attendue : écriture simple (réinitialisation par code).
+      assert.equal(await s.setPassword(id(41), H1), true);
+      // Avec : seulement si l'empreinte rangée est exactement celle-là (le rehachage d'une connexion ne défait pas un changement).
+      assert.equal(await s.setPassword(id(41), H2, H0), false, 'empreinte périmée');
+      assert.equal((await s.accountById(id(41))).pwHash, H1);
+      assert.equal(await s.setPassword(id(41), H2, H1.toUpperCase()), false, 'comparaison exacte, casse comprise');
+      assert.equal((await s.accountById(id(41))).pwHash, H1);
+      assert.equal(await s.setPassword(id(41), H2, H1), true);
+      assert.equal((await s.accountById(id(41))).pwHash, H2);
+      assert.equal(await s.setPassword(id(49), H2, H2), false, 'compte inconnu');
+      // Session : avec pwHash périmé, rien n'est créé (et rien n'est retiré) ; sans pwHash ou avec le bon, comme avant.
+      assert.deepEqual(await mk(1, H0), { dropped: [], stale: true });
+      assert.equal(await s.sessionByTokenHash(sh(1), T0), null);
+      assert.deepEqual(await s.sessionsOf(id(41)), []);
+      assert.deepEqual(await mk(2, H2.toUpperCase()), { dropped: [], stale: true }, 'comparaison exacte');
+      assert.deepEqual(await mk(3, H2), { dropped: [] });
+      assert.deepEqual(await mk(4), { dropped: [] });
+      assert.deepEqual(await mk(5, null), { dropped: [] });
+      assert.equal((await s.sessionsOf(id(41))).length, 3);
+    });
+
+    test('codes : remplacement, 3 envois par heure (fenêtre depuis le premier) et 6 par jour, essais comptés, keep, purge', async () => {
+      const s = await make();
+      const put = (n, at) => s.putCode({ emailHash: eh(31), codeHash: sh(n), nowMs: at, expiresMs: at + 15 * 60000, today: day(at), perHour: 3,
+        perDay: 6 });
+      const take = (n, at, opts = {}) => s.takeCode({ emailHash: eh(31), nowMs: at, maxAttempts: 3, check: (h) => h === sh(n), ...opts });
+      const D = T0 - (T0 % DAY) + 8 * H;           // 8 h UTC : la journée ne change pas pendant l'essai
+      assert.equal(await take(1, D), 'none');
+      assert.deepEqual(await put(1, D), { ok: true });
+      assert.equal(await take(1, D, { keep: true }), 'ok');
+      assert.equal(await take(1, D, { keep: true }), 'ok', 'keep : code vérifié sans être consommé');
+      assert.deepEqual(await put(2, D + 60000), { ok: true });
+      assert.equal(await take(1, D + 60000), 'bad', 'ancien code remplacé');
+      assert.equal(await take(2, D + 60000), 'ok');
+      assert.equal(await take(2, D + 60000), 'none', 'consommé');
+      assert.deepEqual(await put(3, D + 120000), { ok: true });
+      assert.deepEqual(await put(4, D + 180000), { ok: false }, '4e envoi dans l\'heure');
+      assert.equal(await take(3, D + 180000), 'ok', 'refus : code précédent intact');
+      assert.deepEqual(await put(5, D + H), { ok: true }, 'heure suivante (depuis le premier envoi)');
+      assert.equal(await take(9, D + H), 'bad');
+      assert.equal(await take(9, D + H), 'bad');
+      assert.equal(await take(5, D + H, { keep: true }), 'ok');
+      assert.equal(await take(9, D + H), 'bad', '3e essai faux : brûlé');
+      assert.equal(await take(5, D + H), 'none');
+      assert.deepEqual(await put(6, D + H + 1), { ok: true });
+      assert.equal(await take(6, D + H + 15 * 60000 + 1), 'none', 'échu');
+      assert.deepEqual(await put(7, D + 2 * H + 2), { ok: true });
+      assert.deepEqual(await put(8, D + 3 * H + 3), { ok: false }, '6 par jour');
+      assert.deepEqual(await put(8, D + DAY), { ok: true }, 'jour suivant');
+      // Purge : codes échus dont le jour de compte est passé de plus d'un jour.
+      assert.equal((await s.purge(D + DAY + H)).codes, 0);
+      assert.equal((await s.purge(D + 3 * DAY)).codes, 1);
+      assert.equal(await take(8, D + 3 * DAY), 'none');
+    });
+
+    test('parties : compare-et-écrit (base 0 crée, révision attendue, force), lecture, empreinte', async () => {
+      const s = await make();
+      await s.createAccount({ id: id(41), emailHash: eh(41), emailBox: box(41), pwHash: 'x', today: day(T0) });
+      const blob = (n) => Buffer.alloc(n, 7);
+      const put = (o) => s.putSave({ accountId: id(41), force: false, blob: blob(10), bytes: 100, stamp: ['wab12', 4, T0 - 5], nowMs: T0, ...o });
+      assert.equal(await s.saveMeta(id(41)), null);
+      assert.equal(await s.getSave(id(41)), null);
+      assert.deepEqual(await put({ base: 3 }), { ok: false, meta: null });
+      assert.deepEqual(await put({ base: 0 }), { ok: true, rev: 1 });
+      const meta = { rev: 1, savedMs: T0, bytes: 100, stamp: ['wab12', 4, T0 - 5] };
+      assert.deepEqual(await s.saveMeta(id(41)), meta);
+      assert.deepEqual(await s.getSave(id(41)), { ...meta, blob: blob(10) });
+      assert.deepEqual(await put({ base: 0 }), { ok: false, meta });
+      assert.deepEqual(await put({ base: 1, nowMs: T0 + 1, stamp: [null, 0, 0], blob: blob(300000), bytes: 262144 }), { ok: true, rev: 2 });
+      assert.deepEqual(await s.getSave(id(41)), { rev: 2, savedMs: T0 + 1, bytes: 262144, stamp: [null, 0, 0], blob: blob(300000) });
+      assert.deepEqual(await put({ base: 7, force: true }), { ok: true, rev: 3 });
+      assert.equal((await s.saveMeta(id(41))).rev, 3);
+      assert.deepEqual(await s.putSave({ accountId: id(49), base: 0, blob: blob(1), bytes: 1, stamp: [null, 0, 0], nowMs: T0 }), { ok: false, meta: null });
+      assert.deepEqual(await s.countAccounts(), { accounts: 1, sessions: 0, saves: 1 });
+    });
+
+    test('purge : identité rattachée à un compte jamais effacée par la règle des 180 jours (son refuge suit celle des 30)', async () => {
+      const s = await make();
+      const now = T0 + 400 * DAY;
+      await players(s, 2, { today: day(T0) });
+      await s.createAccount({ id: id(51), emailHash: eh(51), emailBox: box(51), pwHash: 'x', today: day(T0) });
+      await s.linkPlayer({ accountId: id(51), playerId: id(1), newTokenHash: th(71) });
+      await s.flush({ refuges: [{ building: 'b45.00001_4.00001', owner: id(1), cy: 1, cx: 1, claimedAt: T0 }], nowMs: T0 });
+      const out = await s.purge(now);
+      assert.equal(out.players, 1);
+      assert.equal(out.refuges, 1);
+      assert.ok(await s.exportPlayer(id(1)));
+      assert.equal(await s.exportPlayer(id(2)), null);
+      assert.equal((await s.accountById(id(51))).playerId, id(1));
+    });
+
     test('fin de la suite', async () => {
       if (store) await store.close();
       store = null;
@@ -314,6 +535,44 @@ for (const B of BACKENDS) {
 }
 
 // ---------- Hors suite (sans MariaDB) ----------
+
+test('schéma 002 : appliqué après 001, quatre tables utf8mb4 puis la version 2', () => {
+  assert.deepEqual(SCHEMA_FILES.map((f) => f.split(/[\\/]/).pop()), ['001-init.sql', '002-comptes.sql']);
+  const st = splitSql(fs.readFileSync(SCHEMA_FILES[1], 'utf8'));
+  assert.equal(st.length, 5);
+  assert.deepEqual(st.slice(0, 4).map((s) => /^CREATE TABLE IF NOT EXISTS (el_\w+)/.exec(s)?.[1]), ['el_accounts', 'el_sessions', 'el_saves', 'el_codes']);
+  for (const s of st) assert.ok(!s.includes('--') && !s.includes('«'), s.slice(0, 60));
+  for (const s of st.slice(0, 4)) assert.match(s, /ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$/);
+  assert.equal(st[4], "UPDATE el_meta SET v = '2' WHERE k = 'schema' AND CAST(v AS UNSIGNED) < 2");
+  assert.match(st[0], /FOREIGN KEY \(player_id\) REFERENCES el_players\(id\) ON DELETE SET NULL/);
+});
+
+test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001 et 002 (tables, schéma 2, données gardées)',
+  { skip: TEST_DB ? false : 'EARTHLIFE_TEST_DB absente' }, async () => {
+    await dropAll();
+    const db = dbFromUrl(TEST_DB);
+    const old = createMysqlStore({ ...db, schemaFile: SCHEMA_FILE });
+    await old.init();
+    await old.createPlayer({ id: id(1), tokenHash: th(1), name: [1, 2, 27], today: day(T0) });
+    await old.close();
+    const admin = await mysql.createConnection(db);
+    const meta = async () => (await admin.query("SELECT v FROM el_meta WHERE k = 'schema'"))[0][0].v;
+    const tables = async () => (await admin.query("SHOW TABLES LIKE 'el\\_%'"))[0].map((r) => Object.values(r)[0]).sort();
+    try {
+      assert.equal(await meta(), '1');
+      assert.ok(!(await tables()).includes('el_accounts'));
+      for (let i = 0; i < 2; i++) {
+        const s = createMysqlStore(db);
+        await s.init();
+        assert.ok(await s.playerByTokenHash(th(1)), 'identité gardée');
+        await s.close();
+      }
+      assert.equal(await meta(), '2');
+      assert.deepEqual(await tables(), [...TABLES].sort());
+    } finally {
+      await admin.end();
+    }
+  });
 
 test('schéma : découpé en instructions, sans commentaire, une table par instruction, utf8mb4', () => {
   const st = splitSql(fs.readFileSync(SCHEMA_FILE, 'utf8'));
@@ -340,6 +599,15 @@ function fakeDriver() {
       if (/^SELECT name_day/.test(sql)) return [[{ name_day: null, name_changes: 0 }]];
       if (/^SELECT name_a/.test(sql)) return [[{ name_a: 1, name_p: 2, name_n: 27, created_on: '2026-10-02', seen_on: '2026-10-02' }]];
       if (/^SELECT id FROM el_players/.test(sql)) return [[{ id: Buffer.alloc(16) }]];
+      // Comptes : lignes trouvées, pour que chaque branche d'écriture soit parcourue.
+      if (/^SELECT (id|id, pw_hash|player_id) FROM el_accounts WHERE id = \?/.test(sql)) {
+        return [[{ id: Buffer.alloc(16), pw_hash: 's1$10$8$1$sel$empreinte', player_id: Buffer.alloc(16, 3) }]];
+      }
+      if (/^SELECT token_hash FROM el_sessions/.test(sql)) return [[{ token_hash: Buffer.alloc(32, 1) }, { token_hash: Buffer.alloc(32, 2) }]];
+      if (/^SELECT hour_ms/.test(sql)) return [[{ hour_ms: T0, hour_n: 1, day: '2026-10-02', day_n: 1 }]];
+      if (/^SELECT code_hash/.test(sql)) return [[{ code_hash: Buffer.alloc(32, 4), expires_ms: T0 + H, attempts: 0 }]];
+      if (/^SELECT rev/.test(sql)) return [[{ rev: 1, saved_ms: T0, bytes: 3, stamp_w: null, stamp_r: 0, stamp_t: 0, data: Buffer.from([1]) }]];
+      if (/^SELECT \(SELECT COUNT/.test(sql)) return [[{ a: 1, s: 2, v: 3 }]];
       if (/^(DELETE|INSERT|UPDATE)/.test(sql)) return [{ affectedRows: 0 }];
       return [[]];
     },
@@ -376,10 +644,41 @@ test('magasin MariaDB (faux pilote) : valeurs toujours liées, autant de ? que d
   await s.purge(T0);
   await s.listReports(T0);
   await s.ping();
+  // Comptes (4.5).
+  await s.createAccount({ id: id(1), emailHash: eh(1), emailBox: box(1), pwHash: 's1$10$8$1$sel$empreinte', today: '2026-10-02' });
+  await s.accountByEmailHash(eh(1));
+  await s.accountById(id(1));
+  await s.setPassword(id(1), 's1$10$8$1$sel$autre');
+  await s.setPassword(id(1), 's1$10$8$1$sel$encore', 's1$10$8$1$sel$autre');
+  await s.touchAccount(id(1), '2026-10-02');
+  await s.linkPlayer({ accountId: id(1), playerId: id(2), newTokenHash: th(5) });
+  await s.playerById(id(2));
+  await s.inactiveAccounts({ warnBefore: '2026-10-02', eraseBefore: '2026-10-02', noticeBefore: '2026-10-02', limit: 50 });
+  await s.markWarned(id(1), '2026-10-02');
+  assert.deepEqual(await s.countAccounts(), { accounts: 1, sessions: 2, saves: 3 });
+  assert.deepEqual(await s.createSession({ tokenHash: sh(1), accountId: id(1), nowMs: T0, expiresMs: T0 + DAY, today: '2026-10-02', max: 1 }),
+    { dropped: [Buffer.alloc(32, 1).toString('hex'), Buffer.alloc(32, 2).toString('hex'), Buffer.alloc(32, 2).toString('hex')] });
+  assert.deepEqual(await s.createSession({ tokenHash: sh(1), accountId: id(1), nowMs: T0, expiresMs: T0 + DAY, today: '2026-10-02', max: 1,
+    pwHash: 's1$10$8$1$sel$autre' }), { dropped: [], stale: true }, 'empreinte vérifiée périmée : aucune session');
+  await s.sessionByTokenHash(sh(1), T0);
+  await s.touchSession(sh(1), '2026-10-02', T0 + DAY);
+  await s.dropSession(sh(1));
+  await s.dropSessions(id(1), sh(1));
+  await s.dropSessions(id(1));
+  await s.sessionsOf(id(1));
+  assert.deepEqual(await s.putCode({ emailHash: eh(1), codeHash: sh(2), nowMs: T0, expiresMs: T0 + H, today: '2026-10-02', perHour: 3, perDay: 10 }),
+    { ok: true });
+  assert.equal(await s.takeCode({ emailHash: eh(1), nowMs: T0, maxAttempts: 5, check: () => false }), 'bad');
+  assert.equal(await s.takeCode({ emailHash: eh(1), nowMs: T0, maxAttempts: 1, check: () => false }), 'bad');
+  assert.equal(await s.takeCode({ emailHash: eh(1), nowMs: T0, maxAttempts: 5, check: () => true }), 'ok');
+  await s.saveMeta(id(1));
+  await s.getSave(id(1));
+  assert.deepEqual(await s.putSave({ accountId: id(1), base: 1, blob: Buffer.from([1]), bytes: 1, stamp: ['w1', 0, 0], nowMs: T0 }), { ok: true, rev: 2 });
+  assert.deepEqual(await s.eraseAccount(id(1)), { playerId: Buffer.alloc(16, 3).toString('hex') });
   const inserts = d.calls.filter((c) => c.sql.startsWith('INSERT INTO el_marks'));
   assert.deepEqual(inserts.map((c) => c.values.length), [604, 604, 184], '100 traces par instruction');
   for (const c of d.calls) {
-    if (c.sql.startsWith('CREATE') || c.sql.startsWith('INSERT IGNORE INTO el_meta')) continue;
+    if (c.sql.startsWith('CREATE') || c.sql.startsWith('INSERT IGNORE INTO el_meta') || c.sql.startsWith('UPDATE el_meta SET v')) continue;
     assert.ok(!/'[^']*'|\b\d{5,}\b/.test(c.sql.replace(/LIMIT \d+/, '').replace(/'@'/, '')), `valeur dans le texte : ${c.sql}`);
   }
 });
@@ -523,7 +822,7 @@ test('purge longue : lot par lot (chaque DELETE a son délai), compte juste, jam
   };
   // 60 lots de 5 000 à 20 ms : 1,2 s en tout, bien au-delà du délai d'un lot (200 ms).
   const full = await run({ lots: 60, latencyMs: 20 });
-  assert.deepEqual(full.r, { marks: 300000, refuges: 0, players: 0, reports: 0, bans: 0 });
+  assert.deepEqual(full.r, { marks: 300000, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0 });
   assert.equal(full.d.calls.filter((c) => c.sql.startsWith('DELETE FROM el_marks')).length, 61);
   assert.deepEqual(full.logs, [{ e: 'base', etat: 'connectee' }]);
   // Budget de la purge dépassé : ce qui est fait est compté, le reste attend la purge suivante.

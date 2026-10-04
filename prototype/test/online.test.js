@@ -1826,3 +1826,134 @@ test('avec le vrai cœur du serveur : hello du repli refusé (429), magasin lent
   assert.equal(st.invalid, 0, 'aucun message invalide');
   assert.deepEqual(st.refusedBy, {}, 'aucune position refusée (horloge du client mesurée depuis le hello accepté)');
 });
+
+// ---------- Compte facultatif (spécification des comptes, 5.6) ----------
+
+const SES = 'S3ss10n_0123456789abcdefghijklmnopqrstuvwxy';
+
+test('compte : hello avec ses et tok nul, welcome sans jeton rangé ; sans session, le jeton anonyme comme avant', async () => {
+  let ses = SES;
+  const storage = memoryStorage({ [TOKEN_KEY]: JSON.stringify({ tok: TOK, since: T0 }) });
+  const h = harness({ storage, session: () => ses });
+  h.online.start();
+  await h.clock.advance(0);
+  const ws = h.WS.last();
+  ws.accept();
+  assert.deepEqual(ws.sent[0], { t: 'hello', v: 1, cl: 1, tok: null, ses: SES, c: 'dev' });
+  // Un welcome qui porterait un jeton (il n'en porte jamais avec ses) : rien n'est rangé à la place de l'anonyme.
+  ws.deliver(welcomeMsg(h, { tok: 'Z'.repeat(43) }));
+  assert.equal(JSON.parse(storage.getItem(TOKEN_KEY)).tok, TOK, 'jeton anonyme intact');
+  assert.equal(h.online.anonToken(), TOK);
+  // Session mal formée, ou fonction qui lève : traitée comme absente.
+  ses = 'trop-court';
+  h.online.relink();
+  await h.clock.advance(0);
+  h.WS.last().accept();
+  assert.deepEqual(h.WS.last().sent[0], { t: 'hello', v: 1, cl: 1, tok: TOK, c: 'dev' });
+  const k = harness({ storage, session: () => { throw new Error('compte'); } });
+  k.online.start();
+  await k.clock.advance(0);
+  k.WS.last().accept();
+  assert.equal(k.WS.last().sent[0].tok, TOK);
+  assert.equal('ses' in k.WS.last().sent[0], false);
+});
+
+test('compte : repli HTTP avec ses et tok nul à chaque requête', async () => {
+  const h = harness({ session: () => SES });
+  h.health.ws = false;
+  pollServer(h);
+  h.online.start();
+  await h.clock.advance(4000);
+  assert.equal(h.online.status, 'lent');
+  assert.ok(h.syncs.length >= 2);
+  for (const s of h.syncs) {
+    assert.equal(s.body.ses, SES);
+    assert.equal(s.body.tok, null);
+  }
+});
+
+test('compte : err session, événement puis reconnexion avec le jeton anonyme (relink) ou nouvel essai espacé', async () => {
+  let ses = SES;
+  const storage = memoryStorage({ [TOKEN_KEY]: JSON.stringify({ tok: TOK, since: T0 }) });
+  const h = harness({ storage, session: () => ses });
+  let n = 0;
+  // Le compte oublie sa session et rouvre aussitôt (account.sessionRefused → online.relink).
+  h.online.on('session', () => { n++; ses = null; h.online.relink(); });
+  const ws = await connect(h, { tok: null });
+  ws.deliver({ t: 'err', code: 'session' });
+  assert.equal(n, 1);
+  assert.equal(ws.readyState, 3);
+  await h.clock.advance(0);
+  const next = h.WS.last();
+  assert.notEqual(next, ws, 'nouvelle connexion tout de suite');
+  next.accept();
+  assert.deepEqual(next.sent[0], { t: 'hello', v: 1, cl: 1, tok: TOK, c: 'dev' });
+  // Sans personne pour relink : nouvel essai espacé, pas de rafale.
+  const g = harness({ session: () => SES });
+  let seen = 0;
+  g.online.on('session', () => { seen++; });
+  const wg = await connect(g, { tok: null });
+  wg.deliver({ t: 'err', code: 'session' });
+  assert.equal(seen, 1);
+  await g.clock.advance(500);
+  assert.equal(g.WS.list.length, 1, 'pas de reconnexion immédiate');
+  await g.clock.advance(1500);
+  assert.equal(g.WS.list.length, 2, 'nouvel essai après le délai');
+});
+
+test('compte : relink ferme poliment et rouvre, lève « autre onglet » (sauf keepBlock), forgetIdentity oublie le jeton', async () => {
+  const storage = memoryStorage();
+  const h = harness({ storage });
+  const ws = await connect(h);
+  assert.equal(JSON.parse(storage.getItem(TOKEN_KEY)).tok, TOK);
+  h.online.relink();
+  assert.equal(ws.of('leave').length, 1);
+  assert.equal(ws.of('bye').length, 1);
+  assert.equal(ws.readyState, 3);
+  assert.equal(h.online.me, null, 'surnom oublié jusqu\'au prochain welcome');
+  await h.clock.advance(0);
+  const ws2 = h.WS.last();
+  assert.notEqual(ws2, ws);
+  ws2.accept();
+  ws2.deliver(welcomeMsg(h));
+  ws2.deliver({ t: 'err', code: 'dup' });
+  assert.equal(h.online.status, 'autre-onglet');
+  h.online.relink({ keepBlock: true });
+  await h.clock.advance(0);
+  assert.equal(h.WS.list.length, 2, 'autre onglet : rien ne rouvre');
+  h.online.relink();
+  await h.clock.advance(0);
+  assert.equal(h.WS.list.length, 3, 'autre compte : la connexion se rouvre');
+  h.WS.last().accept();
+  h.WS.last().deliver(welcomeMsg(h));
+  h.online.forgetIdentity();
+  assert.equal(storage.getItem(TOKEN_KEY), null);
+  assert.equal(h.online.anonToken(), null);
+  assert.equal(h.online.me, null);
+  // Choix « off » : relink ne rouvre rien.
+  const off = harness({ choice: 'off' });
+  off.online.start();
+  off.online.relink();
+  await off.clock.advance(1000);
+  assert.equal(off.WS.list.length, 0);
+  assert.equal(off.fetch.calls.length, 0);
+});
+
+test('compte : accountsOpen lu dans /v1/health (null avant, et quand la santé ne répond pas)', async () => {
+  const h = harness();
+  assert.equal(h.online.accountsOpen, null);
+  h.health.acct = true;
+  h.online.start();
+  await h.clock.advance(0);
+  assert.equal(h.online.accountsOpen, true);
+  const f = harness();
+  f.online.start();
+  await f.clock.advance(0);
+  assert.equal(f.online.accountsOpen, false, 'champ absent : comptes fermés');
+  const down = harness({ route: () => { throw new Error('réseau'); } });
+  down.online.start();
+  await down.clock.advance(0);
+  assert.equal(down.online.accountsOpen, null);
+  assert.equal(NULL_ONLINE.accountsOpen, null);
+  assert.equal(NULL_ONLINE.anonToken(), null);
+});

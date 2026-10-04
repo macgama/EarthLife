@@ -5,7 +5,7 @@ import {
   PROTOCOL, CLIENT_LEVEL, FLAGS, CELL_DEG, RULES, GESTURES, ERR_CODES, NAME_ANIMALS, NAME_PLACES, NAME_NUMBERS,
   nameOf, validName, drawName, toE6, fromE6, metersBetween, metersE6, sectorOf, bandOf, cellOf, cellKey, cellsAround,
   cellCenter, placeOfId, markIdOk, utf8Length, parseClient, validateClient, parseServer, parseSync, parseSyncReply,
-  parseMe,
+  parseMe, readJson, TOKEN_RE,
 } from '../src/net/protocol.js';
 import { makeProjection } from '../src/geo.js';
 import { featuresFromBytes } from '../src/tiles.js';
@@ -401,5 +401,45 @@ test('parseSync, parseSyncReply et parseMe : mêmes messages qu\'en WebSocket', 
   assert.deepEqual(parseMe(JSON.stringify({ v: 1, tok: TOK, op: 'erase' })), { ok: true, msg: { v: 1, tok: TOK, op: 'erase' } });
   assert.equal(parseMe(JSON.stringify({ v: 1, tok: null, op: 'show' })).ok, false);
   assert.equal(parseMe(JSON.stringify({ v: 1, tok: TOK, op: 'drop' })).ok, false);
-  assert.ok(ERR_CODES.includes('full') && ERR_CODES.length === 6);
+  assert.ok(ERR_CODES.includes('full') && ERR_CODES.length === 7);
+});
+
+// ---------- Comptes (spécification des comptes, 4.3) ----------
+
+test('comptes : hello.ses facultatif, err session, parseSync avec ses, readJson et TOKEN_RE exportés', () => {
+  const SES = 'S'.repeat(20) + '_-' + 'x'.repeat(21);
+  // hello avec une session : recopiée ; absente ou nulle : aucune clé ses.
+  const h = parseClient(JSON.stringify({ t: 'hello', v: 1, cl: 1, tok: null, ses: SES, c: 'dev' }));
+  assert.deepEqual(h, { ok: true, msg: { t: 'hello', v: 1, cl: 1, tok: null, ses: SES, c: 'dev' } });
+  for (const ses of [undefined, null]) {
+    const r = parseClient(JSON.stringify({ t: 'hello', v: 1, cl: 1, tok: TOK, ses }));
+    assert.equal(r.ok, true);
+    assert.ok(!('ses' in r.msg), 'pas de clé ses quand elle est absente ou nulle');
+  }
+  for (const ses of ['court', `${SES}=`, 12, true, [SES], { s: SES }, '']) {
+    assert.equal(parseClient(JSON.stringify({ t: 'hello', v: 1, cl: 1, tok: null, ses })).why, 'field:ses', JSON.stringify(ses));
+  }
+  // err session : accepté du serveur ; un code inconnu reste refusé.
+  assert.deepEqual(parseServer('{"t":"err","code":"session"}'), { ok: true, msg: { t: 'err', code: 'session' } });
+  assert.ok(ERR_CODES.includes('session'));
+  assert.equal(parseServer('{"t":"err","code":"sessions"}').ok, false);
+  // welcome sans tok (connexion par session) : valide.
+  assert.equal(parseServer('{"t":"welcome","sid":7,"nm":[12,7,27],"now":5}').ok, true);
+  // Repli HTTP : ses dans le corps, nulle par défaut ; mal formée refusée.
+  const sync = parseSync(JSON.stringify({ v: 1, tok: null, ses: SES, sid: 3, msgs: [] }));
+  assert.equal(sync.ok, true);
+  assert.equal(sync.body.ses, SES);
+  assert.equal(sync.body.tok, null);
+  assert.equal(parseSync('{"v":1,"tok":null,"msgs":[]}').body.ses, null);
+  assert.equal(parseSync(JSON.stringify({ v: 1, ses: 'court', msgs: [] })).why, 'field:ses');
+  const withHello = parseSync(JSON.stringify({ v: 1, ses: SES, msgs: [{ t: 'hello', v: 1, cl: 1, tok: null, ses: SES }] }));
+  assert.equal(withHello.body.msgs[0].ses, SES);
+  // Outils exportés pour net/account.js.
+  assert.ok(TOKEN_RE.test(TOK) && TOKEN_RE.test(SES) && !TOKEN_RE.test(`${TOK}a`));
+  assert.deepEqual(readJson('{"a":1}', 100), { obj: { a: 1 } });
+  assert.deepEqual(readJson('{"__proto__":{}}', 100), { why: 'proto' });
+  assert.deepEqual(readJson('[1]', 100), { why: 'root' });
+  assert.deepEqual(readJson('{', 100), { why: 'json' });
+  assert.deepEqual(readJson('{"a":"' + 'x'.repeat(200) + '"}', 100), { why: 'size' });
+  assert.deepEqual(readJson(5, 100), { why: 'type' });
 });

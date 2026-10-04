@@ -7,6 +7,7 @@ import {
   PROTOCOL, RULES, FLAGS, cellOf, cellKey, cellsAround, cellCenter, placeOfId, metersE6, bandOf, drawName,
   parseClient, parseSync, parseMe, toE6,
 } from '../../prototype/src/net/protocol.js';
+import { ACCOUNT_RULES } from '../../prototype/src/net/account.js';
 import {
   createBucket, createCounter, createQuota, markReach, createPositionState, judgePosition, dayOf,
 } from './rules.js';
@@ -20,7 +21,7 @@ const lonDelta = (d) => (d > 180e6 ? d - 360e6 : d < -180e6 ? d + 360e6 : d);
 // Réglages du serveur (annexe B pour ceux qui viennent du fichier d'environnement) ; RULES pour le reste.
 export const ROOM_DEFAULTS = {
   ...RULES,
-  version: 'dev', minClient: 1, ws: true, maintenance: false, inviteCode: '',
+  version: 'dev', minClient: 1, ws: true, maintenance: false, inviteCode: '', accounts: false,
   maxConn: 100, connPerIp: 20, createPerIpHour: 20, createPerHour: 300,
   msgBurst: 20, msgPerSec: 8, ignoredMax: 200, ignoredWindowMs: 10000, invalidMax: 20, invalidWindowMs: 60000,
   markEveryMs: 1200, markBurst: 3, marksPerHour: 300, marksPerDay: 1500,
@@ -32,7 +33,7 @@ export const ROOM_DEFAULTS = {
 };
 
 // Codes de fermeture WebSocket après un refus.
-const CLOSE = { dup: 1000, old: 1000, invite: 1000, banned: 1008, bad: 1008, full: 1013 };
+const CLOSE = { dup: 1000, old: 1000, invite: 1000, banned: 1008, bad: 1008, full: 1013, session: 1008 };
 const EMPTY = Object.freeze([]);
 
 export function createRoom({
@@ -545,6 +546,50 @@ export function createRoom({
 
   // ---------- Messages ----------
 
+  // Création d'une identité : code d'invitation, 20 par heure et par adresse, 300 par heure en tout. → code de refus
+  // ou null (création comptée).
+  function creationRefused(s, msg) {
+    if (cfg.inviteCode && msg.inv !== cfg.inviteCode) return 'invite';
+    const e = s.ipKey ? ipEntry(s.ipKey) : null;
+    if ((e && e.creates.count() >= cfg.createPerIpHour) || globalCreates.count() >= cfg.createPerHour) return 'full';
+    e?.creates.add();
+    globalCreates.add();
+    return null;
+  }
+
+  // Identité d'une session de compte (spécification des comptes, 4.6) : celle du compte, créée et rattachée au
+  // premier hello s'il n'en a pas. Un autre appareil a été plus rapide : l'identité créée ici est effacée, celle du
+  // compte est reprise. Session renouvelée une fois par jour. → Player, ou null (session refusée ou fermée).
+  async function accountPlayer(s, tokenHash, msg) {
+    const t = now();
+    let sess = await store.sessionByTokenHash(tokenHash, t);
+    if (s.state === 'closed') return null;
+    if (!sess) { refuse(s, 'session'); return null; }
+    if (sess.seenOn !== today()) {
+      const exp = Math.min(sess.createdMs + ACCOUNT_RULES.sessionMaxDays * DAY, t + ACCOUNT_RULES.sessionIdleDays * DAY);
+      await store.touchSession(tokenHash, today(), exp);
+    }
+    let player = sess.playerId ? await store.playerById(sess.playerId) : null;
+    if (player) {
+      await store.touch(player.id, today());
+      return player;
+    }
+    const why = creationRefused(s, msg);
+    if (why) { refuse(s, why); return null; }
+    player = await store.createPlayer({ id: randomBytes(16).toString('hex'), tokenHash: randomBytes(32).toString('hex'),
+      name: drawName(rand), today: today() });
+    if (await store.linkPlayer({ accountId: sess.accountId, playerId: player.id, newTokenHash: randomBytes(32).toString('hex') })) {
+      counts.created++;
+      return player;
+    }
+    await store.erase(player.id);
+    sess = await store.sessionByTokenHash(tokenHash, now());
+    player = sess?.playerId ? await store.playerById(sess.playerId) : null;
+    if (s.state === 'closed') return null;
+    if (!player) { refuse(s, 'session'); return null; }
+    return player;
+  }
+
   async function hello(s, msg) {
     // Origine de l'horloge du client : la réception du hello, pas la fin des lectures du magasin (qui peuvent
     // durer plusieurs secondes et feraient refuser toutes les positions honnêtes de la session).
@@ -552,7 +597,20 @@ export function createRoom({
     try {
       if (msg.v !== PROTOCOL || msg.cl < cfg.minClient) return refuse(s, 'old');
       let player = null, token = null, tokenHash = null;
-      if (msg.tok) {
+      if (msg.ses) {
+        // Session de compte : jamais de jeton anonyme en retour. Comptes coupés sur ce serveur (réglage manquant, ACCOUNTS=0) :
+        // pas err session, que le jeu lit comme « session révoquée » et fait oublier sur chaque appareil ; un bye maintenance,
+        // qui laisse la session où elle est et fait réessayer plus tard (le jeu relit /v1/health à chaque essai).
+        if (!cfg.accounts) {
+          send(s, { t: 'bye', why: 'maintenance', retryMs: cfg.maintenanceRetryMs });
+          closeConn(s, 1013);
+          close(s, 'comptes-coupes');
+          return;
+        }
+        tokenHash = sha256(msg.ses);
+        player = await accountPlayer(s, tokenHash, msg);
+        if (!player) return;
+      } else if (msg.tok) {
         tokenHash = sha256(msg.tok);
         player = await store.playerByTokenHash(tokenHash);
         if (s.state === 'closed') return;
@@ -560,16 +618,13 @@ export function createRoom({
       if (player && player.bannedUntil && player.bannedUntil > now()) return refuse(s, 'banned');
       if (!player) {
         // Jeton absent, ou bien formé mais inconnu (identité effacée, base perdue) : nouvelle identité.
-        if (cfg.inviteCode && msg.inv !== cfg.inviteCode) return refuse(s, 'invite');
-        const e = s.ipKey ? ipEntry(s.ipKey) : null;
-        if ((e && e.creates.count() >= cfg.createPerIpHour) || globalCreates.count() >= cfg.createPerHour) return refuse(s, 'full');
-        e?.creates.add();
-        globalCreates.add();
+        const why = creationRefused(s, msg);
+        if (why) return refuse(s, why);
         token = randomBytes(32).toString('base64url');
         tokenHash = sha256(token);
         player = await store.createPlayer({ id: randomBytes(16).toString('hex'), tokenHash, name: drawName(rand), today: today() });
         counts.created++;
-      } else {
+      } else if (!msg.ses) {
         await store.touch(player.id, today());
       }
       const blocked = await store.blocksOf(player.id);
@@ -920,6 +975,20 @@ export function createRoom({
     }
   }
 
+  // Identité effacée (« Supprimer mes données en ligne », compte supprimé, demande de admin.mjs) : sa session est
+  // fermée (avec err `code` si donné), son refuge retiré sans écriture (déjà effacé en base), ses cadences oubliées.
+  function forgetPlayer(playerId, { code = null } = {}) {
+    dropRefuge(playerId);
+    pending.refuges.delete(playerId);
+    const s = byPlayer.get(playerId);
+    if (s) {
+      if (code) refuse(s, code);
+      else { closeConn(s, 1000); close(s, 'effacement'); }
+    }
+    const a = accounts.get(playerId);
+    if (a) { withRefs.delete(a); accounts.delete(playerId); }
+  }
+
   // ---------- Interface ----------
 
   return {
@@ -959,6 +1028,21 @@ export function createRoom({
 
     message,
     close,
+    forgetPlayer,
+
+    // Sessions de compte retirées (déconnexion, mot de passe changé, reprise par code, onzième appareil, compte
+    // supprimé) : chaque session ouverte avec l'une de ces empreintes reçoit err session et est fermée (1008). Le repli
+    // HTTP l'apprend à son hello suivant. → nombre de sessions fermées.
+    dropCredentials(hashes) {
+      const set = hashes instanceof Set ? hashes : new Set(hashes ?? []);
+      if (!set.size) return 0;
+      let n = 0;
+      for (const h of set) dupTombs.delete(h);
+      for (const s of [...sessions]) {
+        if (s.tokenHash && set.has(s.tokenHash)) { refuse(s, 'session'); n++; }
+      }
+      return n;
+    },
 
     // Toutes les 250 ms : délais, présence, compte du monde ; écritures toutes les 2 s ; nettoyage chaque minute.
     tick() {
@@ -999,8 +1083,10 @@ export function createRoom({
       const r = parseSync(text);
       if (!r.ok) return { status: 400, msgs: [] };
       if (maintenance) return { status: 200, msgs: [{ t: 'bye', why: 'maintenance', retryMs: cfg.maintenanceRetryMs }] };
-      const { tok, sid, msgs } = r.body;
-      const hash = tok ? sha256(tok) : null;
+      // Preuve : la session de compte, sinon le jeton anonyme (même table, mêmes tombes).
+      const { tok, ses, sid, msgs } = r.body;
+      const proof = ses ?? tok;
+      const hash = proof ? sha256(proof) : null;
       let s = hash ? pollByToken.get(hash) : null;
       const helloMsg = msgs[0]?.t === 'hello' ? msgs[0] : null;
       if (!helloMsg) {
@@ -1049,12 +1135,7 @@ export function createRoom({
           return { status: 200, body: { ok: true, ...data } };
         }
         await store.erase(player.id);
-        dropRefuge(player.id);
-        pending.refuges.delete(player.id);
-        const s = byPlayer.get(player.id);
-        if (s) { closeConn(s, 1000); close(s, 'effacement'); }
-        const a = accounts.get(player.id);
-        if (a) { withRefs.delete(a); accounts.delete(player.id); }
+        forgetPlayer(player.id);
         return { status: 200, body: { ok: true } };
       } catch (err) {
         counts.dbErrors++;
@@ -1085,7 +1166,7 @@ export function createRoom({
 
     health() {
       return { ok: true, v: PROTOCOL, minClient: cfg.minClient, version: cfg.version, ws: !!cfg.ws, db: dbReady(),
-        maintenance, invite: !!cfg.inviteCode, online: worldCount(), now: now() };
+        maintenance, invite: !!cfg.inviteCode, acct: !!cfg.accounts, online: worldCount(), now: now() };
     },
 
     // Ligne de mesures (toutes les 5 min) : compteurs depuis l'appel précédent, puis remise à zéro.

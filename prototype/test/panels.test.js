@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { panelHtml, panelParts, cardHtml, foldLine, esc, TABS, PANEL_CSS } from '../src/panels.js';
+import {
+  panelHtml, panelParts, cardHtml, foldLine, esc, TABS, PANEL_CSS, ACCOUNT_TEXTS, accountErrorText, whenText, agoText,
+  conflictCard, logoutCard, logoutAllCard, myDataCard,
+} from '../src/panels.js';
+import { ACCOUNT_ERRORS } from '../src/net/account.js';
 import { createRefuge } from '../src/refuge.js';
 import { createBase } from '../src/base.js';
 import { recipeRows } from '../src/crafting.js';
@@ -391,4 +395,109 @@ test('Défense : ligne « Changer de refuge » en tête, sous la ligne de nuit, 
   assert.doesNotMatch(panelHtml(sampleView({ hint: '<script>x</script>' })), /<script/);
   assert.doesNotMatch(panelHtml(sampleView()), /rp-hint/);
   assert.match(PANEL_CSS, /\.rp-hint \{/);
+});
+
+// ---------- Compte facultatif : textes, dates et cartes (spécification des comptes, 5.4, 5.5 et annexe A) ----------
+
+// Heure locale de l'appareil : les dates attendues sont construites avec le même fuseau.
+const local = (y, mo, d, h, mi) => new Date(y, mo - 1, d, h, mi).getTime();
+
+test('whenText et agoText : à l\'instant, aujourd\'hui, hier, date sans puis avec l\'année', () => {
+  const now = local(2026, 10, 4, 15, 30);
+  assert.equal(whenText(now - 20000, now), "à l'instant");
+  assert.equal(whenText(local(2026, 10, 4, 15, 2), now), "aujourd'hui à 15 h 02");
+  assert.equal(whenText(local(2026, 10, 3, 9, 40), now), 'hier à 9 h 40');
+  assert.equal(whenText(local(2026, 10, 1, 14, 20), now), 'le 1er oct. à 14 h 20');
+  assert.equal(whenText(local(2026, 9, 28, 8, 5), now), 'le 28 sept. à 8 h 05');
+  assert.equal(whenText(local(2025, 10, 4, 14, 20), now), 'le 4 oct. 2025 à 14 h 20');
+  assert.equal(whenText(NaN, now), '');
+  assert.equal(agoText(now - 59000, now), "à l'instant");
+  assert.equal(agoText(now - 2 * 60000 - 5000, now), 'il y a 2 min');
+  assert.equal(agoText(now - 3 * 3600000 - 1, now), 'il y a 3 h');
+  assert.equal(agoText(local(2026, 10, 2, 14, 20), now), 'le 2 oct. à 14 h 20');
+  assert.equal(agoText(null, now), '');
+});
+
+test('accountErrorText : un texte pour chaque code du serveur et du jeu, « trop » avec son délai', () => {
+  const generic = 'Le serveur a un souci : réessaie dans quelques minutes.';
+  for (const code of [...ACCOUNT_ERRORS, 'reseau', 'ferme']) assert.ok(accountErrorText(code).length > 10, code);
+  assert.equal(accountErrorText('identifiants'), 'Adresse ou mot de passe incorrect.');
+  assert.equal(accountErrorText('code'), 'Code faux ou expiré. Demande un nouveau code si besoin.');
+  assert.equal(accountErrorText('session'), ACCOUNT_TEXTS.noteSessionLost);
+  assert.equal(accountErrorText('trop', 15 * 60000), "Trop d'essais : réessaie dans 15 min.");
+  assert.equal(accountErrorText('trop', 61000), "Trop d'essais : réessaie dans 2 min.");
+  assert.equal(accountErrorText('trop', 20000), "Trop d'essais : réessaie dans un instant.");
+  for (const code of ['base', 'arret', 'requete', 'inconnu', undefined]) assert.equal(accountErrorText(code), generic);
+  assert.equal(accountErrorText('conflit'), 'Ta partie en ligne vient encore de changer : compare à nouveau les deux versions.');
+  assert.equal(accountErrorText('reseau'), 'Le serveur ne répond pas. Vérifie ta connexion et réessaie.');
+  assert.equal(accountErrorText('ferme'), 'Les comptes ne sont pas encore ouverts.');
+});
+
+test('conflictCard : deux versions, Exporter sur chaque ligne, trois choix ; nom de lieu échappé', () => {
+  const spec = conflictCard({
+    cloud: { refuge: 'Lyon', nights: 12, when: 'le 4 oct. à 14 h 20' },
+    local: { refuge: '', nights: 1, when: "aujourd'hui à 15 h 02" },
+  });
+  assert.equal(spec.title, 'Deux parties différentes');
+  assert.equal(spec.tone, 'warn');
+  assert.equal(spec.lines[1].text, 'Celle du compte : refuge à Lyon, 12 nuits tenues, sauvegardée le 4 oct. à 14 h 20');
+  assert.equal(spec.lines[2].text, "Celle de cet appareil : pas de refuge, 1 nuit tenue, jouée aujourd'hui à 15 h 02");
+  assert.deepEqual([spec.lines[1].button.id, spec.lines[2].button.id], ['dl-cloud', 'dl-local']);
+  assert.deepEqual(spec.buttons.map((b) => b.id), ['keep-cloud', 'keep-local', 'later']);
+  assert.deepEqual(spec.buttons.map((b) => b.label), ['Garder celle du compte', 'Garder celle de cet appareil', 'Plus tard']);
+  const html = cardHtml(conflictCard({ cloud: { refuge: '<img src=x onerror=alert(1)>', nights: 2 }, local: {} }));
+  assert.ok(!html.includes('<img'), 'nom de lieu échappé');
+  assert.ok(text(html).includes('refuge à <img src=x onerror=alert(1)>, 2 nuits tenues'));
+  assert.ok(text(html).includes('Celle de cet appareil : pas de refuge, 0 nuit tenue'));
+});
+
+test('logoutCard et logoutAllCard : effacement proposé seulement quand la partie est à jour sur le serveur', () => {
+  const ok = logoutCard({ synced: true });
+  assert.deepEqual(ok.buttons.map((b) => b.id), ['logout', 'logout-wipe', 'cancel']);
+  assert.equal(ok.buttons[1].label, 'Me déconnecter et effacer la partie ici');
+  assert.equal(ok.lines[0], 'Ta partie est sauvegardée sur le serveur : tu la retrouveras en te reconnectant.');
+  const late = logoutCard({ synced: false });
+  assert.deepEqual(late.buttons.map((b) => b.id), ['logout', 'cancel']);
+  assert.deepEqual(late.lines, ["Ta dernière partie n'est pas encore sur le serveur. Elle reste sur cet appareil."]);
+  const all = logoutAllCard();
+  assert.deepEqual(all.buttons.map((b) => b.id), ['logout-all', 'cancel']);
+  assert.ok(all.lines[0].startsWith('Chaque appareil connecté à ton compte, celui-ci compris'));
+});
+
+test('myDataCard : compte en tête (adresse échappée), partie sur le serveur, identité rattachée, fichier complet', () => {
+  const now = local(2026, 10, 4, 15, 30);
+  const account = {
+    email: 'k.essai+<b>@exemple.test', createdOn: '2026-10-04', seenOn: '2026-10-04', sessions: 2,
+    save: { rev: 3, savedMs: local(2026, 10, 4, 14, 20), bytes: 18342, stamp: ['wab12cd34', 17, 1] },
+    player: { nm: [0, 0, 27], createdOn: '2026-10-01', seenOn: '2026-10-04', refuge: null, blocks: 1, reports: 0 },
+  };
+  const spec = myDataCard(null, { name: 'Renard des Quais 27', refuge: '', account, nowMs: now });
+  assert.deepEqual(spec.lines.slice(0, 5), [
+    'Adresse e-mail : k.essai+<b>@exemple.test',
+    'Compte créé le 4 oct. 2026 · dernière activité le 4 oct. 2026',
+    'Appareils connectés : 2',
+    "Partie sur le serveur : envoyée aujourd'hui à 14 h 20 (18 Ko)",
+    'Surnom : Renard des Quais 27',
+  ]);
+  assert.ok(spec.lines.includes('Identité créée le 1er oct. 2026'));
+  assert.ok(spec.lines.includes('Masquages : 1 · signalements faits : 0'));
+  assert.equal(spec.lines.at(-1), 'Le fichier complet : Réglages du compte, puis « Exporter mes données ».');
+  assert.ok(!cardHtml(spec).includes('<b>'), 'adresse échappée');
+  const bare = myDataCard(null, { account: { ...account, save: null, player: null }, nowMs: now });
+  assert.ok(bare.lines.includes('Partie sur le serveur : aucune'));
+  assert.ok(!bare.lines.some((l) => String(l).startsWith('Surnom')), 'pas d\'identité rattachée');
+  // Sans compte : comme avant.
+  assert.equal(myDataCard(null).lines[0], "Impossible de lire tes données : le serveur ne répond pas, ou tu n'as pas encore joué en ligne.");
+  assert.equal(myDataCard({ createdOn: '2026-10-01', blocks: 2, reports: 1 }, { name: 'Loup 3' }).lines[0], 'Surnom : Loup 3');
+  // Tailles : 1 Ko au moins.
+  const tiny = myDataCard(null, { account: { ...account, save: { ...account.save, bytes: 10 } }, nowMs: now });
+  assert.ok(tiny.lines[3].endsWith('(1 Ko)'));
+});
+
+test('ACCOUNT_TEXTS : les textes de l\'annexe A', () => {
+  assert.equal(ACCOUNT_TEXTS.lineOut, 'Sauvegarde ta partie en ligne et reprends-la sur un autre appareil (facultatif).');
+  assert.equal(ACCOUNT_TEXTS.lineAbsent, 'Compte indisponible : le serveur ne répond pas. Tu peux jouer sans.');
+  assert.equal(ACCOUNT_TEXTS.labelAge, "J'ai 15 ans ou plus, ou un parent est d'accord");
+  assert.equal(ACCOUNT_TEXTS.onlineElsewhere, 'Ton compte joue en ligne ailleurs (autre appareil ou onglet)');
+  for (const [k, v] of Object.entries(ACCOUNT_TEXTS)) assert.ok(typeof v === 'string' && v.length > 2, k);
 });

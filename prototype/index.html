@@ -201,7 +201,7 @@ select, button { font: inherit; }
 .map-fallback { display: none; position: absolute; inset: var(--map-top, 0px) 0 var(--sheet-h, 0px) var(--map-left, 0px); place-items: center; color: var(--c-line-strong); pointer-events: none; }
 .map-fallback svg { width: min(52vmin, 280px); height: auto; }
 #menu.no-map .map-fallback { display: grid; }
-#menu.help-open::after { content: ''; position: absolute; inset: 0; z-index: 4; background: var(--c-scrim); animation: screen-fade var(--t-base) var(--ease-out); }
+#menu.help-open::after, #menu.account-open::after { content: ''; position: absolute; inset: 0; z-index: 4; background: var(--c-scrim); animation: screen-fade var(--t-base) var(--ease-out); }
 #picker-map .maplibregl-ctrl-bottom-right, #picker-map .maplibregl-ctrl-bottom-left { bottom: var(--sheet-h); }
 #picker-map .maplibregl-ctrl-attrib { font-size: var(--fs-2xs); }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
@@ -287,7 +287,7 @@ select, button { font: inherit; }
 .save-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
 .save-actions .secondary { flex: 1 1 180px; }
 /* Aide : carte modale à sections illustrées, commandes au clavier ou au doigt selon l'appareil. */
-#help { position: absolute; z-index: 5; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(460px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: var(--sp-2) var(--sp-5) var(--sp-5); background: var(--corner), var(--c-panel-solid); border: 1px solid var(--c-line); border-radius: var(--r-xs) var(--r-md) var(--r-md); box-shadow: var(--sh-3); color: var(--c-text-2); font-size: var(--fs-md); line-height: var(--lh-body); animation: help-in var(--t-slow) var(--ease-out); }
+#help, #account { position: absolute; z-index: 5; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(460px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; overscroll-behavior: contain; margin: 0; padding: var(--sp-2) var(--sp-5) var(--sp-5); background: var(--corner), var(--c-panel-solid); border: 1px solid var(--c-line); border-radius: var(--r-xs) var(--r-md) var(--r-md); box-shadow: var(--sh-3); color: var(--c-text-2); font-size: var(--fs-md); line-height: var(--lh-body); animation: help-in var(--t-slow) var(--ease-out); }
 .help-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); margin-bottom: var(--sp-3); padding-bottom: var(--sp-1); border-bottom: 1px solid var(--c-line); }
 .help-head h2 { margin: 0; color: var(--c-text); font: var(--fw-bold) var(--fs-xl) / var(--lh-tight) var(--font-display); letter-spacing: var(--ls-title); text-transform: uppercase; }
 .help-head .icon-button { margin-right: -10px; }
@@ -315,7 +315,7 @@ select, button { font: inherit; }
 /* Téléphone en portrait : l'aide (longue depuis le refuge et la sauvegarde) s'ancre en bas et laisse la marque et la
    recherche visibles au-dessus ; toucher cette bande ferme l'aide. */
 @media (max-width: 759px) and (min-height: 560px) {
-  #help { top: auto; bottom: var(--sp-3); transform: translateX(-50%); max-height: calc(100% - 152px); animation-name: help-in-low; }
+  #help, #account { top: auto; bottom: var(--sp-3); transform: translateX(-50%); max-height: calc(100% - 152px); animation-name: help-in-low; }
 }
 @media (max-width: 359px) {
   #menu .logo { font-size: var(--fs-xl); }
@@ -809,6 +809,42 @@ body.touch #controls { display: block; }
 @media (pointer: coarse) { .online-keys { display: none; } }
 @media (pointer: fine) { .online-touch { display: none; } }
 
+/* ---------- Compte facultatif (spécification des comptes, 5.2 et 5.3) : bloc du menu, panneau des formulaires ---------- */
+#menu .account-block { border-left-color: var(--c-accent); }
+#account-block .account-ico .icon { color: var(--c-accent); }
+#menu .account-wide { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--touch); padding: 0 var(--sp-3); font-family: var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
+#menu .account-wide .icon { width: var(--icon-md); height: var(--icon-md); }
+#menu #account-conflict { border-color: var(--c-warn); color: var(--c-warn); }
+#menu #account-delete { border-color: color-mix(in srgb, var(--c-danger) 55%, transparent); color: var(--c-danger); }
+.account-head h2:focus { outline: none; }
+.account-head h2:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+.account-form { display: grid; gap: var(--sp-3); }
+.account-intro, .account-hint { margin: 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+.account-field { display: grid; gap: 6px; }
+.account-field > label { color: var(--c-text); font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
+/* Champs en 16 px (pas de zoom sur iOS) ; la page interdit la sélection, les champs la permettent. */
+#account .account-input { width: 100%; min-width: 0; min-height: var(--touch); padding: 0 var(--sp-3); border: 1px solid var(--c-line); border-radius: var(--r-sm); background: var(--c-field); color: var(--c-text); font: var(--fw-medium) 16px / 1.2 var(--font-text); -webkit-user-select: text; user-select: text; }
+#account .account-input:focus { outline: none; border-color: var(--c-accent); box-shadow: 0 0 0 1px var(--c-accent); }
+#account .account-input[readonly] { background: transparent; color: var(--c-text-2); }
+#account .account-input[aria-invalid="true"] { border-color: var(--c-danger); }
+#account .account-input[aria-invalid="true"]:focus { box-shadow: 0 0 0 1px var(--c-danger); }
+.account-pw { display: flex; gap: var(--sp-2); }
+.account-pw .account-input { flex: 1 1 auto; }
+#account .account-show { flex: none; min-width: 92px; min-height: var(--touch); padding: 0 var(--sp-2); cursor: pointer; }
+.account-check { display: flex; align-items: center; gap: 10px; min-height: var(--touch); color: var(--c-text); font-size: var(--fs-sm); line-height: var(--lh-snug); cursor: pointer; }
+.account-check input { flex: none; width: 22px; height: 22px; margin: 0; accent-color: var(--c-accent); cursor: pointer; }
+.account-check input[aria-invalid="true"] { outline: 2px solid var(--c-danger); outline-offset: 2px; }
+.account-error { margin: 0; padding-left: 10px; border-left: 2px solid var(--c-danger); color: var(--c-danger); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+.account-note { margin: 0; color: var(--c-text-2); font-size: var(--fs-sm); }
+#account .account-submit { width: 100%; }
+#account .account-danger .account-submit { --btn-bg: var(--c-danger); }
+#account .account-links { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 var(--sp-3); }
+#account .account-text { min-height: var(--touch); padding: 0 var(--sp-1); margin: 0 calc(-1 * var(--sp-1)); border: 0; background: none; color: var(--c-text-2); font: var(--fw-medium) var(--fs-sm) / 1.2 var(--font-text); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+@media (hover: hover) { #account .account-text:hover:not(:disabled) { color: var(--c-text); } }
+#account .account-text:disabled { opacity: var(--o-disabled); text-decoration: none; cursor: not-allowed; }
+#account .account-cancel { width: 100%; min-height: var(--touch); cursor: pointer; }
+.account-link { display: inline-flex; align-items: center; min-height: var(--touch); color: var(--c-others); font-size: var(--fs-sm); text-decoration: underline; text-underline-offset: 3px; }
+
 /* Pastille en ligne (hud.js, info.online) : sous la quête, en haut à gauche. */
 #online-pill { display: flex; align-items: center; gap: 6px; width: max-content; max-width: 100%; min-width: 0; padding: 5px 10px; background: var(--c-panel); border-left: 2px solid var(--c-text-3); color: var(--c-text-2); font: var(--fw-semibold) var(--fs-sm) / 1.25 var(--font-text); }
 #online-pill-icon { display: inline-flex; flex: none; }
@@ -1011,6 +1047,35 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         </details>
         <p class="picker-note" id="online-note" role="status" aria-live="polite" hidden></p>
       </div>
+      <!-- Compte (spécification des comptes, section 5) : caché tant que le jeu en ligne n'est pas actif (account-ui.js). -->
+      <div class="online-block account-block" id="account-block" hidden>
+        <div class="online-row">
+          <span class="btn-icon account-ico" data-icon="compte"></span>
+          <p class="online-line" id="account-line" role="status" aria-live="polite"></p>
+        </div>
+        <p class="picker-note" id="account-save" role="status" aria-live="polite" hidden></p>
+        <div class="online-actions" id="account-out">
+          <button type="button" class="secondary" id="account-signup"><span class="btn-icon" data-icon="compte"></span><span>Créer un compte</span></button>
+          <button type="button" class="secondary" id="account-login"><span class="btn-icon" data-icon="cadenas"></span><span>Me connecter</span></button>
+        </div>
+        <div class="online-actions" id="account-wait" hidden>
+          <button type="button" class="secondary" id="account-code-open"><span class="btn-icon" data-icon="enveloppe"></span><span>Saisir le code</span></button>
+          <button type="button" class="secondary" id="account-code-cancel"><span class="btn-icon" data-icon="fermer"></span><span>Annuler</span></button>
+        </div>
+        <button type="button" class="secondary account-wide" id="account-conflict" hidden><span class="btn-icon" data-icon="alerte"></span><span>Choisir la partie à garder</span></button>
+        <button type="button" class="secondary account-wide" id="account-here" hidden><span class="btn-icon" data-icon="antenne"></span><span>Jouer en ligne ici</span></button>
+        <details class="online-more" id="account-more" hidden>
+          <summary class="label">Réglages du compte</summary>
+          <div class="online-actions">
+            <button type="button" class="secondary" id="account-export"><span class="btn-icon" data-icon="telecharger"></span><span>Exporter mes données</span></button>
+            <button type="button" class="secondary" id="account-password"><span class="btn-icon" data-icon="cadenas"></span><span>Changer de mot de passe</span></button>
+            <button type="button" class="secondary" id="account-logout-all"><span class="btn-icon" data-icon="sortie"></span><span>Déconnecter tous les appareils</span></button>
+            <button type="button" class="secondary" id="account-logout"><span class="btn-icon" data-icon="sortie"></span><span>Se déconnecter</span></button>
+            <button type="button" class="secondary" id="account-delete"><span class="btn-icon" data-icon="fermer"></span><span>Supprimer mon compte</span></button>
+          </div>
+        </details>
+        <p class="picker-note" id="account-note" role="status" aria-live="polite" hidden></p>
+      </div>
       <!-- « Voir mon refuge » recentre la carte sur le refuge ; on change de refuge en jeu (« Déménager ici »), #save-move le dit. -->
       <div class="save-line" id="save-line" hidden><span class="btn-icon" data-icon="refuge"></span><span id="save-text"></span><button type="button" class="secondary" id="save-home">Voir mon refuge</button></div>
       <p class="picker-note" id="save-move" role="status" hidden></p>
@@ -1082,7 +1147,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     </section>
     <section class="help-sec">
       <h3 class="label"><span class="btn-icon" data-icon="telecharger"></span>Ta partie</h3>
-      <p>Elle est enregistrée dans ce navigateur. Garde-en une copie, ou reprends-la sur un autre appareil.</p>
+      <p>Elle est enregistrée dans ce navigateur, et aussi sur le serveur si tu as un compte. Garde-en une copie, ou reprends-la sur un autre appareil.</p>
       <div class="save-actions">
         <button type="button" class="secondary" id="save-export"><span class="btn-icon" data-icon="telecharger"></span><span>Exporter ma partie</span></button>
         <button type="button" class="secondary" id="save-import"><span class="btn-icon" data-icon="importer"></span><span>Importer une partie</span></button>
@@ -1090,6 +1155,112 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
       <input type="file" id="import-file" accept="application/json,.json" hidden>
       <p class="picker-note warn" id="import-note" role="status" hidden></p>
     </section>
+  </div>
+  <!-- Compte (spécification des comptes, 5.3) : panneau des formulaires, sur le modèle de l'aide. Formulaires statiques
+       (mieux reconnus par les gestionnaires de mots de passe), un seul visible ; tout passe par account-ui.js. -->
+  <div id="account" role="dialog" aria-modal="true" aria-labelledby="account-title" hidden>
+    <div class="help-head account-head">
+      <h2 id="account-title" tabindex="-1">Me connecter</h2>
+      <button type="button" class="icon-button" id="account-close" aria-label="Fermer"><span class="btn-icon" data-icon="fermer"></span></button>
+    </div>
+    <form id="account-form-login" class="account-form" novalidate>
+      <div class="account-field">
+        <label for="account-login-email">Adresse e-mail</label>
+        <input class="account-input" id="account-login-email" type="email" name="email" autocomplete="username" inputmode="email" autocapitalize="off" spellcheck="false" maxlength="254" required enterkeyhint="next">
+      </div>
+      <div class="account-field">
+        <label for="account-login-password">Mot de passe</label>
+        <div class="account-pw">
+          <input class="account-input" id="account-login-password" type="password" name="password" autocomplete="current-password" maxlength="512" required enterkeyhint="go">
+          <button type="button" class="secondary account-show" aria-controls="account-login-password" aria-pressed="false">Afficher</button>
+        </div>
+      </div>
+      <p class="account-error" id="account-login-error" role="alert" hidden></p>
+      <button type="submit" class="primary account-submit">Me connecter</button>
+      <div class="account-links">
+        <button type="button" class="account-text" data-go="reset">Mot de passe oublié&nbsp;?</button>
+        <button type="button" class="account-text" data-go="signup">Créer un compte</button>
+      </div>
+    </form>
+    <form id="account-form-email" class="account-form" novalidate hidden>
+      <p class="account-intro" id="account-email-intro"></p>
+      <div class="account-field">
+        <label for="account-email">Adresse e-mail</label>
+        <input class="account-input" id="account-email" type="email" name="email" autocomplete="username" inputmode="email" autocapitalize="off" spellcheck="false" maxlength="254" required enterkeyhint="send">
+      </div>
+      <label class="account-check" id="account-age-row"><input type="checkbox" id="account-age" required><span>J'ai 15 ans ou plus, ou un parent est d'accord</span></label>
+      <a class="account-link" id="account-keeps" href="confidentialite.html#compte" target="_blank" rel="noopener noreferrer">Ce que le jeu garde</a>
+      <p class="account-error" id="account-email-error" role="alert" hidden></p>
+      <button type="submit" class="primary account-submit">Recevoir un code</button>
+    </form>
+    <form id="account-form-code" class="account-form" novalidate hidden>
+      <p class="account-intro" id="account-code-intro"></p>
+      <div class="account-field">
+        <label for="account-code-email">Adresse e-mail</label>
+        <input class="account-input" id="account-code-email" type="email" name="email" autocomplete="username" readonly>
+      </div>
+      <div class="account-field">
+        <label for="account-code">Code à 6 chiffres</label>
+        <input class="account-input" id="account-code" type="text" name="one-time-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required enterkeyhint="next">
+      </div>
+      <div class="account-field">
+        <label for="account-new-password" id="account-new-password-label">Choisis ton mot de passe</label>
+        <div class="account-pw">
+          <input class="account-input" id="account-new-password" type="password" name="new-password" autocomplete="new-password" minlength="10" maxlength="128" required aria-describedby="account-pw-hint">
+          <button type="button" class="secondary account-show" aria-controls="account-new-password" aria-pressed="false">Afficher</button>
+        </div>
+        <p class="account-hint" id="account-pw-hint">10 caractères au moins. Le plus simple&nbsp;: trois mots au hasard, séparés par des tirets.</p>
+      </div>
+      <label class="account-check" id="account-code-age-row" hidden><input type="checkbox" id="account-code-age"><span>J'ai 15 ans ou plus, ou un parent est d'accord</span></label>
+      <p class="account-error" id="account-code-error" role="alert" hidden></p>
+      <button type="submit" class="primary account-submit" id="account-code-submit">Créer mon compte</button>
+      <p class="account-note" id="account-code-note" role="status" aria-live="polite" hidden></p>
+      <div class="account-links">
+        <button type="button" class="account-text" id="account-resend">Renvoyer le code</button>
+        <button type="button" class="account-text" id="account-change-email">Changer d'adresse</button>
+      </div>
+    </form>
+    <form id="account-form-password" class="account-form" novalidate hidden>
+      <p class="account-intro">Tes autres appareils seront déconnectés.</p>
+      <div class="account-field">
+        <label for="account-pw-email">Adresse e-mail</label>
+        <input class="account-input" id="account-pw-email" type="email" name="email" autocomplete="username" readonly>
+      </div>
+      <div class="account-field">
+        <label for="account-old-password">Mot de passe actuel</label>
+        <div class="account-pw">
+          <input class="account-input" id="account-old-password" type="password" name="password" autocomplete="current-password" maxlength="512" required>
+          <button type="button" class="secondary account-show" aria-controls="account-old-password" aria-pressed="false">Afficher</button>
+        </div>
+      </div>
+      <div class="account-field">
+        <label for="account-pw-new">Nouveau mot de passe</label>
+        <div class="account-pw">
+          <input class="account-input" id="account-pw-new" type="password" name="new-password" autocomplete="new-password" minlength="10" maxlength="128" required aria-describedby="account-pw-new-hint">
+          <button type="button" class="secondary account-show" aria-controls="account-pw-new" aria-pressed="false">Afficher</button>
+        </div>
+        <p class="account-hint" id="account-pw-new-hint">10 caractères au moins. Le plus simple&nbsp;: trois mots au hasard, séparés par des tirets.</p>
+      </div>
+      <p class="account-error" id="account-password-error" role="alert" hidden></p>
+      <button type="submit" class="primary account-submit">Changer mon mot de passe</button>
+    </form>
+    <form id="account-form-delete" class="account-form account-danger" novalidate hidden>
+      <p class="account-intro">Ton compte, ton adresse e-mail, ta partie sauvegardée sur le serveur et ton identité en ligne (surnom, drapeau, masquages, signalements) seront effacés. Ta partie reste sur cet appareil.</p>
+      <div class="account-field">
+        <label for="account-delete-email">Adresse e-mail</label>
+        <input class="account-input" id="account-delete-email" type="email" name="email" autocomplete="username" readonly>
+      </div>
+      <div class="account-field">
+        <label for="account-delete-password">Mot de passe</label>
+        <div class="account-pw">
+          <input class="account-input" id="account-delete-password" type="password" name="password" autocomplete="current-password" maxlength="512" required>
+          <button type="button" class="secondary account-show" aria-controls="account-delete-password" aria-pressed="false">Afficher</button>
+        </div>
+      </div>
+      <p class="account-error" id="account-delete-error" role="alert" hidden></p>
+      <button type="submit" class="primary account-submit">Supprimer mon compte</button>
+      <button type="button" class="secondary account-cancel" data-go="close">Annuler</button>
+    </form>
   </div>
 </div>
 

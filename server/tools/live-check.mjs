@@ -6,9 +6,12 @@
 //    applicatif (rf drop et son ack, sans effet).
 // 3. La même chose par POST /v1/sync.
 // 4. Les identités de test sont effacées par POST /v1/me (op « erase »).
+// 5. Comptes (si /v1/health dit acct) : POST /v1/account/me avec une session inventée rend 401 session, avec l'en-tête
+//    CORS du jeu publié (aucun compte n'est créé sur le vrai serveur).
 // Résumé sur la sortie et dans $GITHUB_STEP_SUMMARY ; code 1 si un point échoue. Ne jamais lancer en boucle : chaque
 // essai crée 4 identités (20 par heure et par adresse au plus).
 import fs from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { PROTOCOL, CLIENT_LEVEL, RULES } from '../../prototype/src/net/protocol.js';
@@ -90,7 +93,7 @@ export async function liveCheck({ url, version = null, origin = 'https://macgama
   const step = (name, ok, detail = '') => { results.push({ name, ok, detail }); out(`${ok ? 'OK    ' : 'ÉCHEC '} ${name}${detail ? ` : ${detail}` : ''}`); };
 
   // 1. Santé
-  let wsOn = true;
+  let wsOn = true, acct = false;
   try {
     const t0 = performance.now();
     const res = await fetch(`${url}/v1/health`, { headers: { Origin: origin } });
@@ -103,6 +106,8 @@ export async function liveCheck({ url, version = null, origin = 'https://macgama
     step('CORS du jeu publié', res.headers.get('access-control-allow-origin') === origin);
     if (h.ws === false) out('       WebSocket désactivées sur le serveur (WS=0) : seul le repli HTTP est essayé.');
     wsOn = h.ws !== false;
+    acct = h.acct === true;
+    out(`       Comptes ${acct ? 'ouverts' : 'fermés'} sur ce serveur.`);
   } catch (e) {
     step('santé', false, e?.cause?.code ?? e?.code ?? e?.name);
     return finish();
@@ -188,6 +193,19 @@ export async function liveCheck({ url, version = null, origin = 'https://macgama
   return finish();
 
   async function finish() {
+    // 5. Comptes : une session inventée est refusée, avec l'en-tête CORS du jeu (rien n'est créé).
+    if (acct) {
+      try {
+        const res = await fetch(`${url}/v1/account/me`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8', Origin: origin },
+          body: JSON.stringify({ v: PROTOCOL, ses: randomBytes(32).toString('base64url') }) });
+        let j = null;
+        try { j = await res.json(); } catch { j = null; }
+        step('comptes : session inventée refusée', res.status === 401 && j?.code === 'session', `HTTP ${res.status}`);
+        step('comptes : CORS du jeu publié', res.headers.get('access-control-allow-origin') === origin);
+      } catch (e) {
+        step('comptes : session inventée refusée', false, e?.cause?.code ?? e?.code ?? e?.name);
+      }
+    }
     // 4. Effacement des identités de test, quoi qu'il arrive.
     let erased = 0;
     for (const tok of tokens) {

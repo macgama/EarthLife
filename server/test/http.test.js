@@ -1,6 +1,7 @@
 // Serveur complet (section 9.1, http.test) : vrai serveur HTTP et WebSocket sur un port libre (9700 à 9799),
 // magasin en mémoire ; arrêts dans un processus à part (SIGTERM, restart.request). Plus : réglages (annexe B),
-// journal (6.9), faux serveur (9.2), essai réel contre le faux serveur (9.6), demandes de admin.mjs (6.7).
+// journal (6.9), faux serveur (9.2), essai réel contre le faux serveur (9.6), demandes de admin.mjs (6.7) ; routes des
+// comptes et hello { ses } (spécification des comptes, 7.1).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -19,6 +20,7 @@ import { createMemoryStore } from '../src/store-memory.js';
 import { startDevServer } from '../dev.mjs';
 import { freePort, headingByte } from '../tools/bots.mjs';
 import { runAdmin } from '../admin.mjs';
+import { startFakeSmtp, readMessage } from './fake-smtp.mjs';
 import { cellOf, parseServer, parseSyncReply, placeOfId, toE6 } from '../../prototype/src/net/protocol.js';
 import { headingOfYaw, yawOfHeading } from '../../prototype/src/others.js';
 
@@ -36,13 +38,21 @@ function devConfig(over = {}) {
   return { ...buildConfig(new Map([['DEV', '1'], ['STORE', 'memory'], ['HOST', '127.0.0.1']])), ...over };
 }
 
+// Avant chaque nouveau serveur : deux tours de boucle, le temps que fetch voie les connexions gardées ouvertes que le
+// serveur précédent vient de fermer. Sans cela, un serveur tiré sur le même port (1 chance sur 100 dans la plage)
+// recevait sa première requête sur une ancienne socket déjà fermée (« other side closed »), surtout quand les corps des
+// dernières réponses n'avaient pas été lus.
+const settle = () => new Promise((r) => setTimeout(() => setTimeout(r, 5), 5));
+const startDev = async (opts) => { await settle(); return startDevServer(opts); };
+
 // Vrai serveur dans ce processus, sur un port libre de la plage (nouvel essai si le port vient d'être pris).
 async function serve({ config = {}, roomCfg = {}, timers = {}, store = createMemoryStore(), log = createLog({ dir: null, stdout: null }),
-  exit = () => {} } = {}) {
+  exit = () => {}, accountOpts = { hashParams: { logN: 10, r: 8, p: 1 } } } = {}) {
+  await settle();
   for (let i = 0; ; i++) {
     const cfg = devConfig({ port: await freePort(), ...config });
     try {
-      const srv = await startServer({ config: cfg, store, log, exit, roomCfg, timers });
+      const srv = await startServer({ config: cfg, store, log, exit, roomCfg, timers, accountOpts });
       return srv;
     } catch (e) {
       if (e.code !== 'EADDRINUSE' || i > 20) throw e;
@@ -145,6 +155,7 @@ function spawnMain(env) {
 }
 
 async function spawnOnFreePort(env) {
+  await settle();
   for (let i = 0; ; i++) {
     const port = await freePort();
     const p = spawnMain({ PORT: String(port), ...env });
@@ -343,7 +354,7 @@ test('GET /v1/health, GET /, 404, 405 et en-têtes de la section 6.2', async () 
     assert.equal(res.headers.get('access-control-allow-credentials'), null);
     assert.equal(res.headers.get('set-cookie'), null);
     const h = await res.json();
-    assert.deepEqual(Object.keys(h).sort(), ['db', 'invite', 'maintenance', 'minClient', 'now', 'ok', 'online', 'v', 'version', 'ws'].sort());
+    assert.deepEqual(Object.keys(h).sort(), ['acct', 'db', 'invite', 'maintenance', 'minClient', 'now', 'ok', 'online', 'v', 'version', 'ws'].sort());
     assert.equal(h.ok, true);
     assert.equal(h.v, 1);
     assert.equal(h.minClient, 1);
@@ -746,7 +757,7 @@ test('PORT non numérique : écoute sur un socket Unix, supprimé à l\'arrêt e
 // ---------- Faux serveur (9.2) et essai réel (9.6) ----------
 
 test('faux serveur : /__test/log seulement avec --dev et le magasin en mémoire ; survivants simulés', async () => {
-  const devSrv = await startDevServer({ portRange: [9700, 9799], dev: true, bots: 2 });
+  const devSrv = await startDev({ portRange: [9700, 9799], dev: true, bots: 2 });
   try {
     const c = wsClient(devSrv.url, { origin: 'http://127.0.0.1:5173' });
     const w = await c.hello();
@@ -766,13 +777,13 @@ test('faux serveur : /__test/log seulement avec --dev et le magasin en mémoire 
   } finally {
     await devSrv.stop();
   }
-  const plain = await startDevServer({ portRange: [9700, 9799] });
+  const plain = await startDev({ portRange: [9700, 9799] });
   try {
     assert.equal((await fetch(`${plain.url}/__test/log`)).status, 404, 'sans --dev');
   } finally {
     await plain.stop();
   }
-  const other = await startDevServer({ portRange: [9700, 9799], dev: true, store: createMemoryStore() });
+  const other = await startDev({ portRange: [9700, 9799], dev: true, store: createMemoryStore() });
   try {
     assert.equal((await fetch(`${other.url}/__test/log`)).status, 404, 'magasin autre que « memory »');
   } finally {
@@ -781,7 +792,7 @@ test('faux serveur : /__test/log seulement avec --dev et le magasin en mémoire 
 });
 
 test('live-check.mjs contre le faux serveur : santé, WebSocket, repli HTTP, effacement', async () => {
-  const devSrv = await startDevServer({ portRange: [9700, 9799], origins: [GAME] });
+  const devSrv = await startDev({ portRange: [9700, 9799], origins: [GAME] });
   try {
     const out = await new Promise((resolve) => {
       const child = spawn(process.execPath, [LIVE, '--url', devSrv.url, '--version', 'dev'], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -793,6 +804,10 @@ test('live-check.mjs contre le faux serveur : santé, WebSocket, repli HTTP, eff
     assert.equal(out.code, 0, out.text);
     assert.match(out.text, /WebSocket : les deux identités se voient/);
     assert.match(out.text, /repli HTTP : les deux identités se voient/);
+    assert.match(out.text, /Comptes ouverts sur ce serveur/);
+    assert.match(out.text, /OK +comptes : session inventée refusée/);
+    assert.match(out.text, /OK +comptes : CORS du jeu publié/);
+    assert.equal(await devSrv.accounts.debug.byEmail('k.essai@exemple.test'), null, 'aucun compte créé');
     assert.equal(devSrv.room.debug().byPlayer.size, 0, 'identités de test effacées, sessions fermées');
   } finally {
     await devSrv.stop();
@@ -1127,4 +1142,236 @@ test('survivants simulés : cap envoyé dans la convention du jeu (dessinés tou
     assert.ok(Math.hypot(Math.sin(y) - dx, Math.cos(y) - dz) < 0.03, `${name} : dessiné tourné vers sa marche`);
   }
   assert.equal(headingByte(2 * Math.PI + 0.001), 128);
+});
+
+// ---------- Comptes (spécification des comptes, 7.1) ----------
+
+const EMAIL = 'k.essai@exemple.test';
+const PW = ['renard', 'viaduc', 'essai', '1'].join('-');
+
+// Inscription par les routes HTTP (code lu dans la fausse boîte du serveur) → session.
+async function signupHttp(srv, { tok = null, headers = {} } = {}) {
+  const h = { Origin: GAME, ...headers };
+  assert.equal((await post(srv.url, '/v1/account/code', { v: 1, email: EMAIL, why: 'signup' }, h)).status, 200);
+  const code = srv.mailer.box.lastCode(EMAIL);
+  const r = await post(srv.url, '/v1/account/verify', { v: 1, email: EMAIL, code, password: PW, tok, age: true }, h);
+  assert.equal(r.status, 200, r.text);
+  return JSON.parse(r.text).ses;
+}
+
+test('routes des comptes : CORS de l\'origine admise, 403 pour une autre, 405, 413 (save/put au-delà de 263 168 octets), Retry-After, arrêt', async () => {
+  const srv = await serve({ config: { trustProxy: true } });
+  try {
+    const health = await (await fetch(`${srv.url}/v1/health`)).json();
+    assert.equal(health.acct, true);
+    const r = await post(srv.url, '/v1/account/code', { v: 1, email: EMAIL, why: 'signup' }, { Origin: GAME });
+    assert.deepEqual([r.status, r.text], [200, '{"ok":true}']);
+    assert.equal(r.headers.get('access-control-allow-origin'), GAME);
+    assert.equal(r.headers.get('content-type'), 'application/json; charset=utf-8');
+    assert.equal(r.headers.get('cache-control'), 'no-store');
+    assert.equal(r.headers.get('access-control-allow-credentials'), null);
+    assert.equal(r.headers.get('set-cookie'), null);
+    assert.equal(srv.mailer.box.list(EMAIL).length, 1);
+    const pirate = await post(srv.url, '/v1/account/code', { v: 1, email: EMAIL, why: 'signup' }, { Origin: 'https://pirate.example' });
+    assert.equal(pirate.status, 403);
+    assert.equal(pirate.headers.get('access-control-allow-origin'), null);
+    assert.equal(srv.mailer.box.list(EMAIL).length, 1, 'rien envoyé pour une origine étrangère');
+    const get = await fetch(`${srv.url}/v1/account/me`);
+    assert.deepEqual([get.status, get.headers.get('allow')], [405, 'POST']);
+    const opt = await fetch(`${srv.url}/v1/save/put`, { method: 'OPTIONS', headers: { Origin: GAME } });
+    assert.equal(opt.status, 204);
+    assert.equal((await post(srv.url, '/v1/account/inconnue', { v: 1 }, { Origin: GAME })).status, 404);
+    // save/put : jusqu'à 263 168 octets lus (401 ici, session inventée), au-delà 413 taille, connexion fermée.
+    const ses = 'A'.repeat(43);
+    const body = (n) => { const b = JSON.stringify({ v: 1, ses, base: 0, data: { v: 1, writer: null, rev: 0, savedAt: 0, pad: '' } }); return b.replace('"pad":""', `"pad":"${'x'.repeat(n - b.length)}"`); };
+    assert.equal(body(263168).length, 263168);
+    const okSize = await post(srv.url, '/v1/save/put', body(263168), { Origin: GAME });
+    assert.deepEqual([okSize.status, JSON.parse(okSize.text)], [401, { ok: false, code: 'session' }]);
+    const tooBig = await post(srv.url, '/v1/save/put', body(263169), { Origin: GAME });
+    assert.deepEqual([tooBig.status, JSON.parse(tooBig.text)], [413, { ok: false, code: 'taille' }]);
+    assert.equal(tooBig.headers.get('connection'), 'close');
+    const meBig = await post(srv.url, '/v1/account/me', JSON.stringify({ v: 1, ses, pad: 'x'.repeat(9000) }), { Origin: GAME });
+    assert.deepEqual([meBig.status, JSON.parse(meBig.text)], [413, { ok: false, code: 'taille' }], '8 Ko ailleurs');
+    // 60 requêtes par minute et par adresse : 429 avec Retry-After en secondes entières.
+    let last;
+    for (let i = 0; i < 61; i++) last = await post(srv.url, '/v1/account/me', { v: 1, ses }, { Origin: GAME, 'X-Forwarded-For': '6.6.6.6' });
+    assert.equal(last.status, 429);
+    const retry = JSON.parse(last.text).retryMs;
+    assert.equal(last.headers.get('retry-after'), String(Math.ceil(retry / 1000)));
+    assert.equal((await post(srv.url, '/v1/account/me', { v: 1, ses }, { Origin: GAME, 'X-Forwarded-For': '6.6.6.7' })).status, 401);
+    // Arrêt en cours : 503 arret, Retry-After.
+    srv.state.stopping = true;
+    const stop = await post(srv.url, '/v1/account/me', { v: 1, ses }, { Origin: GAME });
+    assert.equal(stop.status, 503);
+    assert.equal(JSON.parse(stop.text).code, 'arret');
+    assert.match(stop.headers.get('retry-after'), /^\d+$/);
+    srv.state.stopping = false;
+    const m = await srv.measure();
+    assert.ok(m.http.account >= 60 && m.http.save === 2, JSON.stringify(m.http));
+    assert.equal(m.comptes.codes, 1);
+    assert.ok(srv.log.lines.some((l) => / demarrage \{.*"comptes":true,"courrier":"boite"/.test(l)));
+  } finally {
+    await srv.stop();
+  }
+  // Comptes coupés : 404 sur toutes les routes, santé acct: false, hello { ses } renvoyé à plus tard (bye maintenance).
+  const off = await serve({ config: { accounts: false } });
+  try {
+    assert.equal((await (await fetch(`${off.url}/v1/health`)).json()).acct, false);
+    for (const p of ['/v1/account/code', '/v1/account/me', '/v1/save/get', '/v1/save/put']) {
+      assert.equal((await post(off.url, p, { v: 1 }, { Origin: GAME })).status, 404, p);
+    }
+    assert.equal(off.accounts, null);
+    // hello { ses } : bye maintenance (la session reste valable, le jeu réessaiera), jamais err session, que le jeu lit comme
+    // « session révoquée » et fait oublier sur chaque appareil. Même réponse dans le repli HTTP.
+    const c = wsClient(off.url);
+    const m = await c.hello({ ses: 'A'.repeat(43) });
+    assert.deepEqual(m, { t: 'bye', why: 'maintenance', retryMs: 60000 });
+    assert.equal(await c.closed, 1013);
+    const ses = 'A'.repeat(43);
+    const polled = await post(off.url, '/v1/sync', { v: 1, ses, sid: null, msgs: [{ t: 'hello', v: 1, cl: 1, tok: null, ses }] }, { Origin: GAME });
+    assert.deepEqual(parseSyncReply(polled.text).msgs, [{ t: 'bye', why: 'maintenance', retryMs: 60000 }]);
+  } finally {
+    await off.stop();
+  }
+});
+
+test('hello { ses } en WebSocket et dans le repli HTTP (/v1/sync avec ses) ; identité anonyme rattachée ; déconnexion en ligne', async () => {
+  const srv = await serve();
+  try {
+    const anon = wsClient(srv.url);
+    const wa = await anon.hello();
+    const ses = await signupHttp(srv, { tok: wa.tok });
+    const me = JSON.parse((await post(srv.url, '/v1/account/me', { v: 1, ses }, { Origin: GAME })).text);
+    assert.deepEqual(me.account.player.nm, wa.nm);
+    const c = wsClient(srv.url);
+    const w = await c.hello({ ses });
+    assert.equal(w.t, 'welcome');
+    assert.equal(w.tok, undefined);
+    assert.deepEqual(w.nm, wa.nm, 'identité anonyme rattachée');
+    assert.deepEqual(await anon.next((m) => m.t === 'err'), { t: 'err', code: 'dup' });
+    // Repli HTTP avec la même session : il reprend l'identité (la connexion WebSocket cède).
+    const r = await post(srv.url, '/v1/sync', { v: 1, ses, sid: null, msgs: [{ t: 'hello', v: 1, cl: 1, tok: null, ses }] }, { Origin: GAME });
+    const msgs = parseSyncReply(r.text).msgs;
+    const pw = msgs.find((m) => m.t === 'welcome');
+    assert.ok(pw && pw.tok === undefined);
+    assert.deepEqual(pw.nm, wa.nm);
+    assert.deepEqual(await c.next((m) => m.t === 'err'), { t: 'err', code: 'dup' });
+    // Déconnexion : la session du repli l'apprend à son hello suivant.
+    assert.equal((await post(srv.url, '/v1/account/logout', { v: 1, ses }, { Origin: GAME })).status, 200);
+    const after = await post(srv.url, '/v1/sync', { v: 1, ses, sid: pw.sid, msgs: [] }, { Origin: GAME });
+    assert.deepEqual(parseSyncReply(after.text).msgs, [{ t: 'bye', why: 'restart', retryMs: 0 }]);
+    const again = await post(srv.url, '/v1/sync', { v: 1, ses, sid: null, msgs: [{ t: 'hello', v: 1, cl: 1, tok: null, ses }] }, { Origin: GAME });
+    assert.deepEqual(parseSyncReply(again.text).msgs, [{ t: 'err', code: 'session' }]);
+    // Une nouvelle connexion WebSocket avec la session retirée : err session, 1008.
+    const late = wsClient(srv.url);
+    assert.deepEqual(await late.hello({ ses }), { t: 'err', code: 'session' });
+    assert.equal(await late.closed, 1008);
+    c.close();
+    anon.close();
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('faux serveur : comptes et fausse boîte (/__test/mail seulement avec --dev, faux e-mails sur la sortie), --no-accounts', async () => {
+  const printed = [];
+  const orig = console.log;
+  console.log = (...a) => printed.push(a.join(' '));
+  let devSrv;
+  try {
+    devSrv = await startDev({ portRange: [9700, 9799], dev: true, quiet: false, log: createLog({ dir: null, stdout: null }),
+      hashParams: { logN: 10, r: 8, p: 1 } });
+  } finally {
+    console.log = orig;
+  }
+  try {
+    console.log = (...a) => printed.push(a.join(' '));
+    try {
+      await post(devSrv.url, '/v1/account/code', { v: 1, email: EMAIL, why: 'signup' }, { Origin: 'http://127.0.0.1:5173' });
+    } finally {
+      console.log = orig;
+    }
+    assert.ok(printed.some((l) => /^Faux e-mail → k\.essai@exemple\.test : « Ton code EarthLife : \d{6} »$/.test(l)), printed.join('\n'));
+    const box = await (await fetch(`${devSrv.url}/__test/mail?to=${encodeURIComponent(EMAIL)}`)).json();
+    assert.equal(box.messages.length, 1);
+    assert.deepEqual(Object.keys(box.messages[0]).sort(), ['at', 'code', 'subject', 'text', 'to']);
+    assert.equal(box.messages[0].code, devSrv.mailbox.lastCode(EMAIL));
+    // CORS : l'origine du jeu en développement seulement (jamais « * » : les codes ne se lisent pas depuis une page quelconque).
+    for (const path of ['/__test/mail', '/__test/log']) {
+      const dev = await fetch(`${devSrv.url}${path}`, { headers: { Origin: 'http://localhost:5173' } });
+      assert.equal(dev.headers.get('access-control-allow-origin'), 'http://localhost:5173', path);
+      const other = await fetch(`${devSrv.url}${path}`, { headers: { Origin: 'https://autre-site.exemple.test' } });
+      assert.equal(other.status, 200);
+      assert.equal(other.headers.get('access-control-allow-origin'), null, `${path} : origine étrangère`);
+      assert.equal((await fetch(`${devSrv.url}${path}`)).headers.get('access-control-allow-origin'), null, `${path} : sans origine`);
+    }
+    assert.equal((await (await fetch(`${devSrv.url}/__test/mail?to=autre@exemple.test`)).json()).messages.length, 0);
+    await fetch(`${devSrv.url}/__test/mail?clear=1`);
+    assert.equal(devSrv.mailbox.list().length, 0);
+    assert.equal((await devSrv.accounts.debug.byEmail(EMAIL)), null);
+  } finally {
+    await devSrv.stop();
+  }
+  const plain = await startDev({ portRange: [9700, 9799] });
+  try {
+    assert.equal((await fetch(`${plain.url}/__test/mail`)).status, 404, 'sans --dev');
+    assert.ok(plain.mailbox, 'fausse boîte quand même');
+  } finally {
+    await plain.stop();
+  }
+  const none = await startDev({ portRange: [9700, 9799], dev: true, accounts: false });
+  try {
+    assert.equal((await post(none.url, '/v1/account/code', { v: 1, email: EMAIL, why: 'signup' }, { Origin: 'http://127.0.0.1:5173' })).status, 404);
+    assert.equal(none.mailbox, null);
+    assert.equal((await fetch(`${none.url}/__test/mail`)).status, 404);
+    assert.equal((await (await fetch(`${none.url}/v1/health`)).json()).acct, false);
+  } finally {
+    await none.stop();
+  }
+});
+
+test('admin.mjs : erase-account (adresse jamais affichée, identité effacée sur le serveur en marche), mail-test contre un faux SMTP', async () => {
+  const appDir = tmp('admin-comptes');
+  const store = createMemoryStore();
+  const secret = Buffer.alloc(32, 9);
+  const srv = await serve({ store, config: { appDir, accountSecret: secret }, timers: { adminCheckMs: 100, restartCheckMs: 100 } });
+  const out = [];
+  const admin = (argv, more = {}) => runAdmin(argv, { store, appDir, out: (s) => out.push(s), now: Date.now, config: srv.config, ...more });
+  try {
+    const ses = await signupHttp(srv);
+    const c = wsClient(srv.url);
+    assert.equal((await c.hello({ ses })).t, 'welcome');
+    assert.equal(await admin(['erase-account', 'personne@exemple.test']), 1);
+    assert.equal(out.at(-1), 'Aucun compte pour cette adresse.');
+    assert.equal(await admin(['erase-account', 'pas une adresse']), 2);
+    assert.equal(await admin(['erase-account', ` ${EMAIL.toUpperCase()} `]), 0);
+    assert.equal(out.at(-2), 'Compte effacé, avec sa partie sauvegardée et son identité en ligne.');
+    assert.equal(await c.closed, 1000, 'identité oubliée par le serveur en marche');
+    assert.equal(await srv.accounts.debug.byEmail(EMAIL), null);
+    assert.equal((await post(srv.url, '/v1/account/me', { v: 1, ses }, { Origin: GAME })).status, 401);
+    assert.equal(await admin(['erase-account', EMAIL], { config: { ...srv.config, accountSecret: null } }), 1);
+    assert.ok(out.every((l) => !l.toLowerCase().includes('k.essai')), 'adresse jamais affichée en retour');
+  } finally {
+    await srv.stop();
+  }
+  // mail-test : vérification puis message d'essai ; échec à l'AUTH dit l'étape et le nombre, sans le texte.
+  const fake = ['mot', 'de', 'passe', 'jetable'].join('-');
+  const smtp = await startFakeSmtp({ user: 'boite@exemple.test', password: fake });
+  const mailCfg = (password) => ({ gameUrl: 'https://macgama.github.io/EarthLife/',
+    mail: { transport: 'smtp', host: '127.0.0.1', port: smtp.port, user: 'boite@exemple.test', password, from: 'earthlife@exemple.test', replyTo: null } });
+  try {
+    out.length = 0;
+    assert.equal(await runAdmin(['mail-test', EMAIL], { store: null, out: (s) => out.push(s), config: mailCfg(fake), connect: net.connect }), 0);
+    assert.deepEqual(out, ['Connexion SMTP : bonne (EHLO et AUTH acceptés).',
+      'Message d\'essai envoyé : à chercher dans la boîte de réception (et les indésirables).']);
+    assert.equal(smtp.messages.length, 1);
+    assert.equal(readMessage(smtp.messages[0].data).subject, 'EarthLife : essai d\'envoi');
+    out.length = 0;
+    assert.equal(await runAdmin(['mail-test', EMAIL], { store: null, out: (s) => out.push(s), config: mailCfg('autre-jetable'), connect: net.connect }), 1);
+    assert.deepEqual(out, ['Connexion SMTP : Échec à l\'étape auth (réponse 535).']);
+    assert.equal(await runAdmin(['mail-test', EMAIL], { store: null, out: (s) => out.push(s), config: { mail: { transport: 'boite' } } }), 1);
+    assert.ok(out.every((l) => !l.includes(EMAIL)));
+  } finally {
+    await smtp.stop();
+  }
 });

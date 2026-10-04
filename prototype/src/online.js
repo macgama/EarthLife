@@ -2,6 +2,8 @@
 // HTTP, coupures et reconnexions, file des traces faites pendant une coupure, zone privée et couronne anonyme,
 // monde partagé et autres survivants. WebSocket, fetch, stockage, horloges et hasard sont injectés pour être testés
 // sous node. Seule la position du personnage part, jamais en zone privée (connexion fermée) ; rien n'est journalisé.
+// Compte facultatif (spécification des comptes, 5.6) : quand une session de compte existe, elle remplace le jeton
+// anonyme dans le hello et le repli HTTP ; l'identité du compte suit alors d'un appareil à l'autre.
 import {
   PROTOCOL, CLIENT_LEVEL, RULES, FLAGS, GESTURES, toE6, nameOf, markIdOk, placeOfId, metersBetween, cellOf, cellKey,
   cellCenter, cellsAround, parseServer, parseSyncReply,
@@ -117,7 +119,8 @@ function readHealth(text) {
   const nat = (v) => Number.isSafeInteger(v) && v >= 0;
   if (!nat(o.v) || !nat(o.minClient)) return null;
   return { v: o.v, minClient: o.minClient, ws: o.ws !== false, maintenance: o.maintenance === true,
-    invite: o.invite === true, online: nat(o.online) ? o.online : 0, now: nat(o.now) ? o.now : null };
+    invite: o.invite === true, online: nat(o.online) ? o.online : 0, now: nat(o.now) ? o.now : null,
+    acct: o.acct === true };
 }
 
 const intIn = (v, lo, hi, dflt) => (Number.isInteger(v) && v >= lo && v <= hi ? v : dflt);
@@ -127,7 +130,8 @@ const coordsOk = (p) => Number.isFinite(p.lat) && Number.isFinite(p.lon) && Math
 const noop = () => {};
 // Jeu en ligne désactivé (?online=0, maintenance de longue durée…) : même interface, rien ne se passe.
 export const NULL_ONLINE = Object.freeze({
-  status: 'off', me: null, worldCount: null, transport: null, inviteRequired: false,
+  status: 'off', me: null, worldCount: null, transport: null, inviteRequired: false, accountsOpen: null,
+  anonToken: () => null, forgetIdentity: noop, relink: noop,
   start: () => Promise.resolve(), ready: () => Promise.resolve(), needsChoice: () => false, choose: noop,
   enter: noop, pose: noop, hidden: noop, leave: noop, bye: noop, mark: () => false, refuge: noop, zonesChanged: noop,
   gesture: () => false, hide: () => false, report: () => false, rename: () => Promise.resolve(null),
@@ -146,6 +150,7 @@ export function createOnline({
   build = 'dev',                 // empreinte du jeu publié (net/build.js), pour les mesures du serveur
   isPrivate = () => false,       // (lat, lon) → le point est-il dans une zone privée ? (refuges, traces)
   followScale = 1,               // horloge de l'alerte de suivi (accélérée avec ?debug=1)
+  session = () => null,          // session du compte (account.js) ou null : remplace alors le jeton anonyme
 } = {}) {
   // Appelés sans `this` : setTimeout et fetch du navigateur refusent un autre objet que window.
   const setT = timers.set, clearT = timers.clear;
@@ -179,6 +184,15 @@ export function createOnline({
   function forgetToken() {
     memTok = null;
     remove(TOKEN_KEY);
+  }
+  // Session du compte, relue à chaque hello et à chaque requête du repli HTTP (connexion ou déconnexion entre-temps).
+  function currentSession() {
+    try {
+      const s = session();
+      return typeof s === 'string' && TOKEN_RE.test(s) ? s : null;
+    } catch {
+      return null;
+    }
   }
   const readChoice = () => { const v = read(ONLINE_KEYS.choice); return v === 'on' || v === 'off' ? v : null; };
   function storedPoll() {
@@ -381,8 +395,12 @@ export function createOnline({
     refresh();
   }
 
+  // Avec une session de compte : `ses`, et `tok: null` (spécification des comptes, annexe D).
   function helloMsg() {
-    const m = { t: 'hello', v: PROTOCOL, cl: CLIENT_LEVEL, tok: getToken(), c: buildTag };
+    const ses = currentSession();
+    const m = { t: 'hello', v: PROTOCOL, cl: CLIENT_LEVEL, tok: ses ? null : getToken() };
+    if (ses) m.ses = ses;
+    m.c = buildTag;
     if (inviteCode) m.inv = inviteCode;
     return m;
   }
@@ -558,7 +576,8 @@ export function createOnline({
     l.state = 'live';
     l.sid = w.sid;
     cancel('welcome');
-    if (w.tok) saveToken(w.tok);
+    // Jeton anonyme : jamais rangé quand une session de compte tient lieu de preuve (le serveur n'en envoie pas).
+    if (w.tok && !currentSession()) saveToken(w.tok);
     me = { name: nameOf(w.nm), nm: w.nm.slice(), sid: w.sid, left: me?.left ?? null };
     // Heure du serveur : welcome.now, daté entre l'envoi du hello et cette réception (section 5.5). Un saut de plus
     // de 1 s (serveur relancé ailleurs) efface la présence de l'ancienne session, datée dans l'ancienne heure.
@@ -599,6 +618,11 @@ export function createOnline({
       full = true;
       retryAt = perfNow() + ONLINE.fullRetryMs;
       later('full', ONLINE.fullRetryMs, () => { full = false; retryAt = null; update(); });
+    } else if (code === 'session') {
+      // Session du compte inconnue, échue ou supprimée : le compte l'oublie (et appelle relink, qui rouvre aussitôt
+      // avec le jeton anonyme) ; sinon, nouvel essai espacé comme pour toute autre erreur.
+      emit('session');
+      if (!link && !handles.has('retry')) scheduleRetry();
     } else scheduleRetry();
     refresh();
   }
@@ -783,7 +807,10 @@ export function createOnline({
   // ---------- Repli HTTP (POST /v1/sync) ----------
 
   function postSync(l, msgs, keepalive = false) {
-    const body = JSON.stringify({ v: PROTOCOL, tok: getToken(), sid: l.state === 'live' ? l.sid : null, msgs });
+    const ses = currentSession();
+    const head = { v: PROTOCOL, tok: ses ? null : getToken() };
+    if (ses) head.ses = ses;
+    const body = JSON.stringify({ ...head, sid: l.state === 'live' ? l.sid : null, msgs });
     const opts = { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body, cache: 'no-store',
       credentials: 'omit' };
     if (keepalive) opts.keepalive = true;
@@ -1035,6 +1062,8 @@ export function createOnline({
     get worldCount() { return worldCount; },
     get transport() { return link?.kind ?? (enabled ? transport : null); },
     get inviteRequired() { return !!health?.invite; },
+    // Comptes ouverts sur ce serveur (acct de /v1/health) ; null tant que la santé n'est pas lue.
+    get accountsOpen() { return health ? health.acct : null; },
 
     // Au chargement de la page : /v1/health, puis connexion si le choix est « on ». Rappelé par « Reprendre ici »
     // après « Partie en ligne ouverte dans un autre onglet ».
@@ -1275,6 +1304,32 @@ export function createOnline({
       return true;
     },
 
+    // ---------- Compte (spécification des comptes, 1.3 et 5.6) ----------
+
+    // Jeton anonyme rangé sur l'appareil (envoyé à la connexion au compte pour rattacher l'identité), ou null.
+    anonToken() { return enabled ? getToken() : null; },
+
+    // L'identité anonyme vient d'être rattachée au compte : son jeton ne sert plus à rien, l'appareil l'oublie.
+    forgetIdentity() {
+      forgetToken();
+      me = null;
+      refresh();
+    },
+
+    // Connexion au compte, déconnexion ou session perdue : la connexion se ferme (leave et bye) et se rouvre aussitôt
+    // avec la bonne preuve si le choix est « on ». « Partie en ligne ouverte ailleurs » et un refus pour bannissement
+    // tenaient à l'ancienne identité : levés, sauf `keepBlock` (changement venu d'un autre onglet, qui garde la main).
+    relink({ keepBlock = false } = {}) {
+      if (!enabled || !started || closedForGood) return;
+      dropLink(true);
+      me = null;
+      if (!keepBlock && (block === 'autre-onglet' || block === 'banni')) block = null;
+      cancel('retry');
+      retryAt = null;
+      attempts = 0;
+      update();
+    },
+
     searchedByOther: (id) => (sharedOn() ? shared.searchedByOther(id) : null),
     isGone: (id) => sharedOn() && shared.isGone(id),
     foreignRefuge: (id) => sharedOn() && shared.isForeignRefuge(id),
@@ -1302,7 +1357,8 @@ export function createOnline({
       else remove(ONLINE_KEYS.mute);
     },
 
-    // Abonnement : 'status', 'gone', 'refuges', 'gesture', 'follow', 'ack', 'name'. Renvoie de quoi se désabonner.
+    // Abonnement : 'status', 'gone', 'refuges', 'gesture', 'follow', 'ack', 'name', 'session'. Renvoie de quoi se
+    // désabonner.
     on(event, fn) {
       if (typeof fn !== 'function') return noop;
       if (!listeners.has(event)) listeners.set(event, new Set());

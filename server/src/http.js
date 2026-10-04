@@ -1,10 +1,18 @@
-// Adresses HTTP du serveur (sections 5.2, 5.7 et 6.2) : GET /, GET /v1/health, POST /v1/sync, POST /v1/me.
+// Adresses HTTP du serveur (sections 5.2, 5.7 et 6.2) : GET /, GET /v1/health, POST /v1/sync, POST /v1/me, et les
+// routes des comptes (spécification des comptes, 4.2) : POST /v1/account/*, POST /v1/save/{get,put}.
 // Réponses en JSON avec les en-têtes de la section 6.2 ; CORS pour les origines admises seulement, jamais de
-// cookie ni d'Allow-Credentials ; corps de 8 Ko au plus (413 au-delà) ; 404 pour tout le reste.
+// cookie ni d'Allow-Credentials ; corps de 8 Ko au plus (256 Kio et un peu plus pour /v1/save/put ; 413 au-delà) ;
+// 404 pour tout le reste, comptes compris quand ils sont coupés.
 import net from 'node:net';
 import { RULES } from '../../prototype/src/net/protocol.js';
+import { ACCOUNT_RULES } from '../../prototype/src/net/account.js';
 
 const MAX_BODY = RULES.maxBody;
+// Routes des comptes → compteur (counts.account ou counts.save).
+const ACCOUNT_ROUTES = new Map([
+  ...['code', 'verify', 'login', 'me', 'password', 'logout', 'delete', 'export'].map((r) => [`/v1/account/${r}`, 'account']),
+  ['/v1/save/get', 'save'], ['/v1/save/put', 'save'],
+]);
 const BASE_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-store',
@@ -25,7 +33,7 @@ export function normIp(raw) {
 // d'Infomaniak (le premier peut être inventé par le client). Sans en-tête : l'adresse de la connexion seulement si
 // `socketFallback` (mode local : faux serveur, tests) ; sinon aucune, car derrière le proxy ce serait la sienne, la
 // même pour tous, et les limites par adresse deviendraient des limites globales (6.1, V17). TRUST_PROXY=0 : aucune
-// adresse, donc aucune limite par adresse.
+// adresse (le jeu n'a alors aucune limite par adresse ; les routes des comptes, un seau commun « inconnue »).
 export function clientIp(req, trustProxy, socketFallback = true) {
   if (!trustProxy) return '';
   const xff = req.headers['x-forwarded-for'];
@@ -74,7 +82,7 @@ export function originAllowed(origins, origin) {
   return typeof origin === 'string' && origins.includes(origin.replace(/\/+$/, '').toLowerCase());
 }
 
-// Lecture du corps, 8 Ko au plus : { text } ou { tooBig: true } ou { error }.
+// Lecture du corps, 8 Ko au plus (ou `max`) : { text } ou { tooBig: true } ou { error }.
 function readBody(req, max = MAX_BODY) {
   return new Promise((resolve) => {
     const len = Number(req.headers['content-length']);
@@ -95,8 +103,8 @@ function readBody(req, max = MAX_BODY) {
 }
 
 export function createHttpHandler({ room, config, log = () => {}, isBanned = () => false, state = {}, extra = null,
-  tap = null }) {
-  const counts = { requests: 0, health: 0, sync: 0, me: 0, s403: 0, s404: 0, s413: 0, s429: 0, s5xx: 0 };
+  tap = null, accounts = null }) {
+  const counts = { requests: 0, health: 0, sync: 0, me: 0, account: 0, save: 0, s403: 0, s404: 0, s413: 0, s429: 0, s5xx: 0 };
 
   function headersFor(req, type = 'application/json; charset=utf-8') {
     const h = { ...BASE_HEADERS, 'Content-Type': type, Vary: 'Origin' };
@@ -105,6 +113,7 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
     return h;
   }
 
+  // `body` : objet (sérialisé), texte brut, ou { json } (texte JSON déjà construit, comme save/get).
   function reply(req, res, status, body, extraHeaders = {}) {
     if (res.headersSent) return;
     if (status === 403) counts.s403++;
@@ -112,11 +121,40 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
     else if (status === 413) counts.s413++;
     else if (status === 429) counts.s429++;
     else if (status >= 500) counts.s5xx++;
-    const text = typeof body === 'string' ? body : JSON.stringify(body);
-    const h = { ...headersFor(req, typeof body === 'string' ? 'text/plain; charset=utf-8' : undefined), ...extraHeaders,
+    const plain = typeof body === 'string';
+    const text = plain ? body : typeof body?.json === 'string' ? body.json : JSON.stringify(body);
+    const h = { ...headersFor(req, plain ? 'text/plain; charset=utf-8' : undefined), ...extraHeaders,
       'Content-Length': Buffer.byteLength(text) };
     res.writeHead(status, h);
     res.end(req.method === 'HEAD' ? undefined : text);
+  }
+
+  // Route des comptes : limite par adresse avant la lecture du corps, puis accounts.handle → { status, body | raw }.
+  // Retry-After (secondes entières) sur 429 et 503.
+  async function accountPost(req, res, p) {
+    const origin = req.headers.origin;
+    if (origin !== undefined && !originAllowed(config.origins, origin)) return reply(req, res, 403, { ok: false });
+    counts[ACCOUNT_ROUTES.get(p)]++;
+    const answer = (r) => {
+      const wait = r.status === 429 || r.status === 503 ? r.body?.retryMs : undefined;
+      return reply(req, res, r.status, r.raw !== undefined ? { json: r.raw } : r.body,
+        Number.isFinite(wait) ? { 'Retry-After': String(Math.max(1, Math.ceil(wait / 1000))) } : {});
+    };
+    if (state.stopping) return answer({ status: 503, body: { ok: false, code: 'arret', retryMs: state.retryMs ?? 3000 } });
+    const ip = state.ipOf ? state.ipOf(req) : '';
+    const early = accounts.admit(ip);
+    if (early) {
+      req.resume();
+      return answer(early);
+    }
+    const body = await readBody(req, p === '/v1/save/put' ? ACCOUNT_RULES.saveMaxBody : MAX_BODY);
+    if (body.tooBig) {
+      log('refus', { why: 'corps-trop-grand', route: ACCOUNT_ROUTES.get(p) });
+      return reply(req, res, 413, { ok: false, code: 'taille' }, { Connection: 'close' });
+    }
+    if (body.error) return;
+    if (state.stopping) return answer({ status: 503, body: { ok: false, code: 'arret', retryMs: state.retryMs ?? 3000 } });
+    return answer(await accounts.handle(p, body.text, { ip, admitted: true }));
   }
 
   async function post(req, res, kind) {
@@ -150,7 +188,8 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
     const p = pathOf(req.url);
     try {
       if (extra && (await extra(req, res, p))) return;
-      const route = p === '/' ? 'root' : p === '/v1/health' ? 'health' : p === '/v1/sync' ? 'sync' : p === '/v1/me' ? 'me' : null;
+      const route = p === '/' ? 'root' : p === '/v1/health' ? 'health' : p === '/v1/sync' ? 'sync' : p === '/v1/me' ? 'me'
+        : accounts && ACCOUNT_ROUTES.has(p) ? 'account' : null;
       if (!route) return reply(req, res, 404, { ok: false });
       const get = route === 'root' || route === 'health';
       if (req.method === 'OPTIONS') {
@@ -167,6 +206,7 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
         counts.health++;
         return reply(req, res, 200, room.health());
       }
+      if (route === 'account') return await accountPost(req, res, p);
       return await post(req, res, route);
     } catch (err) {
       log('erreur', { type: 'http', err: err?.code ?? err?.name });

@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<!-- Page statique (spécification 6.8), ouverte dans un nouvel onglet depuis le menu et la carte « Jouer à plusieurs ».
-     Aucun script, aucune ressource venue d'un autre site : polices du jeu (assets/fonts), icônes en ligne. Politique
+<!-- Page statique (spécification 6.8), ouverte dans un nouvel onglet depuis le menu, la carte « Jouer à plusieurs » et
+     le formulaire « Créer un compte » (#compte, section 03 ajoutée avec les comptes facultatifs). Aucun script, aucune ressource venue d'un autre site : polices du jeu (assets/fonts), icônes en ligne. Politique
      de sécurité du contenu plus stricte que celle de index.html. Chaque durée et chaque donnée suit le code du serveur
-     et du jeu ; ce qui n'est pas encore connu est marqué « À confirmer ». À relire à chaque changement de règle. -->
+     et du jeu ; ce qui n'est pas encore connu est marqué « À confirmer ». À relire à chaque changement de règle : un essai
+     (test/account.test.js) vérifie que les durées des comptes citées ici suivent ACCOUNT_RULES. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
 <meta name="theme-color" content="#0a0d10">
 <meta name="description" content="Ce qu'EarthLife garde de toi, combien de temps, et comment tout effacer.">
@@ -162,6 +163,7 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
     <symbol id="i-aide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"/><circle cx="12" cy="17" r="1.1" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-refuge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 9.5v11h13v-11"/><path d="M10 20.5V15h4v5.5"/></symbol>
     <symbol id="i-alerte" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 21.5 20h-19z"/><path d="M12 10v4.5"/><circle cx="12" cy="17.3" r="1.1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-compte" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/></symbol>
     <symbol id="i-position" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/></symbol>
   </defs>
 </svg>
@@ -175,16 +177,16 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
   <main>
     <h1>Ce que le jeu garde</h1>
     <p class="lead">Ce que le jeu sait de toi, ce qu'il garde, combien de temps, et comment tout effacer. Cette page est écrite pour être comprise dès 12&nbsp;ans.</p>
-    <p class="updated">Mise à jour le 3&nbsp;octobre 2026.</p>
+    <p class="updated">Mise à jour le 4&nbsp;octobre 2026.</p>
 
     <section class="panel brief" aria-labelledby="t-bref">
       <h2 id="t-bref"><svg class="icon" aria-hidden="true"><use href="#i-bouclier"/></svg>L'essentiel</h2>
       <ul class="checks">
-        <li>Le jeu ne te demande jamais ton nom, ton e-mail, ton âge ni un mot de passe.</li>
-        <li>Ta partie (ton sac, ton coffre, tes quêtes) reste dans ton navigateur. Si tu joues à plusieurs, seuls partent au serveur le bâtiment de ton refuge et, sans ton nom, les lieux que tu fouilles ou démontes&nbsp;; jamais ceux de tes zones privées.</li>
+        <li>Sans compte, le jeu ne te demande jamais ton nom, ton e-mail, ton âge ni un mot de passe. Le compte est facultatif&nbsp;: il demande une adresse e-mail et un mot de passe, pour garder ta partie en ligne et la reprendre sur un autre appareil.</li>
+        <li>Ta partie (ton sac, ton coffre, tes quêtes) reste dans ton navigateur. Si tu joues à plusieurs, seuls partent au serveur le bâtiment de ton refuge et, sans ton nom, les lieux que tu fouilles ou démontes&nbsp;; jamais ceux de tes zones privées. Avec un compte, une copie de ta partie est gardée sur le serveur.</li>
         <li>Si tu joues à plusieurs, le serveur ne sait pas qui tu es&nbsp;: pour lui, tu es un surnom tiré au hasard. Il oublie ta position 15&nbsp;secondes au plus après ton départ.</li>
         <li>Pas de publicité, pas de cookie, pas de mesure d'audience.</li>
-        <li>Depuis le menu du jeu, tu peux voir tes données en ligne et les supprimer.</li>
+        <li>Depuis le menu du jeu, tu peux voir tes données, les exporter et tout supprimer.</li>
       </ul>
     </section>
 
@@ -193,6 +195,7 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
       <ol>
         <li><a href="#appareil">Sur ton appareil</a></li>
         <li><a href="#serveur">Ce que le serveur garde</a></li>
+        <li><a href="#compte">Ton compte (facultatif)</a></li>
         <li><a href="#pas-garde">Ce qu'il ne garde pas</a></li>
         <li><a href="#joueurs">Ce que voient les autres joueurs</a></li>
         <li><a href="#services">Ce que reçoivent les autres services</a></li>
@@ -211,14 +214,15 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
         <li><b>tes réglages</b> et le dernier lieu choisi (avec «&nbsp;Autour de moi&nbsp;», arrondi à environ 100&nbsp;m)&nbsp;;</li>
         <li><b>tes zones privées</b>&nbsp;: leur liste n'est jamais envoyée à personne (ce que le serveur peut en deviner est expliqué plus bas, à «&nbsp;<a href="#pas-garde">Ta vraie position</a>&nbsp;»)&nbsp;;</li>
         <li><b>les morceaux de carte</b> déjà téléchargés, pour ne pas les demander deux fois&nbsp;;</li>
-        <li>si tu joues à plusieurs&nbsp;: ton choix, et <b>ta clé d'accès</b>, une suite de 43&nbsp;caractères tirée au hasard par le serveur, qui lui permet de te reconnaître d'une partie à l'autre.</li>
+        <li>si tu joues à plusieurs&nbsp;: ton choix, et <b>ta clé d'accès</b>, une suite de 43&nbsp;caractères tirée au hasard par le serveur, qui lui permet de te reconnaître d'une partie à l'autre&nbsp;;</li>
+        <li>si tu as un compte&nbsp;: <b>ta clé de session</b> (43&nbsp;caractères tirés au hasard, qui te garde connecté) et ton adresse e-mail, pour l'afficher&nbsp;; tout est retiré quand tu te déconnectes. Pendant une inscription (ou un «&nbsp;mot de passe oublié&nbsp;»), l'adresse que tu as saisie reste aussi sur l'appareil, le temps d'attendre ton code (15&nbsp;minutes au plus)&nbsp;; elle est retirée dès que tu saisis le code, que tu annules ou que tu te connectes, et au plus tard à la prochaine ouverture du jeu une fois ce délai passé.</li>
       </ul>
-      <p>Ta partie n'est jamais envoyée au serveur du jeu, sauf ce que décrit la partie <a href="#serveur">Ce que le serveur garde</a> (le bâtiment de ton refuge et des traces sans nom, si tu joues à plusieurs). Si tu changes d'appareil avec «&nbsp;Exporter ma partie&nbsp;», attention&nbsp;: ce fichier contient les lieux où tu as joué ces derniers jours, dont ton refuge. Garde-le pour toi.</p>
+      <p>Sans compte, ta partie n'est jamais envoyée au serveur du jeu, sauf ce que décrit la partie <a href="#serveur">Ce que le serveur garde</a> (le bâtiment de ton refuge et des traces sans nom, si tu joues à plusieurs). Avec un compte, une copie part au serveur (voir <a href="#compte">Ton compte</a>). Si tu changes d'appareil avec «&nbsp;Exporter ma partie&nbsp;», attention&nbsp;: ce fichier contient les lieux où tu as joué ces derniers jours, dont ton refuge. Garde-le pour toi.</p>
     </section>
 
     <section class="panel" id="serveur" aria-labelledby="t-serveur">
       <h2 id="t-serveur"><svg class="icon" aria-hidden="true"><use href="#i-antenne"/></svg>Ce que le serveur garde<span class="n">02</span></h2>
-      <p>Seulement si tu choisis «&nbsp;Jouer à plusieurs&nbsp;». Le serveur du jeu, <b class="mail">earthlife.needhelpapp.com</b>, est hébergé par Infomaniak, en Suisse. Dès l'ouverture du jeu, avant ta réponse, le jeu lui demande s'il est ouvert&nbsp;: la question ne porte ni ta position ni ta clé, et le serveur du jeu ne la note pas, mais, comme pour tout site, elle donne ton adresse IP à Infomaniak (voir <a href="#journaux">Journaux et sauvegardes</a>). Si tu choisis «&nbsp;Jouer seul&nbsp;», le jeu ne le contacte plus du tout.</p>
+      <p>Seulement si tu choisis «&nbsp;Jouer à plusieurs&nbsp;», ou si tu crées un compte (section&nbsp;03). Le serveur du jeu, <b class="mail">earthlife.needhelpapp.com</b>, est hébergé par Infomaniak, en Suisse. Dès l'ouverture du jeu, avant ta réponse, le jeu lui demande s'il est ouvert&nbsp;: la question ne porte ni ta position ni ta clé, et le serveur du jeu ne la note pas, mais, comme pour tout site, elle donne ton adresse IP à Infomaniak (voir <a href="#journaux">Journaux et sauvegardes</a>). Si tu choisis «&nbsp;Jouer seul&nbsp;», le jeu ne le contacte plus du tout, sauf si tu es connecté à ton compte (pour garder ta partie).</p>
       <dl class="facts">
         <div class="fact">
           <dt>Ton identité anonyme <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>180 jours sans jouer en ligne</span></dt>
@@ -250,8 +254,45 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
       <p class="small after">Le serveur fait le ménage toutes les heures et compte les jours en jours entiers&nbsp;: une donnée peut rester jusqu'à un jour et une heure de plus que la durée écrite.</p>
     </section>
 
+    <section class="panel" id="compte" aria-labelledby="t-compte">
+      <h2 id="t-compte"><svg class="icon" aria-hidden="true"><use href="#i-compte"/></svg>Ton compte (facultatif)<span class="n">03</span></h2>
+      <p>Seulement si tu crées un compte, depuis le bloc «&nbsp;Compte&nbsp;» du menu. Sans compte, le jeu marche comme avant et rien de ce qui suit n'existe. Le compte garde ta partie sur le serveur du jeu (hébergé par Infomaniak, en Suisse), pour la reprendre sur un autre appareil&nbsp;; une partie commencée sans compte s'y rattache.</p>
+      <dl class="facts">
+        <div class="fact">
+          <dt>Ton adresse e-mail <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>Tant que ton compte existe</span></dt>
+          <dd>Elle sert à te connecter, à t'envoyer les codes, les avis de sécurité (mot de passe changé, compte supprimé) et, une seule fois, la prévenance avant l'effacement d'un compte inutilisé. Jamais de publicité ni de lettre d'information&nbsp;; elle n'est donnée à personne.</dd>
+          <dd>Elle est gardée chiffrée sur le serveur&nbsp;: une copie de la base ne la montre pas.</dd>
+        </div>
+        <div class="fact">
+          <dt>Ton mot de passe <span class="chip ok"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>Jamais gardé</span></dt>
+          <dd>Le serveur n'en garde qu'une empreinte (scrypt), qui permet de le vérifier mais pas de le retrouver. Personne, pas même l'éditeur du jeu, ne peut te le redire&nbsp;: si tu l'oublies, «&nbsp;Mot de passe oublié&nbsp;» t'en fait choisir un autre.</dd>
+        </div>
+        <div class="fact">
+          <dt>Ta partie sauvegardée <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>Tant que ton compte existe</span></dt>
+          <dd>Une copie de ta partie&nbsp;: refuge, coffre, sac, quêtes, et les bâtiments fouillés ou objets démontés ces derniers jours, donc des lieux où tu as joué. Remplacée à chaque envoi, effacée avec le compte.</dd>
+        </div>
+        <div class="fact">
+          <dt>Tes appareils connectés <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>60 jours sans utilisation (400 jours au plus)</span></dt>
+          <dd>Pour chacun&nbsp;: l'empreinte de sa clé de session, l'heure de la connexion et le dernier jour d'utilisation. Un appareil inutilisé pendant 60&nbsp;jours est déconnecté&nbsp;; aucun ne reste connecté plus de 400&nbsp;jours.</dd>
+        </div>
+        <div class="fact">
+          <dt>Les codes envoyés par e-mail <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>2 jours au plus</span></dt>
+          <dd>Un code ne marche que 15&nbsp;minutes. Mais la ligne qui le concerne reste en base jusqu'au ménage, 2&nbsp;jours au plus&nbsp;: une empreinte de ton adresse (jamais l'adresse elle-même), l'empreinte du dernier code, qui ne sert plus à rien une fois le délai passé, et le nombre d'envois (limite contre les abus). Elle existe aussi pour une adresse qui n'a jamais créé de compte, par exemple si l'inscription n'a pas été finie.</dd>
+        </div>
+        <div class="fact">
+          <dt>Ton identité en ligne <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>Tant que ton compte existe</span></dt>
+          <dd>Si tu joues à plusieurs, ton identité anonyme (surnom, refuge partagé, masquages, signalements&nbsp;: <a href="#serveur">section&nbsp;02</a>) est reliée à ton compte&nbsp;: ton surnom te suit d'un appareil à l'autre.</dd>
+        </div>
+        <div class="fact">
+          <dt>Compte inutilisé <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>2 ans</span></dt>
+          <dd>Sans connexion pendant 2&nbsp;ans, il est effacé avec tout ce qui précède&nbsp;; un e-mail te prévient 30&nbsp;jours avant.</dd>
+        </div>
+      </dl>
+      <p class="small after">Pour créer un compte, il faut avoir 15&nbsp;ans, ou l'accord d'un parent (voir <a href="#pourquoi">Pourquoi le jeu a le droit</a>).</p>
+    </section>
+
     <section class="panel" id="pas-garde" aria-labelledby="t-pas-garde">
-      <h2 id="t-pas-garde"><svg class="icon" aria-hidden="true"><use href="#i-fermer"/></svg>Ce que le serveur ne garde pas<span class="n">03</span></h2>
+      <h2 id="t-pas-garde"><svg class="icon" aria-hidden="true"><use href="#i-fermer"/></svg>Ce que le serveur ne garde pas<span class="n">04</span></h2>
       <dl class="facts">
         <div class="fact">
           <dt>Ta position de jeu <span class="chip ok"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>15 s au plus</span></dt>
@@ -277,7 +318,7 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
     </section>
 
     <section class="panel" id="joueurs" aria-labelledby="t-joueurs">
-      <h2 id="t-joueurs"><svg class="icon" aria-hidden="true"><use href="#i-cible"/></svg>Ce que voient les autres joueurs<span class="n">04</span></h2>
+      <h2 id="t-joueurs"><svg class="icon" aria-hidden="true"><use href="#i-cible"/></svg>Ce que voient les autres joueurs<span class="n">05</span></h2>
       <ul class="list">
         <li>ton personnage et ses mouvements, quand ils sont à 150&nbsp;m ou moins&nbsp;;</li>
         <li>ton surnom, seulement à 30&nbsp;m ou moins, et jamais dans la couronne autour d'une zone privée&nbsp;;</li>
@@ -290,7 +331,7 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
     </section>
 
     <section class="panel" id="services" aria-labelledby="t-services">
-      <h2 id="t-services"><svg class="icon" aria-hidden="true"><use href="#i-carte"/></svg>Ce que reçoivent les autres services<span class="n">05</span></h2>
+      <h2 id="t-services"><svg class="icon" aria-hidden="true"><use href="#i-carte"/></svg>Ce que reçoivent les autres services<span class="n">06</span></h2>
       <p>Même si tu joues seul, ton navigateur demande la carte, la météo et les noms de lieux directement à d'autres services, et au serveur du jeu à plusieurs s'il est ouvert. Comme pour tout site, <b>chacun reçoit ton adresse IP</b>. En plus&nbsp;:</p>
       <dl class="facts">
         <div class="fact">
@@ -319,18 +360,26 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
         </div>
         <div class="fact">
           <dt><span>Infomaniak, le serveur du jeu à plusieurs</span></dt>
-          <dd>Dès l'ouverture du jeu, la question «&nbsp;es-tu ouvert&nbsp;?&nbsp;» (voir <a href="#serveur">Ce que le serveur garde</a>)&nbsp;; si tu choisis «&nbsp;Jouer seul&nbsp;», plus rien.</dd>
+          <dd>Dès l'ouverture du jeu, la question «&nbsp;es-tu ouvert&nbsp;?&nbsp;» (voir <a href="#serveur">Ce que le serveur garde</a>)&nbsp;; si tu choisis «&nbsp;Jouer seul&nbsp;», plus rien, sauf l'envoi de ta partie si tu es connecté à ton compte.</dd>
+        </div>
+        <div class="fact">
+          <dt><span>Infomaniak Mail, l'envoi des e-mails du jeu</span></dt>
+          <dd>Si tu as un compte&nbsp;: les e-mails du jeu (codes, avis de sécurité) partent de <span class="mail">earthlife@needhelpapp.com</span> par le service de messagerie d'Infomaniak, qui reçoit ton adresse et le contenu du message.</dd>
+        </div>
+        <div class="fact">
+          <dt><span>Ton fournisseur de messagerie</span></dt>
+          <dd>Il reçoit le message, comme tout e-mail.</dd>
         </div>
       </dl>
       <p class="small after">Ces services, sauf le serveur du jeu, ne dépendent pas d'EarthLife et ont leurs propres règles. Certains, dont GitHub et jsDelivr, peuvent traiter ton adresse IP hors de l'Union européenne, par exemple aux États-Unis. <span class="todo"><svg class="icon" aria-hidden="true"><use href="#i-alerte"/></svg>À confirmer</span></p>
     </section>
 
     <section class="panel" id="journaux" aria-labelledby="t-journaux">
-      <h2 id="t-journaux"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>Journaux et sauvegardes<span class="n">06</span></h2>
+      <h2 id="t-journaux"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>Journaux et sauvegardes<span class="n">07</span></h2>
       <dl class="facts">
         <div class="fact">
           <dt>Le journal du serveur <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>14 jours</span></dt>
-          <dd>Une ligne par événement&nbsp;: démarrage, erreurs, refus, et des mesures toutes les 5&nbsp;minutes (nombre de connexions, mémoire…). Jamais de position, d'adresse IP, de clé, de surnom ni de numéro d'identité.</dd>
+          <dd>Une ligne par événement&nbsp;: démarrage, erreurs, refus, et des mesures toutes les 5&nbsp;minutes (nombre de connexions, mémoire…). Jamais de position, d'adresse IP, de clé, de surnom ni de numéro d'identité&nbsp;; jamais non plus ton adresse e-mail, ton mot de passe, tes codes ni ta clé de session.</dd>
           <dd>Le gestionnaire d'Infomaniak qui fait tourner le serveur en garde aussi une copie, avec le même contenu. <span class="todo"><svg class="icon" aria-hidden="true"><use href="#i-alerte"/></svg>À confirmer</span> <span class="todo-note">(durée de cette copie pas encore relevée)</span></dd>
         </div>
         <div class="fact">
@@ -338,20 +387,29 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
           <dd>Comme tout hébergeur, Infomaniak note les connexions à ses serveurs dans des journaux d'accès, qui peuvent contenir ton adresse IP. Leur durée de conservation n'est pas encore relevée.</dd>
         </div>
         <div class="fact">
+          <dt>Les e-mails envoyés <span class="todo"><svg class="icon" aria-hidden="true"><use href="#i-alerte"/></svg>Durée à confirmer</span></dt>
+          <dd>Le service d'envoi d'e-mails d'Infomaniak garde une trace des messages envoyés (destinataire, date). Sa durée n'est pas encore relevée.</dd>
+        </div>
+        <div class="fact">
           <dt>Les sauvegardes d'Infomaniak <span class="todo"><svg class="icon" aria-hidden="true"><use href="#i-alerte"/></svg>Durée à confirmer</span></dt>
           <dd>Infomaniak garde des copies de sauvegarde de la base du jeu. Si tu supprimes tes données en ligne, elles peuvent rester dans ces copies jusqu'à ce que celles-ci soient effacées à leur tour. Leur durée n'est pas encore relevée.</dd>
+          <dd>Ces copies contiennent aussi les comptes (adresses chiffrées) jusqu'à leur propre effacement.</dd>
           <dd>Si la base est perdue, le jeu repart d'une base vide plutôt que de remettre une vieille copie, pour ne pas faire revenir des données effacées.</dd>
         </div>
       </dl>
     </section>
 
     <section class="panel" id="droits" aria-labelledby="t-droits">
-      <h2 id="t-droits"><svg class="icon" aria-hidden="true"><use href="#i-aide"/></svg>Tes droits<span class="n">07</span></h2>
-      <p>Tout se fait depuis le menu du jeu, dans «&nbsp;Réglages en ligne&nbsp;», et marche tout de suite&nbsp;:</p>
+      <h2 id="t-droits"><svg class="icon" aria-hidden="true"><use href="#i-aide"/></svg>Tes droits<span class="n">08</span></h2>
+      <p>Tout se fait depuis le menu du jeu, blocs «&nbsp;Compte&nbsp;» et «&nbsp;Réglages en ligne&nbsp;», et marche tout de suite&nbsp;:</p>
       <dl class="facts">
         <div class="fact">
           <dt>Voir mes données</dt>
-          <dd>Ton surnom, tes dates, ton refuge partagé, le nombre de tes masquages et des signalements que tu as faits.</dd>
+          <dd>Ton surnom, tes dates, ton refuge partagé, le nombre de tes masquages et des signalements que tu as faits. Avec un compte, en plus&nbsp;: ton adresse, les dates du compte, le nombre d'appareils connectés et la partie gardée sur le serveur.</dd>
+        </div>
+        <div class="fact">
+          <dt>Exporter mes données</dt>
+          <dd>Avec un compte&nbsp;: un fichier avec tout ce que le serveur garde de ton compte, partie comprise.</dd>
         </div>
         <div class="fact">
           <dt>Un autre nom</dt>
@@ -360,6 +418,18 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
         <div class="fact">
           <dt>Supprimer mes données en ligne</dt>
           <dd>Efface du serveur ton identité, ton surnom, ton refuge partagé, tes masquages et les signalements (faits ou reçus). Ton appareil oublie ta clé et le jeu en ligne se coupe&nbsp;; ta partie reste sur ton appareil.</dd>
+        </div>
+        <div class="fact">
+          <dt>Supprimer mon compte</dt>
+          <dd>Efface ton compte, ton adresse, ta partie sauvegardée, tes appareils connectés et ton identité en ligne. Ta partie reste sur ton appareil.</dd>
+        </div>
+        <div class="fact">
+          <dt>Se déconnecter, «&nbsp;Déconnecter tous les appareils&nbsp;»</dt>
+          <dd>L'appareil oublie ta clé de session et ton adresse (ta partie reste, ou s'efface si tu le demandes)&nbsp;; avec «&nbsp;Déconnecter tous les appareils&nbsp;», tous tes appareils doivent se reconnecter.</dd>
+        </div>
+        <div class="fact">
+          <dt>Mot de passe oublié</dt>
+          <dd>Un code envoyé à ton adresse te fait choisir un nouveau mot de passe&nbsp;; tes autres appareils sont déconnectés.</dd>
         </div>
         <div class="fact">
           <dt>L'interrupteur «&nbsp;Jouer à plusieurs&nbsp;»</dt>
@@ -371,22 +441,24 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
     </section>
 
     <section class="panel" id="pourquoi" aria-labelledby="t-pourquoi">
-      <h2 id="t-pourquoi"><svg class="icon" aria-hidden="true"><use href="#i-refuge"/></svg>Pourquoi le jeu a le droit<span class="n">08</span></h2>
+      <h2 id="t-pourquoi"><svg class="icon" aria-hidden="true"><use href="#i-refuge"/></svg>Pourquoi le jeu a le droit<span class="n">09</span></h2>
       <ul class="list">
         <li><b>Le jeu en ligne</b>&nbsp;: tu l'as demandé en choisissant «&nbsp;Jouer à plusieurs&nbsp;». Sans ces données, il ne peut pas marcher (RGPD, article&nbsp;6.1.b&nbsp;; à défaut, 6.1.f).</li>
+        <li><b>Ton compte</b>&nbsp;: tu l'as demandé&nbsp;; sans adresse ni mot de passe, il ne peut pas marcher (article&nbsp;6.1.b). Les avis de sécurité et les limites contre les abus protègent ton compte (6.1.b et 6.1.f).</li>
         <li><b>Les limites, masquages, signalements et bannissements</b>&nbsp;: ils protègent les joueurs et le jeu (intérêt légitime, article&nbsp;6.1.f).</li>
         <li><b>La clé rangée dans ton navigateur</b> est indispensable au jeu en ligne que tu demandes&nbsp;: c'est pour cela qu'il n'y a pas de bandeau de cookies. Il n'y a ni publicité, ni mesure d'audience, ni achat, ni profilage.</li>
-        <li>Le jeu ne demande pas ton âge. Le jeu en ligne est déconseillé aux moins de 12&nbsp;ans.</li>
+        <li>Sans compte, le jeu ne demande pas ton âge. Le jeu en ligne est déconseillé aux moins de 12&nbsp;ans.</li>
+        <li>Pour créer un compte, il faut avoir 15&nbsp;ans, ou l'accord d'un parent. <span class="todo"><svg class="icon" aria-hidden="true"><use href="#i-alerte"/></svg>À confirmer</span></li>
       </ul>
     </section>
 
     <section class="panel" id="mentions" aria-labelledby="t-mentions">
-      <h2 id="t-mentions"><svg class="icon" aria-hidden="true"><use href="#i-position"/></svg>Mentions légales<span class="n">09</span></h2>
+      <h2 id="t-mentions"><svg class="icon" aria-hidden="true"><use href="#i-position"/></svg>Mentions légales<span class="n">10</span></h2>
       <dl class="legal">
         <div>
           <dt class="label">Éditeur et directeur de la publication</dt>
           <dd><span class="todo-note">Nom de l'éditeur</span> <span class="todo"><svg class="icon" aria-hidden="true"><use href="#i-alerte"/></svg>À confirmer</span></dd>
-          <dd>Contact&nbsp;: <span class="mail">earthlife@needhelpapp.com</span> <span class="todo"><svg class="icon" aria-hidden="true"><use href="#i-alerte"/></svg>À confirmer</span> <span class="todo-note">(adresse pas encore ouverte)</span></dd>
+          <dd>Contact, et adresse d'envoi des e-mails du jeu&nbsp;: <span class="mail">earthlife@needhelpapp.com</span> <span class="todo"><svg class="icon" aria-hidden="true"><use href="#i-alerte"/></svg>À confirmer</span> <span class="todo-note">(adresse pas encore ouverte)</span></dd>
         </div>
         <div>
           <dt class="label">Hébergeur des pages du jeu</dt>

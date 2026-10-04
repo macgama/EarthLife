@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createRoom } from '../src/room.js';
 import { createMemoryStore } from '../src/store-memory.js';
 import { dayOf } from '../src/rules.js';
@@ -872,7 +873,7 @@ test('arrêt propre : bye restart avec un délai de 2 à 5 s, code 1012, écritu
 test('santé : JSON de /v1/health, compte caché en dessous de 2', async () => {
   const w = world({ cfg: { version: 'a1b2c3d', inviteCode: 'X' } });
   assert.deepEqual(w.room.health(), { ok: true, v: 1, minClient: 1, version: 'a1b2c3d', ws: true, db: true,
-    maintenance: false, invite: true, online: 0, now: T0 });
+    maintenance: false, invite: true, acct: false, online: 0, now: T0 });
   const w2 = world();
   await w2.join(0, 0);
   assert.equal(w2.room.health().online, 0);
@@ -1230,4 +1231,84 @@ test('vie privée en mémoire : aucune position 15 s après le dernier message, 
   const text = JSON.stringify([...d.perIp.keys(), Object.keys(c.s), String(c.s.ipKey)]);
   assert.ok(!text.includes(ip) && c.s.ip === undefined, 'adresse en clair');
   assert.ok(!JSON.stringify(w.logs).includes(ip));
+});
+
+// ---------- Comptes (spécification des comptes, 4.6) ----------
+
+test('comptes : hello { ses } (identité du compte, welcome sans jeton), session retirée, banni, comptes coupés ; dropCredentials, forgetPlayer', async () => {
+  const store = createMemoryStore();
+  const w = world({ store, cfg: { accounts: true } });
+  const sha = (x) => createHash('sha256').update(x).digest('hex');
+  const ACC = 'a'.repeat(32);
+  const ses = 'S'.repeat(43), ses2 = 'T'.repeat(43);
+  await store.createAccount({ id: ACC, emailHash: 'e'.repeat(64), emailBox: Buffer.alloc(40), pwHash: 'x', today: dayOf(T0) });
+  for (const x of [ses, ses2]) {
+    await store.createSession({ tokenHash: sha(x), accountId: ACC, nowMs: T0 - 2 * DAY, expiresMs: T0 + DAY, today: dayOf(T0 - 2 * DAY), max: 10 });
+  }
+  const a = w.client();
+  const wa = await a.hello({ ses });
+  assert.ok(wa, 'accueilli');
+  assert.equal(wa.tok, undefined, 'jamais de jeton anonyme pour une session de compte');
+  const acc = await store.accountById(ACC);
+  assert.ok(acc.playerId, 'identité créée et rattachée au premier hello');
+  assert.deepEqual(wa.nm, (await store.playerById(acc.playerId)).name);
+  assert.equal(a.s.tokenHash, sha(ses));
+  const sess = await store.sessionByTokenHash(sha(ses), T0);
+  assert.equal(sess.seenOn, dayOf(T0), 'session renouvelée (une fois par jour)');
+  assert.equal(sess.expiresMs, T0 + 60 * DAY);
+  // Autre appareil du même compte : même identité, l'ancienne connexion cède (dup).
+  const b = w.client();
+  const wb = await b.hello({ ses: ses2 });
+  assert.deepEqual(wb.nm, wa.nm);
+  assert.deepEqual(a.last('err'), { t: 'err', code: 'dup' });
+  // Sessions retirées par les comptes : err session et fermeture 1008 ; les autres ne bougent pas.
+  const anon = await w.join(5, 0);
+  assert.equal(w.room.dropCredentials(new Set([sha(ses2), sha('inconnue')])), 1);
+  assert.deepEqual([b.last('err'), b.closed], [{ t: 'err', code: 'session' }, 1008]);
+  assert.equal(anon.closed, null);
+  assert.equal(w.room.dropCredentials([]), 0);
+  // Session supprimée en base : hello refusé (err session, 1008).
+  await store.dropSession(sha(ses2));
+  const c = w.client();
+  assert.equal(await c.hello({ ses: ses2 }), null);
+  assert.deepEqual([c.last('err'), c.closed], [{ t: 'err', code: 'session' }, 1008]);
+  // Identité du compte bannie : refusée comme avant.
+  await store.ban(acc.playerId, T0 + DAY);
+  const d = w.client();
+  assert.equal(await d.hello({ ses }), null);
+  assert.deepEqual(d.last('err'), { t: 'err', code: 'banned' });
+  await store.ban(acc.playerId, null);
+  // Repli HTTP : la preuve est la session ; après dropCredentials, bye restart puis err session au hello suivant.
+  const r1 = await w.room.sync(JSON.stringify({ v: 1, ses, sid: null, msgs: [{ t: 'hello', v: 1, cl: 1, tok: null, ses }] }));
+  const welcome = r1.msgs.find((m) => m.t === 'welcome');
+  assert.ok(welcome && welcome.tok === undefined);
+  const r2 = await w.room.sync(JSON.stringify({ v: 1, ses, sid: welcome.sid, msgs: [] }));
+  assert.equal(r2.status, 200);
+  assert.ok(!r2.msgs.some((m) => m.t === 'bye'));
+  w.room.dropCredentials([sha(ses)]);
+  await store.dropSession(sha(ses));
+  const r3 = await w.room.sync(JSON.stringify({ v: 1, ses, sid: welcome.sid, msgs: [] }));
+  assert.deepEqual(r3.msgs, [{ t: 'bye', why: 'restart', retryMs: 0 }]);
+  const r4 = await w.room.sync(JSON.stringify({ v: 1, ses, sid: null, msgs: [{ t: 'hello', v: 1, cl: 1, tok: null, ses }] }));
+  assert.deepEqual(r4.msgs, [{ t: 'err', code: 'session' }]);
+  // forgetPlayer : session fermée (err code si donné, sinon 1000), cadences oubliées.
+  const e = await w.join(10, 0);
+  const eid = e.s.playerId;
+  assert.ok(w.room.debug().accounts.has(eid));
+  w.room.forgetPlayer(eid, { code: 'session' });
+  assert.deepEqual([e.last('err'), e.closed], [{ t: 'err', code: 'session' }, 1008]);
+  assert.ok(!w.room.debug().accounts.has(eid));
+  const f = await w.join(12, 0);
+  w.room.forgetPlayer(f.s.playerId);
+  assert.deepEqual([f.last('err'), f.closed], [null, 1000]);
+  // Comptes coupés sur ce serveur : toute session renvoyée à plus tard par un bye maintenance (pas err session : le jeu la
+  // lirait comme « session révoquée » et l'oublierait), santé acct: false.
+  const off = world({ store });
+  const g = off.client();
+  await store.createSession({ tokenHash: sha('U'.repeat(43)), accountId: ACC, nowMs: T0, expiresMs: T0 + DAY, today: dayOf(T0), max: 10 });
+  assert.equal(await g.hello({ ses: 'U'.repeat(43) }), null);
+  assert.deepEqual([g.last('bye'), g.last('err'), g.closed], [{ t: 'bye', why: 'maintenance', retryMs: 60000 }, null, 1013]);
+  assert.ok(await store.sessionByTokenHash(sha('U'.repeat(43)), T0), 'session intacte dans le magasin');
+  assert.equal(off.room.health().acct, false);
+  assert.equal(w.room.health().acct, true);
 });

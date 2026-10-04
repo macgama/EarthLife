@@ -2,8 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SAVE_KEY, PREV_KEY, CORRUPT_KEY, SAVE_VERSION, LIMITS, ITEM_KEYS, SAVE_MESSAGES,
-  emptySave, validateSave, parseSave, purgeOld, createSaveStore, memoryStorage, exportFileName,
+  emptySave, validateSave, parseSave, purgeOld, createSaveStore, memoryStorage, exportFileName, isBlankSave,
 } from '../src/save.js';
+import { stampOf } from '../src/net/account.js';
+import { stampOfText } from '../src/account.js';
 import { ITEMS } from '../src/survival.js';
 import { createBase, maxHp } from '../src/base.js';
 
@@ -893,4 +895,101 @@ test('taille maximale au pire (identifiants de 40 caractères, textes à échapp
   }
   times.sort((a, b) => a - b);
   assert.ok(times[4] <= 5, `flush ${times[4].toFixed(2)} ms`);
+});
+
+// ---------- Compte facultatif (spécification des comptes, 5.7) ----------
+
+test('onWrite : texte exact rangé, à chaque écriture réussie (tous les motifs), jamais en lecture seule ni en échec', () => {
+  withBrowser(({ hide, close }) => {
+    const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+    const seen = [];
+    const store = createSaveStore({ storage, now: () => NOW, rand: seeded(6), onWrite: (e) => seen.push(e) });
+    assert.equal(store.storedText, JSON.stringify(EXAMPLE), 'storedText : le texte lu au démarrage');
+    store.flush('menu');
+    store.markDirty();
+    store.tick(2000);
+    hide();
+    store.markDirty();
+    close();
+    assert.equal(store.importText(JSON.stringify(EXAMPLE)).ok, true);
+    assert.deepEqual(seen.map((e) => e.why), ['menu', 'delai', 'arriere-plan', 'fermeture', 'import']);
+    for (const e of seen) assert.equal(typeof e.text, 'string');
+    assert.equal(seen.at(-1).text, storage.map.get(SAVE_KEY), 'texte exact rangé');
+    assert.equal(store.storedText, storage.map.get(SAVE_KEY));
+    // Empreinte lue au début du texte : la même que celle de la partie relue en entier.
+    const stamp = stampOfText(seen.at(-1).text);
+    assert.deepEqual(stamp, stampOf(JSON.parse(storage.map.get(SAVE_KEY))));
+    assert.deepEqual(stamp, [store.writer, store.save.rev, NOW]);
+    // Un abonné qui lève ne fait pas échouer l'écriture.
+    const loud = createSaveStore({ storage: fakeStorage(), now: () => NOW, onWrite: () => { throw new Error('réseau'); } });
+    assert.equal(loud.flush('menu').ok, true);
+  });
+  // Partie neuve (?fresh) et « Reprendre ici » : signalées aussi ; lecture seule et stockage plein : jamais.
+  const seen = [];
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const fresh = createSaveStore({ storage, now: () => NOW, fresh: true, rand: seeded(7), onWrite: (e) => seen.push(e.why) });
+  assert.deepEqual(seen, ['nouvelle partie']);
+  const other = createSaveStore({ storage, now: () => NOW, rand: seeded(8), onWrite: (e) => seen.push(`autre:${e.why}`) });
+  other.flush('menu');
+  assert.equal(fresh.flush('menu').ok, false, 'lecture seule');
+  assert.equal(fresh.takeOver().ok, true);
+  assert.deepEqual(seen, ['nouvelle partie', 'autre:menu', 'reprise']);
+  const full = createSaveStore({ storage: fakeStorage({ limit: 10 }), now: () => NOW, onWrite: (e) => seen.push(`plein:${e.why}`) });
+  full.flush('menu');
+  assert.equal(seen.some((w) => w.startsWith('plein')), false);
+  // Version plus récente : lecture seule dès le départ.
+  const newer = createSaveStore({ storage: fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify({ ...EXAMPLE, v: 2 }) } }), now: () => NOW, onWrite: (e) => seen.push(`v2:${e.why}`) });
+  newer.flush('menu');
+  assert.equal(seen.some((w) => w.startsWith('v2')), false);
+});
+
+test('wipe : partie, copie et partie illisible retirées ; plus rien d\'écrit ensuite', () => {
+  withBrowser(({ close }) => {
+    const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE), [PREV_KEY]: '{}', [CORRUPT_KEY]: 'x', 'earthlife.place': 'garde' } });
+    const store = createSaveStore({ storage, now: () => NOW });
+    store.flush('menu');
+    assert.equal(store.wipe(), true);
+    assert.equal(storage.map.has(SAVE_KEY), false);
+    assert.equal(storage.map.has(PREV_KEY), false);
+    assert.equal(storage.map.has(CORRUPT_KEY), false);
+    assert.equal(storage.map.get('earthlife.place'), 'garde', 'les autres clés restent');
+    assert.equal(store.storedText, null);
+    store.markDirty();
+    close();
+    assert.equal(storage.map.has(SAVE_KEY), false, 'la fermeture ne réécrit pas la partie effacée');
+  });
+  const blocked = { getItem() { return null; }, setItem() { throw new Error('bloqué'); }, removeItem() { throw new Error('bloqué'); } };
+  assert.equal(createSaveStore({ storage: blocked, now: () => NOW }).wipe(), false);
+});
+
+test('isBlankSave : partie neuve et partie jouée sans rien de marquant vides ; refuge, compteur, journal… non', () => {
+  assert.equal(isBlankSave(emptySave(NOW)), true);
+  // Besoins, sac et position changent dès la première minute : ils ne comptent pas.
+  const walked = emptySave(NOW);
+  Object.assign(walked.survivor, { food: 40, water: 30, bag: { eau: 2 } });
+  walked.where = { lat: 45.7, lon: 4.8, at: NOW, inside: false };
+  walked.profile.kitGiven = true;
+  assert.equal(isBlankSave(walked), true);
+  assert.equal(isBlankSave(EXAMPLE), false);
+  const cases = {
+    base: (s) => { s.base = structuredClone(EXAMPLE.base); },
+    orphanChest: (s) => { s.orphanChest = { lat: 45.7, lon: 4.8, chest: { bois: 1 } }; },
+    dropBag: (s) => { s.dropBag = { lat: 45.7, lon: 4.8, bag: { eau: 1 }, at: NOW }; },
+    nightsHeld: (s) => { s.profile.nightsHeld = 1; },
+    kills: (s) => { s.profile.kills = 3; },
+    deaths: (s) => { s.profile.deaths = 1; },
+    deliveries: (s) => { s.profile.deliveries = 1; },
+    firstWaveDone: (s) => { s.profile.firstWaveDone = true; },
+    journal: (s) => { s.profile.journal = [{ at: NOW, text: 'Refuge installé' }]; },
+    plans: (s) => { s.profile.plans = ['etabli']; },
+    searched: (s) => { s.searched = { 'b45.75718_4.83049': NOW }; },
+    dismantled: (s) => { s.dismantled = { c457561_48311: NOW }; },
+  };
+  for (const [name, edit] of Object.entries(cases)) {
+    const s = emptySave(NOW);
+    edit(s);
+    assert.equal(isBlankSave(s), false, name);
+  }
+  assert.equal(isBlankSave(null), true);
+  assert.equal(isBlankSave({}), true);
 });

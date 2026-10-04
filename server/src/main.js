@@ -1,6 +1,7 @@
 // Démarrage du serveur (sections 4.9 et 7.3) : réglages, magasin, HTTP, WebSocket (ws en mode noServer, origine
 // vérifiée avant toute poignée de main), tic de 250 ms, purge horaire, mesures toutes les 5 min, sortie volontaire
-// sur restart.request (code 1), SIGTERM et SIGINT (code 0), demandes de modération déposées par admin.mjs.
+// sur restart.request (code 1), SIGTERM et SIGINT (code 0), demandes de modération déposées par admin.mjs ; comptes
+// facultatifs (spécification des comptes) quand config.accounts est vrai : routes, e-mails, purge, mesures.
 // Protections du transport : trames de contrôle plafonnées et tampons d'envoi balayés chaque seconde (mémoire),
 // délais HTTP effectifs, limites par adresse sur le /64 en IPv6 ; sonde de la base toutes les 5 s (/v1/health).
 // Lancé tel quel par le gestionnaire d'Infomaniak : node --max-old-space-size=192 …/current/server/src/main.js
@@ -13,6 +14,8 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { createRoom } from './room.js';
+import { createAccounts } from './accounts.js';
+import { createMailer } from './mail.js';
 import { createMemoryStore } from './store-memory.js';
 import { createLog, errFields } from './log.js';
 import { createHttpHandler, clientIp, ipScope, originAllowed, pathOf } from './http.js';
@@ -63,10 +66,13 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-// Méthodes du magasin appelées par la salle (interface de store-memory.js).
+// Méthodes du magasin appelées par la salle et par les comptes (interface de store-memory.js).
 const STORE_OPS = ['init', 'playerByTokenHash', 'createPlayer', 'touch', 'rename', 'blocksOf', 'addBlock', 'addReport',
   'reportStats', 'setHidden', 'ban', 'banIp', 'ipBans', 'activeMarks', 'marksIn', 'refuges', 'flush', 'exportPlayer',
-  'erase', 'purge'];
+  'erase', 'purge',
+  'createAccount', 'accountByEmailHash', 'accountById', 'setPassword', 'touchAccount', 'linkPlayer', 'playerById',
+  'eraseAccount', 'inactiveAccounts', 'markWarned', 'countAccounts', 'createSession', 'sessionByTokenHash', 'touchSession',
+  'dropSession', 'dropSessions', 'sessionsOf', 'putCode', 'takeCode', 'saveMeta', 'getSave', 'putSave'];
 
 async function makeStore(config, log) {
   if (config.store === 'memory') return createMemoryStore({ refugeDays: config.refugeDays, playerDays: config.playerDays });
@@ -98,10 +104,11 @@ function rejectUpgrade(socket, code) {
 
 // Démarre le serveur. `config` : réglages de config.js ; `store` et `log` peuvent être fournis (tests, faux serveur).
 // `exit(code)` est appelé à la fin d'un arrêt demandé (signal, restart.request) ; `tap` voit les trames reçues
-// (faux serveur seulement) ; `extra` ajoute des adresses HTTP (faux serveur seulement).
+// (faux serveur seulement) ; `extra` ajoute des adresses HTTP (faux serveur seulement). `mailer` remplace l'envoi
+// d'e-mails tiré de config.mail, `accountOpts` complète createAccounts (essais : hachage rapide, horloge).
 export async function startServer({
   config, store = null, log = null, exit = (code) => process.exit(code), signals = false, tap = null, extra = null,
-  roomCfg = {}, onTick = null, timers = {},
+  roomCfg = {}, onTick = null, timers = {}, mailer = null, accountOpts = {},
 } = {}) {
   const T = { ...SERVER_TIMERS, ...timers };
   const startedAt = Date.now();
@@ -109,14 +116,15 @@ export async function startServer({
   store ??= await makeStore(config, log);
   const hmac = makeHmac(config.hmacSecret);
   // Adresse du joueur. Hors du mode local, TRUST_PROXY=1 sans X-Forwarded-For lisible donne une adresse vide (pas de
-  // limite par adresse, comme TRUST_PROXY=0) : le journal le dit une fois (V17).
+  // limite par adresse pour le jeu, comme TRUST_PROXY=0 ; les routes des comptes, elles, rangent ces requêtes dans un seau
+  // commun « inconnue », limité lui aussi) : le journal le dit une fois (V17).
   const xffNoted = new Set();
   const ipOf = (req) => {
     const ip = clientIp(req, config.trustProxy, !!config.dev);
     if (!ip && config.trustProxy && !config.dev) {
       const xff = req.headers['x-forwarded-for'];
       const type = typeof xff === 'string' && xff.trim() ? 'xff-illisible' : 'xff-absent';
-      if (!xffNoted.has(type)) { xffNoted.add(type); log('reglage', { type, effet: 'aucune limite par adresse' }); }
+      if (!xffNoted.has(type)) { xffNoted.add(type); log('reglage', { type, effet: 'jeu : aucune limite par adresse ; comptes : limites communes' }); }
     }
     return ip;
   };
@@ -151,6 +159,19 @@ export async function startServer({
   const room = createRoom({ store: roomStore, cfg: { ...roomConfig(config), ...roomCfg }, hmac, log,
     dbUp: () => initOk && probeOk });
 
+  // Comptes (4.6) : après la salle, qui reçoit leurs effets (dropCredentials, forgetPlayer). L'envoi d'e-mails est
+  // vérifié sans attendre (connexion, EHLO, AUTH) ; un échec est au journal, les routes répondent 503 courrier tant
+  // que le disjoncteur est ouvert.
+  let accounts = null;
+  if (config.accounts) {
+    const m = config.mail ?? {};
+    mailer ??= createMailer({ transport: m.transport, smtp: { host: m.host, port: m.port, user: m.user, password: m.password },
+      from: m.from, replyTo: m.replyTo, perHour: m.perHour, perDay: m.perDay, log, gameUrl: config.gameUrl });
+    accounts = createAccounts({ store: roomStore, room, config, mailer, log, hmac, ...accountOpts });
+  } else {
+    mailer = null;
+  }
+
   function retryInit() {
     if (initing) return initing;
     initing = (async () => {
@@ -179,9 +200,10 @@ export async function startServer({
   log('demarrage', {
     version: config.version, node: process.version, tasMaxMo: heapMo, magasin: config.store, ws: config.ws,
     maintenance: config.maintenance, origines: config.origins.length, trustProxy: config.trustProxy, maxConn: config.maxConn,
-    fichier: config.envFile?.found ?? null,
+    fichier: config.envFile?.found ?? null, comptes: !!accounts, courrier: accounts ? mailer?.transport ?? null : null,
   });
   for (const w of config.warnings ?? []) log('reglage', w);
+  if (mailer) Promise.resolve().then(() => mailer.verify()).catch((err) => log('erreur', { type: 'courrier', ...errFields(err) }));
 
   await room.init();
   initOk = room.debug().dbOk;
@@ -192,7 +214,7 @@ export async function startServer({
     const until = runtimeBans.get(hmac(ip));
     return !!until && until > Date.now();
   };
-  const web = createHttpHandler({ room, config, log, isBanned, state, extra, tap });
+  const web = createHttpHandler({ room, config, log, isBanned, state, extra, tap, accounts });
   // Délais de 10 s (6.2) contrôlés toutes les 2 s (30 s par défaut dans node:http : une connexion aux en-têtes jamais
   // finis vivait 30 s) ; nombre de sockets borné (WebSocket et HTTP), large devant MAX_CONN.
   const server = http.createServer({ headersTimeout: T.httpTimeoutMs, requestTimeout: T.httpTimeoutMs,
@@ -365,6 +387,11 @@ export async function startServer({
       const r = await room.purge();
       if (r) log('purge', r);
     } catch (err) { log('erreur', { type: 'purge', ...errFields(err) }); }
+    if (!accounts) return;
+    try {
+      const a = await accounts.purge(Date.now());
+      if (a.prevenus || a.effaces) log('purge', { comptesPrevenus: a.prevenus, comptesEffaces: a.effaces });
+    } catch (err) { log('erreur', { type: 'purge-comptes', ...errFields(err) }); }
   };
   once(T.firstPurgeMs, () => { purge(); every(T.purgeMs, purge); });
 
@@ -403,6 +430,7 @@ export async function startServer({
         maxMs: Math.round(io.maxMs * 100) / 100 },
       rssMo: Math.round(mem.rss / MB), tasMo: Math.round(mem.heapUsed / MB), dbMs,
     };
+    if (accounts) out.comptes = accounts.stats();
     Object.assign(io, { ticks: 0, ms: 0, maxMs: 0, writes: 0 });
     for (const k of Object.keys(web.counts)) web.counts[k] = 0;
     for (const k of Object.keys(wsCounts)) wsCounts[k] = 0;
@@ -468,6 +496,7 @@ export async function startServer({
         room.close(x, 'banni');
       }
     } else {
+      room.forgetPlayer(id);
       for (const x of [...d.sessions]) {
         if (x.playerId !== id) continue;
         try { x.conn.close(1000); } catch { /* déjà fermée */ }
@@ -506,6 +535,7 @@ export async function startServer({
           server.closeAllConnections?.();
           setTimeout(resolve, 500).unref?.();
         });
+        mailer?.close();
         await Promise.race([Promise.resolve(store.close?.()).catch(() => {}), new Promise((r) => setTimeout(r, 1000))]);
         if (socketFile) try { fs.unlinkSync(socketFile); } catch { /* déjà parti */ }
         log('arret', { fin: true });
@@ -525,7 +555,7 @@ export async function startServer({
   }
 
   const url = port !== null ? `http://${config.host && config.host !== '0.0.0.0' ? config.host : '127.0.0.1'}:${port}` : null;
-  return { server, room, store, log, config, port, url, stop, measure, state, sockets, runtimeBans };
+  return { server, room, store, log, config, port, url, stop, measure, state, sockets, runtimeBans, accounts, mailer };
 }
 
 // ---------- Lancement direct ----------

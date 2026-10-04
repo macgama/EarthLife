@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { normEmail } from '../../prototype/src/net/account.js';
+import { DEFAULT_GAME_URL } from './mail-texts.js';
 
 export const KNOWN_KEYS = [
   'PORT', 'HOST', 'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_POOL', 'HMAC_SECRET',
@@ -14,6 +16,9 @@ export const KNOWN_KEYS = [
   'GONE_HOURS', 'REFUGE_DAYS', 'PLAYER_DAYS', 'CREATE_PER_HOUR',
   // Ajouts du lot B : mode local, magasin, dossiers.
   'DEV', 'STORE', 'LOG_DIR', 'EARTHLIFE_APP_DIR',
+  // Comptes (spécification des comptes, 4.7).
+  'ACCOUNTS', 'ACCOUNT_SECRET', 'MAIL', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'MAIL_FROM', 'MAIL_REPLY_TO',
+  'MAIL_PER_HOUR', 'MAIL_PER_DAY', 'GAME_URL',
 ];
 const KNOWN = new Set(KNOWN_KEYS);
 
@@ -147,6 +152,47 @@ export function buildConfig(raw, { root = RELEASE_ROOT } = {}) {
   const inviteCode = str('INVITE_CODE');
   if (inviteCode && !/^[A-Za-z0-9-]{1,16}$/.test(inviteCode)) errors.push({ type: 'valeur-invalide', detail: 'INVITE_CODE' });
 
+  // Comptes (4.7) : un réglage manquant ou faux les coupe (avertissement comptes-coupes avec sa raison, jamais sa
+  // valeur) sans empêcher le démarrage. Mode local : secret tiré au démarrage, fausse boîte aux lettres.
+  const accountsWanted = bool('ACCOUNTS', dev);
+  const off = [];
+  let accountSecret = null;
+  const secretHex = str('ACCOUNT_SECRET');
+  if (/^[0-9a-fA-F]{64}$/.test(secretHex)) accountSecret = Buffer.from(secretHex, 'hex');
+  else {
+    if (secretHex) warnings.push({ type: 'valeur-invalide', variable: 'ACCOUNT_SECRET' });
+    if (!dev) off.push('secret');
+  }
+  let transport = str('MAIL');
+  if (transport && transport !== 'smtp' && transport !== 'boite') { warnings.push({ type: 'valeur-invalide', variable: 'MAIL' }); transport = ''; }
+  if (!transport) transport = raw.get('SMTP_HOST') || !dev ? 'smtp' : 'boite';
+  if (transport === 'boite' && !dev) off.push('courrier');
+  const smtpHost = str('SMTP_HOST');
+  const smtpPort = str('SMTP_PORT', '465') || '465';
+  if (transport === 'smtp') {
+    if (!/^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(smtpHost)) off.push('smtp-hote');
+    if (smtpPort !== '465') off.push('smtp-port');                 // TLS implicite seulement
+    if (!str('SMTP_USER')) off.push('smtp-utilisateur');
+    if (!str('SMTP_PASSWORD')) off.push('smtp-mot-de-passe');
+  }
+  const from = normEmail(str('MAIL_FROM')) ?? (dev && transport === 'boite' && !str('MAIL_FROM') ? 'earthlife@exemple.test' : null);
+  if (!from) off.push('expediteur');
+  let replyTo = null;
+  if (str('MAIL_REPLY_TO')) {
+    replyTo = normEmail(str('MAIL_REPLY_TO'));
+    if (!replyTo) warnings.push({ type: 'valeur-invalide', variable: 'MAIL_REPLY_TO' });
+  }
+  let gameUrl = str('GAME_URL') || DEFAULT_GAME_URL;
+  if (!/^https:\/\/[A-Za-z0-9.-]+(:\d+)?(\/[^\s<>"]*)?$/.test(gameUrl)) {
+    warnings.push({ type: 'valeur-invalide', variable: 'GAME_URL' });
+    gameUrl = DEFAULT_GAME_URL;
+  }
+  const mail = {
+    transport, host: smtpHost || null, port: 465, user: str('SMTP_USER') || null, password: str('SMTP_PASSWORD') || null,
+    from, replyTo, perHour: num('MAIL_PER_HOUR', 60, 1, 100000), perDay: num('MAIL_PER_DAY', 300, 1, 1000000),
+  };
+  if (accountsWanted) for (const raison of off) warnings.push({ type: 'comptes-coupes', raison });
+
   const appDir = raw.get('EARTHLIFE_APP_DIR') ? path.resolve(raw.get('EARTHLIFE_APP_DIR')) : guessAppDir(root);
   const logDir = raw.get('LOG_DIR') ? path.resolve(raw.get('LOG_DIR')) : appDir ? path.join(appDir, 'logs') : null;
 
@@ -165,6 +211,7 @@ export function buildConfig(raw, { root = RELEASE_ROOT } = {}) {
     refugeDays: num('REFUGE_DAYS', 30, 1, 3650),
     playerDays: num('PLAYER_DAYS', 180, 1, 3650),
     createPerHour: num('CREATE_PER_HOUR', 300, 0, 100000),
+    accounts: accountsWanted && !off.length, accountSecret, mail, gameUrl,
     appDir, logDir,
     version: readVersion(root),
     warnings, errors,
@@ -187,7 +234,7 @@ export function roomConfig(cfg) {
   const HOUR = 3600000;
   return {
     version: cfg.version, minClient: cfg.minClient, ws: cfg.ws, maintenance: cfg.maintenance, inviteCode: cfg.inviteCode,
-    maxConn: cfg.maxConn, createPerHour: cfg.createPerHour,
+    maxConn: cfg.maxConn, createPerHour: cfg.createPerHour, accounts: !!cfg.accounts,
     searchSharedMs: cfg.searchHours * HOUR, goneSharedMs: cfg.goneHours * HOUR,
   };
 }

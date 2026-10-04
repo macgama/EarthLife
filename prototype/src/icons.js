@@ -82,6 +82,12 @@ const ICONS = {
   'geste-merci': '<path d="M7 10.5H3.5V20H7zM7 11l3.6-7.2c1.4 0 2.4 1.3 2.1 2.7L12 10h6.3a2 2 0 0 1 2 2.4l-1.2 6A2 2 0 0 1 17.1 20H7"/>',
   'geste-suivre': '<path d="M5 6l6 6-6 6M13 6l6 6-6 6"/>',
   'geste-aide': '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M5.6 5.6l3.6 3.6M14.8 14.8l3.6 3.6M18.4 5.6l-3.6 3.6M9.2 14.8l-3.6 3.6"/>',
+
+  // Compte facultatif (spécification des comptes, 5.2) : silhouette, cadenas, enveloppe, sortie.
+  compte: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
+  cadenas: `<path d="M5.5 11h13v9.5h-13zM8 11V7.5a4 4 0 0 1 8 0V11"/>${dot(12, 15.5, 1.3)}`,
+  enveloppe: '<path d="M3.5 6h17v12h-17z"/><path d="M3.5 6.5 12 13l8.5-6.5"/>',
+  sortie: '<path d="M10 4H5.5v16H10M14.5 8l4 4-4 4M18.5 12H9"/>',
 };
 
 // Icônes des 6 gestes, par numéro de geste (0 « Salut » … 5 « Besoin d'aide »).

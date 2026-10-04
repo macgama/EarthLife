@@ -296,17 +296,215 @@ export function dayText(day) {
 
 // « Voir mes données » : `data` = réponse de /v1/me (op show) lue par online.showMe, ou null. `name` : surnom
 // recomposé par le client (jamais un texte venu du réseau) ; `refuge` : texte du refuge partagé, composé par main.js.
-export function myDataCard(data, { name = null, refuge = '' } = {}) {
+// `account` (connecté, spécification des comptes 5.4) : la vue du compte (AccountView) ; ses lignes passent en tête,
+// puis celles de l'identité rattachée (`account.player`, qui remplace alors `data`).
+export function myDataCard(data, { name = null, refuge = '', account = null, nowMs = Date.now() } = {}) {
   const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
-  const lines = !data ? ['Impossible de lire tes données : le serveur ne répond pas, ou tu n\'as pas encore joué en ligne.'] : [
+  const who = account ? (account.player ?? null) : data;
+  const identity = !who ? [] : [
     `Surnom : ${name || '—'}`,
-    dayText(data.createdOn) ? `Identité créée le ${dayText(data.createdOn)}` : '',
-    dayText(data.seenOn) ? `Dernière venue le ${dayText(data.seenOn)}` : '',
+    dayText(who.createdOn) ? `Identité créée le ${dayText(who.createdOn)}` : '',
+    dayText(who.seenOn) ? `Dernière venue le ${dayText(who.seenOn)}` : '',
     `Refuge partagé : ${refuge || 'aucun'}`,
-    `Masquages : ${n(data.blocks)} · signalements faits : ${n(data.reports)}`,
+    `Masquages : ${n(who.blocks)} · signalements faits : ${n(who.reports)}`,
     'Ta position de jeu n\'est jamais gardée : elle est oubliée 15 s après ton départ.',
   ];
+  let lines;
+  if (account) {
+    const created = dayText(account.createdOn), seen = dayText(account.seenOn);
+    const sv = account.save;
+    const sent = sv && Number.isFinite(sv.savedMs) ? whenText(sv.savedMs, nowMs) : '';
+    lines = [
+      `Adresse e-mail : ${typeof account.email === 'string' ? account.email : '—'}`,
+      [created ? `Compte créé le ${created}` : '', seen ? `dernière activité le ${seen}` : ''].filter(Boolean).join(' · '),
+      `Appareils connectés : ${n(account.sessions)}`,
+      sv ? `Partie sur le serveur : envoyée ${sent || '—'} (${sizeText(sv.bytes)})` : 'Partie sur le serveur : aucune',
+      ...identity,
+      ACCOUNT_TEXTS.myDataFile,
+    ];
+  } else {
+    lines = data ? identity : ['Impossible de lire tes données : le serveur ne répond pas, ou tu n\'as pas encore joué en ligne.'];
+  }
   return { title: 'Mes données', lines, link: { href: PRIVACY_PAGE, label: ONLINE_TEXTS.keeps }, buttons: [{ id: 'close', label: 'Fermer', primary: true }] };
+}
+
+// ---------- Compte facultatif : textes, dates et cartes (spécification des comptes, 5.4, 5.5 et annexe A) ----------
+
+export const ACCOUNT_TEXTS = {
+  lineOut: 'Sauvegarde ta partie en ligne et reprends-la sur un autre appareil (facultatif).',
+  lineWait: 'Adresse à confirmer : code envoyé à {masque}',
+  lineIn: 'Connecté : {masque}',
+  lineInOffline: 'Connecté : {masque} · hors ligne',
+  lineAbsent: 'Compte indisponible : le serveur ne répond pas. Tu peux jouer sans.',
+  titleLogin: 'Me connecter',
+  titleSignup: 'Créer un compte',
+  titleReset: 'Mot de passe oublié',
+  titleCode: 'Saisis le code',
+  titlePassword: 'Changer de mot de passe',
+  titleDelete: 'Supprimer mon compte',
+  introSignup: "Ton adresse sert à te connecter et à recevoir un code. Rien d'autre : ni publicité, ni lettre d'information.",
+  introReset: 'Saisis ton adresse : tu recevras un code pour choisir un nouveau mot de passe.',
+  introCode: "Code envoyé à {adresse}. Il arrive en général en moins d'une minute ; regarde aussi dans les indésirables.",
+  introPassword: 'Tes autres appareils seront déconnectés.',
+  introDelete: 'Ton compte, ton adresse e-mail, ta partie sauvegardée sur le serveur et ton identité en ligne (surnom, drapeau, masquages, signalements) seront effacés. Ta partie reste sur cet appareil.',
+  labelEmail: 'Adresse e-mail',
+  labelPassword: 'Mot de passe',
+  labelCode: 'Code à 6 chiffres',
+  labelNewPassword: 'Choisis ton mot de passe',
+  labelNewPasswordReset: 'Nouveau mot de passe',
+  labelOldPassword: 'Mot de passe actuel',
+  labelAge: "J'ai 15 ans ou plus, ou un parent est d'accord",
+  hintPassword: '10 caractères au moins. Le plus simple : trois mots au hasard, séparés par des tirets.',
+  show: 'Afficher',
+  hide: 'Masquer',
+  forgot: 'Mot de passe oublié ?',
+  toSignup: 'Créer un compte',
+  sendCode: 'Recevoir un code',
+  resend: 'Renvoyer le code',
+  resendIn: 'Renvoyer le code (dans {s} s)',
+  changeEmail: "Changer d'adresse",
+  submitLogin: 'Me connecter',
+  submitSignup: 'Créer mon compte',
+  submitReset: 'Changer mon mot de passe',
+  submitDelete: 'Supprimer mon compte',
+  busy: 'Un instant…',
+  noteCreated: 'Compte créé : ta partie est sauvegardée en ligne.',
+  noteLogin: 'Connecté.',
+  loadingAdopt: 'Reprise de ta partie…',
+  noteAdopted: 'Partie du compte reprise.',
+  noteLogout: 'Déconnecté. Ta partie reste sur cet appareil.',
+  noteLogoutWipe: 'Déconnecté. Partie effacée de cet appareil.',
+  noteLogoutAll: 'Tous les appareils sont déconnectés.',
+  notePassword: 'Mot de passe changé. Tes autres appareils sont déconnectés.',
+  noteDeleted: 'Compte supprimé. Ta partie reste sur cet appareil.',
+  noteSessionLost: 'Tu as été déconnecté de ton compte. Ta partie reste sur cet appareil.',
+  noteExport: 'Fichier {nom} téléchargé.',
+  toastConflict: 'Deux parties différentes : à régler au menu',
+  onlineElsewhere: 'Ton compte joue en ligne ailleurs (autre appareil ou onglet)',
+  here: 'Jouer en ligne ici',
+  // Ligne d'état de la sauvegarde (5.5) ; {quand} : agoText.
+  cloudEgal: 'Partie sauvegardée sur le serveur {quand}',
+  cloudEnvoi: 'Envoi de la partie…',
+  cloudHorsLigne: 'Hors ligne : partie gardée sur cet appareil, envoi au retour du réseau',
+  cloudConflit: 'Deux parties différentes : choisis laquelle garder',
+  cloudLectureSeule: "Sauvegarde en ligne faite par l'autre onglet",
+  cloudAucune: "Aucune partie sur le serveur pour l'instant",
+  cloudTaille: 'Sauvegarde en ligne impossible : partie trop grosse',
+  myDataFile: 'Le fichier complet : Réglages du compte, puis « Exporter mes données ».',
+};
+
+// Message d'erreur d'un formulaire ou d'une action du compte (annexe A) ; `retryMs` pour « trop ».
+export function accountErrorText(code, retryMs = null) {
+  switch (code) {
+    case 'adresse': return 'Adresse e-mail invalide.';
+    case 'mdp-court': return '10 caractères au moins. Le plus simple : trois mots au hasard.';
+    case 'mdp-long': return '128 caractères au plus.';
+    case 'mdp-commun': return 'Ce mot de passe est trop courant : choisis-en un autre.';
+    case 'mdp-adresse': return 'Ton mot de passe ne doit pas reprendre ton adresse e-mail.';
+    case 'age': return 'Coche la case pour créer ton compte.';
+    case 'code': return 'Code faux ou expiré. Demande un nouveau code si besoin.';
+    case 'identifiants': return 'Adresse ou mot de passe incorrect.';
+    case 'trop': {
+      const min = Number.isFinite(retryMs) && retryMs >= 60000 ? Math.ceil(retryMs / 60000) : null;
+      return `Trop d'essais : réessaie ${min ? `dans ${min} min` : 'dans un instant'}.`;
+    }
+    case 'occupe': return 'Serveur occupé : réessaie dans un instant.';
+    case 'courrier': return "L'envoi d'e-mails ne marche pas pour l'instant : réessaie plus tard.";
+    case 'session': return ACCOUNT_TEXTS.noteSessionLost;
+    case 'conflit': return 'Ta partie en ligne vient encore de changer : compare à nouveau les deux versions.';
+    case 'taille': return 'Ta partie est trop grosse pour être sauvegardée en ligne.';
+    case 'ferme': return 'Les comptes ne sont pas encore ouverts.';
+    case 'reseau': return 'Le serveur ne répond pas. Vérifie ta connexion et réessaie.';
+    default: return 'Le serveur a un souci : réessaie dans quelques minutes.';
+  }
+}
+
+const DAY_MS = 86400000;
+const pad2 = (v) => String(v).padStart(2, '0');
+const clockText = (d) => `${d.getHours()} h ${pad2(d.getMinutes())}`;
+const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+// « le 4 oct. à 14 h 20 », avec l'année si elle n'est pas celle de `now` (heure locale de l'appareil).
+function dateAt(d, now) {
+  const day = `${d.getDate() === 1 ? '1er' : d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return `le ${day}${d.getFullYear() === now.getFullYear() ? '' : ` ${d.getFullYear()}`} à ${clockText(d)}`;
+}
+
+// Moment d'une sauvegarde : « à l'instant », « aujourd'hui à 15 h 02 », « hier à 9 h 40 », « le 4 oct. à 14 h 20 »,
+// « le 4 oct. 2025 à 14 h 20 » (autre année). '' si `ms` n'est pas une heure.
+export function whenText(ms, nowMs = Date.now()) {
+  if (!Number.isFinite(ms) || !Number.isFinite(nowMs)) return '';
+  if (Math.abs(nowMs - ms) < 60000) return "à l'instant";
+  const d = new Date(ms), now = new Date(nowMs);
+  if (sameDay(d, now)) return `aujourd'hui à ${clockText(d)}`;
+  if (sameDay(d, new Date(nowMs - DAY_MS))) return `hier à ${clockText(d)}`;
+  return dateAt(d, now);
+}
+
+// Âge d'une sauvegarde pour la ligne d'état : « à l'instant », « il y a 2 min », « il y a 3 h », puis la date.
+export function agoText(ms, nowMs = Date.now()) {
+  if (!Number.isFinite(ms) || !Number.isFinite(nowMs)) return '';
+  const age = nowMs - ms;
+  if (age < 60000) return "à l'instant";
+  if (age < 3600000) return `il y a ${Math.floor(age / 60000)} min`;
+  if (age < DAY_MS) return `il y a ${Math.floor(age / 3600000)} h`;
+  return dateAt(new Date(ms), new Date(nowMs));
+}
+
+// Taille en Ko arrondis, 1 Ko au moins.
+function sizeText(bytes) {
+  return `${Math.max(1, Math.round((Number.isFinite(bytes) ? bytes : 0) / 1024))} Ko`;
+}
+
+// « refuge à Lyon, 12 nuits tenues » : côté { refuge, nights, when } composé par account-ui.js.
+function sideText(side = {}) {
+  const nights = Number.isInteger(side.nights) && side.nights >= 0 ? side.nights : 0;
+  const refuge = typeof side.refuge === 'string' && side.refuge ? `refuge à ${side.refuge}` : 'pas de refuge';
+  return `${refuge}, ${nights} nuit${nights > 1 ? 's' : ''} tenue${nights > 1 ? 's' : ''}`;
+}
+
+// Conflit entre la partie du compte et celle de l'appareil : boutons 'dl-cloud', 'dl-local' (Exporter, puis la carte
+// revient), 'keep-cloud', 'keep-local' et 'later' (Échap).
+export function conflictCard({ cloud = {}, local = {} } = {}) {
+  const at = (w) => (typeof w === 'string' && w ? ` ${w}` : '');
+  return {
+    title: 'Deux parties différentes', tone: 'warn',
+    lines: [
+      "Ce compte a déjà une partie, et cet appareil en a une autre. Laquelle garder ? L'autre sera remplacée.",
+      { text: `Celle du compte : ${sideText(cloud)}, sauvegardée${at(cloud.when)}`, button: { id: 'dl-cloud', label: 'Exporter' } },
+      { text: `Celle de cet appareil : ${sideText(local)}, jouée${at(local.when)}`, button: { id: 'dl-local', label: 'Exporter' } },
+      'Exporter en garde une copie dans un fichier, à réimporter si besoin.',
+    ],
+    buttons: [
+      { id: 'keep-cloud', label: 'Garder celle du compte' },
+      { id: 'keep-local', label: 'Garder celle de cet appareil' },
+      { id: 'later', label: 'Plus tard' },
+    ],
+  };
+}
+
+// « Se déconnecter » : 'logout', 'logout-wipe' (seulement si la partie est à jour sur le serveur) et 'cancel'.
+export function logoutCard({ synced = false } = {}) {
+  return {
+    title: 'Se déconnecter',
+    lines: synced
+      ? ['Ta partie est sauvegardée sur le serveur : tu la retrouveras en te reconnectant.',
+        'Sur cet appareil, tu peux la garder pour jouer sans compte, ou l\'effacer (appareil partagé).']
+      : ["Ta dernière partie n'est pas encore sur le serveur. Elle reste sur cet appareil."],
+    buttons: [
+      { id: 'logout', label: 'Me déconnecter', primary: true },
+      ...(synced ? [{ id: 'logout-wipe', label: 'Me déconnecter et effacer la partie ici' }] : []),
+      { id: 'cancel', label: 'Annuler' },
+    ],
+  };
+}
+
+// « Déconnecter tous les appareils » : 'logout-all' et 'cancel'.
+export function logoutAllCard() {
+  return {
+    title: 'Déconnecter tous les appareils',
+    lines: ['Chaque appareil connecté à ton compte, celui-ci compris, devra se reconnecter. Les parties restent sur les appareils.'],
+    buttons: [{ id: 'logout-all', label: 'Déconnecter tout', primary: true }, { id: 'cancel', label: 'Annuler' }],
+  };
 }
 
 // « Supprimer mes données en ligne » : boutons 'erase' et 'cancel'.
