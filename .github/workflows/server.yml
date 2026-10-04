@@ -70,10 +70,18 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: npm ci --ignore-scripts
       - run: npm test
-      - run: npm run test:probe
       # Tableau de la section 9.5 (attaques simulées, 200 survivants pendant 2 min) contre le faux serveur.
       - name: Attaques simulées et charge
         run: node tools/abuse.mjs
+      # Sonde : elle tourne sous la version de la matrice (NODE_SONDE) ; l'essai, faux navigateur qui a besoin des
+      # WebSocket et EventSource de Node 22 ou plus, tourne sous Node 24. En dernier : les étapes d'avant restent sous
+      # la version de la matrice.
+      - name: Node de la matrice pour la sonde
+        run: echo "NODE_SONDE=$(command -v node)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm run test:probe
 
   secrets-check:
     # Échec si un fichier .env ou .env.* (sauf *.example), une clé privée, ou une affectation à PASSWORD, SECRET ou
