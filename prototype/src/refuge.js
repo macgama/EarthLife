@@ -2,10 +2,12 @@
 // d'absence. Orchestrateur pur (ni DOM ni THREE) : le directeur des zombies, le champ de distances et
 // reachableFrom arrivent par attach(world) ; l'heure et les tirages sont passés en paramètre.
 import { isFree, getAt, BUILDING, lineFree } from './collision.js';
+import { makeProjection } from './geo.js';
 import {
   TIMES, TRAP, KIT, PERKS, claimableShape, planOpenings, createBase, relocateBase, anchorOf,
   openingsWorld as worldOpenings, maxHp, nail, plate, repair, canRepair, repairCost, setTrap, hit, breaches,
   chestCap, countOf, moveItems, depositMaterials, storeItems, spreadDamage, countsLabel, itemWord, openingName, kindLabel,
+  perkFor, splitChest,
 } from './base.js';
 import {
   HORDE, utcOffsetFor, nightKey, localDate, hordeSize, hordeComposition, hordeFronts, directionLabel, bearingOf,
@@ -30,6 +32,10 @@ const LURE = { radius: 45, seconds: 20, throwOut: 12, fromDoor: 15 };
 const RAIN_EVERY = 240, RAIN_RANGE = 2000;
 const FIELD_MIN_GAP = 2;
 const HEAL = { normal: 0.2, infirmerie: 0.5 };
+const NO_DOOR = 'Aucune entrée accessible depuis la rue';
+const NO_DOOR_HERE = "Pas d'entrée possible d'ici : essaie un autre côté";
+const DOOR_CELL = 4;          // porte possible : recalculée quand le joueur change de carré de 4 m
+const CRATE_OUT = 2.0;        // caisse du surplus : 2 m devant l'ancienne porte, hors de portée de « Fouiller »
 const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const TAU = Math.PI * 2;
 
@@ -60,6 +66,16 @@ export function durationLabel(ms) {
   const min = Math.max(0, Math.round(ms / 60000));
   if (min < 60) return `${min} min`;
   return `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')}`;
+}
+
+// Lieu écrit au carnet : le quartier ou la ville du lieu choisi (« Lyon 2e », « Place Bellecour »). Un village trouvé
+// par la recherche a pour zone « département, pays », un point touché sur la carte ses coordonnées : on garde alors
+// le nom du lieu (« Pérouges »).
+export function placeWhere(place) {
+  const area = place?.area ?? '';
+  const parts = area.split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length && parts.length !== 2 && !/°/.test(area) && !/^-?\d+([.,]\d+)?$/.test(parts[0])) return parts[0];
+  return place?.name || null;
 }
 
 function distanceLabel(m) {
@@ -132,6 +148,7 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
   let rainAcc = 0;
   let nightSoonFor = null;
   let changeCache = null;
+  let doorCache = { key: '', why: '' }; // porte possible pour le bouton « Déménager ici » (doorWhy)
   let absenceDone = false;
   let firstNow = null;
   let waveSeq = 0;
@@ -174,6 +191,7 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     world = w;
     bandCache = null;
     ringCache = null;
+    doorCache = { key: '', why: '' };
     return refuge;
   }
 
@@ -322,17 +340,60 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     return { ok: true, why: '' };
   }
 
+  // Porte et fenêtres possibles depuis la position du joueur : seules les entrées qu'il peut atteindre comptent.
+  function planFrom(building, player) {
+    const grid = world.grid;
+    const reachable = world.reachableFrom && player ? world.reachableFrom(grid, player.x, player.z, { maxCells: 6000 }) : null;
+    return planOpenings(building, grid, { from: player, reachable });
+  }
+
+  // Pas de porte d'ici : une autre façade sur la rue en a une (le joueur peut en faire le tour), ou aucune.
+  function noDoor(building, player) {
+    return player && planOpenings(building, world.grid).length ? NO_DOOR_HERE : NO_DOOR;
+  }
+
+  // Le bouton « Déménager ici » ne se montre que si une porte peut être posée : le calcul (parcours en largeur, moins
+  // d'1 ms sous node) est gardé tant que le joueur reste dans le même carré de 4 m et que la grille ne change pas.
+  function doorWhy(building, player) {
+    if (!building || !player || !world?.grid) return '';
+    const key = `${building.id}|${Math.floor(player.x / DOOR_CELL)}|${Math.floor(player.z / DOOR_CELL)}|${world.grid.chunks?.size ?? 0}`;
+    if (doorCache.key !== key) doorCache = { key, why: planFrom(building, player).length ? '' : noDoor(building, player) };
+    return doorCache.why;
+  }
+
+  // Ce bâtiment peut-il devenir le refuge, d'ici ? Forme (aire, étage) puis porte ; pas les causes passagères
+  // (poursuivants, vague), que la vérification de l'action donne au moment d'appuyer. side : la porte est possible
+  // depuis une autre façade.
+  function suitable(building, player) {
+    const shape = claimableShape(building);
+    if (!shape.ok) return shape;
+    const why = doorWhy(building, player);
+    return why === NO_DOOR_HERE ? { ok: false, why, side: true } : { ok: !why, why };
+  }
+
+  // Objets du coffre qui ne tiendront pas dans le coffre du refuge `building` (300 places vers 200).
+  function overflowFor(building) {
+    const b = base();
+    if (!b || !building) return 0;
+    return Math.max(0, countOf(b.chest) - chestCap({ perk: perkFor(building.loot ?? 'house') }));
+  }
+
+  // Caisse du surplus, 2 m devant la porte de l'ancien refuge (case libre vérifiée à l'installation), en lat/lon :
+  // l'ancien refuge peut être dans une autre ville, hors des tuiles chargées.
+  function crateSpot(old) {
+    const d = old.openings[0];
+    const ll = makeProjection(old.lat, old.lon).toLatLon(d.dx + d.nx * CRATE_OUT, d.dz + d.nz * CRATE_OUT);
+    return { lat: Math.round(ll.lat * 1e6) / 1e6, lon: Math.round(ll.lon * 1e6) / 1e6 };
+  }
+
   function claim(building, ctx = {}) {
     const can = canClaim(building, ctx);
     if (!can.ok) return { ok: false, why: can.why, kit: null, moved: false, msg: can.why, events: [] };
     const grid = world.grid;
     const player = ctx.player;
-    const reachable = world.reachableFrom && player ? world.reachableFrom(grid, player.x, player.z, { maxCells: 6000 }) : null;
-    const plan = planOpenings(building, grid, { from: player, reachable });
-    if (!plan.length) {
-      const why = 'Aucune entrée accessible depuis la rue';
-      return { ok: false, why, kit: null, moved: false, msg: why, events: [] };
-    }
+    // Dernier garde-fou (la vérification de l'action a déjà dit, d'ici, s'il faut changer de côté).
+    const plan = planFrom(building, player);
+    if (!plan.length) return { ok: false, why: NO_DOOR, kit: null, moved: false, msg: NO_DOOR, events: [] };
     const now = nowOf(ctx);
     const proj = world.proj ?? world.store?.proj;
     const ll = proj ? proj.toLatLon(building.cx, building.cz) : { lat: 0, lon: 0 };
@@ -344,6 +405,7 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     const old = base();
     const moved = !!old;
     const b = moved ? relocateBase(old, building, plan, info) : createBase(building, plan, info);
+    const left = moved ? splitChest(old.chest, chestCap(b)).left : {};
     save.base = b;
     wave = null; ws = null; alertInfo = null; sirenPending = 0; intruders.clear();
     lateAlert = false; attackAt = null;
@@ -355,6 +417,14 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
       const oc = save.orphanChest.chest;
       for (const k of Object.keys(oc)) moveItems(oc, b.chest, k, oc[k], cap);
       if (countOf(oc) === 0) save.orphanChest = null;
+    }
+    // Coffre trop plein pour le nouveau refuge : le surplus reste dans une caisse devant l'ancienne porte (avec ce
+    // qu'une caisse orpheline n'a pas pu verser), à reprendre à la main (« Récupérer le coffre »).
+    const crate = countOf(left);
+    if (crate) {
+      const oc = save.orphanChest?.chest ?? {};
+      for (const [k, n] of Object.entries(left)) oc[k] = (oc[k] ?? 0) + n;
+      save.orphanChest = { ...crateSpot(old), chest: oc };
     }
     let kit = null;
     if (!profile().kitGiven) {
@@ -370,12 +440,20 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     bump();
     const n = b.openings.length;
     const label = kindLabel(b.kind);
-    const where = b.place?.area?.split(',')[0]?.trim() || b.place?.name || null;
+    const where = placeWhere(b.place);
     const offset = utcOffsetFor(b, ctx.weather, b.lon);
-    journal(events, `${dayLabel(now, offset)} · ${moved ? 'Refuge déplacé' : 'Refuge installé'} : ${label}${where ? `, ${where}` : ''}`, now);
-    const msg = `Refuge installé : ${label}, ${n} ouverture${n > 1 ? 's' : ''}.${kit ? ` Kit de départ : ${countsLabel(kit)}` : ''}`;
+    const done = moved ? 'Refuge déplacé' : 'Refuge installé';
+    journal(events, `${dayLabel(now, offset)} · ${done} : ${label}${where ? `, ${where}` : ''}`, now);
+    // La caisse s'écrit au carnet, avec le lieu de l'ancien refuge s'il est ailleurs (une autre ville) : on la retrouve.
+    const items = `${crate} objet${crate > 1 ? 's' : ''}`;
+    const oldWhere = crate ? placeWhere(old.place) : null;
+    if (crate) journal(events, `${dayLabel(now, offset)} · Caisse de ${items} devant l'ancien refuge${oldWhere && oldWhere !== where ? `, ${oldWhere}` : ''}`, now);
+    // Avec une caisse, elle remplace le type et le nombre d'ouvertures (le panneau les montre) : le toast tient en
+    // 2 lignes sur téléphone à l'horizontale.
+    const msg = crate ? `${done}. Caisse de ${items} devant l'ancien.`
+      : `${done} : ${label}, ${n} ouverture${n > 1 ? 's' : ''}.${kit ? ` Kit de départ : ${countsLabel(kit)}` : ''}`;
     dirty(events, true);
-    return { ok: true, why: '', kit, moved, msg, events };
+    return { ok: true, why: '', kit, moved, msg, events, crate };
   }
 
   // ---------- Entrer, sortir ----------
@@ -467,11 +545,15 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     if (id === 'claim' || id === 'move') {
       const building = typeof arg === 'object' && arg !== null ? arg : world?.store?.buildings?.[arg];
       const can = canClaim(building, ctx);
-      return can.ok ? yes() : no(can.why);
+      if (!can.ok) return no(can.why);
+      // Porte vérifiée avant la carte « Déménager ici ? », d'où se tient le joueur (calcul neuf, sans le cache).
+      if (player && world?.grid && !planFrom(building, player).length) return no(noDoor(building, player));
+      return yes();
     }
+    // Caisse orpheline (refuge disparu) ou surplus d'un déménagement : reprise à la main, refuge ou pas.
     if (id === 'orphan') {
       const oc = save.orphanChest;
-      if (!oc || b) return no('Rien à récupérer');
+      if (!oc) return no('Rien à récupérer');
       const proj = world?.proj ?? world?.store?.proj;
       if (proj && player) {
         const p = proj.toLocal(oc.lat, oc.lon);
@@ -665,16 +747,25 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     if (near && near.trap === 0 && (bagOf(full).piege ?? 0) > 0) {
       secondary = act('trap', near.id, `Poser un piège${r} · ${TIMES.trap} s`, TIMES.trap, 'secondary');
     }
+    // Bâtiment fouillé : « En faire mon refuge » ou « Déménager ici » s'il peut devenir le refuge d'ici (forme, porte).
+    // Porte possible depuis une autre façade seulement : le bouton est grisé (off), son appui dit d'en faire le tour,
+    // aussi sur téléphone. Sinon le motif (why), que la touche R affiche. Pendant une vague, le bouton reste et R dit
+    // pourquoi attendre.
     const bd = ctx.building;
-    if (!secondary && bd && bd.id !== b?.id && sourceOf() === 'tiles' && claimableShape(bd).ok && searchedOf(bd, ctx)) {
-      secondary = b
-        ? act('move', bd.index, `Déménager ici${r}`, 0, 'secondary')
-        : act('claim', bd.index, `En faire mon refuge${r}`, 0, 'secondary');
+    let why = '';
+    if (!secondary && bd && bd.id !== b?.id && sourceOf() === 'tiles' && searchedOf(bd, ctx)) {
+      const fit = wave ? claimableShape(bd) : suitable(bd, player);
+      if (fit.ok || fit.side) {
+        secondary = b
+          ? act('move', bd.index, `Déménager ici${r}`, 0, 'secondary')
+          : act('claim', bd.index, `En faire mon refuge${r}`, 0, 'secondary');
+        if (!fit.ok) Object.assign(secondary, { off: true, why: fit.why });
+      } else why = fit.why;
     }
-    return { primary, secondary };
+    return why ? { primary, secondary, why } : { primary, secondary };
   }
 
-  // Caisse orpheline (refuge disparu, pas encore de nouveau refuge) : « Récupérer le coffre (E) ».
+  // Caisse orpheline (refuge disparu) ou surplus d'un déménagement, à 2 m au plus : « Récupérer le coffre (E) ».
   function orphanAction(player, ctx = {}) {
     const c = check('orphan', null, { ...ctx, player });
     if (!c.ok || !player) return null;
@@ -1245,7 +1336,9 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     const b = base();
     if (!b || !world?.store || sourceOf() !== 'tiles') return { gone: false, msg: '' };
     if (world.store.buildingIds.has(b.id)) return { gone: false, msg: '' };
-    const oc = save.orphanChest ?? { lat: b.lat, lon: b.lon, chest: {} };
+    // Une caisse laissée par un déménagement (devant un ancien refuge, peut-être dans une autre ville) rejoint le
+    // coffre : tout attend sur place, là où était le refuge, comme le message le dit.
+    const oc = { lat: b.lat, lon: b.lon, chest: { ...(save.orphanChest?.chest ?? {}) } };
     for (const [k, n] of Object.entries(b.chest)) oc.chest[k] = (oc.chest[k] ?? 0) + n;
     save.orphanChest = oc;
     save.base = null;
@@ -1356,7 +1449,7 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     get version() { return version; },
     get spawnLog() { return spawnLog; },
     attach, anchor, openingsWorld: openings, directorOpenings,
-    canClaim, claim, actions, check, apply, update, absence,
+    canClaim, claim, actions, check, apply, update, absence, suitable, overflowFor,
     defenseRows, extras, statusLine, nightLine, bannerText, perkLine,
     hordeAlive, hordeArrows, wakeInside, vanishCheck, orphanAction,
     title: () => (save.base ? `Ton refuge · ${kindLabel(save.base.kind)}` : ''),

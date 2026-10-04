@@ -9,6 +9,7 @@ import {
   wallSamples, createBase, relocateBase, anchorOf, openingsWorld, maxHp, nail, plate, repair, repairCost, setTrap, hit,
   breaches, refugeWarmth, chestCap, countOf, moveItems, depositMaterials, prepareBag, storeItems, spreadDamage, countsLabel,
 } from '../src/base.js';
+import { splitChest } from '../src/base.js';
 
 const LYON = { lat: 45.7578, lon: 4.832 };
 const tileBytes = (x) => readFileSync(new URL(`./fixtures/lyon-14-${x}-5844.mvt`, import.meta.url));
@@ -386,4 +387,26 @@ test('base : création, ancrage, déménagement (le coffre suit, les barricades 
   const police = createBase({ ...b, loot: 'police' }, openings, { now: 1 });
   assert.equal(police.perk, 'murs');
   assert.deepEqual(police.openings.map((o) => o.hp), [150, 25]);
+});
+
+test('déménagement vers un coffre plus petit : le coffre tient dans la place du nouveau refuge, le surplus à part', () => {
+  // Matériaux d'abord, puis l'ordre d'arrivée ; rien n'est perdu.
+  assert.deepEqual(splitChest({ conserve: 120, bois: 50, eau: 88 }, 200), { kept: { bois: 50, conserve: 120, eau: 30 }, left: { eau: 58 } });
+  assert.deepEqual(splitChest({ bois: 4, planche: 2 }, 200), { kept: { bois: 4, planche: 2 }, left: {} });
+  assert.deepEqual(splitChest({ bois: 0, clous: 3 }, 0), { kept: {}, left: { clous: 3 } });
+  assert.deepEqual(splitChest(null, 10), { kept: {}, left: {} });
+  const store = lyonStore();
+  const b = store.buildings.find((x) => claimableShape(x).ok && x.loot === 'house');
+  const openings = [{ door: true, dx: 1, dz: 2, nx: 0, nz: 1 }];
+  // Le magasin (Arrière-boutique) et la maison : même forme, seul le type change.
+  const old = createBase({ ...b, loot: 'clothes' }, openings, { now: 1 });
+  assert.equal(chestCap(old), CHEST.big);
+  old.chest = { conserve: 150, eau: 100, bois: 30 };
+  const moved = relocateBase(old, b, openings, { now: 2 });
+  assert.equal(chestCap(moved), CHEST.normal);
+  assert.equal(countOf(moved.chest), CHEST.normal, 'ramené à 200 places');
+  assert.deepEqual(moved.chest, { bois: 30, conserve: 150, eau: 20 });
+  assert.equal(moved.perk, 'lits');
+  // Vers un autre magasin : tout suit.
+  assert.deepEqual(relocateBase(old, { ...b, loot: 'retail' }, openings, { now: 3 }).chest, old.chest);
 });

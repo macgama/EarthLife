@@ -92,10 +92,12 @@ function buildPanel(view = {}, ui = {}) {
     return `<button type="button" class="rp-tab" role="tab" id="rp-tab-${t.id}" aria-controls="rp-pane-${t.id}" aria-selected="${on}" tabindex="${on ? 0 : -1}" data-ui="tab" data-tab="${t.id}">${esc(t.label)}</button>`;
   }).join(''), ' role="tablist" aria-label="Refuge"');
 
-  // Défense : ligne de nuit, une ligne par ouverture, leurre et sirène.
+  // Défense : ligne de nuit, comment changer de refuge (vue dès l'ouverture, sauf en alerte : les ouvertures d'abord),
+  // une ligne par ouverture, leurre et sirène.
   const alert = isAlert(v);
   let defense = leaf('night', 'p', `rp-night${alert ? ' rp-alert' : ''}`,
     `${icon(alert ? 'alerte' : 'lune', { size: 18 })}<span>${esc(v.night ?? '')}</span>`);
+  if (v.hint && !alert) defense += leaf('hint', 'p', 'rp-hint', `${icon('refuge', { size: 16 })}<span>${esc(v.hint)}</span>`);
   defense += '<ul class="rp-list">';
   (v.defense ?? []).forEach((o, i) => {
     const max = Math.max(1, n0(o.maxHp));
@@ -318,6 +320,9 @@ export const PANEL_CSS = `
 .rp-actions:empty { display: none; }
 .rp-row .rp-actions { margin-top: 10px; }
 .rp-extras { margin-top: var(--sp-3, 12px); }
+.rp-hint { display: flex; align-items: flex-start; gap: var(--sp-2, 8px); margin: 0 0 var(--sp-3, 12px); padding: 0 var(--sp-3, 12px) 0 16px; color: ${T.text2};
+  font-size: var(--fs-sm, 13px); line-height: var(--lh-snug, 1.3); overflow-wrap: anywhere; }
+.rp-hint svg { width: 16px; height: 16px; margin-top: 1px; color: ${T.text3}; }
 .rp-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2, 8px); flex: 1 1 136px; min-width: 0; min-height: ${T.touch};
   padding: 6px var(--sp-3, 12px); border: 1px solid ${T.lineStrong}; border-radius: ${T.rSm}; background: transparent; color: ${T.text}; cursor: pointer;
   font: var(--fw-semibold, 600) 14px / 1.2 ${T.display}; letter-spacing: .01em; text-align: center; touch-action: manipulation;
