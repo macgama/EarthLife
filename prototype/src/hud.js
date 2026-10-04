@@ -12,9 +12,10 @@ const TOAST_ICONS = { danger: 'alerte', success: 'succes', loot: 'sac' };
 const EASE_OUT = 'cubic-bezier(.16, 1, .3, 1)';
 // Rayon de chaque flèche de boussole, en part de la plus petite dimension de la zone du HUD : elles ne se recouvrent pas.
 const ARROW_RADIUS = { quest: 0.22, home: 0.185, bag: 0.255, horde: 0.29 };
-// Une flèche qui tomberait sur un panneau fixe du HUD se rapproche du centre (pas de 4 px), jusqu'à ce rayon au plus près.
-const ARROW_MIN = 0.12, ARROW_HALF = 16;
-const BLOCKERS = ['conditions', 'quest', 'vitals', 'inventory', 'topbuttons', 'horde-banner'];
+// Une flèche qui tomberait sur un panneau fixe du HUD se rapproche du centre (pas de 4 px), jusqu'à ce rayon au plus près ;
+// celle de la quête recule aussi tant que sa distance (posée 30 px plus loin, demi-hauteur 8 px) toucherait un panneau.
+const ARROW_MIN = 0.12, ARROW_HALF = 16, DIST_OUT = 30, DIST_HALF_H = 8;
+const BLOCKERS = ['conditions', 'quest', 'vitals', 'inventory', 'topbuttons', 'horde-banner', 'mapbox'];
 // Notifications en file : 3 au plus, chacune visible au moins 1,2 s avant la suivante.
 const TOAST_QUEUE = 3, TOAST_MIN = 1.2;
 const FATIGUE_LOW = 85;
@@ -83,7 +84,9 @@ export function createHud({ $, input }) {
       if (r && r.width > 0 && r.height > 0 && getComputedStyle(n).visibility !== 'hidden') blockers.push(r);
     }
   }
-  const blocked = (x, y) => blockers.some((b) => x + ARROW_HALF > b.left && x - ARROW_HALF < b.right && y + ARROW_HALF > b.top && y - ARROW_HALF < b.bottom);
+  const blocked = (x, y, hw = ARROW_HALF, hh = ARROW_HALF) => blockers.some((b) => x + hw > b.left && x - hw < b.right && y + hh > b.top && y - hh < b.bottom);
+  // Demi-largeur de la distance de la quête (px), estimée sur son texte (« 469 m », « 1,2 km ») sans lire la mise en page.
+  let distHalf = 24;
   const st = {
     last: 0, prev: {}, counts: {}, kills: undefined, player: null, start: 0, hurt: undefined, hurtPrev: 0,
     toastShown: false, toastTimer: 0, toastAge: 0, toastText: '', queue: [],
@@ -149,13 +152,14 @@ export function createHud({ $, input }) {
       const a = -normalizeAngle(Math.atan2(t.x - p.x, t.z - p.z) - s.cameraYaw);
       const x = Math.sin(a), y = -Math.cos(a);
       let r = side * (ARROW_RADIUS[t.kind] ?? 0.22);
-      while (r > side * ARROW_MIN && blocked(cx + x * r, cy + y * r)) r -= 4;
+      const quest = t.kind === 'quest';
+      while (r > side * ARROW_MIN && (blocked(cx + x * r, cy + y * r) || (quest && blocked(cx + x * (r + DIST_OUT), cy + y * (r + DIST_OUT), distHalf, DIST_HALF_H)))) r -= 4;
       svg.style.transform = `translate(${x * r}px, ${y * r}px) rotate(${a}rad)`;
       svg.classList.remove('off');
       svg.classList.toggle('near', !!t.near);
       if (t.kind === 'quest') {
         // Distance du côté extérieur de la flèche, sans rotation.
-        el.compassDist.style.transform = `translate(${x * (r + 30)}px, ${y * (r + 30)}px) translate(-50%, -50%)`;
+        el.compassDist.style.transform = `translate(${x * (r + DIST_OUT)}px, ${y * (r + DIST_OUT)}px) translate(-50%, -50%)`;
         el.compassDist.classList.toggle('near', !!t.near);
       }
     }
@@ -278,6 +282,7 @@ export function createHud({ $, input }) {
       const label = distanceText(dist);
       setText(el.questDist, label);
       setText(el.compassDist, label);
+      distHalf = 3.6 * label.length + 4;
       const q = s.quest;
       const timed = !!q && Number.isFinite(q.timeLimit) && q.stage === 'toDropoff';
       el.quest.classList.toggle('no-timer', !timed);
