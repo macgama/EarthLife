@@ -83,11 +83,14 @@ export function lootKind(kind) {
   return KIND_ALIASES[kind] ?? 'house';
 }
 
-export function rollLoot(kind, rand = Math.random) {
+// `draws` : nombre de tirages de la table (1 ; 2 au niveau facile d'une ville, quartier.js, NIVEAUX.loot), les butins s'additionnent.
+export function rollLoot(kind, rand = Math.random, draws = 1) {
   const table = LOOT[lootKind(kind)];
   const found = {};
-  for (const [item, chance, max] of table) {
-    if (rand() < chance) found[item] = (found[item] ?? 0) + 1 + Math.floor(rand() * max);
+  for (let d = 0; d < Math.max(1, draws | 0); d++) {
+    for (const [item, chance, max] of table) {
+      if (rand() < chance) found[item] = (found[item] ?? 0) + 1 + Math.floor(rand() * max);
+    }
   }
   return found;
 }

@@ -5,7 +5,7 @@ import { createPicker, placeFromCity } from './picker.js';
 import { fetchWeather, forcedWeather, gameplayModifiers } from './weather.js';
 import { sunPosition, localTimeLabel } from './sun.js';
 import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, lineFree } from './collision.js';
-import { createWorldStore, createTileLoader, useProceduralWorld } from './world.js';
+import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate } from './world.js';
 import { createChunkManager, VIEW_RADIUS } from './chunks.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
@@ -37,6 +37,10 @@ import { createHud, distanceText } from './hud.js';
 import { createMinimap } from './minimap.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
 import { makeProjection } from './geo.js';
+import { createTerritoryStore } from './territory-store.js';
+import { createCommuneCache } from './commune.js';
+import { createResilientBlocks } from './ville-jeu.js';
+import { createCityGame } from './ville-ecran.js';
 // Icônes (HUD, chargement, fin) sous un espace de noms : pas de conflit avec d'autres imports nommés.
 import * as icons from './icons.js';
 
@@ -62,17 +66,41 @@ let session = null;
 let starting = false;
 let firstLaunch = true; // récupération hors ligne : une seule fois par page
 let homePending = true; // refuge disparu, siège d'absence : une fois par page, à la première session au refuge
+// Territoire (villes sauvées, ville en cours : « Sauver sa ville ») : rangé sous sa propre clé, écrit par la sauvegarde
+// dans le même lot (companion), exporté et importé avec elle.
+const localStore = (() => { try { return window.localStorage; } catch { return null; } })();
+const territoryStore = createTerritoryStore({
+  storage: localStore,
+  fresh: params.get('fresh') === '1',
+  onDirty: () => saveStore.markDirty(),
+  onExternal: (e) => setTimeout(() => onSaveExternal(e), 0),
+});
 const saveStore = createSaveStore({
   fresh: params.get('fresh') === '1',
   // Différé : la carte, le HUD et les cartes de jeu n'existent pas encore pendant la création du magasin.
   onExternal: (e) => setTimeout(() => onSaveExternal(e), 0),
   beforeWrite: copyLive,
+  companion: territoryStore,
 });
 const save = saveStore.save;
+// Fiches des communes trouvées, lecteur de pâtés (travailleur, puis calcul sur la page s'il ne démarre pas) et jeu de la ville.
+const communes = createCommuneCache(localStore);
+const blocksClient = createResilientBlocks({ makeWorker: () => new Worker(new URL('./blocks-worker.js', import.meta.url), { type: 'module' }) });
+let city = null;
 // ?fresh=1 ne sert qu'une fois : un rechargement à la main ne doit pas effacer la partie.
 if (params.has('fresh')) history.replaceState(history.state, '', urlWithout('fresh'));
 
 const picker = createPicker({ root: $('menu'), cities: CITIES, onChange: (place) => updatePlayLabel(place) });
+// Sauver sa ville (src/ville-ecran.js) : niveau du menu, choix de la ville, compteurs, nuits, fin de ville. `host` : ce que
+// la partie lui prête (cartes, HUD, session, sauvegarde).
+city = createCityGame({
+  document, params, save, saveStore, store: territoryStore, communes, client: blocksClient, picker,
+  homeLatLon, geoDistance, HOME_RADIUS, template: () => tileTemplate(),
+  setLoading, showCard, toast, getSession: () => session, placePlayer, renderConditions, refugeCtx, markSearched, afterClaim,
+  startGame, toMenu, saveDirty: () => saveStore.markDirty(), saveFlush: (why) => saveStore.flush(why),
+  onLevelChange: (place) => updatePlayLabel(place),
+});
+city.initMenu();
 // Icônes de toute la page ([data-icon]), dessinées une fois ; ensuite setIcon seulement quand l'une d'elles change.
 icons.replaceIcons(document);
 const urlPlace = placeFromParams(params);
@@ -118,7 +146,8 @@ function updatePlayLabel(place) {
   $('play').disabled = !place;
   const home = homeLatLon();
   const d = home && place ? geoDistance(home, place) : null;
-  const label = d === null ? 'Jouer ici' : d <= HOME_RADIUS ? 'Rentrer au refuge' : 'Partir en expédition ici';
+  const base = d === null ? 'Jouer ici' : d <= HOME_RADIUS ? 'Rentrer au refuge' : 'Partir en expédition ici';
+  const label = city ? city.playLabel(base, place) : base;
   const span = $('play-label');
   if (span && span.textContent !== label) {
     span.textContent = label;
@@ -135,6 +164,7 @@ function updatePlayLabel(place) {
 
 // Menu : libellé de « Jouer », repères du refuge et du sac perdu sur la carte, ligne de la sauvegarde.
 function syncMenu() {
+  city?.syncMenu();
   updatePlayLabel(picker.getPlace());
   const b = save.base;
   picker.setHome(b ? { lat: b.lat, lon: b.lon, label: [kindLabel(b.kind), b.place?.name].filter(Boolean).join(' · ') } : null);
@@ -251,6 +281,10 @@ const frustumMatrix = new THREE.Matrix4();
 const probe = new THREE.Sphere(new THREE.Vector3(), 1.2);
 
 $('play').addEventListener('click', () => startGame(picker.getPlace()));
+// Au menu la boucle de jeu ne lit pas les touches : Échap ferme tout de même la carte du niveau (« Annuler »).
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('menu').classList.contains('hidden') && card.isOpen() && cardInfo?.blocking) pressCard(cardInfo.escape);
+});
 $('quit').addEventListener('click', () => toMenu());
 $('refuge-open').addEventListener('click', () => { if (session?.refuge.inside) openPanel(session); });
 $('save-home').addEventListener('click', () => {
@@ -377,27 +411,32 @@ const samePlace = (a, b) => a && b && Math.abs(a.lat - b.lat) < 1e-6 && Math.abs
 // à 1 500 m ou moins, sinon le lieu choisi (expédition). Le monde est gardé si l'origine ne change pas et si la météo
 // a moins de 15 min ; le personnage n'est jamais remis à neuf. spawn : 'place' (départ ou reprise) ou 'refuge'
 // (réveil au refuge après une mort en expédition).
-async function startGame(place, { spawn = 'place' } = {}) {
+async function startGame(place, { spawn = 'place', confirmed = false } = {}) {
   if (!place || starting) return;
   starting = true;
   try {
-    await launch(place, spawn);
+    // Quelle partie ? Libre (comme avant), ta ville en cours, ou une ville à commencer (commune, recensement, niveau) ;
+    // null : le joueur annule, on reste où l'on est (menu ou partie).
+    const plan = await city.prepareLaunch(place, { spawn, confirmed });
+    if (!plan) { setLoading(null); return; }
+    await launch(place, spawn, plan);
   } finally {
     starting = false;
   }
 }
 
-async function launch(place, spawn) {
+async function launch(place, spawn, plan = { kind: 'free', place }) {
   picker.hide();
   $('menu').classList.add('hidden');
   const home = homeLatLon();
-  const atHome = !!home && geoDistance(home, place) <= HOME_RADIUS;
+  // Une ville neuve ailleurs que chez soi : on y joue d'abord comme en expédition, la maison tirée y déménage le refuge.
+  const atHome = !(plan.kind === 'new' && !plan.adopt) && !!home && geoDistance(home, place) <= HOME_RADIUS;
   const origin = atHome ? home : { lat: place.lat, lon: place.lon };
   // À 1 500 m ou moins, on repart de la porte du refuge : le HUD (et le nom d'un refuge installé ensuite) donne le lieu
   // du refuge, pas celui du point choisi à côté.
   if (atHome && save.base) place = homePlace();
   const old = session;
-  if (old && samePlace(old.origin, origin) && old.store.source === 'tiles' && Date.now() - old.weatherAt < WEATHER_REFRESH_MS) {
+  if (old && city.canReuse(old, plan) && samePlace(old.origin, origin) && old.store.source === 'tiles' && Date.now() - old.weatherAt < WEATHER_REFRESH_MS) {
     old.place = place;
     if (old.ended || spawn === 'refuge') await wakeUp(old);
     else {
@@ -415,6 +454,7 @@ async function launch(place, spawn) {
     $('hud').classList.remove('hidden');
     applyConditions();
     saveStore.markDirty();
+    city.afterLaunch(old);
     return;
   }
   disposeSession();
@@ -461,6 +501,8 @@ async function launch(place, spawn) {
   buildSession(place, origin, atHome && store.source === 'tiles', store, grid, loader, chunks, start, liveWeather);
   const s = session;
   restoreCharacter(s);
+  // Ville à sauver : pâtés, habitants et zombies de la commune, maison tirée au hasard (refuge) pour une ville neuve.
+  await city.attach(s, plan);
   // Au refuge : départ à la porte (dedans si on l'avait quitté dedans).
   const door = s.home ? s.refuge.openingsWorld()[0] : null;
   if (door) await placePlayer(s, { x: door.ax, z: door.az });
@@ -478,6 +520,7 @@ async function launch(place, spawn) {
   if (session !== s) return;
   // Première écriture : cet onglet prend la main sur la sauvegarde.
   saveStore.markDirty();
+  city.afterLaunch(s);
   if (save.base && !s.home && store.source === 'tiles') {
     const km = (geoDistance(home, origin) / 1000).toFixed(1).replace('.', ',');
     // La consigne pour y déménager est dans la pastille de quête : le toast tient en 2 lignes à l'horizontale.
@@ -640,6 +683,8 @@ function disposeSession() {
   session.beacon.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
   // Carte des environs : l'ancien monde et ses caches sont lâchés pendant le chargement du suivant.
   minimap.reset(null);
+  city.detach(session);
+  $('city-meta').hidden = true;
   session = null;
 }
 
@@ -907,7 +952,10 @@ function step(s, inp, dt) {
   handleRefugeEvents(s, r.update(dt, {
     player: p, survivor: sv, isNight: s.isNight, forcedTime: mode === 'live' ? null : mode, weather: w, mods: s.mods,
     now: Date.now(), offscreen, zombieEvents: events, sessionStart: s.sessionStart, respawnedAt: s.respawnedAt,
+    ...city.refugeCtx(s),
   }));
+  // Ville : zombies prêtés par les pâtés, contre-attaque, nuits, compteurs et fin de ville.
+  city.step(s, dt);
   // 11. Champ de distances de la horde, calculé par morceaux.
   if (!s.field.ready) s.field.step(4000);
   // 12. Sac perdu, ramassé en passant.
@@ -952,7 +1000,7 @@ const FEMININE_ITEMS = new Set(['conserve', 'barre', 'eau', 'ferraille', 'planch
 // Icône du bouton selon l'action (les objets du décor par leur sorte).
 const ACTION_ICONS = {
   search: 'fouiller', enter: 'refuge', claim: 'refuge', move: 'refuge', exit: 'fleche', nail: 'marteau', repair: 'marteau',
-  plate: 'marteau', trap: 'piege', sleep: 'lune', orphan: 'sac', tree: 'hache', car: 'cle', bench: 'cle',
+  plate: 'marteau', trap: 'piege', sleep: 'lune', orphan: 'sac', tree: 'hache', car: 'cle', bench: 'cle', nest: 'cle', flag: 'marteau',
 };
 // Libellé du bouton pendant l'action.
 const BUSY_LABELS = { nail: 'Clouage…', repair: 'Réparation…', plate: 'Pose de la plaque…', trap: 'Pose du piège…', sleep: 'Tu dors…' };
@@ -977,7 +1025,15 @@ function markSearched(s, b) {
 
 // Contexte des règles du refuge (check, apply, textes du panneau).
 function refugeCtx(s, more = {}) {
-  return { player: s.player, survivor: s.survivor, weather: s.weather, mods: s.mods, now: Date.now(), ...more };
+  return { player: s.player, survivor: s.survivor, weather: s.weather, mods: s.mods, now: Date.now(), ...city.refugeCtx(s), ...more };
+}
+
+// Maison tirée au hasard dans la ville (refuge installé pour le joueur) : première mission, stockage persistant demandé.
+function afterClaim(s) {
+  saveStore.persist();
+  s.home = true;
+  s.goal = city.homeGoal(s);
+  renderConditions();
 }
 
 // Installation ou déménagement : le bâtiment doit être fouillé ; le lieu choisi nomme le refuge.
@@ -997,6 +1053,8 @@ function chooseActions(s) {
   const searched = building ? isSearched(s, building) : false;
   const menu = r.actions(p, { touch, survivor: s.survivor, building: building ? { ...building, index: near } : null, searched });
   let primary = menu.primary;
+  // Ville à sauver : ouvrir le nid d'un pâté, planter le fanion (avant la fouille du bâtiment voisin).
+  if (!primary && !r.inside) primary = city.action(s, touch);
   if (!primary && building && !searched) {
     const title = buildingTitle(building);
     primary = { id: 'search', arg: near, label: `Fouiller : ${title}${touch ? '' : ' (E)'}`, time: SEARCH_TIME * s.actionMul, slot: 'primary', title };
@@ -1047,6 +1105,11 @@ function startAction(s, a) {
     s.action = { ...base, time: a.time, title: a.title, label: `Fouille… ${a.title}`, icon: 'fouiller', noise: 14 };
     return;
   }
+  if (a.id === 'nest' || a.id === 'flag') {
+    const nest = a.id === 'nest';
+    s.action = { ...base, time: a.time, label: nest ? 'Ouverture du nid…' : 'Plantation du fanion…', icon: nest ? 'cle' : 'marteau', noise: nest ? 14 : 10 };
+    return;
+  }
   if (a.id === 'prop') {
     const k = PROP_KINDS[a.arg.kind];
     s.action = {
@@ -1071,6 +1134,7 @@ function finishAction(s, a) {
   s.action = null;
   if (a.id === 'search') finishSearch(s, a);
   else if (a.id === 'prop') finishProp(s, a);
+  else if (a.id === 'nest' || a.id === 'flag') city.runAction(s, a);
   else runRefuge(s, a);
 }
 
@@ -1079,7 +1143,7 @@ function finishSearch(s, a) {
   const b = s.store.buildings[a.arg];
   if (!b) return;
   markSearched(s, b);
-  const found = rollLoot(b.loot);
+  const found = rollLoot(b.loot, Math.random, city.lootDraws(s));
   if (s.store.source === 'tiles' && rollPlan(b.loot, save.profile)) toast(PLAN_FOUND_TEXT, 4, 'success');
   const res = addLoot(s.survivor, found);
   const got = { ...res.stored };
@@ -1260,6 +1324,7 @@ function runRefuge(s, a) {
   const res = r.apply(a.id, a.arg, refugeCtx(s, claiming ? claimCtx(s, a.arg) : {}));
   if (!res.ok) { toast(res.msg, 2.5); return; }
   handleRefugeEvents(s, res.events ?? []);
+  city.onRefugeAction(s, a);
   if (claiming) {
     // Première installation : stockage persistant demandé (4.1), un refus est ignoré.
     if (a.id === 'claim') saveStore.persist();
@@ -1564,6 +1629,7 @@ function placeNear(s, p) {
 function onDeath(s) {
   const p = s.player, sv = s.survivor, r = s.refuge;
   s.ended = true;
+  city.onDeath(s);
   cancelAction(s);
   panel.close();
   p.carrying = false;
@@ -1631,7 +1697,7 @@ function toast(text, seconds = 2, kind = '') {
 function hudInfo(s) {
   const p = s.player, r = s.refuge;
   const arrows = [];
-  const target = s.quest ? currentTarget(s.quest) : null;
+  const target = s.quest ? currentTarget(s.quest) : s.cityTarget ?? null;
   if (target) arrows.push({ kind: 'quest', x: target.x, z: target.z, near: Math.hypot(target.x - p.x, target.z - p.z) < NEAR_ARROW });
   const centre = r.base ? r.anchor() : null;
   if (centre && !r.inside && Math.hypot(centre.x - p.x, centre.z - p.z) >= NEAR_ARROW) arrows.push({ kind: 'home', x: centre.x, z: centre.z });
@@ -1673,12 +1739,12 @@ function hudInfo(s) {
 // tournée avec elle ; refuge, mission (couleur de la balise), sac perdu, zombies proches et fronts de la horde.
 function mapInfo(s) {
   const p = s.player, r = s.refuge, at = s.viewAt ?? p;
-  const target = s.quest ? currentTarget(s.quest) : null;
+  const target = s.quest ? currentTarget(s.quest) : s.cityTarget ?? null;
   const centre = r.base ? r.anchor() : null;
   return {
     x: at.x, z: at.z, yaw: s.cameraYaw, player: p, playerYaw: p.yaw, playerHidden: !!p.hidden,
     home: centre, homeId: r.base?.id ?? null,
-    target: target && { x: target.x, z: target.z, kind: s.quest.stage === 'toPickup' ? 'warn' : 'success' },
+    target: target && { x: target.x, z: target.z, kind: s.quest?.stage === 'toPickup' ? 'warn' : 'success' },
     bag: save.dropBag ? s.store.proj.toLocal(save.dropBag.lat, save.dropBag.lon) : null,
     zombies: s.director.zombies, fog: s.weather?.kind === 'fog',
     fronts: centre ? r.hordeArrows().map((a) => { const v = frontVector(a); return { x: centre.x + v.x * 60, z: centre.z + v.z * 60 }; }) : [],
@@ -1870,7 +1936,7 @@ function renderConditions() {
     $('quest-stage').replaceChildren(step, second ? 'Livrer' : 'Récupérer');
     $('quest-text').textContent = second ? `Livre ${q.item} ${placeWith('à', q.dropoff)}.` : questText(q);
     quest.classList.toggle('stage-2', second);
-    quest.classList.remove('explore');
+    quest.classList.remove('explore', 'city');
     // Étape franchie (cargaison récupérée) : bandeau « Objectif mis à jour ».
     if (s.hudQuest === q && s.hudStage === 'toPickup' && q.stage === 'toDropoff') hud.showObjective();
     s.hudQuest = q;
@@ -1882,13 +1948,17 @@ function renderConditions() {
     // En expédition (refuge à plus de 1 500 m), les missions sont au refuge : on dit comment s'installer ici, le mot du
     // bouton en tête (une seule ligne sur téléphone à l'horizontale).
     const away = !g && !!s.refuge?.base && s.store.source === 'tiles' && !s.home;
-    $('quest-stage').textContent = g ? missionLine(g) : away ? 'Expédition' : 'Exploration';
+    // Ville à sauver : son nom, son niveau et l'objectif du moment (flèche et distance quand il a un lieu).
+    const ct = !g && s.city ? city.questText(s) : null;
+    $('quest-stage').textContent = g ? missionLine(g) : ct ? ct.stage : away ? 'Expédition' : 'Exploration';
     $('quest-text').textContent = g ? `${questText(g)}${dusk}`
-      : away ? "Déménager ici : fouille un bâtiment pour t'y installer."
-        : s.refuge?.base && s.store.source === 'tiles' ? 'Pas de mission en cours : choisis-en une avec « Missions » au refuge.'
-          : 'Pas de quête disponible ici. Explore la ville et survis.';
+      : ct ? ct.text
+        : away ? "Déménager ici : fouille un bâtiment pour t'y installer."
+          : s.refuge?.base && s.store.source === 'tiles' ? 'Pas de mission en cours : choisis-en une avec « Missions » au refuge.'
+            : 'Pas de quête disponible ici. Explore la ville et survis.';
     quest.classList.remove('stage-2');
-    quest.classList.add('explore');
+    quest.classList.toggle('explore', !ct);
+    quest.classList.toggle('city', !!ct);
     s.hudQuest = null;
   }
 }
@@ -1909,7 +1979,8 @@ function nextFrame() {
 function onSaveExternal(e) {
   renderSaveLine();
   const playing = session?.player && !$('hud').classList.contains('hidden');
-  if (e.type === 'full') {
+  // Stockage plein, territoire non enregistré ou allégé : un toast (une fois), le motif reste dans la ligne de la sauvegarde.
+  if (e.type === 'full' || e.type === 'companion-full' || e.type === 'compacted' || e.type === 'dropped') {
     if (playing) toast(e.message, 6, 'danger');
     return;
   }
@@ -2073,6 +2144,8 @@ const debug = DEBUG ? {
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
   saveStore, picker, renderer, ...(debug ? { debug } : {}),
+  // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.
+  cityGame: city, get city() { return session?.city ?? null; }, territory: territoryStore, communes,
 };
 // Chargement lent : le message « le jeu n'a pas pu se charger » (index.html) a pu s'afficher entre-temps.
 if ($('loading').classList.contains('fatal')) setLoading(null);
