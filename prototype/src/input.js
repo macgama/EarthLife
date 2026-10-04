@@ -1,4 +1,9 @@
 // Commandes : clavier et souris sur ordinateur, joystick et boutons tactiles sur mobile et tablette.
+import { ZOOM_STEP } from './view.js';
+
+// Zoom au clavier : rôle pris dans e.key (le − de l'AZERTY est sur Digit6, celui du QWERTY sur Minus) ; −1 rapproche.
+const ZOOM_KEYS = { '+': -1, '=': -1, '-': 1, '_': 1 };
+
 // Jeu à plusieurs : roue des 6 gestes (T, bouton #gesture-toggle, boutons [data-gesture]) et toucher sur la vue
 // (state.pick), que main.js passe à others-view pour ouvrir la carte d'un survivant.
 
@@ -7,6 +12,8 @@ const TAP_MS = 350, TAP_PX = 12;
 
 export function createInput(canvas, ui) {
   const keys = new Set();
+  // Zoom tenu (touche par son code, ou bouton 'btn±') → { dir, t } : continu 250 ms après t.
+  const zoomHeld = new Map();
   const state = {
     move: { x: 0, y: 0 },   // x = droite, y = avant, dans [-1, 1]
     run: false,
@@ -19,6 +26,8 @@ export function createInput(canvas, ui) {
     use: null,              // 'eat' | 'drink' | 'heal' | 'warm' | 'lure'
     cameraYawDelta: 0,
     cameraPitchDelta: 0,
+    cameraZoomDelta: 0,     // zoom demandé pendant l'image, en logarithme (> 0 : la caméra recule)
+    map: false,             // agrandir ou réduire la carte des environs (C)
     touch: false,
     gesture: null,          // geste choisi dans la roue (0 à 5), pendant une image
     pick: null,             // { x, y } : clic ou toucher court sur la vue, pendant une image
@@ -60,14 +69,57 @@ export function createInput(canvas, ui) {
     if (e.code === 'KeyR') state.action2 = true;
     if (e.code === 'KeyB') state.fold = true;
     if (e.code === 'Escape') state.escape = true;
+    if (e.code === 'KeyC') state.map = true;
+    // + et − : Ctrl, Cmd ou Alt enfoncés, ils restent au zoom du navigateur.
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      const dir = ZOOM_KEYS[e.key] ?? (e.code === 'NumpadAdd' ? -1 : e.code === 'NumpadSubtract' ? 1 : 0);
+      if (dir) { zoomHeld.set(e.code, { dir, t: performance.now() }); state.cameraZoomDelta += dir * ZOOM_STEP.wheel; }
+    }
     if (panelTab) state.tab = true;
     const uses = { Digit1: 'eat', Digit2: 'drink', Digit3: 'heal', Digit4: 'warm', Digit5: 'lure' };
     if (uses[e.code]) state.use = uses[e.code];
   };
-  const up = (e) => keys.delete(e.code);
+  const up = (e) => { keys.delete(e.code); zoomHeld.delete(e.code); };
   window.addEventListener('keydown', down);
   window.addEventListener('keyup', up);
-  window.addEventListener('blur', () => keys.clear());
+  window.addEventListener('blur', () => { keys.clear(); zoomHeld.clear(); });
+
+  // Molette et pavé tactile : sur la vue et sur la zone du zoom seulement (le panneau du refuge garde son défilement).
+  // Molette vers soi : la caméra recule, comme sur les cartes en ligne.
+  const onWheel = (e) => {
+    e.preventDefault();
+    // Pincement sur pavé tactile (Chrome, Edge, Firefox) : wheel avec ctrlKey ; empêche aussi le zoom de la page.
+    if (e.ctrlKey) { state.cameraZoomDelta += Math.max(-0.5, Math.min(0.5, e.deltaY * 0.01)); return; }
+    const unit = e.deltaMode === 1 ? 1 / 3 : e.deltaMode === 2 ? 1 : 1 / 100; // lignes, pages, pixels
+    state.cameraZoomDelta += Math.max(-3, Math.min(3, e.deltaY * unit)) * ZOOM_STEP.wheel;
+  };
+  canvas.addEventListener('wheel', onWheel, { passive: false });
+  for (const el of ui.wheelTargets ?? []) el?.addEventListener('wheel', onWheel, { passive: false });
+
+  // Boutons − et + : un cran (×1,25) à l'appui, zoom continu après 400 ms tenus ; au clavier (Tab puis Entrée), un cran
+  // au clic. Le clic qui suit un appui au pointeur (jusqu'à 500 ms après le relâcher) n'ajoute rien : un toucher donne
+  // un clic de detail 0, comme le clavier. Après un appui au pointeur, le focus revient au jeu.
+  const zoomButton = (el, dir) => {
+    if (!el) return;
+    let pointerUntil = 0;
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      state.cameraZoomDelta += dir * ZOOM_STEP.button;
+      zoomHeld.set(`btn${dir}`, { dir, t: performance.now() + 150 });
+      pointerUntil = Infinity;
+      el.setPointerCapture?.(e.pointerId);
+    });
+    const stop = () => {
+      zoomHeld.delete(`btn${dir}`);
+      if (pointerUntil === Infinity) pointerUntil = performance.now() + 500;
+    };
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) el.addEventListener(type, stop);
+    el.addEventListener('click', () => {
+      if (performance.now() < pointerUntil) { pointerUntil = 0; el.blur(); } else state.cameraZoomDelta += dir * ZOOM_STEP.button;
+    });
+  };
+  zoomButton(ui.zoomIn, -1);
+  zoomButton(ui.zoomOut, 1);
 
   // Souris : glisser pour tourner la caméra, clic bref pour attaquer.
   let mouse = null;
@@ -94,25 +146,56 @@ export function createInput(canvas, ui) {
     mouse = null;
   });
 
-  // Tactile : moitié gauche = joystick, moitié droite = caméra.
+  // Tactile : à gauche (45 % de l'écran), le joystick ; ailleurs, un doigt tourne la caméra et deux doigts zooment
+  // (pincement). Deux doigts posés à gauche presque ensemble (120 ms) font aussi un pincement, pas un joystick.
   let stick = null, look = null;
+  const points = new Map(); // doigts hors joystick → { x, y }
+  let pinch = null;         // { a, b, last } : identifiants des deux doigts et dernier écart (px)
+  let stickAt = 0;
   const knob = ui.stickKnob, base = ui.stickBase;
   const radius = 55;
   const taps = new Map();       // toucher en cours → { x, y, at, moved }
+  const startPinch = () => {
+    const [a, b] = [...points.keys()];
+    const pa = points.get(a), pb = points.get(b);
+    pinch = { a, b, last: Math.max(ZOOM_STEP.pinchMinPx, Math.hypot(pa.x - pb.x, pa.y - pb.y)) };
+    taps.get(a) && (taps.get(a).moved = true); // un pincement n'est pas un toucher sur la vue
+    taps.get(b) && (taps.get(b).moved = true);
+    look = null; // la rotation de la caméra est suspendue pendant le pincement
+  };
+  const cancelStick = () => {
+    stick = null;
+    state.move.x = 0; state.move.y = 0; state.run = false;
+    base.classList.remove('active');
+  };
   canvas.addEventListener('touchstart', (e) => {
     state.touch = true;
-    document.body.classList.add('touch');
+    // Classe posée une fois : la réécrire à chaque toucher relancerait la disposition de la carte (MutationObserver).
+    if (!document.body.classList.contains('touch')) document.body.classList.add('touch');
     for (const t of e.changedTouches) {
       taps.set(t.identifier, { x: t.clientX, y: t.clientY, at: performance.now(), moved: false });
-      if (t.clientX < window.innerWidth * 0.45 && !stick) {
-        stick = { id: t.identifier, x0: t.clientX, y0: t.clientY };
+      const left = t.clientX < window.innerWidth * 0.45, now = performance.now();
+      if (stick && left && !pinch && points.size === 0 && now - stickAt < 120 && !stick.moved) {
+        // Joystick tout juste créé, deuxième doigt à gauche : c'était un pincement.
+        points.set(stick.id, { x: stick.x0, y: stick.y0 });
+        cancelStick();
+        points.set(t.identifier, { x: t.clientX, y: t.clientY });
+        startPinch();
+        continue;
+      }
+      if (left && !stick && !pinch) {
+        stick = { id: t.identifier, x0: t.clientX, y0: t.clientY, moved: false };
+        stickAt = now;
         base.style.left = `${t.clientX}px`;
         base.style.top = `${t.clientY}px`;
         base.classList.add('active');
         knob.style.transform = 'translate(-50%, -50%)';
-      } else if (!look) {
-        look = { id: t.identifier, x: t.clientX, y: t.clientY };
+        continue;
       }
+      if (points.size >= 2) continue; // troisième doigt : ignoré
+      points.set(t.identifier, { x: t.clientX, y: t.clientY });
+      if (points.size === 1) look = { id: t.identifier, x: t.clientX, y: t.clientY };
+      else startPinch();
     }
     e.preventDefault();
   }, { passive: false });
@@ -123,17 +206,27 @@ export function createInput(canvas, ui) {
       if (stick && t.identifier === stick.id) {
         let dx = t.clientX - stick.x0, dy = t.clientY - stick.y0;
         const len = Math.hypot(dx, dy);
+        if (len > 10) stick.moved = true;
         if (len > radius) { dx = (dx / len) * radius; dy = (dy / len) * radius; }
         state.move.x = dx / radius;
         state.move.y = -dy / radius;
         // Pousser le joystick au bout = courir.
         stick.full = len > radius * 0.95 && ui.autoRun;
         knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
-      } else if (look && t.identifier === look.id) {
-        state.cameraYawDelta -= (t.clientX - look.x) * 0.008;
-        state.cameraPitchDelta += (t.clientY - look.y) * 0.005;
-        look.x = t.clientX; look.y = t.clientY;
+      } else if (points.has(t.identifier)) {
+        if (look && t.identifier === look.id) {
+          state.cameraYawDelta -= (t.clientX - look.x) * 0.008;
+          state.cameraPitchDelta += (t.clientY - look.y) * 0.005;
+          look.x = t.clientX; look.y = t.clientY;
+        }
+        points.set(t.identifier, { x: t.clientX, y: t.clientY });
       }
+    }
+    if (pinch) {
+      const pa = points.get(pinch.a), pb = points.get(pinch.b);
+      const d = Math.max(ZOOM_STEP.pinchMinPx, Math.hypot(pa.x - pb.x, pa.y - pb.y));
+      state.cameraZoomDelta += Math.log(pinch.last / d); // doigts qui s'écartent : la caméra s'approche
+      pinch.last = d;
     }
     e.preventDefault();
   }, { passive: false });
@@ -143,11 +236,14 @@ export function createInput(canvas, ui) {
       const tap = taps.get(t.identifier);
       taps.delete(t.identifier);
       if (tap && e.type === 'touchend' && !tap.moved && performance.now() - tap.at < TAP_MS) state.pick = { x: t.clientX, y: t.clientY };
-      if (stick && t.identifier === stick.id) {
-        stick = null;
-        state.move.x = 0; state.move.y = 0; state.run = false;
-        base.classList.remove('active');
-      } else if (look && t.identifier === look.id) {
+      if (stick && t.identifier === stick.id) { cancelStick(); continue; }
+      if (!points.delete(t.identifier)) continue;
+      if (pinch && (t.identifier === pinch.a || t.identifier === pinch.b)) {
+        // Un doigt du pincement se lève : l'autre redevient la visée, à sa position actuelle.
+        pinch = null;
+        const rest = [...points.keys()][0];
+        look = rest === undefined ? null : { id: rest, ...points.get(rest) };
+      } else if (t.identifier === look?.id) {
         look = null;
       }
     }
@@ -204,6 +300,9 @@ export function createInput(canvas, ui) {
     }
     if (keys.has('KeyJ')) state.cameraYawDelta += 0.04;
     if (keys.has('KeyL')) state.cameraYawDelta -= 0.04;
+    // Touche ou bouton de zoom tenus : continu, comme J et L pour le lacet.
+    const now = performance.now();
+    for (const h of zoomHeld.values()) if (now - h.t > 250) state.cameraZoomDelta += h.dir * ZOOM_STEP.hold;
     return state;
   }
 
@@ -219,6 +318,8 @@ export function createInput(canvas, ui) {
     state.cameraPitchDelta = 0;
     state.gesture = null;
     state.pick = null;
+    state.cameraZoomDelta = 0;
+    state.map = false;
   }
 
   // Jeu à plusieurs actif ou non : la roue n'existe qu'en ligne.

@@ -26,6 +26,10 @@ export const cutaway = {
   radius: { value: 5.5 },
   night: { value: 0 },
 };
+// Bout non découpé, du côté du joueur, sur la ligne caméra → joueur : une longueur fixe (m), pas une part de la ligne,
+// pour que la découpe protège le joueur collé à une façade à toute distance de la caméra. 1,13 m = 4 % de la ligne au
+// zoom de défaut (28,3 m), comme avant le zoom.
+export const CUT_KEEP = 1.13;
 
 // Aspect du monde selon la météo : toits blanchis par la neige, murs assombris et refroidis par la pluie.
 export const weatherLook = {
@@ -379,7 +383,7 @@ function addCutaway(material, { facades = false, lite = false } = {}) {
   float cutT = dot(vCutWorld - uCutCamera, cutDir) / (cutLen * cutLen);
   // Bord de la découpe : un filet sombre net, pour lire la trouée comme une fenêtre voulue sur le joueur.
   float cutEdge = 0.0;
-  if (cutT > 0.0 && cutT < 0.96) {
+  if (cutT > 0.0 && cutT < 1.0 - ${CUT_KEEP.toFixed(2)} / cutLen) {
     vec3 cutClosest = uCutCamera + cutDir * cutT;
     float cutOver = distance(vCutWorld, cutClosest) - uCutRadius * (0.35 + 0.65 * cutT) - CUT_EXTRA;
     if (cutOver < 0.0) discard;

@@ -16,9 +16,10 @@ const ARROW_RADIUS = { quest: 0.22, home: 0.185, bag: 0.255, horde: 0.29, surviv
 // Flèches vers les autres survivants : 3 au plus (spec 3.1), créées ici si la page ne les a pas.
 const SURVIVOR_ARROWS = 3;
 const ARROW_PATH = 'M16 3 26.5 28 16 21.5 5.5 28Z';
-// Une flèche qui tomberait sur un panneau fixe du HUD se rapproche du centre (pas de 4 px), jusqu'à ce rayon au plus près.
-const ARROW_MIN = 0.12, ARROW_HALF = 16;
-const BLOCKERS = ['conditions', 'quest', 'vitals', 'inventory', 'topbuttons', 'horde-banner', 'online-pill'];
+// Une flèche qui tomberait sur un panneau fixe du HUD se rapproche du centre (pas de 4 px), jusqu'à ce rayon au plus près ;
+// celle de la quête recule aussi tant que sa distance (posée 30 px plus loin, demi-hauteur 8 px) toucherait un panneau.
+const ARROW_MIN = 0.12, ARROW_HALF = 16, DIST_OUT = 30, DIST_HALF_H = 8;
+const BLOCKERS = ['conditions', 'quest', 'vitals', 'inventory', 'topbuttons', 'horde-banner', 'online-pill', 'mapbox'];
 // Notifications en file : 3 au plus, chacune visible au moins 1,2 s avant la suivante.
 const TOAST_QUEUE = 3, TOAST_MIN = 1.2;
 const FATIGUE_LOW = 85;
@@ -122,7 +123,9 @@ export function createHud({ $, input }) {
       if (r && r.width > 0 && r.height > 0 && getComputedStyle(n).visibility !== 'hidden') blockers.push(r);
     }
   }
-  const blocked = (x, y) => blockers.some((b) => x + ARROW_HALF > b.left && x - ARROW_HALF < b.right && y + ARROW_HALF > b.top && y - ARROW_HALF < b.bottom);
+  const blocked = (x, y, hw = ARROW_HALF, hh = ARROW_HALF) => blockers.some((b) => x + hw > b.left && x - hw < b.right && y + hh > b.top && y - hh < b.bottom);
+  // Demi-largeur de la distance de la quête (px), estimée sur son texte (« 469 m », « 1,2 km ») sans lire la mise en page.
+  let distHalf = 24;
   const st = {
     last: 0, prev: {}, counts: {}, kills: undefined, player: null, start: 0, hurt: undefined, hurtPrev: 0,
     toastShown: false, toastTimer: 0, toastAge: 0, toastText: '', queue: [], online: '', wheel: '',
@@ -197,14 +200,15 @@ export function createHud({ $, input }) {
           inner = true;
         }
       }
-      while (r > side * ARROW_MIN && blocked(cx + x * r, cy + y * r)) r -= 4;
+      const quest = t.kind === 'quest';
+      while (r > side * ARROW_MIN && (blocked(cx + x * r, cy + y * r) || (quest && blocked(cx + x * (r + DIST_OUT), cy + y * (r + DIST_OUT), distHalf, DIST_HALF_H)))) r -= 4;
       if (t.kind === 'survivor') placed.push({ a, r });
       svg.style.transform = `translate(${x * r}px, ${y * r}px) rotate(${a}rad)`;
       svg.classList.remove('off');
       svg.classList.toggle('near', !!t.near);
       if (t.kind === 'quest') {
         // Distance du côté extérieur de la flèche, sans rotation.
-        el.compassDist.style.transform = `translate(${x * (r + 30)}px, ${y * (r + 30)}px) translate(-50%, -50%)`;
+        el.compassDist.style.transform = `translate(${x * (r + DIST_OUT)}px, ${y * (r + DIST_OUT)}px) translate(-50%, -50%)`;
         el.compassDist.classList.toggle('near', !!t.near);
       } else if (t.kind === 'survivor') {
         // Autre survivant : « 42 m » (précis) ou « ≈ 350 m » (secteur lointain), du côté extérieur.
@@ -367,6 +371,7 @@ export function createHud({ $, input }) {
       const label = distanceText(dist);
       setText(el.questDist, label);
       setText(el.compassDist, label);
+      distHalf = 3.6 * label.length + 4;
       const q = s.quest;
       const timed = !!q && Number.isFinite(q.timeLimit) && q.stage === 'toDropoff';
       el.quest.classList.toggle('no-timer', !timed);
@@ -456,6 +461,10 @@ export function createHud({ $, input }) {
     st.online = st.wheel = '';
   }
 
+  // Temps de jeu qu'il faut avant que la file des notifications soit passée : de quoi faire attendre un conseil qui
+  // doit laisser au butin son temps de lecture même quand un autre message (plan trouvé…) l'a retardé.
+  const toastBacklog = () => st.queue.length * TOAST_MIN;
+
   // Panneaux du HUD (rectangles relus toutes les 150 ms) : les étiquettes des autres survivants les évitent aussi.
-  return { render, toast, showObjective, reset, blockers: () => blockers };
+  return { render, toast, toastBacklog, showObjective, reset, blockers: () => blockers };
 }

@@ -774,6 +774,113 @@ body.touch #controls { display: block; }
 @media (min-width: 1024px) and (max-width: 1279px) and (min-height: 501px) {
   body.panel-open #horde-banner { grid-column: 1 / 2; grid-row: 1 / -1; top: auto; bottom: 270px; margin: 0; }
 }
+/* Carte des environs et zoom de la caméra (src/minimap.js, src/input.js), ensemble dans #mapbox. En bas à gauche sur
+   ordinateur et tablette, boutons − et + au-dessus. Sur téléphone tactile, en haut à droite sous les jauges : le pouce
+   gauche garde la zone du joystick (PHONE_MAP_CORNER de minimap.js, classe map-tr sur #hud) ; en bas à gauche avec
+   'bas-gauche', et pour une fenêtre étroite à la souris (map-bl). Le garde-fou de minimap.js retire les boutons
+   (no-btns), réduit la carte (--mm-size en ligne) ou la masque (off) si un panneau fixe la touche ; il pose aussi
+   --mm-room, la réserve des éléments centrés (Fouiller, action secondaire, toast). Butée du zoom : aria-disabled. */
+#hud { --mm-size: 176px; --mm-gap: 8px; --mm-room: calc(var(--hud-l) + var(--mm-size) + var(--mm-gap)); }
+#mapbox { position: absolute; left: var(--hud-l); bottom: var(--hud-b); display: flex; flex-direction: column; align-items: flex-start; gap: 6px; pointer-events: none; }
+#mapbox > * { pointer-events: auto; }
+/* L'écart entre − et + laisse passer le toucher (joystick, visée) ; les boutons ne zooment jamais la page (iOS ignore
+   user-scalable=no). */
+.zoom-btns { display: flex; gap: 6px; }
+#mapbox > .zoom-btns { pointer-events: none; }
+.zoom-btns .small { padding: 0; pointer-events: auto; touch-action: none; }
+.zoom-btns .small[aria-disabled="true"] { opacity: var(--o-disabled); }
+#minimap { display: block; width: var(--mm-size); height: var(--mm-size); padding: 0; border: 1px solid var(--c-line-strong); border-radius: var(--r-md); background: #161c22; box-shadow: var(--sh-1); overflow: hidden; cursor: pointer; touch-action: none; }
+#minimap canvas { display: block; width: 100%; height: 100%; }
+#minimap:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+#mapbox.no-btns .zoom-btns, #mapbox.big .zoom-btns { display: none; }
+#mapbox.off { visibility: hidden; }
+#mapbox.big { z-index: 3; }
+#mapbox.big #minimap { width: var(--mm-big); height: var(--mm-big); border-color: var(--c-accent-line); box-shadow: var(--sh-2); }
+@media (min-width: 760px) and (max-width: 1023px) { #hud { --mm-size: 152px; } }
+/* Fenêtre basse (501 à 599 px) : carte plus petite, sans boutons (molette et touches restent). */
+@media (min-width: 760px) and (min-height: 501px) and (max-height: 599px) { #hud { --mm-size: 136px; } .zoom-btns { display: none; } }
+@media (min-width: 760px) and (min-height: 501px) {
+  /* Tablette : l'indice du pouce passe au-dessus de la carte et des boutons. */
+  #hud.has-map #stick-hint { bottom: calc(var(--hud-b) + var(--mm-size) + 6px + var(--touch) + 12px); }
+  /* Éléments centrés : même réserve des deux côtés, pour rester centrés. */
+  #hud.has-map :is(#search, #action2, #toast) { max-width: min(420px, calc(100% - 2 * var(--mm-room))); }
+}
+/* Panneau du refuge ouvert : de 1024 à 1199 px, la zone du HUD (604 à 779 px) n'a plus la place ; sur téléphone, la
+   feuille ou le tiroir prend le bas ou la droite. */
+@media (min-width: 1024px) and (max-width: 1199px) and (min-height: 501px) { body.panel-open #mapbox { display: none; } }
+@media (max-width: 759px), (max-height: 500px) and (orientation: landscape) { body.panel-open #mapbox { display: none; } }
+/* Téléphone en portrait, coin haut-droite : dans la colonne de l'état, sous les jauges, boutons dessous ; le bandeau de
+   horde et celui d'objectif passent dans la colonne de la quête. Ces règles valent pour la mise en page portrait (moins
+   de 760 px de large, sauf à l'horizontale sous 501 px de haut, où joue le bloc suivant). Seuils sur la hauteur visible
+   (sous les barres du navigateur : 664 px sur un iPhone de 390 × 844, 553 sur un iPhone SE) : la carte et ses boutons
+   s'arrêtent au-dessus de la colonne du sac (leurre compris) et du plus haut toast (343 px du bas). */
+@media (max-width: 759px) and (orientation: portrait), (max-width: 759px) and (min-height: 501px) {
+  #hud.map-tr { --mm-size: 120px; }
+  #hud.map-tr #mapbox { position: static; grid-column: 2; grid-row: 3; justify-self: end; align-self: start; align-items: flex-end; }
+  #hud.map-tr .zoom-btns { order: 2; }
+  #hud.map-tr #horde-banner, #hud.map-tr #objective { grid-column: 1 / 2; }
+}
+@media (max-width: 379px) { #hud.map-tr { --mm-size: 112px; } }
+/* 120 px et boutons dessous demandent 780 px (735 sans leurre, la colonne du sac est plus courte). Plus bas : carte de
+   72 px (64 sous 380 px de large) calée à gauche de la colonne de l'état, donc à gauche de la colonne du sac, boutons
+   l'un sur l'autre à sa droite, au-dessus du sac ; ils s'effacent quand le sac monte jusqu'à eux (700 px avec le leurre,
+   645 sans). La carte passe à 64 px sous 640 px et s'efface sous 624 px (au-dessus du plus haut toast). */
+@media (max-width: 759px) and (orientation: portrait) and (max-height: 779px), (max-width: 759px) and (min-height: 501px) and (max-height: 779px) {
+  #hud.map-tr:not(.map-big):has(#use-lure:not(.hidden)) { --mm-size: 72px; }
+  #hud.map-tr:not(.map-big):has(#use-lure:not(.hidden)) #mapbox { justify-self: start; flex-direction: row; align-items: flex-start; }
+  #hud.map-tr:not(.map-big):has(#use-lure:not(.hidden)) .zoom-btns { flex-direction: column; }
+}
+@media (max-width: 759px) and (orientation: portrait) and (max-height: 734px), (max-width: 759px) and (min-height: 501px) and (max-height: 734px) {
+  #hud.map-tr:not(.map-big) { --mm-size: 72px; }
+  #hud.map-tr:not(.map-big) #mapbox { justify-self: start; flex-direction: row; align-items: flex-start; }
+  #hud.map-tr:not(.map-big) .zoom-btns { flex-direction: column; }
+}
+@media (max-width: 379px) and (orientation: portrait) and (max-height: 779px), (max-width: 379px) and (min-height: 501px) and (max-height: 779px) { #hud.map-tr:not(.map-big):has(#use-lure:not(.hidden)) { --mm-size: 64px; } }
+@media (max-width: 379px) and (orientation: portrait) and (max-height: 734px), (max-width: 379px) and (min-height: 501px) and (max-height: 734px) { #hud.map-tr:not(.map-big) { --mm-size: 64px; } }
+@media (max-width: 759px) and (orientation: portrait) and (max-height: 699px), (max-width: 759px) and (min-height: 501px) and (max-height: 699px) { #hud.map-tr:has(#use-lure:not(.hidden)) .zoom-btns { display: none; } }
+@media (max-width: 759px) and (orientation: portrait) and (max-height: 644px), (max-width: 759px) and (min-height: 501px) and (max-height: 644px) { #hud.map-tr .zoom-btns { display: none; } }
+@media (max-width: 759px) and (orientation: portrait) and (max-height: 639px), (max-width: 759px) and (min-height: 501px) and (max-height: 639px) { #hud.map-tr:not(.map-big) { --mm-size: 64px; } }
+@media (max-width: 759px) and (orientation: portrait) and (max-height: 623px), (max-width: 759px) and (min-height: 501px) and (max-height: 623px) { #hud.map-tr #mapbox { display: none; } }
+/* Téléphone à l'horizontale, coin haut-droite : sous les jauges 2 × 2, boutons à sa gauche, l'un au-dessus de l'autre. */
+@media (max-height: 500px) and (orientation: landscape) {
+  #hud.map-tr { --mm-size: 128px; }
+  #hud.map-tr #mapbox { position: static; grid-column: 3; grid-row: 2 / 4; justify-self: end; align-self: start; flex-direction: row; align-items: flex-start; }
+  #hud.map-tr .zoom-btns { order: -1; flex-direction: column; }
+  /* Réserve des actions centrées ; le toast est en haut à gauche dans cette disposition, sans réserve. */
+  #hud.has-map :is(#search, #action2) { max-width: min(420px, calc(100% - 2 * var(--mm-room))); }
+}
+@media (max-height: 389px) and (orientation: landscape) { #hud.map-tr { --mm-size: 112px; } }
+/* Téléphone étroit à l'horizontale (667 × 375) : la grille 2 × 2 du sac est sous les jauges ; la carte va à sa gauche,
+   sans boutons, et s'efface quand le leurre fait passer la grille à 3 colonnes. */
+@media (max-height: 500px) and (orientation: landscape) and (max-width: 729px) {
+  #hud.map-tr { --mm-size: 88px; }
+  #hud.map-tr #mapbox { position: absolute; grid-column: auto; grid-row: auto; left: auto; right: calc(var(--hud-r) + 2 * var(--btn-item) + 6px + var(--mm-gap)); bottom: calc(var(--hud-b) + 114px); }
+  #hud.map-tr .zoom-btns { display: none; }
+  #hud.map-tr:has(#use-lure:not(.hidden)) #mapbox { display: none; }
+}
+/* Téléphone, coin bas-gauche (PHONE_MAP_CORNER = 'bas-gauche', ou fenêtre étroite à la souris) : petite carte, boutons
+   à sa droite ; l'indice du pouce passe au-dessus. Les doigts posés sur la carte ne font pas de joystick. */
+@media (max-width: 759px), (max-height: 500px) and (orientation: landscape) {
+  #hud.map-bl { --mm-size: 96px; }
+  #hud.map-bl #mapbox { flex-direction: row; align-items: flex-end; }
+  #hud.map-bl .zoom-btns { order: 2; flex-direction: column; }
+  body:not(.touch) #hud.map-bl .zoom-btns { display: none; }
+  #hud.map-bl.has-map #stick-hint { bottom: calc(var(--hud-b) + var(--mm-size) + 12px); }
+}
+/* Carte agrandie (côté --mm-big, posé par minimap.js) : sur ordinateur et tablette, au même coin ; sur téléphone en
+   portrait, centrée sous la barre du haut, au-dessus du joueur ; à l'horizontale, en haut à droite sous la rangée du
+   haut, au-dessus de Frapper. Elle peut couvrir un temps la quête ou les jauges, jamais les commandes. */
+@media (max-width: 759px) {
+  #hud.map-big #mapbox { position: absolute; grid-column: auto; grid-row: auto; top: calc(var(--hud-t) + var(--touch) + 8px); left: 0; right: 0; bottom: auto; width: max-content; margin: 0 auto; }
+  /* Alerte et vague : le bandeau de horde (compte à rebours, zombies restants) passe au-dessus de la carte agrandie, sur
+     sa bande du haut (le loin, devant), pas sur le joueur au centre. */
+  #hud.map-big #horde-banner { grid-column: 1 / -1; grid-row: 2; z-index: 4; }
+}
+/* À l'horizontale, les deux coins (PHONE_MAP_CORNER) : en haut à droite, hors de la zone du joystick. */
+@media (max-height: 500px) and (orientation: landscape) {
+  #hud:is(.map-tr, .map-bl).map-big #mapbox { position: absolute; grid-column: auto; grid-row: auto; top: calc(var(--hud-t) + 52px); right: var(--hud-r); bottom: auto; left: auto; margin: 0; }
+  #hud.map-big #horde-banner { grid-column: 1 / -1; grid-row: 1 / -1; z-index: auto; }
+}
 /* Mouvement réduit : les alertes de jauge gardent un filet rouge au lieu de pulser. */
 @media (prefers-reduced-motion: reduce) {
   .vital.low::before { content: ''; position: absolute; top: 0; bottom: 0; left: -7px; width: 2px; background: var(--c-danger); }
@@ -1110,8 +1217,10 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <dt><kbd>1</kbd> à <kbd>4</kbd></dt><dd>Manger, boire, te soigner, te réchauffer</dd>
         <dt><kbd>5</kbd></dt><dd>Lancer un leurre</dd>
         <dt><kbd>Tab</kbd><kbd>B</kbd></dt><dd>Onglet suivant, replier le panneau du refuge</dd>
-        <dt><kbd>Échap</kbd></dt><dd>Fermer une carte ou le panneau, sortir du refuge</dd>
+        <dt><kbd>Échap</kbd></dt><dd>Fermer une carte, la carte des environs ou le panneau, sortir du refuge</dd>
         <dt><kbd>J</kbd><kbd>L</kbd> ou souris</dt><dd>Tourner la caméra</dd>
+        <dt><kbd>+</kbd><kbd>−</kbd> ou molette</dt><dd>Zoomer, dézoomer</dd>
+        <dt><kbd>C</kbd> ou clic sur la carte</dt><dd>Agrandir ou réduire la carte des environs</dd>
       </dl>
     </section>
     <section class="help-sec help-touch">
@@ -1119,6 +1228,8 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
       <ul class="touch-list">
         <li><span class="btn-icon" data-icon="navigation"></span><span><b>Pouce gauche</b>&nbsp;: bouger</span></li>
         <li><span class="btn-icon" data-icon="fleche"></span><span><b>Glisse à droite</b>&nbsp;: tourner la caméra</span></li>
+        <li><span class="btn-icon" data-icon="plus"></span><span><b>Pince</b> l'écran à deux doigts, ou touche <b>+</b> et <b>−</b>&nbsp;: zoomer</span></li>
+        <li><span class="btn-icon" data-icon="carte"></span><span><b>Carte</b>&nbsp;: touche-la pour l'agrandir, touche-la encore pour la réduire</span></li>
         <li><span class="btn-icon" data-icon="frapper"></span><span><b>Frapper</b> et <b>Courir</b>&nbsp;: boutons en bas à droite</span></li>
         <li><span class="btn-icon" data-icon="fouiller"></span><span><b>Fouiller</b>, <b>entrer</b>, <b>clouer</b>&nbsp;: bouton au centre, près d'un bâtiment</span></li>
         <li><span class="btn-icon" data-icon="refuge"></span><span><b>En faire ton refuge</b>, <b>déménager</b>&nbsp;: bouton juste au-dessus, une fois le bâtiment fouillé</span></li>
@@ -1335,6 +1446,15 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
   </div>
   <div id="objective" aria-hidden="true"><span data-icon="quete"></span>Objectif mis à jour</div>
   <div id="horde-banner" class="hidden" role="status" aria-live="polite"><span data-icon="alerte"></span><span id="horde-text"></span></div>
+  <!-- Carte des environs (src/minimap.js) et zoom de la caméra (src/input.js) : placés par le CSS selon la disposition,
+       gardés hors des autres panneaux. -->
+  <div id="mapbox">
+    <div class="zoom-btns" role="group" aria-label="Zoom de la caméra">
+      <button class="small" id="zoom-out" aria-label="Dézoomer" title="Dézoomer (−)"><span class="small-icon" data-icon="moins"></span></button>
+      <button class="small" id="zoom-in" aria-label="Zoomer" title="Zoomer (+)"><span class="small-icon" data-icon="plus"></span></button>
+    </div>
+    <button id="minimap" aria-label="Carte des environs : agrandir" aria-expanded="false" title="Carte des environs (C)"><canvas id="minimap-canvas" aria-hidden="true"></canvas></button>
+  </div>
   <!-- Boussole : la flèche de quête reste le premier enfant ; refuge, sac perdu et horde (une par front) ensuite. -->
   <div id="compass" aria-hidden="true"><svg class="arrow off" data-kind="quest" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="home" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="bag" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="horde" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="horde" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><span class="compass-dist off" id="compass-dist"></span></div>
   <div id="toast" class="pill" role="status" aria-live="polite" style="opacity:0"><span class="toast-icon" id="toast-icon" hidden></span><span id="toast-text"></span></div>
