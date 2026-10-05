@@ -481,6 +481,11 @@ select, button { font: inherit; }
 #quest.explore .quest-pips, #quest.explore .meta, #quest.no-target .meta, #quest.no-timer .quest-timer-val { display: none; }
 /* Sauver sa ville : compteurs (zombies restants, habitants sauvés, pâtés libérés) puis la ligne du pâté où l'on est. */
 #quest.city .quest-pips { display: none; }
+#fiche { margin-top: var(--sp-1); padding-top: var(--sp-1); border-top: 1px solid var(--c-line); font-size: var(--fs-xs); line-height: 1.35; }
+#fiche[hidden] { display: none; }
+.fiche-title { overflow: hidden; color: var(--c-text); font-weight: var(--fw-semibold); text-overflow: ellipsis; white-space: nowrap; }
+#fiche-lines { margin: 0; padding: 0; list-style: none; color: var(--c-text-2); }
+#fiche-lines li { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 #city-meta { margin-top: var(--sp-1); color: var(--c-text-2); font-size: var(--fs-xs); line-height: 1.35; }
 #city-meta > div:first-child { color: var(--c-text); font-weight: var(--fw-medium); }
 #city-meta > div { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
@@ -1111,6 +1116,8 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <div class="quest-head"><span class="quest-icon" data-icon="quete"></span><span class="stage" id="quest-stage"></span><span class="quest-pips" aria-hidden="true"><i></i><i></i></span></div>
     <div id="quest-text"></div>
     <div id="city-meta" hidden><div></div><div></div></div>
+    <!-- Fiche du bâtiment tout près (src/fiche.js) : nom, fouille, état de la zone. -->
+    <div id="fiche" hidden aria-live="polite"><div class="fiche-title" id="fiche-title"></div><ul id="fiche-lines"></ul></div>
     <div class="meta"><span class="quest-val"><span data-icon="cible"></span><span class="sr-only">Distance :</span><span class="num" id="quest-dist"></span></span><span class="quest-val quest-timer-val"><span data-icon="horloge"></span><span class="sr-only">Temps restant :</span><span class="timer num" id="quest-timer"></span></span></div>
   </div>
   </div>

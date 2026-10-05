@@ -79,7 +79,9 @@ Pendant l'alerte et la vague, la caméra ne recule pas assez pour voir la horde 
 
 **Missions.** La première est « Trouve un refuge ». Ensuite, le bouton « Missions » du panneau propose trois livraisons entre vrais lieux ; le chrono ne part qu'au ramassage, et la récompense est déposée au coffre.
 
-**Sauvegarde.** La partie est gardée dans le navigateur à chaque action importante ; le menu propose alors « Rentrer au refuge ». « Exporter ma partie » et « Importer une partie » passent d'un appareil à l'autre. Si le jeu est ouvert dans deux onglets, l'ancien onglet cesse de sauvegarder (« Reprendre ici » pour y revenir). `?fresh=1` dans l'adresse commence une partie neuve (l'ancienne est gardée une fois de côté).
+**Sauvegarde.** La partie est gardée dans le navigateur à chaque action importante ; le menu propose alors « Rentrer au refuge ». « Exporter ma partie » et « Importer une partie » passent d'un appareil à l'autre. Si le jeu est ouvert dans deux onglets, l'ancien onglet cesse de sauvegarder (« Reprendre ici » pour y revenir ; la carte dit depuis combien de temps l'autre page a sauvegardé). Une page restée au menu n'est pas bloquée : elle relit la partie de l'autre page au moment de lancer une partie, et un retour au premier plan ou un retour arrière du navigateur rattrape l'écriture manquée. `?fresh=1` dans l'adresse commence une partie neuve (l'ancienne est gardée une fois de côté).
+
+**Fiche du bâtiment.** Tout près d'un bâtiment (3 m), un encadré sous la quête donne son nom, s'il est fouillé (« fouillé il y a 3 h · de nouveau fouillable dans 21 h », ou « pas encore fouillé », ou « ton refuge ») et, dans une ville à sauver, l'état de la zone : zombies restants, nettoyée, fanion, sécurisée par toi et habitants sauvés. Les noms des autres joueurs viendront avec le serveur de jeu. Règles pures dans `src/fiche.js`, données lues par `main.js` (`updateFiche`).
 
 ## Données réelles et effets
 

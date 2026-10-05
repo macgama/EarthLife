@@ -28,6 +28,7 @@ import {
 } from './quest.js';
 import { createSaveStore, LIMITS, exportFileName, SAVE_MESSAGES } from './save.js';
 import { createRefuge, clockLabel, durationLabel } from './refuge.js';
+import { FICHE, ficheOf } from './fiche.js';
 import { kindLabel, countsLabel, countOf, chestCap, moveItems, depositAll, prepareBag, storeItems, refugeWarmth, TIMES } from './base.js';
 import { frontVector, nextNightChange, nightKey, utcOffsetFor, clockTargets, HORDE } from './horde.js';
 import { craft, canCraft, craftTime, RECIPES, recipeRows, rollPlan, PLAN_FOUND_TEXT } from './crafting.js';
@@ -196,7 +197,7 @@ function renderSaveLine() {
     : `Caisse de ${n} objet${n > 1 ? 's' : ''} là où était ton refuge.`;
   crate.hidden = !n;
   const note = $('save-note');
-  const text = saveStore.readOnly || saveStore.reason ? saveStore.reason ?? '' : '';
+  const text = saveStore.readOnly || saveStore.reason ? [saveStore.reason ?? '', otherTab() ? otherPageLine() : ''].filter(Boolean).join(' ') : '';
   note.textContent = text;
   note.hidden = !text;
   $('save-take').hidden = !otherTab();
@@ -422,6 +423,9 @@ async function startGame(place, { spawn = 'place', confirmed = false } = {}) {
   if (!place || starting) return;
   starting = true;
   try {
+    // Page restée au menu pendant qu'une autre écrivait : on relit la partie avant de jouer (sinon cette page jouerait en
+    // lecture seule, sans sauvegarde).
+    if (saveStore.refresh()) syncMenu();
     // Quelle partie ? Libre (comme avant), ta ville en cours, ou une ville à commencer (commune, recensement, niveau) ;
     // null : le joueur annule, on reste où l'on est (menu ou partie).
     const plan = await city.prepareLaunch(place, { spawn, confirmed });
@@ -532,8 +536,9 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
   else if (s.refuge.inside) openPanel(s);
   // Mort en expédition : le réveil a rechargé le monde du refuge, cette partie-ci n'existe plus.
   if (session !== s) return;
-  // Première écriture : cet onglet prend la main sur la sauvegarde.
+  // Première écriture : cet onglet prend la main sur la sauvegarde (sans effet en lecture seule : la carte l'explique).
   saveStore.markDirty();
+  if (otherTab()) showTakeOverCard();
   city.afterLaunch(s);
   if (save.base && !s.home && store.source === 'tiles') {
     const km = (geoDistance(home, origin) / 1000).toFixed(1).replace('.', ',');
@@ -948,6 +953,7 @@ function step(s, inp, dt) {
   updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
   // 7. Boutons E et R.
   updateActions(s, inp, dt, before);
+  updateFiche(s, dt);
   // 8. Attaque.
   if (inp.attack && !p.hidden) attack(s);
   // 9. Zombies : ordinaires sous le plafond de 60 (horde comprise), horde guidée par le champ de distances.
@@ -1035,6 +1041,32 @@ function isSearched(s, b) {
   if (s.store.source !== 'tiles') return s.searchedLocal.has(b.id);
   const t = save.searched?.[b.id];
   return Number.isFinite(t) && Date.now() - t < LIMITS.searchedMs;
+}
+
+// Heure de la fouille d'un bâtiment (ms), true si fouillé pendant cette partie (heure inconnue), null sinon.
+function searchedAtOf(s, b) {
+  if (!isSearched(s, b)) return null;
+  return s.store.source === 'tiles' ? save.searched[b.id] : true;
+}
+
+// Fiche du bâtiment tout près (sous la quête) : mise à jour quatre fois par seconde, texte réécrit seulement s'il change.
+function updateFiche(s, dt) {
+  s.ficheWait = (s.ficheWait ?? 0) - dt;
+  if (s.ficheWait > 0) return;
+  s.ficheWait = 0.25;
+  const near = s.refuge.inside || s.ended ? null : buildingNear(s.grid, s.player.x, s.player.z, FICHE.reach);
+  const b = near === null ? null : s.store.buildings[near];
+  const fiche = !b ? null : ficheOf({
+    title: buildingTitle(b), home: s.refuge.base?.id === b.id, searchedAt: searchedAtOf(s, b), searchedMs: LIMITS.searchedMs,
+    now: Date.now(), zone: city.zoneAt(s, b.cx, b.cz),
+  });
+  const key = fiche ? `${fiche.title}\n${fiche.lines.join('\n')}` : '';
+  if (key === s.ficheKey) return;
+  s.ficheKey = key;
+  $('fiche').hidden = !fiche;
+  if (!fiche) return;
+  $('fiche-title').textContent = fiche.title;
+  $('fiche-lines').replaceChildren(...fiche.lines.map((t) => { const li = document.createElement('li'); li.textContent = t; return li; }));
 }
 
 function markSearched(s, b) {
@@ -2077,9 +2109,17 @@ function otherTab() {
   return saveStore.readOnly && saveStore.reason === SAVE_MESSAGES.otherTab;
 }
 
+// « L'autre page a sauvegardé il y a 12 s » : de quoi reconnaître une page oubliée.
+function otherPageLine() {
+  const at = saveStore.conflict?.savedAt;
+  if (!Number.isFinite(at)) return '';
+  const ms = Math.max(0, Date.now() - at);
+  return `L'autre page a sauvegardé il y a ${ms < 60000 ? `${Math.round(ms / 1000)}\u00a0s` : durationLabel(ms)}.`;
+}
+
 function showTakeOverCard() {
   showCard({
-    title: 'Sauvegarde', tone: 'warn', lines: [SAVE_MESSAGES.otherTab],
+    title: 'Sauvegarde', tone: 'warn', lines: [SAVE_MESSAGES.otherTab, otherPageLine()].filter(Boolean),
     buttons: [{ id: 'take', label: SAVE_MESSAGES.takeOver, primary: true }, { id: 'close', label: 'Fermer' }],
   }, (id) => { if (id === 'take') takeOver(); }, { escape: 'close' });
 }

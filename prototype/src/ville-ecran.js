@@ -377,6 +377,15 @@ export function createCityGame(host) {
     return { stage: `${s.city.ville.name} · ${lv}`, text: s.cityObj?.text ?? `${s.city.ville.name} : sauve ses habitants` };
   }
 
+  // Pâté sous un point (fiche du bâtiment) : { state, zombies, saved, flagNights, place } ; null hors d'une ville à sauver.
+  function zoneAt(s, x, z) {
+    const rt = s.city;
+    if (!rt) return null;
+    const key = rt.blockAt(x, z);
+    const info = key ? blockInfo(rt.ville, key) : null;
+    return info ? { state: info.state, zombies: info.zombies, saved: info.saved, flagNights: info.flagNights, place: info.place } : null;
+  }
+
   // Bouton E : ouvrir le nid ou planter le fanion.
   function action(s, touch) {
     return s.city && !s.city.ended ? s.city.actions(s.player, { touch }) : null;
@@ -549,7 +558,7 @@ export function createCityGame(host) {
 
   return {
     initMenu, syncMenu, playLabel, prepareLaunch, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws,
-    questText, homeGoal, onRefugeAction, onDeath, refreshHud,
+    questText, homeGoal, onRefugeAction, onDeath, refreshHud, zoneAt,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },
   };
