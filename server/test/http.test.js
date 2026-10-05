@@ -795,7 +795,7 @@ test('live-check.mjs contre le faux serveur : santé, WebSocket, repli HTTP, eff
   const devSrv = await startDev({ portRange: [9700, 9799], origins: [GAME] });
   try {
     const out = await new Promise((resolve) => {
-      const child = spawn(process.execPath, [LIVE, '--url', devSrv.url, '--version', 'dev'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [LIVE, '--url', devSrv.url, '--version', 'dev', '--settle-ms', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
       let text = '';
       child.stdout.on('data', (d) => { text += d; });
       child.stderr.on('data', (d) => { text += d; });
@@ -809,6 +809,32 @@ test('live-check.mjs contre le faux serveur : santé, WebSocket, repli HTTP, eff
     assert.match(out.text, /OK +comptes : CORS du jeu publié/);
     assert.equal(await devSrv.accounts.debug.byEmail('k.essai@exemple.test'), null, 'aucun compte créé');
     assert.equal(devSrv.room.debug().byPlayer.size, 0, 'identités de test effacées, sessions fermées');
+  } finally {
+    await devSrv.stop();
+  }
+});
+
+test('live-check.mjs : page de maintenance de l\'hébergement à la place du serveur, redemandée puis comptée', async () => {
+  const { liveCheck, isHostPage } = await import(new URL('../tools/live-check.mjs', import.meta.url));
+  const hostPage = () => new Response('<!DOCTYPE html>\n<title>Website under maintenance</title>',
+    { status: 404, headers: { 'x-powered-by': 'Express', 'content-type': 'text/html; charset=utf-8' } });
+  assert.equal(isHostPage(hostPage()), true);
+  assert.equal(isHostPage(new Response('{}', { headers: { 'content-type': 'application/json; charset=utf-8' } })), false);
+  assert.equal(isHostPage(new Response('EarthLife', { headers: { 'content-type': 'text/plain; charset=utf-8' } })), false);
+  const devSrv = await startDev({ portRange: [9700, 9799], origins: [GAME] });
+  try {
+    // Comme juste après la fin d'une WebSocket chez Infomaniak : la première requête de chaque route reçoit la page.
+    const seen = new Set();
+    const fetchImpl = (u, init) => {
+      const p = new URL(u).pathname;
+      if ((p === '/v1/sync' || p === '/v1/account/me') && !seen.has(p)) { seen.add(p); return Promise.resolve(hostPage()); }
+      return fetch(u, init);
+    };
+    const lines = [];
+    const r = await liveCheck({ url: devSrv.url, version: 'dev', out: (l) => lines.push(l), settleMs: 0, hostWaitMs: 10, fetchImpl });
+    assert.equal(r.ok, true, lines.join('\n'));
+    assert.match(lines.join('\n'), /Page de maintenance de l'hébergement reçue 2 fois à la place du serveur/);
+    assert.equal(devSrv.room.debug().byPlayer.size, 0, 'identités de test effacées');
   } finally {
     await devSrv.stop();
   }
