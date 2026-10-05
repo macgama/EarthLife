@@ -1,7 +1,8 @@
 name: Sonde HTTP
 
-# Sonde jetable (branche claude/sonde-http, jamais fusionnée) : pourquoi les POST du jeu vers le vrai serveur
-# reçoivent 404 alors que GET /v1/health et les WebSocket marchent. Aucun secret.
+# Sonde jetable (branche claude/sonde-http, jamais fusionnée) : des requêtes du jeu reçoivent par moments un 404
+# sans en-tête CORS du vrai serveur. Chaque requête part ici sur une connexion neuve, pour voir qui répond.
+# Rien n'est créé sur le serveur (session et jeton inventés). Aucun secret.
 on:
   push:
     branches: [claude/sonde-http]
@@ -20,58 +21,45 @@ jobs:
       - name: Sonde
         run: |
           cat > sonde.mjs <<'EOF'
-          import dns from 'node:dns/promises';
+          import https from 'node:https';
           import { randomBytes } from 'node:crypto';
-          const URL0 = 'https://earthlife.needhelpapp.com';
+          const HOST = 'earthlife.needhelpapp.com';
           const ORIGIN = 'https://macgama.github.io';
-          console.log('DNS', JSON.stringify(await dns.lookup('earthlife.needhelpapp.com', { all: true })));
-          const hello = JSON.stringify({ v: 1, tok: null, sid: null, msgs: [{ t: 'hello', v: 1, cl: 1, tok: null, c: 'dev' }] });
-          const ses = () => JSON.stringify({ v: 1, ses: randomBytes(32).toString('base64url') });
-          const toks = [];
-          async function probe(label, path, { method = 'POST', ct, body, origin = ORIGIN } = {}) {
-            const headers = {};
-            if (origin) headers.Origin = origin;
-            if (ct) headers['Content-Type'] = ct;
-            let b = body;
-            if (b !== undefined && !ct) b = Buffer.from(b);
-            const t0 = performance.now();
-            try {
-              const res = await fetch(URL0 + path, { method, headers, body: b, redirect: 'manual' });
-              const text = await res.text();
-              const h = {};
-              for (const [k, v] of res.headers) if (!['date', 'strict-transport-security', 'x-content-type-options'].includes(k)) h[k] = v;
-              console.log(`\n== ${label} : ${method} ${path} ct=${ct ?? '(aucun)'} -> HTTP ${res.status} en ${Math.round(performance.now() - t0)} ms`);
-              console.log('   en-têtes', JSON.stringify(h));
-              console.log('   corps', JSON.stringify(text.slice(0, 300)));
-              try { for (const m of JSON.parse(text).msgs ?? []) if (m.t === 'welcome' && m.tok) toks.push(m.tok); } catch {}
-            } catch (e) {
-              console.log(`\n== ${label} : erreur ${e?.cause?.code ?? e?.code ?? e?.name}`);
-            }
-          }
-          await probe('A santé', '/v1/health', { method: 'GET' });
-          await probe('B sync, comme le jeu', '/v1/sync', { ct: 'text/plain;charset=UTF-8', body: hello });
-          await probe('C sync, JSON', '/v1/sync', { ct: 'application/json', body: hello });
-          await probe('D sync, sans type', '/v1/sync', { body: hello });
-          await probe('E sync, texte non JSON', '/v1/sync', { ct: 'text/plain;charset=UTF-8', body: 'x' });
-          await probe('F sync, corps vide', '/v1/sync', { ct: 'text/plain;charset=UTF-8', body: '' });
-          await probe('G compte, comme le jeu', '/v1/account/me', { ct: 'text/plain;charset=UTF-8', body: ses() });
-          await probe('H compte, JSON', '/v1/account/me', { ct: 'application/json', body: ses() });
-          await probe('I compte, sans type', '/v1/account/me', { body: ses() });
-          await probe('J sync sans Origin', '/v1/sync', { ct: 'text/plain;charset=UTF-8', body: hello, origin: null });
-          await probe('K me, jeton inventé, JSON', '/v1/me', { ct: 'application/json', body: JSON.stringify({ v: 1, tok: 'x'.repeat(43), op: 'erase' }) });
-          await probe('L chemin inconnu', '/v1/inconnu', { ct: 'text/plain;charset=UTF-8', body: 'x' });
-          console.log(`\nJetons créés : ${toks.length}`);
-          for (const tok of toks) {
-            for (const ct of ['application/json', undefined, 'text/plain;charset=UTF-8']) {
+          const skip = new Set(['date', 'strict-transport-security', 'x-content-type-options', 'cache-control', 'vary']);
+          function req(method, path, body) {
+            return new Promise((resolve) => {
+              const t0 = performance.now();
               const headers = { Origin: ORIGIN };
-              if (ct) headers['Content-Type'] = ct;
-              const body = JSON.stringify({ v: 1, tok, op: 'erase' });
-              const res = await fetch(URL0 + '/v1/me', { method: 'POST', headers, body: ct ? body : Buffer.from(body) });
-              const ok = res.status === 200;
-              console.log(`effacement ct=${ct ?? '(aucun)'} -> HTTP ${res.status}`);
-              await res.text();
-              if (ok) break;
+              if (body !== undefined) { headers['Content-Type'] = 'text/plain;charset=UTF-8'; headers['Content-Length'] = Buffer.byteLength(body); }
+              const r = https.request({ host: HOST, path, method, headers, agent: false }, (res) => {
+                let text = '';
+                res.on('data', (c) => { text += c; });
+                res.on('end', () => {
+                  const h = {};
+                  for (const [k, v] of Object.entries(res.headers)) if (!skip.has(k)) h[k] = v;
+                  resolve({ status: res.statusCode, ip: res.socket?.remoteAddress, ms: Math.round(performance.now() - t0), h, text });
+                });
+              });
+              r.on('error', (e) => resolve({ status: 'erreur ' + (e.code ?? e.name) }));
+              if (body !== undefined) r.write(body);
+              r.end();
+            });
+          }
+          const tally = {};
+          async function run(label, method, path, body, n, gapMs = 300) {
+            for (let i = 1; i <= n; i++) {
+              const r = await req(method, path, typeof body === 'function' ? body() : body);
+              const key = `${label} ${r.status} cors=${r.h?.['access-control-allow-origin'] ? 'oui' : 'non'}`;
+              tally[key] = (tally[key] ?? 0) + 1;
+              console.log(`${label} #${i} -> ${r.status} ${r.ms ?? ''} ms ip=${r.ip ?? '?'} ${JSON.stringify(r.h ?? {})} ${JSON.stringify((r.text ?? '').slice(0, 160))}`);
+              await new Promise((s) => setTimeout(s, gapMs));
             }
           }
+          const ses = () => JSON.stringify({ v: 1, ses: randomBytes(32).toString('base64url') });
+          await run('santé', 'GET', '/v1/health', undefined, 12);
+          await run('compte', 'POST', '/v1/account/me', ses, 20);
+          await run('me', 'POST', '/v1/me', JSON.stringify({ v: 1, tok: 'x'.repeat(43), op: 'erase' }), 10);
+          await run('racine', 'GET', '/', undefined, 6);
+          console.log('\nBilan', JSON.stringify(tally, null, 1));
           EOF
           node sonde.mjs
