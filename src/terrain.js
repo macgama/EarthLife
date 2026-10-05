@@ -20,7 +20,14 @@ import { DEM_ZOOM, DEM_SIZE } from './dem.js';
 export const NODE = 4; // écart des nœuds (m)
 export const NODES = 17; // nœuds par côté d'un morceau de 64 m (bords compris)
 export const RELIEF_N = NODES + 2; // avec la marge d'un nœud de chaque côté
-const WATER_WINDOW = 30; // le niveau de l'eau est le minimum du modèle sur ± 30 m
+const WATER_STEP = 12; // le niveau de l'eau est un bas centile du modèle sur 7 × 7 points espacés de 12 m (± 36 m)
+const WATER_RANK = 12; //  (le 12e plus bas des 49 : insensible aux creux isolés de la donnée, qui descendent de 3 à 5 m sous l'eau)
+// Berges : voir bankField.
+const BANK_BASE = 4; // m : hauteur de la berge au bord de l'eau (les quais de Lyon sont à 4 ou 5 m au-dessus de l'eau)
+const BANK_SLOPE = 0.15; // la berge monte de 15 % au plus en s'éloignant de l'eau (la Presqu'île est à 10 m au-dessus des fleuves, à 100 m d'eux)
+const BANK_REACH = 96; // m : au-delà, le modèle est intact
+const BANK_BLEND = 32; // m : raccord progressif sur les derniers mètres de la portée
+const LATTICE = 8; // m : pas du réseau de points d'eau, ancré à l'origine du monde (le même pour tous les morceaux)
 const RIM = 0.5; // les nœuds de rive restent à 0,5 m au moins au-dessus de l'eau
 const PAD = 6; // marge (pixels) des tuiles à attendre autour d'un rectangle : noyau bicubique, nœud de marge et fenêtre de l'eau
 export const DECK_REACH = 180; // un pont sur l'eau cherche ses culées jusqu'à 180 m de part et d'autre
@@ -43,6 +50,8 @@ export function createTerrain({ proj, zoom = DEM_ZOOM, enabled = true } = {}) {
   let on = enabled;
   let ref = 0;
   let last = null; // dernière tuile lue (presque toutes les lectures tombent dans la même)
+  const waterMemo = new Map(); // niveau de l'eau déjà calculé aux points entiers (waterLevelAt)
+  const waterSamples = new Float64Array(49); // les 7 × 7 points d'un niveau de l'eau, triés sur place
 
   // Pixel (fractionnaire) du point (x, z) dans la grille mondiale des pixels du zoom ; le centre du pixel i est en i + 0,5.
   function pixelOf(x, z) {
@@ -76,12 +85,15 @@ export function createTerrain({ proj, zoom = DEM_ZOOM, enabled = true } = {}) {
     const { fx, fy } = pixelOf(x, z);
     const ix = Math.floor(fx), iy = Math.floor(fy), tx = fx - ix, ty = fy - iy;
     const wx = weights(tx), wy = weights(ty);
-    let v = 0;
+    let v = 0, lo = Infinity, hi = -Infinity;
     for (let r = 0; r < 4; r++) {
       const y = iy - 1 + r;
-      v += wy[r] * (wx[0] * sample(ix - 1, y) + wx[1] * sample(ix, y) + wx[2] * sample(ix + 1, y) + wx[3] * sample(ix + 2, y));
+      const a = sample(ix - 1, y), b = sample(ix, y), c = sample(ix + 1, y), d = sample(ix + 2, y);
+      v += wy[r] * (wx[0] * a + wx[1] * b + wx[2] * c + wx[3] * d);
+      if (r === 1 || r === 2) { lo = Math.min(lo, b, c); hi = Math.max(hi, b, c); }
     }
-    return v;
+    // Pas de dépassement : à une falaise de 15 m en un pixel, le noyau cubique creuserait de 2 m sous l'eau.
+    return v < lo ? lo : v > hi ? hi : v;
   }
 
   // Tuiles (clés numériques) qui touchent le rectangle, avec une marge de `pad` pixels pour le noyau bicubique.
@@ -119,6 +131,7 @@ export function createTerrain({ proj, zoom = DEM_ZOOM, enabled = true } = {}) {
       if (!t) return;
       t.state = elev ? 'ready' : 'failed';
       t.elev = elev ?? null;
+      waterMemo.clear(); // une tuile de plus change ce que les points du bord lisent
     },
     // États des tuiles du rectangle : 'ready', 'failed', 'loading' ou 'missing'.
     states(minX, minZ, maxX, maxZ, pad = PAD) {
@@ -141,10 +154,11 @@ export function createTerrain({ proj, zoom = DEM_ZOOM, enabled = true } = {}) {
       const a = absoluteModel(0, 0);
       if (!Number.isFinite(a)) { on = false; return false; }
       ref = Math.round(a);
+      waterMemo.clear();
       return true;
     },
     // Référence fixée à la main (essais).
-    setReference(m) { ref = m; },
+    setReference(m) { ref = m; waterMemo.clear(); },
 
     // Hauteur du sol (m) au point (x, z), relative à la référence ; 0 si le relief est coupé.
     heightAt(x, z) {
@@ -156,18 +170,28 @@ export function createTerrain({ proj, zoom = DEM_ZOOM, enabled = true } = {}) {
     absoluteAt(x, z) {
       return on ? api.heightAt(x, z) + ref : 0;
     },
-    // Niveau de l'eau au point : minimum glissant du modèle sur ± 30 m, une fonction de la position seule (une
-    // rivière coupée en deux par les tuiles vectorielles garde le même niveau des deux côtés). Mer : 0 m, soit −ref.
+    // Niveau de l'eau au point : bas centile du modèle sur ± 36 m (le 12e plus bas de 49 points), une fonction de la
+    // position seule (une rivière coupée en deux par les tuiles vectorielles garde le même niveau des deux côtés). Un
+    // minimum glissant prenait les creux isolés de la donnée, 3 à 5 m sous l'eau. Mer : 0 m, soit −ref.
     waterLevelAt(x, z) {
       if (!on) return 0;
-      let m = Infinity;
-      for (let k = -2; k <= 2; k++) {
-        for (let l = -2; l <= 2; l++) {
-          const h = api.heightAt(x + (k * WATER_WINDOW) / 2, z + (l * WATER_WINDOW) / 2);
-          if (h < m) m = h;
-        }
+      // Mémoire pour les points entiers (ceux du réseau de berges, relus par chaque morceau voisin) ; vidée à chaque tuile.
+      const key = Number.isInteger(x) && Number.isInteger(z) && Math.abs(x) < 1e6 && Math.abs(z) < 1e6 ? (x + 1e6) * 2e6 + (z + 1e6) : -1;
+      if (key >= 0) {
+        const hit = waterMemo.get(key);
+        if (hit !== undefined) return hit;
       }
-      return m;
+      let m = 0;
+      for (let k = -3; k <= 3; k++) {
+        for (let l = -3; l <= 3; l++) waterSamples[m++] = api.heightAt(x + k * WATER_STEP, z + l * WATER_STEP);
+      }
+      waterSamples.sort();
+      const v = waterSamples[WATER_RANK - 1];
+      if (key >= 0) {
+        if (waterMemo.size > 40000) waterMemo.clear();
+        waterMemo.set(key, v);
+      }
+      return v;
     },
     info() {
       const c = { ready: 0, failed: 0, loading: 0 };
@@ -204,12 +228,21 @@ export function chunkHeights(terrain, x0, z0, wet, bridges = null) {
       if (wet(x0 + (i - 2) * NODE, z0 + (j - 2) * NODE)) { water[j * m + i] = 1; any = true; }
     }
   }
+  const bank = bankField(terrain, wet, x0, z0, n);
   const h = new Float32Array(n * n);
   let min = Infinity, max = -Infinity;
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {
       const x = x0 + (i - 1) * NODE, z = z0 + (j - 1) * NODE;
       let v = terrain.heightAt(x, z);
+      if (bank) {
+        const d = bank.d[j * n + i];
+        if (d < BANK_REACH) {
+          const lv = bank.level[j * n + i], cap = lv + bankCap(d), floor = lv + bankFloor(d);
+          if (v > cap) v = cap;
+          else if (v < floor) v = floor;
+        }
+      }
       if (any) {
         const w = (j + 1) * m + i + 1; // même nœud dans la grille d'eau (décalage 1)
         let near = false;
@@ -228,6 +261,67 @@ export function chunkHeights(terrain, x0, z0, wet, bridges = null) {
     }
   }
   return { x0, z0, h, min, max, flat: max - min < 1e-4 };
+}
+
+// ---------- Berges ----------
+
+// Les altitudes des villes (AWS Terrain Tiles) comptent aussi les toits : près d'un fleuve, la ville est 15 à 20 m au-dessus
+// de l'eau, avec une falaise de 20 à 60 % de pente à la rive, alors que les quais sont 4 ou 5 m au-dessus de l'eau. La rive
+// monte donc au plus de BANK_BASE m au bord de l'eau, puis de BANK_SLOPE m par mètre en s'éloignant, jusqu'à BANK_REACH m
+// (raccord progressif sur les BANK_BLEND derniers mètres) : au-delà le modèle est intact, les collines gardent leur hauteur.
+// Elle ne descend pas non plus sous le niveau de l'eau (bankFloor).
+const smooth01 = (t) => { const k = clamp(t, 0, 1); return k * k * (3 - 2 * k); };
+const bankCap = (d) => BANK_BASE + BANK_SLOPE * d + 200 * smooth01((d - (BANK_REACH - BANK_BLEND)) / BANK_BLEND);
+// Plancher : la terre près de l'eau n'est jamais sous l'eau (le contour des tuiles vectorielles est plus étroit que le fleuve
+// de la donnée, ce qui laissait des fossés de 2 à 6 m le long des quais) ; même raccord que le plafond.
+const bankFloor = (d) => RIM - 200 * smooth01((d - (BANK_REACH - BANK_BLEND)) / BANK_BLEND);
+
+// Distance à l'eau (m) de chaque nœud d'un morceau (RELIEF_N × RELIEF_N, même indexation que les hauteurs) et niveau de l'eau
+// du point d'eau le plus proche ; null si aucune eau à portée. L'eau est lue sur un réseau de points tous les LATTICE m,
+// ancré à l'origine du monde : la distance et le niveau d'un point ne dépendent que de sa position, donc deux morceaux
+// voisins donnent la même hauteur à leur nœud commun (l'égalité de distance se départage dans l'ordre de la recherche,
+// anneau par anneau autour de la case du nœud, le même pour tous les morceaux).
+function bankField(terrain, wet, x0, z0, n) {
+  const ring = Math.ceil(BANK_REACH / LATTICE) + 1; // anneaux de points à parcourir, au plus
+  const gx0 = Math.floor((x0 - NODE - BANK_REACH) / LATTICE) - 1, gz0 = Math.floor((z0 - NODE - BANK_REACH) / LATTICE) - 1;
+  const gw = Math.ceil((x0 + (n - 2) * NODE + BANK_REACH) / LATTICE) + 2 - gx0, gh = Math.ceil((z0 + (n - 2) * NODE + BANK_REACH) / LATTICE) + 2 - gz0;
+  const lat = new Uint8Array(gw * gh);
+  let any = false;
+  for (let gz = 0; gz < gh; gz++) {
+    for (let gx = 0; gx < gw; gx++) if (wet((gx0 + gx) * LATTICE, (gz0 + gz) * LATTICE)) { lat[gz * gw + gx] = 1; any = true; }
+  }
+  if (!any) return null;
+  const d = new Float32Array(n * n).fill(Infinity), level = new Float32Array(n * n);
+  const levels = new Map();
+  const r2 = BANK_REACH * BANK_REACH;
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const x = x0 + (i - 1) * NODE, z = z0 + (j - 1) * NODE;
+      const cx = Math.floor(x / LATTICE) - gx0, cz = Math.floor(z / LATTICE) - gz0;
+      let best = r2, at = -1;
+      for (let r = 0; r <= ring; r++) {
+        // Les points des anneaux suivants sont à plus de r × LATTICE du nœud : inutile de chercher plus loin.
+        const lim = r * LATTICE;
+        if (best <= lim * lim) break;
+        for (let gz = cz - r; gz <= cz + r; gz++) {
+          if (gz < 0 || gz >= gh) continue;
+          const edge = gz === cz - r || gz === cz + r; // rangée du haut ou du bas : tous les points ; sinon, les deux bouts
+          for (let gx = cx - r; gx <= cx + r; gx += edge || r === 0 ? 1 : 2 * r) {
+            if (gx < 0 || gx >= gw || !lat[gz * gw + gx]) continue;
+            const dx = (gx0 + gx) * LATTICE - x, dz = (gz0 + gz) * LATTICE - z;
+            const q = dx * dx + dz * dz;
+            if (q < best) { best = q; at = gz * gw + gx; }
+          }
+        }
+      }
+      if (at < 0) continue;
+      let lv = levels.get(at);
+      if (lv === undefined) { lv = terrain.waterLevelAt((gx0 + (at % gw)) * LATTICE, (gz0 + Math.floor(at / gw)) * LATTICE); levels.set(at, lv); }
+      d[j * n + i] = Math.sqrt(best);
+      level[j * n + i] = lv;
+    }
+  }
+  return { d, level };
 }
 
 // ---------- Ponts sur l'eau ----------
@@ -273,7 +367,10 @@ export function deckBuilder(terrain, wet, bridges) {
     const a = abutment(-1), b = abutment(1);
     if (!a || !b) return -Infinity;
     const level = terrain.waterLevelAt(best.qx, best.qz) + RIM;
-    const ha = Math.max(terrain.heightAt(a.x, a.z), level), hb = Math.max(terrain.heightAt(b.x, b.z), level);
+    // Les culées sont au plus à la hauteur d'un quai (la berge de bankField à un pas du bord de l'eau) : le sol de la rive
+    // y est ramené, la donnée de la ville y est trop haute.
+    const quay = level - RIM + bankCap(DECK_STEP);
+    const ha = clamp(terrain.heightAt(a.x, a.z), level, quay), hb = clamp(terrain.heightAt(b.x, b.z), level, quay);
     return ha + ((hb - ha) * a.s) / (a.s + b.s);
   };
 }

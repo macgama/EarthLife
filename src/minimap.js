@@ -38,6 +38,7 @@ const TOKENS = {
   accent: ['--c-accent', '#ff7f1f'], onAccent: ['--c-on-accent', '#170b00'], refuge: ['--c-refuge', '#5fb7ff'],
   warn: ['--c-warn', '#ffc23d'], success: ['--c-success', '#3fd08f'], bag: ['--c-bag', '#c58bff'],
   danger: ['--c-danger', '#ff5c5c'], horde: ['--c-horde', '#ff5d5d'], text: ['--c-text', '#eef1f3'],
+  others: ['--c-others', '#2bb3a3'],
 };
 // Aires dessinées : verts, puis places pavées (quais, pontons, tabliers de pont) ; les autres classes ne le sont pas.
 const GREEN = new Set(['grass', 'wood', 'wetland', 'farmland', 'cemetery', 'playground', 'pitch', 'stadium', 'park']);
@@ -78,7 +79,8 @@ export function nearZombies(zombies, x, z, { range, max = MAP.zombieMax }) {
 
 // Repères à dessiner, du dessous au dessus : zombies, fronts, sac, mission, refuge, joueur, nord. Positions en px CSS
 // depuis le centre de la carte ; ceux qui sortent du cadre restent plaqués au bord (sauf les zombies, toujours dedans).
-// info : { x, z, yaw, player?, playerYaw, playerHidden, home, target: { x, z, kind }, bag, zombies, fog, fronts }.
+// info : { x, z, yaw, player?, playerYaw, playerHidden, home, target: { x, z, kind }, bag, zombies, fog, fronts, others? }
+// (others : les autres survivants du jeu à plusieurs, { x, z } ; seuls ceux qui tiennent dans le cadre sont montrés).
 export function mapMarkers(info, { k, half, big = false }) {
   const out = [];
   const yaw = info.yaw;
@@ -104,6 +106,10 @@ export function mapMarkers(info, { k, half, big = false }) {
       const m = put('front', f.x, f.z, { color: 'horde', size: 11 });
       m.angle = Math.atan2(-m.u, m.v);
     }
+  }
+  for (const o of info.others ?? []) {
+    const p = mapPoint(o.x - info.x, o.z - info.z, yaw, k);
+    if (Math.max(Math.abs(p.u), Math.abs(p.v)) <= half) out.push({ kind: 'survivor', u: p.u, v: p.v, clipped: false, color: 'others', size: big ? 5.5 : 5 });
   }
   if (info.bag) put('bag', info.bag.x, info.bag.z, { color: 'bag', size: 8 });
   if (info.target) put('mission', info.target.x, info.target.z, { color: info.target.kind === 'success' ? 'success' : 'warn', size: 12 });
@@ -320,6 +326,11 @@ function drawMarkers(ctx, markers, colors) {
         outlineFill(ctx, c);
         break;
       }
+      case 'survivor':
+        ctx.beginPath();
+        ctx.arc(0, 0, m.size, 0, Math.PI * 2);
+        outlineFill(ctx, c, '#ffffff', 1.4);
+        break;
       case 'bag':
         ctx.beginPath();
         ctx.rect(-m.size / 2, -m.size / 2, m.size, m.size);

@@ -1,5 +1,9 @@
 // Choix du point de départ sur la carte du monde : recherche, tap sur la carte, raccourcis, position.
 // MapLibre n'est chargé qu'à l'affichage du menu. Sans carte, la recherche et les raccourcis suffisent.
+// Vie privée : « Autour de moi » est arrondi à 3 décimales dès la lecture et crée une zone privée (privacy.js) ;
+// la position précise n'est ni gardée, ni affichée, ni envoyée.
+
+import { PRIVATE, roundCoord, forThirdParty, loadZones, saveZones, zoneFor, coverIndex, nameZone, ZONES_KEY } from './privacy.js';
 
 // MapLibre 6 : module ES (son worker est chargé depuis le même CDN). Les versions <= 6.4.0 ont une faille XSS connue.
 const MAPLIBRE_JS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.mjs';
@@ -18,6 +22,9 @@ const NOMINATIM_GAP_MS = 1100; // règle d'usage de Nominatim : une requête par
 const MAX_LAT = 85; // au-delà, plus de tuiles Web Mercator (main.js refuse aussi ces latitudes)
 const SIDE_LAYOUT = '(min-width: 760px)';
 const DEFAULT_NAME = 'Point sur la carte';
+const MY_POSITION = 'Ma position';
+const MY_POSITION_NOTE = `Position arrondie à 100 m. Une zone privée de ${PRIVATE.radius} m t'entoure : personne ne t'y voit.`;
+const PROTECT_NOTE = `Lieu protégé : personne ne te verra à moins de ${PRIVATE.radius} m`; // annexe A, sans point
 const MAP_LOCALE = {
   'AttributionControl.ToggleAttribution': 'Afficher les crédits',
   'Map.Title': 'Carte du monde',
@@ -36,6 +43,18 @@ const BAG_SVG = pinSvg('#c58bff', '<path d="M14.4 9.6 17 11.6l2.6-2-.7 3.1h-3.8z
 const PIN_CSS = `
 #picker-map .map-pin-tag { position: absolute; top: 5px; left: calc(100% + 2px); padding: 3px 6px 2px; border: 1px solid var(--c-line-strong); border-radius: var(--r-xs); background: var(--c-panel-solid); box-shadow: var(--sh-1); color: var(--c-text); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; white-space: nowrap; pointer-events: none; }
 `;
+// Bouton « Protéger ce lieu » : 3e colonne de la fiche du lieu, sur deux lignes au plus, pour ne pas grandir le panneau.
+const PROTECT_CSS = `
+#menu .place-card.can-protect { grid-template-columns: var(--icon-md) 1fr auto; }
+#menu .place-protect { display: inline-flex; align-items: center; gap: 6px; min-width: var(--touch); min-height: var(--touch); max-width: 112px; padding: 4px 10px; border: 1px solid var(--c-line); border-radius: var(--r-sm); background: rgba(255, 255, 255, .04); color: var(--c-text); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-align: left; text-transform: uppercase; cursor: pointer; }
+#menu .place-protect svg { flex: none; width: var(--icon-sm); height: var(--icon-sm); color: var(--c-refuge); }
+#menu .place-protect[aria-disabled="true"] { border-color: transparent; background: none; color: var(--c-text-2); cursor: default; }
+#menu .place-protect[aria-disabled="true"] svg { color: var(--c-success); }
+@media (hover: hover) { #menu .place-protect:not([aria-disabled="true"]):hover { border-color: var(--c-line-strong); background: rgba(255, 255, 255, .08); } }
+`;
+const SHIELD = (inner = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3 5 6v5.5c0 4.2 2.9 7.9 7 9.5 4.1-1.6 7-5.3 7-9.5V6z"/>${inner}</svg>`;
+const PROTECT_HTML = `${SHIELD()}<span>Protéger ce lieu</span>`;
+const PROTECTED_HTML = `${SHIELD('<path d="m9 12 2 2 4-4"/>')}<span>Lieu protégé</span>`;
 
 // ---------- Données ----------
 export function placeFromCity(city) {
@@ -120,20 +139,80 @@ export function reversePlace(json) {
   return { name: name.slice(0, 120), area: joinParts([a.county || a.state, a.country], name) };
 }
 
-function readSaved(cities) {
+// Quartier de « Ma position » : l'arrondissement s'il porte le nom de la commune (« Lyon 7e »), sinon la commune.
+// Jamais plus fin (ni rue, ni lieu-dit avant la commune) : le nom reste lisible sur une capture d'écran.
+export function districtLabel(json) {
+  if (!json || json.error) return '';
+  const a = json.address ?? {};
+  const town = clean(a.city || a.town || a.village || a.municipality || a.hamlet);
+  if (town) {
+    for (const raw of [a.city_district, a.borough, a.suburb, a.quarter]) {
+      const d = clean(raw).replace(/\s+arrondissement$/i, '');
+      if (d.length > town.length && d.toLowerCase().startsWith(`${town.toLowerCase()} `)) return d.slice(0, 120);
+    }
+    return town.slice(0, 120);
+  }
+  return clean(a.county || a.state).slice(0, 120);
+}
+
+// Paramètres du géocodage inverse : 3 décimales (environ 100 m), le nom du quartier ne change pas.
+export function reverseQuery(lat, lon) {
+  const at = forThirdParty(lat, lon, 'reverse');
+  return { format: 'jsonv2', zoom: '14', 'accept-language': 'fr', lat: at.lat.toFixed(3), lon: at.lon.toFixed(3) };
+}
+
+const looksLikeCoords = (s) => /\d+[,.]\d+\s*°/.test(s);
+
+// Format de earthlife.place : 2 = rangé par cette version (section 6.6). Sans lui, le lieu vient d'une version
+// d'avant, où « Autour de moi » gardait la position GPS précise, parfois renommée par le géocodage inverse
+// (« Pérouges ») et donc impossible à reconnaître.
+const PLACE_FORMAT = 2;
+const stamp = (place) => JSON.stringify({ ...place, v: PLACE_FORMAT });
+const isShortcut = (p, cities) => cities.some((c) => c.name === p.name && Math.abs(c.lat - p.lat) < 1e-5 && Math.abs(c.lon - p.lon) < 1e-5);
+
+// Lieu d'une version d'avant : arrondi à 3 décimales (68 m au plus) sauf s'il s'agit d'une ville des raccourcis ;
+// les coordonnées affichées suivent le point arrondi (aucune pour « Ma position »).
+function migratePlace(p, cities) {
+  if (isShortcut(p, cities)) return p;
+  const lat = roundCoord(p.lat), lon = roundCoord(p.lon);
+  const area = !looksLikeCoords(p.area) ? p.area : p.name === MY_POSITION ? '' : coordLabel(lat, lon);
+  return { ...p, lat, lon, area };
+}
+
+// Lieu rangé : { place, legacyHome } ou null. legacyHome : « Ma position » rangée par une version d'avant (sans v: 2),
+// dont la zone privée promise (section 6.6) n'a jamais été créée ; createPicker la crée, puis marque le lieu.
+function readSaved(cities, storage) {
   try {
-    const saved = normalizePlace(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null'));
-    if (saved) return saved;
+    const text = storage?.getItem(STORAGE_KEY) ?? null;
+    const raw = JSON.parse(text ?? 'null');
+    const saved = normalizePlace(raw);
+    if (saved) {
+      const legacy = raw.v !== PLACE_FORMAT;
+      let place = legacy ? migratePlace(saved, cities) : saved;
+      // « Ma position » vient toujours du GPS : jamais plus de 3 décimales, jamais de coordonnées affichées.
+      if (place.name === MY_POSITION) {
+        place = { ...place, lat: roundCoord(place.lat), lon: roundCoord(place.lon), area: looksLikeCoords(place.area) ? '' : place.area };
+      }
+      const legacyHome = legacy && place.name === MY_POSITION;
+      // Réécrit aussitôt : la position précise ne reste pas dans le stockage (sans v: 2 tant que la zone manque).
+      if (legacyHome) save(storage, place, { stamped: false });
+      else if (stamp(place) !== text) save(storage, place);
+      return { place, legacyHome };
+    }
     // Ancienne version du menu : seul l'identifiant de la ville était gardé.
-    const city = cities.find((c) => c.id === localStorage.getItem(LEGACY_CITY_KEY));
-    return city ? normalizePlace(placeFromCity(city)) : null;
+    const city = cities.find((c) => c.id === storage?.getItem(LEGACY_CITY_KEY));
+    return city ? { place: normalizePlace(placeFromCity(city)), legacyHome: false } : null;
   } catch {
     return null;
   }
 }
 
-function save(place) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(place)); } catch { /* stockage indisponible */ }
+function save(storage, place, { stamped = true } = {}) {
+  try { storage.setItem(STORAGE_KEY, stamped ? stamp(place) : JSON.stringify(place)); } catch { /* stockage indisponible */ }
+}
+
+function defaultStorage() {
+  try { return globalThis.localStorage ?? null; } catch { return null; }
 }
 
 // ---------- Réseau ----------
@@ -208,6 +287,15 @@ function loadMapLibre() {
   return maplibrePromise;
 }
 
+// Feuille de style injectée une seule fois (repères de la carte, bouton de la fiche du lieu).
+function injectStyle(id, css) {
+  if (document.getElementById(id)) return;
+  const style = document.createElement('style');
+  style.id = id;
+  style.textContent = css;
+  document.head.append(style);
+}
+
 function hasWebGL() {
   try {
     const c = document.createElement('canvas');
@@ -218,7 +306,9 @@ function hasWebGL() {
 }
 
 // ---------- Sélecteur ----------
-export function createPicker({ root, cities = [], onChange } = {}) {
+// onMyPosition(place, r) et onProtect(place, r) : zone créée ou réutilisée (r = résultat de zoneFor, zones à jour).
+// storage, rand et now sont injectables pour les tests.
+export function createPicker({ root, cities = [], onChange, onMyPosition, onProtect, storage = defaultStorage(), rand, now = Date.now } = {}) {
   const $ = (sel) => root.querySelector(sel);
   const mapEl = $('#picker-map');
   const ui = $('.menu-ui');
@@ -234,6 +324,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
   const quick = $('#quick');
   const locateBtn = $('#locate');
   const noteEl = $('#picker-note');
+  const placeCard = $('.place-card');
   const playBtn = $('#play');
   const helpBtn = $('#help-toggle');
   const help = $('#help');
@@ -242,7 +333,18 @@ export function createPicker({ root, cities = [], onChange } = {}) {
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const finePointer = window.matchMedia('(pointer: fine)');
 
-  let current = readSaved(cities);
+  const saved = readSaved(cities, storage);
+  let current = saved?.place ?? null;
+  let zones = loadZones(storage); // zones privées ; gardées en mémoire même si le stockage est bloqué ou plein
+  let zonesSaved = true; // dernière écriture des zones réussie ; sinon, la liste en mémoire fait foi
+  // Ancien « Autour de moi » : sa zone privée est créée une fois, autour du point arrondi (une zone proche est
+  // réutilisée sans nouveau tirage). Le lieu ne passe au format 2 qu'une fois la zone rangée : sinon, on réessaie
+  // au prochain chargement.
+  if (saved?.legacyHome) {
+    keepZone(zoneFor(zones, current.lat, current.lon, rand, { now: now(), name: current.area }));
+    if (zonesSaved) save(storage, current);
+  }
+  let placeNote = ''; // note propre au lieu choisi (zone privée), rétablie après le géocodage inverse
   let token = 0; // change à chaque nouveau lieu : une réponse en retard ne l'écrase pas
   let visible = false;
   let map = null, gl = null, marker = null, markerOnMap = false;
@@ -279,20 +381,95 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     return { city, b };
   });
 
+  // ----- Zones privées : « Protéger ce lieu » -----
+  let protectBtn = null;
+  if (placeCard) {
+    injectStyle('picker-protect-style', PROTECT_CSS);
+    protectBtn = document.createElement('button');
+    protectBtn.type = 'button';
+    protectBtn.id = 'place-protect';
+    protectBtn.className = 'place-protect';
+    protectBtn.hidden = true;
+    placeCard.append(protectBtn);
+    // aria-disabled plutôt que disabled : le bouton garde le focus du clavier une fois le lieu protégé.
+    protectBtn.addEventListener('click', () => {
+      if (!current || protectBtn.getAttribute('aria-disabled') === 'true') return;
+      const r = keepZone(zoneFor(zones, current.lat, current.lon, rand, { now: now(), name: zoneLabel(current) }));
+      placeNote = zoneNote(PROTECT_NOTE, r);
+      setNote(placeNote);
+      render();
+      onProtect?.({ ...current }, r);
+    });
+  }
+
+  function keepZone(r) {
+    zones = r.zones;
+    zonesSaved = saveZones(storage, zones);
+    return r;
+  }
+
+  // Le stockage fait foi s'il est lisible et à jour (main.js peut y retirer une zone). Si la dernière écriture
+  // a échoué (stockage plein), on la refait ; tant qu'elle échoue, la liste en mémoire reste : sinon, le même
+  // domicile recevrait un nouveau centre tiré au hasard (section 3.3).
+  function reloadZones() {
+    if (!storage) return;
+    if (!zonesSaved) {
+      zonesSaved = saveZones(storage, zones);
+      if (!zonesSaved) return;
+    }
+    try {
+      storage.getItem(ZONES_KEY);
+      zones = loadZones(storage);
+    } catch { /* stockage bloqué */ }
+  }
+
+  function zoneLabel(place) {
+    if (place.name === MY_POSITION) return place.area;
+    return place.name === DEFAULT_NAME ? '' : place.name;
+  }
+
+  function zoneNote(text, r) {
+    if (!r.dropped) return text;
+    return `${text}${text.endsWith('.') ? '' : '.'} Zone privée la plus ancienne retirée${r.dropped.name ? ` : ${r.dropped.name}` : ''}.`;
+  }
+
+  function renderProtect() {
+    if (!protectBtn) return;
+    protectBtn.hidden = !current;
+    placeCard.classList.toggle('can-protect', !!current);
+    if (!current) return;
+    // Protégé seulement si une zone couvre vraiment le lieu (212 m au moins jusqu'au bord), pas si elle est proche.
+    const done = coverIndex(zones, current.lat, current.lon) >= 0;
+    if (protectBtn.getAttribute('aria-disabled') === String(done) && protectBtn.childElementCount) return;
+    protectBtn.setAttribute('aria-disabled', String(done));
+    protectBtn.innerHTML = done ? PROTECTED_HTML : PROTECT_HTML;
+    protectBtn.title = done
+      ? `Zone privée : personne ne te voit à moins de ${PRIVATE.radius} m`
+      : `Personne ne te verra à moins de ${PRIVATE.radius} m de ce lieu`;
+  }
+
+  // Le nom du quartier vient après la zone : il sert à la reconnaître dans la liste des zones.
+  function nameZoneAt(place, name) {
+    const next = nameZone(zones, place.lat, place.lon, name);
+    if (next !== zones) keepZone({ zones: next });
+  }
+
   // ----- Lieu choisi -----
-  function choose(raw, { zoom = null, reverse = false } = {}) {
+  // reverse : true pour nommer le lieu touché, 'mine' pour le quartier de « Ma position ».
+  function choose(raw, { zoom = null, reverse = false, note = '' } = {}) {
     const place = normalizePlace(raw);
     if (!place) return;
     token += 1;
     cancelSearch();
     reverseCtrl?.abort();
     current = place;
-    save(place);
+    placeNote = note;
+    save(storage, place);
     render();
     syncMarker();
     if (zoom !== null) flyTo(place, zoom);
-    if (reverse) nameFromCoords(place, token);
-    else setNote('');
+    if (reverse) nameFromCoords(place, token, reverse);
+    else setNote(placeNote);
     onChange?.({ ...place });
   }
 
@@ -305,6 +482,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
       const on = !!current && current.name === city.name && Math.abs(current.lat - city.lat) < 1e-5 && Math.abs(current.lon - city.lon) < 1e-5;
       b.setAttribute('aria-pressed', String(on));
     }
+    renderProtect();
   }
 
   function setNote(text, kind = '') {
@@ -314,30 +492,41 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     noteEl.className = `picker-note${shown && (kind === 'warn' || !text) ? ' warn' : ''}`;
   }
 
-  // Nom du lieu touché sur la carte (géocodage inverse, une requête par seconde au plus).
-  async function nameFromCoords(place, t) {
-    const key = `${place.lat.toFixed(4)},${place.lon.toFixed(4)}`;
+  // Nom du lieu touché sur la carte, ou quartier de « Ma position » (géocodage inverse à 3 décimales,
+  // une requête par seconde au plus).
+  async function nameFromCoords(place, t, mode) {
+    const mine = mode === 'mine';
+    const query = reverseQuery(place.lat, place.lon);
+    const key = `${query.lat},${query.lon}`;
     reverseCtrl = new AbortController();
     const { signal } = reverseCtrl;
-    setNote('Recherche du nom du lieu…');
+    setNote(mine ? placeNote : 'Recherche du nom du lieu…');
     try {
-      let named = reverseCache.get(key);
-      if (named === undefined) {
-        const json = await nominatimJson('reverse', { format: 'jsonv2', zoom: '14', 'accept-language': 'fr', lat: place.lat.toFixed(5), lon: place.lon.toFixed(5) }, signal);
-        named = reversePlace(json);
-        reverseCache.set(key, named);
+      let found = reverseCache.get(key);
+      if (found === undefined) {
+        const json = await nominatimJson('reverse', query, signal);
+        found = { named: reversePlace(json), district: districtLabel(json) };
+        reverseCache.set(key, found);
       }
       if (t !== token) return;
-      if (!named) { setNote('Endroit sans nom : tu partiras de ce point précis.'); return; }
-      current = { ...current, name: named.name, area: named.area || current.area };
-      save(current);
+      if (mine) {
+        if (!found.district) { setNote(placeNote); return; }
+        current = { ...current, area: found.district };
+        nameZoneAt(current, found.district);
+      } else {
+        const { named } = found;
+        if (!named) { setNote('Endroit sans nom : tu partiras de ce point précis.'); return; }
+        current = { ...current, name: named.name, area: named.area || current.area };
+        nameZoneAt(current, named.name);
+      }
+      save(storage, current);
       render();
-      setNote('');
+      setNote(placeNote);
       onChange?.({ ...current });
     } catch (err) {
       if (isAbort(err) || t !== token) return;
       console.warn('Géocodage inverse indisponible', err);
-      setNote('Nom du lieu introuvable : tu partiras quand même de ce point.');
+      setNote(mine ? placeNote : 'Nom du lieu introuvable : tu partiras quand même de ce point.');
     }
   }
 
@@ -517,11 +706,17 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     const done = () => { locateBtn.disabled = false; locateBtn.removeAttribute('aria-busy'); };
     const t = token;
     navigator.geolocation.getCurrentPosition((pos) => {
+      // Arrondi à 3 décimales (environ 100 m) avant toute autre chose : la position précise n'est ni gardée,
+      // ni affichée, ni envoyée (le nom du quartier vient de ce point arrondi).
+      const lat = roundCoord(pos.coords.latitude), lon = roundCoord(pos.coords.longitude);
       done();
       if (t !== token) return; // un autre lieu a été choisi pendant l'attente
-      const { latitude: lat, longitude: lon } = pos.coords;
       closeList();
-      choose({ lat, lon, name: 'Ma position', area: coordLabel(lat, lon), aroundMe: true }, { zoom: PLACE_ZOOM, reverse: true });
+      // Zone privée autour du point arrondi ; une zone proche est réutilisée sans nouveau décalage, et agrandie
+      // s'il le faut pour couvrir ce point (privacy.js, zoneFor).
+      const r = keepZone(zoneFor(zones, lat, lon, rand, { now: now() }));
+      choose({ lat, lon, name: MY_POSITION, area: r.zone.name, aroundMe: true }, { zoom: PLACE_ZOOM, reverse: 'mine', note: zoneNote(MY_POSITION_NOTE, r) });
+      onMyPosition?.(current ? { ...current } : null, r);
     }, (err) => {
       done();
       setNote(err?.code === 1
@@ -612,16 +807,8 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     if (!markerOnMap) { marker.addTo(map); markerOnMap = true; }
   }
 
-  function injectPinStyle() {
-    if (document.getElementById('picker-pin-style')) return;
-    const style = document.createElement('style');
-    style.id = 'picker-pin-style';
-    style.textContent = PIN_CSS;
-    document.head.append(style);
-  }
-
   function makePin(pin) {
-    injectPinStyle();
+    injectStyle('picker-pin-style', PIN_CSS);
     const el = document.createElement('div');
     el.className = `map-pin map-pin-${pin.kind}`;
     el.setAttribute('role', 'img');
@@ -814,8 +1001,17 @@ export function createPicker({ root, cities = [], onChange } = {}) {
     setBag(bag) {
       setPin('bag', bag, 'Ton sac');
     },
+    // Zones privées (privacy.js) : copie de la liste ; setZones après un retrait fait ailleurs (menu), qui la range aussi.
+    getZones: () => zones.map((z) => ({ ...z })),
+    setZones(list) {
+      zones = Array.isArray(list) ? list.map((z) => ({ ...z })) : [];
+      zonesSaved = saveZones(storage, zones);
+      render();
+    },
     show() {
       visible = true;
+      reloadZones();
+      render();
       updateLayout({ padding: false });
       if (mapState === 'idle' || mapState === 'failed') startMap();
       else if (map) { map.resize(); updateLayout(); startSpin(); }

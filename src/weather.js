@@ -1,15 +1,18 @@
 // Météo réelle (Open-Meteo, sans clé) et règles de jeu qui en découlent.
 
+import { forThirdParty } from './privacy.js';
+
 const CURRENT_VARS = [
   'temperature_2m', 'apparent_temperature', 'precipitation', 'rain', 'showers', 'snowfall',
   'weather_code', 'cloud_cover', 'wind_speed_10m', 'wind_gusts_10m', 'wind_direction_10m',
   'is_day', 'visibility',
 ];
 
+// Adresse de la requête : coordonnées telles quelles, 4 décimales au plus, sans zéros inutiles.
 export function weatherUrl(lat, lon) {
   const params = new URLSearchParams({
-    latitude: lat.toFixed(4),
-    longitude: lon.toFixed(4),
+    latitude: String(Number(lat.toFixed(4))),
+    longitude: String(Number(lon.toFixed(4))),
     current: CURRENT_VARS.join(','),
     timezone: 'auto',
     wind_speed_unit: 'kmh',
@@ -17,8 +20,10 @@ export function weatherUrl(lat, lon) {
   return `https://api.open-meteo.com/v1/forecast?${params}`;
 }
 
+// Open-Meteo ne reçoit que 2 décimales (environ 1 km) : sa maille va de 1 à 11 km, le résultat ne change pas.
 export async function fetchWeather(lat, lon, { signal } = {}) {
-  const res = await fetch(weatherUrl(lat, lon), { signal });
+  const at = forThirdParty(lat, lon, 'weather');
+  const res = await fetch(weatherUrl(at.lat, at.lon), { signal });
   if (!res.ok) throw new Error(`Open-Meteo a répondu ${res.status}`);
   return parseWeather(await res.json());
 }

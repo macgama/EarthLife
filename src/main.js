@@ -26,8 +26,8 @@ import {
   planDelivery, questText, updateQuest, currentTarget, placeWith, refugeQuest, offerMissions, questReward, missionLine,
   durationLabel as questDuration,
 } from './quest.js';
-import { createSaveStore, LIMITS, exportFileName, SAVE_MESSAGES } from './save.js';
-import { createRefuge, clockLabel, durationLabel } from './refuge.js';
+import { createSaveStore, LIMITS, exportFileName, SAVE_MESSAGES, isBlankSave } from './save.js';
+import { createRefuge, clockLabel, durationLabel, TAKEN_TEXT } from './refuge.js';
 import { FICHE, ficheOf } from './fiche.js';
 import { kindLabel, countsLabel, countOf, chestCap, moveItems, depositAll, prepareBag, storeItems, refugeWarmth, TIMES } from './base.js';
 import { frontVector, nextNightChange, nightKey, utcOffsetFor, clockTargets, HORDE } from './horde.js';
@@ -36,7 +36,10 @@ import { ambushCount, ambushSpots, ambushText } from './embuscade.js';
 import { PROP_KINDS, PROP_TEXTS, rollPropLoot, propTime, propLabel, propLootText, goneChecker } from './props.js';
 import { createPropsView } from './props-view.js';
 import { createBaseView } from './base-view.js';
-import { createRefugePanel, createCard } from './panels.js';
+import {
+  createRefugePanel, createCard, onlineChoiceCard, survivorCard, reportCard, followCard, myDataCard, eraseCard, exportCard,
+  zonesCard, ONLINE_TEXTS, ACCOUNT_TEXTS,
+} from './panels.js';
 import { createHud, distanceText } from './hud.js';
 import { createMinimap } from './minimap.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
@@ -47,6 +50,15 @@ import { createResilientBlocks } from './ville-jeu.js';
 import { createCityGame } from './ville-ecran.js';
 // Icônes (HUD, chargement, fin) sous un espace de noms : pas de conflit avec d'autres imports nommés.
 import * as icons from './icons.js';
+// Jeu à plusieurs : une couche posée à côté du jeu solo (spécification 7).
+import { createOnline, NULL_ONLINE, ONLINE, serverFromParams } from './online.js';
+import { FLAGS, nameOf, sectorOf } from './net/protocol.js';
+import { BUILD } from './net/build.js';
+import { zoneStatus, inviteCoords, removeZone, metersBetween as zoneMeters } from './privacy.js';
+import { REDUCED_LOOT, searchedLabel } from './shared-world.js';
+// Compte facultatif (spécification des comptes, 5.8) : partie sauvegardée sur le serveur, autre appareil.
+import { createAccount, NULL_ACCOUNT } from './account.js';
+import { createAccountUi } from './account-ui.js';
 
 const PREFETCH_RADIUS = 600; // tuiles demandées à l'avance autour du joueur
 const QUEST_RADIUS = 700;
@@ -73,6 +85,9 @@ let session = null;
 let starting = false;
 let firstLaunch = true; // récupération hors ligne : une seule fois par page
 let homePending = true; // refuge disparu, siège d'absence : une fois par page, à la première session au refuge
+// Compte (account.js), créé plus bas après le jeu à plusieurs ; NULL_ACCOUNT d'ici là et avec ?online=0.
+let account = NULL_ACCOUNT;
+let accountUi = null;
 // Territoire (villes sauvées, ville en cours : « Sauver sa ville ») : rangé sous sa propre clé, écrit par la sauvegarde
 // dans le même lot (companion), exporté et importé avec elle.
 const localStore = (() => { try { return window.localStorage; } catch { return null; } })();
@@ -87,6 +102,9 @@ const saveStore = createSaveStore({
   // Différé : la carte, le HUD et les cartes de jeu n'existent pas encore pendant la création du magasin.
   onExternal: (e) => setTimeout(() => onSaveExternal(e), 0),
   beforeWrite: copyLive,
+  // Copie de la partie sur le serveur, si un compte est connecté (différé comme onExternal : le compte n'existe pas
+  // encore quand ?fresh=1 écrit la partie neuve).
+  onWrite: (e) => setTimeout(() => account.onSaveWrite(e), 0),
   companion: territoryStore,
 });
 const save = saveStore.save;
@@ -94,10 +112,16 @@ const save = saveStore.save;
 const communes = createCommuneCache(localStore);
 const blocksClient = createResilientBlocks({ makeWorker: () => new Worker(new URL('./blocks-worker.js', import.meta.url), { type: 'module' }) });
 let city = null;
+// Ses propres démontages (72 h, sauvegarde) ; ceux des autres viennent du jeu en ligne.
+const localGone = goneChecker(() => save.dismantled);
 // ?fresh=1 ne sert qu'une fois : un rechargement à la main ne doit pas effacer la partie.
 if (params.has('fresh')) history.replaceState(history.state, '', urlWithout('fresh'));
 
-const picker = createPicker({ root: $('menu'), cities: CITIES, onChange: (place) => updatePlayLabel(place) });
+const picker = createPicker({
+  root: $('menu'), cities: CITIES, onChange: (place) => updatePlayLabel(place),
+  // « Autour de moi » et « Protéger ce lieu » : picker.js range la zone ; le jeu en ligne relit la liste.
+  onMyPosition: () => zonesUpdated(), onProtect: () => zonesUpdated(),
+});
 // Sauver sa ville (src/ville-ecran.js) : niveau du menu, choix de la ville, compteurs, nuits, fin de ville. `host` : ce que
 // la partie lui prête (cartes, HUD, session, sauvegarde).
 city = createCityGame({
@@ -108,6 +132,76 @@ city = createCityGame({
   onLevelChange: (place) => updatePlayLabel(place),
 });
 city.initMenu();
+
+// ---------- Jeu à plusieurs (online.js) ----------
+// ?online=0 : NULL_ONLINE, aucune requête. Sans ?server= local, tant que le vrai serveur n'est pas en service
+// (ONLINE.enabledByDefault, lot G), createOnline ne fait rien non plus : le jeu solo est celui d'avant.
+const storage = (() => { try { return window.localStorage; } catch { return null; } })();
+let zones = picker.getZones(); // zones privées (privacy.js), rangées par picker.js, jamais envoyées
+const serverParam = params.get('server');
+const online = params.get('online') === '0' ? NULL_ONLINE : createOnline({
+  server: serverFromParams(params, ONLINE.server), storage,
+  // Empreinte du jeu publié (net/build.js, réécrit à la publication) : champ `c` du hello, pour les mesures seulement.
+  build: BUILD,
+  // Traces et refuge d'un lieu situé dans une zone privée : jamais partagés.
+  isPrivate: (lat, lon) => zoneStatus(zones, lat, lon).kind === 'private',
+  // Alerte de suivi accélérée pour les tests (?debug=1&followScale=60).
+  followScale: DEBUG ? Math.min(600, Math.max(1, Number(params.get('followScale')) || 1)) : 1,
+  // Connecté à un compte : sa session remplace le jeton anonyme (lue à chaque hello, jamais montrée au débogage).
+  session: () => account.session,
+});
+// Jeu en ligne actif sur cette page (le transport n'existe que si un serveur est utilisable).
+const onlineOn = online.transport !== null;
+// ?server= refusé (seule la machine locale est acceptée) : dit par un toast avec ?debug=1 (section 6.2).
+let serverNotice = DEBUG && !!serverParam && !onlineOn && params.get('online') !== '0';
+const LIVE = new Set(['en-ligne', 'lent', 'couronne']);
+let othersView = null; // others-view.js, chargé à la première partie en ligne
+let frameNow = Date.now(); // heure de l'appareil, lue au début de chaque image
+let menuOnlineAt = 0; // dernier rafraîchissement du bloc en ligne du menu
+online.on('status', () => onOnlineStatus());
+online.on('name', () => renderOnlineMenu());
+// Démontages des autres : cachés tout de suite (chunks.markGone), tache d'huile comprise.
+online.on('gone', (ids) => {
+  const s = session;
+  if (s?.store.source === 'tiles') for (const id of ids) s.chunks.markGone(id);
+});
+online.on('refuges', () => { if (session) session.flagsDirty = true; });
+online.on('gesture', ({ sid, k }) => othersView?.bubble(sid, k));
+online.on('follow', ({ sid }) => showFollow(sid));
+online.on('ack', (e) => {
+  if (!e.ok && e.why === 'taken' && e.notify) toast("Refuge non partagé : un autre survivant s'y était installé avant toi", 6);
+});
+// Compte facultatif : même serveur que le jeu à plusieurs ; inactif avec ?online=0 ou sans jeu en ligne.
+if (onlineOn) {
+  account = createAccount({
+    server: serverFromParams(params, ONLINE.server), enabled: true, storage,
+    save: {
+      storedText: () => saveStore.storedText, readOnly: () => saveStore.readOnly, isBlank: blankSaveText,
+      importText: (text) => saveStore.importText(text), wipe: () => saveStore.wipe(),
+    },
+    online: { anonToken: () => online.anonToken(), forgetIdentity: () => online.forgetIdentity(), relink: (o) => online.relink(o),
+      get accountsOpen() { return online.accountsOpen; } },
+    // Reprise et carte de conflit seulement au menu (section 5.8).
+    menuShown: () => !$('menu').classList.contains('hidden'),
+    onReload: (o) => reloadPage(o),
+  });
+  online.on('session', () => account.sessionRefused());
+}
+// Écouteurs posés après ceux de save.js (créé plus haut) : la partie est écrite d'abord, puis envoyée. Une erreur du
+// jeu en ligne n'empêche pas l'envoi de la partie.
+window.addEventListener('pagehide', () => {
+  try { online.bye(); } catch (e) { console.warn('online.bye', e); }
+  account.pagehide();
+});
+// Page rendue par le cache de navigation (retour arrière) : le client fermé à pagehide repart.
+window.addEventListener('pageshow', (e) => { if (e.persisted) online.start(); });
+document.addEventListener('visibilitychange', () => {
+  try { online.hidden(document.hidden); } catch (e) { console.warn('online.hidden', e); }
+  account.hidden(document.hidden);
+});
+// Le refuge actuel (ou aucun, après ?fresh=1) est renvoyé à chaque welcome ; hors zone privée seulement.
+online.refuge(save.base?.id ?? null);
+
 // Icônes de toute la page ([data-icon]), dessinées une fois ; ensuite setIcon seulement quand l'une d'elles change.
 icons.replaceIcons(document);
 const urlPlace = placeFromParams(params);
@@ -117,7 +211,7 @@ syncMenu();
 function placeFromParams(p) {
   const lat = parseFloat(p.get('lat')), lon = parseFloat(p.get('lon'));
   if (Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 85 && Math.abs(lon) <= 180) {
-    return { lat, lon, name: p.get('name') || 'Point choisi', area: p.get('area') || `${lat.toFixed(4)}, ${lon.toFixed(4)}` };
+    return { lat, lon, name: p.get('name') || 'Point choisi', area: p.get('area') || `${lat.toFixed(3)}, ${lon.toFixed(3)}` };
   }
   const city = CITIES.find((c) => c.id === p.get('city'));
   return city ? placeFromCity(city) : null;
@@ -143,6 +237,33 @@ function urlWithout(name) {
 // Après un import ou une reprise (« Reprendre ici ») : la partie en mémoire a changé, on recharge sans ?fresh.
 function reloadClean() {
   location.replace(urlWithout('fresh'));
+}
+
+// Rechargement demandé par le compte : reprise de la partie du compte, ou ?fresh=1 après « Me déconnecter et
+// effacer la partie ici ».
+function reloadPage({ fresh = false } = {}) {
+  if (!fresh) { reloadClean(); return; }
+  const u = new URL(location.href);
+  u.searchParams.set('fresh', '1');
+  location.replace(u.toString());
+}
+
+// Partie vide (save.js, isBlankSave) d'un texte rangé ou reçu du serveur ; illisible : pas vide (jamais écrasée).
+function blankSaveText(text) {
+  try {
+    return isBlankSave(JSON.parse(text));
+  } catch {
+    return false;
+  }
+}
+
+// Résumé d'une partie pour la carte de conflit : refuge, nuits tenues, heure de la sauvegarde. La partie du serveur
+// n'est pas encore validée : chaque champ est vérifié ici.
+function describeSave(data) {
+  const b = data && typeof data === 'object' ? data.base : null;
+  const name = b && typeof b === 'object' ? (typeof b.place?.name === 'string' && b.place.name ? b.place.name.slice(0, 60) : kindLabel(b.kind) || 'refuge') : '';
+  const nights = Number.isInteger(data?.profile?.nightsHeld) && data.profile.nightsHeld >= 0 ? data.profile.nightsHeld : 0;
+  return { refuge: name, nights, savedAt: Number.isFinite(data?.savedAt) ? data.savedAt : null };
 }
 
 // « Jouer ici » sans refuge, « Rentrer au refuge » à 1 500 m ou moins du refuge, « Partir en expédition ici » au-delà.
@@ -177,6 +298,7 @@ function syncMenu() {
   picker.setHome(b ? { lat: b.lat, lon: b.lon, label: [kindLabel(b.kind), b.place?.name].filter(Boolean).join(' · ') } : null);
   picker.setBag(save.dropBag ? { lat: save.dropBag.lat, lon: save.dropBag.lon } : null);
   renderSaveLine();
+  renderOnlineMenu();
 }
 
 // « Ton refuge : Habitation · Lyon · 3 ouvertures », bouton « Voir mon refuge », message de la sauvegarde.
@@ -288,6 +410,16 @@ const frustumMatrix = new THREE.Matrix4();
 const probe = new THREE.Sphere(new THREE.Vector3(), 1.2);
 const beaconNormal = [0, 1, 0];
 
+// Jeu en ligne lancé une fois input, HUD et cartes créés (le premier état arrive tout de suite).
+online.start();
+// Compte : son interface s'abonne avant le lancement (note « Partie du compte reprise. » au premier état).
+if (account !== NULL_ACCOUNT) {
+  accountUi = createAccountUi({ $, account, online, saveStore, showCard, hideCard, toast, setLoading, describeSave,
+    download: downloadText });
+  account.start();
+}
+onOnlineStatus();
+
 $('play').addEventListener('click', () => startGame(picker.getPlace()));
 // Au menu la boucle de jeu ne lit pas les touches : Échap ferme tout de même la carte du niveau (« Annuler »).
 document.addEventListener('keydown', (e) => {
@@ -306,6 +438,27 @@ $('import-file').addEventListener('change', (e) => importSave(e.target));
 $('mods-toggle').addEventListener('click', () => {
   $('mods-toggle').setAttribute('aria-expanded', String(document.body.classList.toggle('show-mods')));
 });
+// Bloc en ligne du menu (annexe A).
+$('online-toggle')?.addEventListener('change', (e) => {
+  online.choose(e.target.checked);
+  setOnlineNote('');
+  renderOnlineMenu();
+});
+$('online-rename')?.addEventListener('click', () => renameOnline());
+$('online-invite')?.addEventListener('click', () => inviteHere());
+$('online-mute')?.addEventListener('click', () => {
+  online.setMuted(!online.muted());
+  renderOnlineMenu();
+});
+$('online-data')?.addEventListener('click', () => showMyData());
+$('online-erase')?.addEventListener('click', () => askErase());
+$('zones-open')?.addEventListener('click', () => showZones());
+// Échap sur une carte ouverte par-dessus le menu (en partie, handleUiKeys s'en charge).
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Escape' || menuEl.classList.contains('hidden') || !card.isOpen()) return;
+  if (cardInfo?.blocking) pressCard(cardInfo.escape);
+  else hideCard();
+});
 if (params.get('autostart') === '1') startGame(picker.getPlace() ?? placeFromCity(CITIES[0]));
 else picker.show();
 
@@ -320,8 +473,14 @@ function toMenu() {
     if (session.action) cancelAction(session);
     saveStore.flush('menu');
   }
+  // Au menu, le personnage n'est plus visible des autres ; la connexion reste (surnom, compte du monde).
+  online.leave();
+  othersView?.clear();
+  input.closeWheel();
   syncMenu();
   picker.show();
+  // Compte : reprise différée (jamais en partie) ou carte de conflit en attente.
+  accountUi?.atMenu();
 }
 
 // Lieu du refuge, pour le menu (« Voir mon refuge » y recentre la carte) et le réveil après une mort en expédition.
@@ -330,12 +489,22 @@ function homePlace() {
   return { lat: b.lat, lon: b.lon, name: b.place?.name ?? kindLabel(b.kind), area: b.place?.area ?? '' };
 }
 
-// « Exporter ma partie » : fichier earthlife-sauvegarde-AAAA-MM-JJ.json.
+// « Exporter ma partie » : une carte rappelle d'abord ce que contient le fichier (section 6.6), puis
+// téléchargement de earthlife-sauvegarde-AAAA-MM-JJ.json.
 function exportSave() {
-  const blob = new Blob([saveStore.exportText()], { type: 'application/json' });
+  showCard(exportCard(), (id) => { if (id === 'export') downloadSave(); }, { escape: 'cancel' });
+}
+
+function downloadSave() {
+  downloadText(exportFileName(Date.now()), saveStore.exportText());
+}
+
+// Fichier JSON téléchargé (partie, version d'une carte de conflit, données du compte).
+function downloadText(name, text) {
+  const blob = new Blob([text], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = exportFileName(Date.now());
+  a.download = name;
   document.body.append(a);
   a.click();
   a.remove();
@@ -430,6 +599,8 @@ async function startGame(place, { spawn = 'place', confirmed = false } = {}) {
     // null : le joueur annule, on reste où l'on est (menu ou partie).
     const plan = await city.prepareLaunch(place, { spawn, confirmed });
     if (!plan) { setLoading(null); return; }
+    // Premier passage en ligne : la carte « Jouer à plusieurs » avant le départ, jamais pendant une partie.
+    if (spawn === 'place' && onlineOn) await onlineChoice();
     await launch(place, spawn, plan);
   } finally {
     starting = false;
@@ -438,6 +609,7 @@ async function startGame(place, { spawn = 'place', confirmed = false } = {}) {
 
 async function launch(place, spawn, plan = { kind: 'free', place }) {
   picker.hide();
+  readZones();
   $('menu').classList.add('hidden');
   const home = homeLatLon();
   // Une ville neuve ailleurs que chez soi : on y joue d'abord comme en expédition, la maison tirée y déménage le refuge.
@@ -465,6 +637,8 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
     $('hud').classList.remove('hidden');
     applyConditions();
     saveStore.markDirty();
+    // Reprise au même endroit (sans buildSession) : de nouveau visible des autres.
+    onlineEnter(old);
     city.afterLaunch(old);
     return;
   }
@@ -499,7 +673,8 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
   await nextFrame();
   const chunks = createChunkManager({
     scene, store, grid, lowPower, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
-    propsView, isGone: goneChecker(() => save.dismantled),
+    // Démontages : les siens (sauvegarde, 72 h), et ceux des autres survivants en ligne (72 h).
+    propsView, isGone: (id) => localGone(id) || online.isGone(id),
   });
   chunks.buildAll(0, 0);
   // Départ sur la terre ferme, hors des cours intérieures fermées.
@@ -536,6 +711,8 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
   else if (s.refuge.inside) openPanel(s);
   // Mort en expédition : le réveil a rechargé le monde du refuge, cette partie-ci n'existe plus.
   if (session !== s) return;
+  // Jeu en ligne : départ ou nouveau lieu (la ville de secours le suspend).
+  onlineEnter(s);
   // Première écriture : cet onglet prend la main sur la sauvegarde (sans effet en lecture seule : la carte l'explique).
   saveStore.markDirty();
   if (otherTab()) showTakeOverCard();
@@ -549,6 +726,10 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
     toast('Données en direct injoignables depuis ce lien : ville générée ou météo par défaut', 6);
   } else if (store.buildings.length < 30) {
     toast('Peu de bâtiments cartographiés ici : explore les environs', 5);
+  }
+  if (serverNotice) {
+    serverNotice = false;
+    toast('?server= ignoré : seule la machine locale (127.0.0.1, localhost) est acceptée', 6, 'danger');
   }
 }
 
@@ -633,6 +814,7 @@ function homeChecks(s, nearReady) {
   if (r.base && nearReady) {
     const gone = r.vanishCheck();
     if (gone.gone) {
+      online.refuge(null);
       s.player.hidden = false;
       s.goal = refugeQuest();
       renderConditions();
@@ -693,6 +875,7 @@ function onTile(key, info) {
 
 function disposeSession() {
   if (!session) return;
+  othersView?.clear();
   panel.close();
   baseView.setLure(null);
   session.chunks.dispose();
@@ -739,9 +922,13 @@ function buildSession(place, origin, home, store, grid, loader, chunks, start, l
     viewRadius: ZOOM.radius, covered: ZOOM.radius, coveredFog: ZOOM.radius, zoomCap: Infinity, edgeCap: Infinity,
     zoomGoal: clampZoom(viewPrefs.zoom, lowPower), zoomLimited: '', zoomSeen: clampZoom(viewPrefs.zoom, lowPower),
     isNight: false, nextPrefetch: 0, actionMul: 1, respawnedAt: null, lastPanel: 0,
+    // Jeu à plusieurs : zone privée du moment, drapeaux à relire, « à terre » jusqu'à, survivants de l'image.
+    zone: null, flagsDirty: true, downUntil: 0, othersNow: [], aroundShown: 0, ring: null, takenSeen: new Set(),
     sessionStart: Date.now(), weatherAt: liveWeather.fetchedAt ?? Date.now(),
     nextWeatherCheck: performance.now() + (liveWeather.source === 'live' ? WEATHER_REFRESH_MS : WEATHER_RETRY_MS),
   };
+  // Autres survivants : module chargé à la première partie en ligne (rien en solo).
+  if (onlineOn) ensureOthersView();
   syncZoomButtons(session);
   atmosphere.state.onLightning = () => {
     if (!session?.player) return;
@@ -787,8 +974,11 @@ function applyConditions() {
 const clock = new THREE.Clock();
 const menuEl = $('menu');
 const focus = new THREE.Vector3();
-// Temps de logique par image, en ms (debug.perf).
+// Temps de logique par image, en ms (debug.perf), et part du jeu en ligne (debug.perf().online : syncOnline et
+// syncOthers, dont l'affichage des autres survivants, étiquettes et bulles comprises ; scénario O18).
 const perfSamples = [];
+const onlineSamples = [];
+let othersMs = 0;
 // Point hors du champ de la caméra (image précédente) : une horde n'apparaît jamais à l'écran.
 const offscreen = (x, z) => {
   probe.center.set(x, 1 + (session?.grid ? groundAt(session.grid, x, z) : 0), z); // relief : la sonde suit le sol
@@ -797,8 +987,11 @@ const offscreen = (x, z) => {
 renderer.setAnimationLoop(() => {
   const elapsed = clock.getDelta();
   const dt = Math.min(elapsed, 0.05);
+  frameNow = Date.now();
   // Écritures regroupées de la sauvegarde (délai de 2 s), même au menu.
   saveStore.tick(elapsed * 1000);
+  // Ligne d'état du jeu en ligne au menu (« nouvel essai dans 4 s »), relue deux fois par seconde.
+  if (onlineOn && !menuEl.classList.contains('hidden') && frameNow - menuOnlineAt > 500) renderOnlineMenu();
   if (!session) return;
   // Pendant le menu (carte du monde), la scène 3D est cachée : inutile de la dessiner.
   if (!menuEl.classList.contains('hidden')) { input.consume(); return; }
@@ -809,6 +1002,7 @@ renderer.setAnimationLoop(() => {
     // Zoom hors de step() : il marche aussi pendant une pause ou une carte bloquante.
     applyZoom(s, inp);
   }
+  if (s.player && onlineOn) onlineInput(s, inp);
   // Une carte qui attend une réponse (mort, livraison, missions, déménagement, absence) met le jeu en pause.
   const blocked = card.isOpen() && !!cardInfo?.blocking;
   if (!s.paused && !s.ended && s.player && !blocked) {
@@ -819,9 +1013,22 @@ renderer.setAnimationLoop(() => {
       if (perfSamples.length > 600) perfSamples.shift();
     }
   }
+  // Position partagée, aussi quand une carte met le jeu en pause ou après une mort (« à terre »).
+  const sampled = DEBUG && !!s.player && !s.paused && onlineOn;
+  let onlineMs = 0;
+  if (s.player && !s.paused && onlineOn) {
+    const t1 = performance.now();
+    syncOnline(s);
+    if (DEBUG) onlineMs = performance.now() - t1;
+  }
   input.consume();
 
+  othersMs = 0;
   if (s.player) syncScene(s, dt);
+  if (sampled) {
+    onlineSamples.push(onlineMs + othersMs);
+    if (onlineSamples.length > 600) onlineSamples.shift();
+  }
   const at = s.viewAt ?? s.player;
   focus.set(at?.x ?? 0, s.groundY ?? 0, at?.z ?? 0);
   atmosphere.update(dt, focus, s.player?.yaw ?? 0);
@@ -1052,9 +1259,11 @@ function searchedAtOf(s, b) {
 // Fiche du bâtiment tout près (sous la quête) : mise à jour quatre fois par seconde, texte réécrit seulement s'il change.
 function updateFiche(s, dt) {
   s.ficheWait = (s.ficheWait ?? 0) - dt;
-  if (s.ficheWait > 0) return;
+  // Au refuge (ou partie finie), la fiche disparaît tout de suite : sur téléphone elle allongerait la quête sous le bandeau de la horde.
+  const away = s.refuge.inside || s.ended;
+  if (s.ficheWait > 0 && !(away && s.ficheKey)) return;
   s.ficheWait = 0.25;
-  const near = s.refuge.inside || s.ended ? null : buildingNear(s.grid, s.player.x, s.player.z, FICHE.reach);
+  const near = away ? null : buildingNear(s.grid, s.player.x, s.player.z, FICHE.reach);
   const b = near === null ? null : s.store.buildings[near];
   const fiche = !b ? null : ficheOf({
     title: buildingTitle(b), home: s.refuge.base?.id === b.id, searchedAt: searchedAtOf(s, b), searchedMs: LIMITS.searchedMs,
@@ -1090,7 +1299,13 @@ function afterClaim(s) {
 // Installation ou déménagement : le bâtiment doit être fouillé ; le lieu choisi nomme le refuge.
 function claimCtx(s, index) {
   const b = s.store.buildings[index];
-  return { searched: b ? isSearched(s, b) : false, place: { name: s.place.name, area: s.place.area ?? '' } };
+  // taken : refuge partagé d'un autre survivant (le serveur décide, premier arrivé).
+  return { searched: b ? isSearched(s, b) : false, place: { name: s.place.name, area: s.place.area ?? '' }, taken: takenBy(s, b) };
+}
+
+// Bâtiment déjà refuge d'un autre survivant (en ligne, vraies rues seulement).
+function takenBy(s, b) {
+  return !!b && s.store.source === 'tiles' && online.foreignRefuge(b.id);
 }
 
 // Actions proposées, par ordre de priorité : refuge (sortir, entrer, clouer, réparer), fouille, décor, caisse
@@ -1102,13 +1317,22 @@ function chooseActions(s) {
   const near = r.inside ? null : buildingNear(s.grid, p.x, p.z, 1.6);
   const building = near === null ? null : s.store.buildings[near];
   const searched = building ? isSearched(s, building) : false;
-  const menu = r.actions(p, { touch, survivor: s.survivor, building: building ? { ...building, index: near } : null, searched });
+  const taken = takenBy(s, building);
+  // « Déjà le refuge d'un autre survivant » : une fois par bâtiment et par partie.
+  if (taken && !s.takenSeen.has(building.id)) {
+    s.takenSeen.add(building.id);
+    toast(TAKEN_TEXT, 3);
+  }
+  const menu = r.actions(p, { touch, survivor: s.survivor, building: building ? { ...building, index: near } : null, searched, taken });
   let primary = menu.primary;
   // Ville à sauver : ouvrir le nid d'un pâté, planter le fanion (avant la fouille du bâtiment voisin).
   if (!primary && !r.inside) primary = city.action(s, touch);
   if (!primary && building && !searched) {
     const title = buildingTitle(building);
-    primary = { id: 'search', arg: near, label: `Fouiller : ${title}${touch ? '' : ' (E)'}`, time: SEARCH_TIME * s.actionMul, slot: 'primary', title };
+    // Fouillé par un autre survivant depuis moins de 6 h : « · fouillée il y a 12 min » (butin réduit).
+    const other = s.store.source === 'tiles' ? online.searchedByOther(building.id) : null;
+    const when = other ? ` · fouillée ${searchedLabel(online.serverNow() - other.at)}` : '';
+    primary = { id: 'search', arg: near, label: `Fouiller : ${title}${touch ? '' : ' (E)'}${when}`, time: SEARCH_TIME * s.actionMul, slot: 'primary', title };
   }
   if (!primary && !r.inside) {
     const prop = s.chunks.propNear(p.x, p.z);
@@ -1211,13 +1435,18 @@ function finishSearch(s, a) {
   if (!b) return;
   markSearched(s, b);
   ambush(s, b);
-  const found = rollLoot(b.loot, Math.random, city.lootDraws(s));
-  if (s.store.source === 'tiles' && rollPlan(b.loot, save.profile)) toast(PLAN_FOUND_TEXT, 4, 'success');
+  // Fouillé par un autre survivant depuis moins de 6 h : chances × 0,35, 1 objet au plus par ligne (3.2). Sa
+  // fouille ne compte pas comme la sienne : isSearched ne change pas.
+  const tiles = s.store.source === 'tiles';
+  const other = tiles ? online.searchedByOther(b.id) : null;
+  const found = rollLoot(b.loot, lootRand, { ...(other ? REDUCED_LOOT : null), draws: city.lootDraws(s) });
+  if (tiles && rollPlan(b.loot, save.profile)) toast(PLAN_FOUND_TEXT, 4, 'success');
   const res = addLoot(s.survivor, found);
   const got = { ...res.stored };
   for (const k of res.equipped) got[k] = (got[k] ?? 0) + 1;
-  toast(`${a.title} : ${countsLabel(got) || 'rien'}`, 3, 'loot');
+  toast(`${a.title} : ${countsLabel(got) || 'rien'}${other ? ' · il restait peu de choses' : ''}`, 3, 'loot');
   lootNotes(res);
+  if (tiles) online.mark('s', b.id);
   claimHint(s, b, a.arg);
   saveStore.markDirty();
 }
@@ -1246,7 +1475,8 @@ function ambush(s, b) {
 const HINT_WAIT = 3;
 function claimHint(s, b, index) {
   const r = s.refuge;
-  if (s.store.source !== 'tiles' || r.base?.id === b.id || !(r.base || s.goal)) return;
+  // Refuge d'un autre survivant : le toast « Déjà le refuge d'un autre survivant » suffit.
+  if (s.store.source !== 'tiles' || r.base?.id === b.id || !(r.base || s.goal) || takenBy(s, b)) return;
   const fit = r.suitable({ ...b, index }, s.player);
   const later = (text, seconds, move = false) => { s.hintLater = { text, seconds, index, move, wait: HINT_WAIT + hud.toastBacklog() }; };
   if (fit.ok) {
@@ -1283,6 +1513,7 @@ function finishProp(s, a) {
   const prop = a.arg;
   save.dismantled[prop.id] = Date.now();
   s.chunks.markGone(prop.id);
+  if (s.store.source === 'tiles') online.mark('g', prop.id);
   const loot = rollPropLoot(prop.kind, { axe: a.axe });
   const res = addLoot(s.survivor, loot);
   toast(propLootText(prop.kind, loot), 3, 'loot');
@@ -1411,6 +1642,9 @@ function runRefuge(s, a) {
   if (claiming) {
     // Première installation : stockage persistant demandé (4.1), un refus est ignoré.
     if (a.id === 'claim') saveStore.persist();
+    // Refuge partagé (drapeau sarcelle chez les autres), hors zone privée ; le serveur décide (premier arrivé).
+    online.refuge(save.base?.id ?? null);
+    s.flagsDirty = true;
     // Le refuge est dans ce monde-ci : il devient la maison de la session.
     s.home = true;
     s.goal = null;
@@ -1724,6 +1958,8 @@ function placeNear(s, p) {
 function onDeath(s) {
   const p = s.player, sv = s.survivor, r = s.refuge;
   s.ended = true;
+  // Les autres survivants le voient à terre pendant 10 s.
+  s.downUntil = performance.now() + 10000;
   city.onDeath(s);
   cancelAction(s);
   panel.close();
@@ -1759,16 +1995,17 @@ function onDeath(s) {
 }
 
 // Carte de jeu (#card). `onButton(id)` reçoit le bouton touché ; `escape` : le bouton que déclenche Échap.
-// Une carte sans autoHideMs attend une réponse et met le jeu en pause.
+// Une carte sans autoHideMs attend une réponse et met le jeu en pause. `value` : champ de la carte (code d'invitation).
 function showCard(spec, onButton = null, { escape = null } = {}) {
   const info = { blocking: !(spec.autoHideMs > 0), escape, onButton };
   cardInfo = info;
   // Une carte qui attend une réponse passe devant la carte des environs : elle se referme.
   if (info.blocking) minimap.close();
-  card.show(spec, (id) => {
+  card.show(spec, (id, value) => {
     if (cardInfo === info) cardInfo = null;
-    onButton?.(id);
+    onButton?.(id, value);
   });
+  return info;
 }
 
 function hideCard() {
@@ -1807,6 +2044,8 @@ function hudInfo(s) {
       arrows.push({ kind: 'horde', x: centre.x + v.x * 60, z: centre.z + v.z * 60 });
     }
   }
+  // Autres survivants : 3 flèches sarcelle au plus (25 à 150 m, puis secteurs lointains jusqu'à 400 m).
+  if (onlineOn) arrows.push(...survivorArrows(s));
   // Boutons : l'action en cours dans son emplacement ; sur téléphone, la feuille du panneau ouverte les remplace.
   let primary = null, secondary = null;
   const a = s.action;
@@ -1827,6 +2066,9 @@ function hudInfo(s) {
     baseLine: r.base && s.store.source === 'tiles' ? r.statusLine({ player: p }) : '',
     refugeButton: r.inside && !!r.base && !panel.isOpen(),
     saveWarn: otherTab(),
+    // Pastille du jeu en ligne (null : jeu en ligne inactif) et roue des gestes.
+    online: onlineOn ? onlinePill(s) : null,
+    wheel: { open: input.state.wheelOpen, enabled: onlineOn && LIVE.has(online.status) },
   };
 }
 
@@ -1842,6 +2084,7 @@ function mapInfo(s) {
     target: target && { x: target.x, z: target.z, kind: s.quest?.stage === 'toPickup' ? 'warn' : 'success' },
     bag: save.dropBag ? s.store.proj.toLocal(save.dropBag.lat, save.dropBag.lon) : null,
     zombies: s.director.zombies, fog: s.weather?.kind === 'fog',
+    others: onlineOn ? s.othersNow.map((o) => s.store.proj.toLocal(o.lat, o.lon)) : [],
     fronts: centre ? r.hordeArrows().map((a) => { const v = frontVector(a); return { x: centre.x + v.x * 60, z: centre.z + v.z * 60 }; }) : [],
   };
 }
@@ -1942,6 +2185,11 @@ function syncScene(s, dt) {
 
   syncBase(s, dt);
   propsView.update(dt);
+  if (onlineOn) {
+    const t0 = DEBUG ? performance.now() : 0;
+    syncOthers(s, dt);
+    if (DEBUG) othersMs = performance.now() - t0;
+  }
 }
 
 // Refuge (ouvertures, drapeau), sac perdu, caisse orpheline et leurre dans la scène : relus quand ils changent.
@@ -2021,6 +2269,8 @@ function renderConditions() {
     wxSpan('wx-wind', `${Math.round(w.windKmh ?? 0)} km/h`, 'vent', 'Vent'),
     wxSpan('wx-time', nbsp(time), s.isNight ? 'lune' : 'soleil', s.isNight ? 'Nuit' : 'Jour', mode === 'live' ? '' : mode === 'day' ? '(forcé)' : '(forcée)'),
     ...(next ? [wxSpan('wx-next', nbsp(next))] : []),
+    // « · 1 survivant autour », « · 3 survivants autour » ; rien à 0.
+    ...(s.aroundShown ? [wxSpan('wx-around', `· ${s.aroundShown} survivant${s.aroundShown > 1 ? 's' : ''} autour`)] : []),
   );
   const streets = s.store.source === 'tiles'
     ? `<span class="live">Rues réelles</span> OpenStreetMap via OpenFreeMap, ${nbsp(s.store.buildings.length.toLocaleString('fr-FR'))} bâtiments chargés${s.streaming ? ' · chargement…' : ''}`
@@ -2137,6 +2387,393 @@ function takeOver() {
 $('weather-mode').addEventListener('change', () => session && applyConditions());
 $('time-mode').addEventListener('change', () => session && applyConditions());
 
+// ---------- Jeu à plusieurs : branchements (spécification 7.4) ----------
+
+// Butin : hasard du jeu, ou suite fixée par debug.lootSeed (tests).
+let lootRand = Math.random;
+function seededRand(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), a | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Directions des flèches lointaines (secteur 0 = nord, sens horaire), pour le toast.
+const SECTOR_WORDS = ['au nord', 'au nord-est', "à l'est", 'au sud-est', 'au sud', 'au sud-ouest', "à l'ouest", 'au nord-ouest'];
+const FAR_TOAST_MS = 10 * 60 * 1000;
+const farToasted = new Map(); // secteur → heure du dernier toast
+// Secteur → dernière image où un survivant y était en vue (150 m au plus) : celui qui passe 150 m en s'éloignant
+// n'annonce pas « Un survivant à environ 150 m ».
+const nearSeen = new Array(8).fill(-Infinity);
+const NEAR_SEEN_MS = 3000;
+const arrowAlpha = new Map(); // sid → alpha à l'image précédente (un alpha qui baisse : survivant qui s'efface)
+const RING_M = 60;            // cercle du bord de la zone privée tracé à moins de 60 m
+const TAP_PICK_M = 30;
+
+// others-view.js (Three.js et DOM) n'est chargé qu'en ligne : le jeu solo ne le télécharge jamais.
+let othersViewLoading = false;
+function ensureOthersView() {
+  if (othersView || othersViewLoading) return;
+  othersViewLoading = true;
+  import('./others-view.js').then((m) => {
+    othersView = m.createOthersView({ scene, characters, labelsRoot: $('others-labels'), lowPower, avoid: () => hud.blockers() });
+    if (session) session.flagsDirty = true;
+  }).catch((err) => console.warn('Autres survivants : affichage indisponible', err?.message ?? err));
+}
+
+// Carte « Jouer à plusieurs » au premier passage (santé du serveur correcte, aucun choix rangé). On attend la
+// santé 1,5 s au plus : le chargement du monde n'attend jamais le serveur.
+async function onlineChoice() {
+  await Promise.race([online.ready(), new Promise((r) => setTimeout(r, 1500))]);
+  if (!online.needsChoice()) return;
+  const refused = online.status === 'invite';
+  await new Promise((resolve) => {
+    const info = showCard(onlineChoiceCard({ invite: online.inviteRequired || refused, inviteRefused: refused }), (id, code) => {
+      online.choose(id === 'on', typeof code === 'string' ? code.trim() : undefined);
+      renderOnlineMenu();
+      resolve();
+    }, { escape: 'off' });
+    // Carte remplacée par une autre sans réponse : le départ n'attend pas indéfiniment (elle reviendra au prochain).
+    const watch = setInterval(() => { if (cardInfo !== info) { clearInterval(watch); resolve(); } }, 500);
+  });
+}
+
+// Départ, reprise au même endroit ou nouveau lieu : de nouveau visible des autres (la ville de secours suspend).
+function onlineEnter(s) {
+  if (!onlineOn) return;
+  const ll = playerLatLon(s);
+  online.enter({ lat: ll.lat, lon: ll.lon, source: s.store.source });
+  s.zone = null;
+  s.flagsDirty = true;
+  s.ring = null;
+  othersView?.setRing(null, s.store.proj);
+}
+
+// À chaque image : zone privée du moment, puis position partagée (débit limité par online.js, rien en zone privée).
+function syncOnline(s) {
+  const p = s.player;
+  const ll = playerLatLon(s);
+  s.zone = zoneStatus(zones, ll.lat, ll.lon, s.zone?.kind ?? 'public');
+  let flags = 0;
+  if (p.running && !s.refuge.inside) flags |= FLAGS.run;
+  if (s.refuge.inside) flags |= FLAGS.inside;
+  if (p.carrying) flags |= FLAGS.carrying;
+  if (performance.now() < s.downUntil) flags |= FLAGS.down;
+  online.pose({ lat: ll.lat, lon: ll.lon, yaw: p.yaw, flags, zone: s.zone.kind });
+  // Compte « autour » du bandeau des conditions : relu quand il change.
+  const n = online.around();
+  if (n !== s.aroundShown) {
+    s.aroundShown = n;
+    renderConditions();
+  }
+}
+
+// Roue des gestes et toucher sur la vue (input.js), avant l'image de jeu.
+function onlineInput(s, inp) {
+  if (inp.gesture !== null) {
+    if (online.gesture(inp.gesture)) othersView?.bubble(0, inp.gesture);
+    else toast('Geste impossible pour l\'instant', 1.5);
+  }
+  if (!inp.pick || !othersView || card.isOpen() || s.ended) return;
+  const sid = othersView.pick(inp.pick.x, inp.pick.y, camera);
+  if (sid === null || sid === undefined) return;
+  // Survivant touché à 30 m ou moins : sa carte, et pas de coup dans le vide.
+  const o = s.othersNow.find((x) => x.sid === sid);
+  if (o) {
+    const at = s.store.proj.toLocal(o.lat, o.lon);
+    if (Math.hypot(at.x - s.player.x, at.z - s.player.z) > TAP_PICK_M + 2) return;
+  }
+  inp.attack = false;
+  openSurvivor(sid, o?.name ?? null);
+}
+
+// Survivants, drapeaux et cercle de la zone privée dans la scène.
+function syncOthers(s, dt) {
+  const list = online.others(frameNow);
+  s.othersNow = list;
+  if (!othersView) return;
+  othersView.sync(list, s.store.proj, camera, dt, atmosphere.state.daylight, s.player);
+  if (s.flagsDirty) {
+    s.flagsDirty = false;
+    // Son propre refuge garde son drapeau bleu (le serveur ne le renvoie pas, exclu ici aussi).
+    othersView.setFlags(online.refuges(), s.store, save.base?.id ?? null);
+  }
+  const ring = ringZone(s);
+  if (ring !== s.ring) {
+    s.ring = ring;
+    othersView.setRing(ring, s.store.proj);
+  }
+}
+
+// Zone dont le bord est à moins de 60 m du personnage (dedans ou dehors), seulement quand le jeu en ligne joue.
+function ringZone(s) {
+  if (!zones.length || online.status === 'seul' || online.status === 'off') return null;
+  const ll = playerLatLon(s);
+  let best = null, bestD = RING_M;
+  for (const z of zones) {
+    const d = Math.abs(zoneMeters(ll.lat, ll.lon, z.cLat, z.cLon) - z.r);
+    if (d < bestD) { best = z; bestD = d; }
+  }
+  return best;
+}
+
+// Flèches vers les autres : précises de 25 à 150 m (les plus proches), puis secteurs lointains (point à 60 m dans
+// la direction du secteur, distance arrondie à 50 m par le serveur). 3 au plus ; toast une fois par secteur et 10 min.
+// Jamais vers un survivant en couronne anonyme (FLAGS.crown, posé par le serveur : spec 3.1 et 6.6), ni vers un
+// survivant qui s'efface : au passage des 150 m, la flèche précise cède sa place à la lointaine, sans doublon.
+function survivorArrows(s) {
+  const p = s.player;
+  const me = playerLatLon(s);
+  const out = [];
+  const near = [];
+  for (const o of s.othersNow) {
+    const prev = arrowAlpha.get(o.sid);
+    arrowAlpha.set(o.sid, o.alpha);
+    if (o.alpha <= 0) continue;
+    const at = s.store.proj.toLocal(o.lat, o.lon);
+    const d = Math.hypot(at.x - p.x, at.z - p.z);
+    if (d <= 150) nearSeen[sectorOf(me, o)] = frameNow;
+    if ((o.flags & FLAGS.crown) || (prev !== undefined && o.alpha < prev)) continue;
+    if (d >= NEAR_ARROW && d <= 150) near.push({ x: at.x, z: at.z, d });
+  }
+  if (arrowAlpha.size > 2 * s.othersNow.length + 8) {
+    const live = new Set(s.othersNow.map((o) => o.sid));
+    for (const sid of arrowAlpha.keys()) if (!live.has(sid)) arrowAlpha.delete(sid);
+  }
+  near.sort((a, b) => a.d - b.d);
+  for (const n of near.slice(0, 3)) out.push({ kind: 'survivor', x: n.x, z: n.z, near: false, label: `${Math.round(n.d / 5) * 5}${' '}m` });
+  for (const f of online.far()) {
+    if (out.length >= 3) break;
+    const v = frontVector((f.sector * Math.PI) / 4);
+    out.push({ kind: 'survivor', x: p.x + v.x * 60, z: p.z + v.z * 60, near: false, label: `≈${' '}${f.band}${' '}m` });
+    const last = farToasted.get(f.sector);
+    if (last === undefined || frameNow - last > FAR_TOAST_MS) {
+      farToasted.set(f.sector, frameNow);
+      // Quelqu'un était en vue dans ce secteur (ou un voisin) il y a moins de 3 s : c'est lui qui s'éloigne.
+      const seen = [0, 1, 7].some((k) => frameNow - nearSeen[(f.sector + k) % 8] < NEAR_SEEN_MS);
+      if (!seen) toast(`Un survivant à environ ${f.band} m, ${SECTOR_WORDS[f.sector] ?? ''}`.trim(), 4);
+    }
+  }
+  return out.slice(0, 3);
+}
+
+// Pastille du HUD (annexe A) : { text, icon, tone }.
+function onlinePill(s) {
+  const st = online.status;
+  if (st === 'off') return null;
+  const text = onlineStatusText(st, s);
+  const tone = st === 'en-ligne' ? 'ok' : st === 'zone' || st === 'couronne' ? 'zone'
+    : ['hors-ligne', 'seul', 'secours'].includes(st) ? 'off' : 'warn';
+  return { text, icon: tone === 'zone' ? 'bouclier' : 'antenne', tone };
+}
+
+function onlineStatusText(st, s = session) {
+  switch (st) {
+    case 'en-ligne': {
+      const n = online.around();
+      return n ? `En ligne · ${n} survivant${n > 1 ? 's' : ''} autour` : 'En ligne · personne autour';
+    }
+    case 'lent': return 'En ligne · lent';
+    case 'couronne': return 'Près de chez toi · anonyme';
+    case 'connexion': return 'Connexion…';
+    case 'hors-ligne': {
+      const ms = online.retryIn();
+      return ms === null ? 'Hors ligne' : `Hors ligne · nouvel essai dans ${Math.max(1, Math.ceil(ms / 1000))} s`;
+    }
+    case 'seul': return 'Seul';
+    case 'zone': {
+      const m = s?.zone?.kind === 'private' ? Math.max(10, Math.ceil(s.zone.exitM / 10) * 10) : null;
+      return m === null ? 'Zone privée · hors ligne' : `Zone privée · hors ligne · ${m} m pour en sortir`;
+    }
+    case 'maintenance': return 'Maintenance du jeu en ligne';
+    case 'perime': return 'Mets le jeu à jour : recharge la page';
+    case 'autre-onglet': return account.state === 'in' ? ACCOUNT_TEXTS.onlineElsewhere : 'Partie en ligne ouverte dans un autre onglet';
+    case 'complet': return "Jeu en ligne complet : tu joues seul pour l'instant";
+    case 'secours': return 'Hors ligne : ville de secours';
+    case 'invite': return "Code d'invitation demandé";
+    default: return '';
+  }
+}
+
+function onOnlineStatus() {
+  const live = LIVE.has(online.status);
+  input.setWheel(live);
+  document.body.classList.toggle('online-live', live);
+  renderOnlineMenu();
+}
+
+// Bloc en ligne du menu : interrupteur, ligne d'état, boutons (annexe A). Caché sans jeu en ligne ; « Mes zones
+// privées » reste proposé dès qu'une zone existe.
+function renderOnlineMenu() {
+  menuOnlineAt = frameNow;
+  readZones();
+  const zbtn = $('zones-open');
+  if (zbtn) {
+    zbtn.hidden = !zones.length;
+    setText($('zones-label'), `Mes zones privées (${zones.length})`);
+  }
+  const block = $('online-block');
+  if (!block) return;
+  block.hidden = !onlineOn;
+  $('help-online')?.toggleAttribute('hidden', !onlineOn);
+  if (!onlineOn) return;
+  const st = online.status;
+  const live = LIVE.has(st);
+  const toggle = $('online-toggle');
+  if (toggle) toggle.checked = !['seul', 'off'].includes(st);
+  let line = '';
+  if (live) {
+    const parts = [st === 'lent' ? 'En ligne · lent' : 'En ligne'];
+    if (Number.isInteger(online.worldCount) && online.worldCount >= 2) parts.push(`${online.worldCount} survivants dans le monde`);
+    if (online.me?.name) parts.push(`tu es ${online.me.name}`);
+    line = parts.join(' · ');
+  } else if (st === 'seul') line = 'Tu joues seul';
+  else if (st !== 'off') line = onlineStatusText(st);
+  setText($('online-line'), line);
+  const left = online.me?.left;
+  const rename = $('online-rename');
+  if (rename) rename.disabled = !live || left === 0;
+  const invite = $('online-invite');
+  if (invite) invite.hidden = !session?.player;
+  const mute = $('online-mute');
+  if (mute) {
+    mute.setAttribute('aria-pressed', String(online.muted()));
+    setText($('online-mute-label'), online.muted() ? 'Rétablir les gestes' : 'Couper les gestes');
+  }
+  accountUi?.render();
+}
+
+function setText(el, text) {
+  if (el && el.textContent !== text) el.textContent = text;
+}
+
+// Message du bloc en ligne au menu (les toasts n'existent qu'en partie).
+function setOnlineNote(text, warn = false) {
+  const n = $('online-note');
+  if (!n) return;
+  n.textContent = text;
+  n.hidden = !text;
+  n.classList.toggle('warn', !!warn);
+}
+
+async function renameOnline() {
+  const btn = $('online-rename');
+  if (btn) btn.disabled = true;
+  const name = await online.rename();
+  setOnlineNote(name ? `Nouveau surnom : ${name}` : "Pas de nouveau nom pour l'instant (3 par jour, en ligne seulement)", !name);
+  renderOnlineMenu();
+}
+
+// « Inviter quelqu'un ici » : lien de la position du personnage, arrondie à 50 m ; jamais depuis une zone privée
+// ni depuis la couronne anonyme (section 3.3).
+async function inviteHere() {
+  const s = session;
+  if (!s?.player) return;
+  const ll = playerLatLon(s);
+  if (zoneStatus(zones, ll.lat, ll.lon).kind !== 'public') {
+    setOnlineNote("Pas d'invitation depuis une zone privée", true);
+    return;
+  }
+  const c = inviteCoords(ll.lat, ll.lon);
+  const u = new URL(location.pathname, location.origin);
+  u.searchParams.set('lat', String(c.lat));
+  u.searchParams.set('lon', String(c.lon));
+  // Serveur local de test (?server=) gardé, pour inviter un second onglet.
+  if (serverParam && onlineOn) u.searchParams.set('server', serverParam);
+  try {
+    await navigator.clipboard.writeText(u.toString());
+    setOnlineNote('Lien copié : envoie-le pour jouer au même endroit');
+  } catch {
+    setOnlineNote(`Copie impossible ici. Le lien : ${u.toString()}`, true);
+  }
+}
+
+// « Voir mes données » (droit d'accès, section 6.8) : le surnom est recomposé ici, jamais lu comme un texte du réseau.
+// Connecté à un compte : la vue du compte d'abord (spécification des comptes, 6.2), puis l'identité rattachée.
+async function showMyData() {
+  setOnlineNote('Lecture de tes données…');
+  const signedIn = account.state === 'in';
+  const r = signedIn ? await account.me() : null;
+  const data = signedIn ? (r.ok ? r.account?.player ?? null : null) : await online.showMe();
+  setOnlineNote('');
+  // Session perdue pendant la lecture : la note du compte le dit, pas de carte.
+  if (signedIn && !r.ok && r.code === 'session') return;
+  const name = data && Array.isArray(data.nm) ? nameOf(data.nm) : null;
+  const id = typeof data?.refuge === 'string' ? data.refuge : null;
+  const refuge = !id ? '' : id === save.base?.id ? `ton refuge (${kindLabel(save.base.kind)})` : 'un autre bâtiment';
+  const view = signedIn && r.ok ? r.account : null;
+  showCard(myDataCard(view ? null : (signedIn ? null : data), { name, refuge, account: view }), null, { escape: 'close' });
+}
+
+function askErase() {
+  showCard(eraseCard(), async (id) => {
+    if (id !== 'erase') return;
+    setOnlineNote('Suppression…');
+    const ok = await online.eraseMe();
+    setOnlineNote(ok ? ONLINE_TEXTS.erased : 'Suppression impossible : réessaie quand le jeu est en ligne', !ok);
+    renderOnlineMenu();
+  }, { escape: 'cancel' });
+}
+
+// « Mes zones privées » : une ligne par zone, avec « Retirer ».
+function showZones() {
+  readZones();
+  showCard(zonesCard(zones), (id) => {
+    const i = Number(/^z(\d+)$/.exec(id)?.[1]);
+    if (!Number.isInteger(i)) return;
+    picker.setZones(removeZone(picker.getZones(), i));
+    zonesUpdated();
+    if (zones.length) showZones();
+  }, { escape: 'close' });
+}
+
+// Copie des zones de picker.js, relue là où elle sert (menu, départ, « Mes zones privées ») : le nom du quartier
+// arrive après la zone (recherche inverse), et une autre page peut avoir changé la liste (picker.show la relit).
+function readZones() {
+  const next = picker.getZones();
+  const shape = (list) => list.map((z) => `${z.cLat},${z.cLon},${z.r}`).join(';');
+  const moved = shape(next) !== shape(zones);
+  zones = next;
+  if (moved) online.zonesChanged();
+}
+
+// Zones changées (« Autour de moi », « Protéger ce lieu », retrait) : le refuge partagé est réévalué.
+function zonesUpdated() {
+  zones = picker.getZones();
+  online.zonesChanged();
+  renderOnlineMenu();
+}
+
+// Alerte de suivi : carte discrète avec « Masquer » ; une carte déjà ouverte : simple toast.
+function showFollow(sid) {
+  if (!session?.player || $('hud').classList.contains('hidden')) return;
+  if (card.isOpen()) { toast(ONLINE_TEXTS.follow, 5, 'danger'); return; }
+  showCard(followCard(), (id) => { if (id === 'hide') hideSurvivor(sid); });
+}
+
+function hideSurvivor(sid) {
+  if (online.hide(sid)) toast('Vous ne vous verrez plus.', 3, 'success');
+  else toast('Hors ligne : réessaie plus tard', 2);
+}
+
+// Carte d'un survivant touché à 30 m ou moins : « Masquer », « Signaler » (3 motifs), « Fermer ».
+function openSurvivor(sid, name) {
+  showCard(survivorCard({ name }), (id) => {
+    if (id === 'hide') hideSurvivor(sid);
+    else if (id === 'report') {
+      showCard(reportCard(), (rid) => {
+        const r = Number(/^r([123])$/.exec(rid)?.[1]);
+        if (!r) return;
+        if (online.report(sid, r)) toast(ONLINE_TEXTS.reportThanks, 3, 'success');
+        else toast('Hors ligne : réessaie plus tard', 2);
+      }, { escape: 'cancel' });
+    }
+  }, { escape: 'close' });
+}
+
 // Commandes de test (?debug=1) : objets, horloge de nuit, vague, horde, téléportation, décor, blessure, journal
 // des apparitions de horde et temps de logique par image.
 const debug = DEBUG ? {
@@ -2211,6 +2848,14 @@ const debug = DEBUG ? {
     return { rate: ambushRate, force: ambushForce };
   },
   spawnLog: () => session?.refuge.spawnLog.slice() ?? [],
+  // Tirage du butin fixé (scénario O5) : graine entière, ou null pour revenir au hasard.
+  lootSeed(seed) {
+    lootRand = Number.isInteger(seed) ? seededRand(seed) : Math.random;
+    return Number.isInteger(seed);
+  },
+  // Jeu en ligne : état lisible (aucun jeton, aucune position), zone du moment, survivants affichés.
+  online: () => ({ ...(online.debug() ?? {}), status: online.status, me: online.me, around: online.around(), far: online.far(),
+    zone: session?.zone?.kind ?? null, others: session?.othersNow?.length ?? 0, view: !!othersView }),
   // Caméra de jeu (tests d'acceptation : apparitions de horde projetées à l'écran).
   camera: () => camera,
   // Zoom : distance voulue et réelle, tangage effectif, rayon construit et rayon sans trou, plafonds de l'alerte et du
@@ -2261,30 +2906,39 @@ const debug = DEBUG ? {
     hudFrozen = !!on;
     return hudFrozen;
   },
-  // Temps par image (ms, 600 dernières images) : 'step' (logique du jeu) ; 'carte' (dessin de la carte des environs,
-  // hors reconstruction du cache ; rebuild : images où le cache se reconstruisait, et leur tranche). Avec reset, les
-  // échantillons sont vidés après lecture.
-  perf(kind = 'step', { reset = false } = {}) {
+  // Temps par image (ms) : 'step' ou un nombre d'images (600 au plus, 600 par défaut) : logique du jeu et, dans
+  // `online`, temps du jeu en ligne ; 'carte' : dessin de la carte des environs, hors reconstruction du cache
+  // (rebuild : images où le cache se reconstruisait, et leur tranche). Avec reset, les échantillons lus sont vidés.
+  perf(what = 600, { reset = false } = {}) {
+    const quant = (list, q) => (list.length ? list[Math.min(list.length - 1, Math.floor(q * list.length))] : 0);
     const stats = (list) => {
       const v = list.slice().sort((a, b) => a - b);
-      const at = (q) => (v.length ? v[Math.min(v.length - 1, Math.floor(q * v.length))] : 0);
-      return { n: v.length, median: at(0.5), p95: at(0.95), max: v.length ? v[v.length - 1] : 0 };
+      return { n: v.length, median: quant(v, 0.5), p95: quant(v, 0.95), max: v.length ? v[v.length - 1] : 0 };
     };
-    const samples = kind === 'carte' ? mapSamples : perfSamples;
-    const list = samples.slice();
-    if (reset) samples.length = 0;
-    if (kind !== 'carte') return stats(list);
-    const draws = list.filter((t) => t.draw > 0).map((t) => t.draw), jobs = list.filter((t) => t.job > 0).map((t) => t.job);
-    return { ...stats(draws), rebuild: stats(jobs) };
+    if (what === 'carte') {
+      const list = mapSamples.slice();
+      if (reset) mapSamples.length = 0;
+      const draws = list.filter((t) => t.draw > 0).map((t) => t.draw), jobs = list.filter((t) => t.job > 0).map((t) => t.job);
+      return { ...stats(draws), rebuild: stats(jobs) };
+    }
+    const last = typeof what === 'number' ? what : 600;
+    const v = perfSamples.slice(-last).sort((a, b) => a - b);
+    const o = onlineSamples.slice(-last).sort((a, b) => a - b);
+    if (reset) { perfSamples.length = 0; onlineSamples.length = 0; }
+    return { ...stats(v), online: { n: o.length, median: quant(o, 0.5), p95: quant(o, 0.95), mean: o.length ? o.reduce((a, b) => a + b, 0) / o.length : 0 } };
   },
 } : undefined;
 
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, ...(debug ? { debug } : {}),
+  saveStore, picker, renderer, ...(debug ? { debug, online } : {}),
+  // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
+  ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.
   cityGame: city, get city() { return session?.city ?? null; }, territory: territoryStore, communes,
 };
+// others-view.js arrive plus tard (import dynamique) : lu à la demande, pas recopié au chargement.
+if (debug) Object.defineProperty(window.__earthlife, 'othersView', { get: () => othersView, enumerable: true });
 // Chargement lent : le message « le jeu n'a pas pu se charger » (index.html) a pu s'afficher entre-temps.
 if ($('loading').classList.contains('fatal')) setLoading(null);

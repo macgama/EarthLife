@@ -202,8 +202,336 @@ export function cardHtml(spec = {}) {
   const buttons = (spec.buttons ?? []).map((b) => cardButton(b)).join('');
   return `<div class="rp-card rp-tone-${tone}">`
     + `<div class="rp-card-head">${ico ? `<span class="rp-card-icon">${icon(ico, { size: 32 })}</span>` : ''}<h2 class="rp-card-title" id="rp-card-title">${esc(spec.title ?? '')}</h2></div>`
-    + `${lines ? `<ul class="rp-card-lines">${lines}</ul>` : ''}${score}`
+    + `${lines ? `<ul class="rp-card-lines">${lines}</ul>` : ''}${score}${cardField(spec.field)}${cardLink(spec.link)}`
     + `${buttons ? `<div class="rp-card-btns">${buttons}</div>` : ''}</div>`;
+}
+
+// Champ de saisie d'une carte (code d'invitation) : { label, value?, maxLength?, placeholder? }. Sa valeur est
+// passée au bouton touché (onButton(id, valeur)).
+function cardField(f) {
+  if (!f) return '';
+  const max = Number.isInteger(f.maxLength) && f.maxLength > 0 ? f.maxLength : 32;
+  return `<label class="rp-card-field"><span class="rp-card-field-name">${esc(f.label)}</span>`
+    + `<input class="rp-card-input" data-card-field type="text" maxlength="${max}" autocomplete="off" autocapitalize="off" spellcheck="false"`
+    + ` value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder ?? '')}"></label>`;
+}
+
+// Lien d'une carte vers une page du jeu (« Ce que le jeu garde ») : adresse relative seulement.
+const PAGE_HREF = /^[a-z0-9-]+\.html(#[a-z0-9-]+)?$/;
+function cardLink(l) {
+  if (!l || !PAGE_HREF.test(l.href ?? '')) return '';
+  return `<p class="rp-card-link"><a class="rp-card-a" href="${esc(l.href)}" target="_blank" rel="noopener noreferrer">${esc(l.label)}</a></p>`;
+}
+
+// ---------- Jeu à plusieurs : cartes (textes de l'annexe A de la spécification) ----------
+// Purs : chaque fonction rend la spec d'une carte (cardHtml) ; main.js la montre et reçoit le bouton touché.
+
+export const PRIVACY_PAGE = 'confidentialite.html';
+export const ONLINE_TEXTS = {
+  intro: [
+    'Tu verras les autres survivants près de toi, en direct, et les traces qu\'ils laissent.',
+    'Ils voient ton personnage et ton surnom (Renard des Quais 27) de près, jamais ta vraie position.',
+    'Pas de discussion écrite : on se parle avec 6 gestes. Chacun garde ses zombies, son sac et sa partie.',
+    'Près de chez toi, une zone privée te rend invisible. Tu joues près de chez toi depuis la carte ? Protège ce lieu.',
+  ],
+  keeps: 'Ce que le jeu garde',
+  invite: "Code d'invitation",
+  inviteBad: "Code d'invitation refusé : vérifie-le.",
+  survivor: 'Survivant',
+  reportThanks: 'Merci. Vous ne vous verrez plus.',
+  follow: 'Un survivant reste près de toi depuis 5 min',
+  erase: 'Ton surnom, ton drapeau, tes masquages et tes signalements seront effacés du serveur. Ta partie reste sur cet appareil.',
+  erased: 'Données en ligne supprimées',
+  exportWarn: "Ce fichier contient les lieux où tu as joué ces derniers jours, dont ton refuge : ne le partage qu'avec toi-même (pour changer d'appareil).",
+};
+// Motifs de « Signaler » (r du protocole : 1, 2, 3).
+export const REPORT_REASONS = [
+  { r: 1, label: 'Me suit partout' },
+  { r: 2, label: 'Abuse des gestes' },
+  { r: 3, label: 'Triche (vitesse, téléportation)' },
+];
+
+// Carte du premier passage : boutons 'on' et 'off' ; avec un code demandé par le serveur, champ « Code d'invitation ».
+export function onlineChoiceCard({ invite = false, inviteRefused = false } = {}) {
+  return {
+    title: 'Jouer à plusieurs',
+    lines: [...ONLINE_TEXTS.intro, inviteRefused ? ONLINE_TEXTS.inviteBad : ''],
+    field: invite ? { label: ONLINE_TEXTS.invite, maxLength: 16 } : null,
+    link: { href: PRIVACY_PAGE, label: ONLINE_TEXTS.keeps },
+    buttons: [{ id: 'on', label: 'Jouer à plusieurs', primary: true }, { id: 'off', label: 'Jouer seul' }],
+  };
+}
+
+// Carte d'un survivant touché à 30 m ou moins : boutons 'hide', 'report', 'close'.
+export function survivorCard({ name = null } = {}) {
+  return {
+    title: name || ONLINE_TEXTS.survivor,
+    buttons: [{ id: 'hide', label: 'Masquer', primary: true }, { id: 'report', label: 'Signaler' }, { id: 'close', label: 'Fermer' }],
+  };
+}
+
+// « Pourquoi ? » : boutons 'r1', 'r2', 'r3' et 'cancel'.
+export function reportCard() {
+  return {
+    title: 'Pourquoi ?', tone: 'warn',
+    buttons: [...REPORT_REASONS.map((x) => ({ id: `r${x.r}`, label: x.label })), { id: 'cancel', label: 'Annuler' }],
+  };
+}
+
+// Alerte de suivi : carte discrète, boutons 'hide' et 'close'.
+export function followCard() {
+  return {
+    title: ONLINE_TEXTS.follow, tone: 'warn', autoHideMs: 12000,
+    buttons: [{ id: 'hide', label: 'Masquer', primary: true }, { id: 'close', label: 'Fermer' }],
+  };
+}
+
+const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+// « 2026-10-02 » → « 2 oct. 2026 » ; null si ce n'est pas une date.
+export function dayText(day) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof day === 'string' ? day : '');
+  if (!m || +m[2] < 1 || +m[2] > 12 || +m[3] < 1 || +m[3] > 31) return null;
+  return `${+m[3] === 1 ? '1er' : +m[3]} ${MONTHS[+m[2] - 1]} ${m[1]}`;
+}
+
+// « Voir mes données » : `data` = réponse de /v1/me (op show) lue par online.showMe, ou null. `name` : surnom
+// recomposé par le client (jamais un texte venu du réseau) ; `refuge` : texte du refuge partagé, composé par main.js.
+// `account` (connecté, spécification des comptes 5.4) : la vue du compte (AccountView) ; ses lignes passent en tête,
+// puis celles de l'identité rattachée (`account.player`, qui remplace alors `data`).
+export function myDataCard(data, { name = null, refuge = '', account = null, nowMs = Date.now() } = {}) {
+  const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+  const who = account ? (account.player ?? null) : data;
+  const identity = !who ? [] : [
+    `Surnom : ${name || '—'}`,
+    dayText(who.createdOn) ? `Identité créée le ${dayText(who.createdOn)}` : '',
+    dayText(who.seenOn) ? `Dernière venue le ${dayText(who.seenOn)}` : '',
+    `Refuge partagé : ${refuge || 'aucun'}`,
+    `Masquages : ${n(who.blocks)} · signalements faits : ${n(who.reports)}`,
+    'Ta position de jeu n\'est jamais gardée : elle est oubliée 15 s après ton départ.',
+  ];
+  let lines;
+  if (account) {
+    const created = dayText(account.createdOn), seen = dayText(account.seenOn);
+    const sv = account.save;
+    const sent = sv && Number.isFinite(sv.savedMs) ? whenText(sv.savedMs, nowMs) : '';
+    lines = [
+      `Adresse e-mail : ${typeof account.email === 'string' ? account.email : '—'}`,
+      [created ? `Compte créé le ${created}` : '', seen ? `dernière activité le ${seen}` : ''].filter(Boolean).join(' · '),
+      `Appareils connectés : ${n(account.sessions)}`,
+      sv ? `Partie sur le serveur : envoyée ${sent || '—'} (${sizeText(sv.bytes)})` : 'Partie sur le serveur : aucune',
+      ...identity,
+      ACCOUNT_TEXTS.myDataFile,
+    ];
+  } else {
+    lines = data ? identity : ['Impossible de lire tes données : le serveur ne répond pas, ou tu n\'as pas encore joué en ligne.'];
+  }
+  return { title: 'Mes données', lines, link: { href: PRIVACY_PAGE, label: ONLINE_TEXTS.keeps }, buttons: [{ id: 'close', label: 'Fermer', primary: true }] };
+}
+
+// ---------- Compte facultatif : textes, dates et cartes (spécification des comptes, 5.4, 5.5 et annexe A) ----------
+
+export const ACCOUNT_TEXTS = {
+  lineOut: 'Sauvegarde ta partie en ligne et reprends-la sur un autre appareil (facultatif).',
+  lineWait: 'Adresse à confirmer : code envoyé à {masque}',
+  lineIn: 'Connecté : {masque}',
+  lineInOffline: 'Connecté : {masque} · hors ligne',
+  lineAbsent: 'Compte indisponible : le serveur ne répond pas. Tu peux jouer sans.',
+  titleLogin: 'Me connecter',
+  titleSignup: 'Créer un compte',
+  titleReset: 'Mot de passe oublié',
+  titleCode: 'Saisis le code',
+  titlePassword: 'Changer de mot de passe',
+  titleDelete: 'Supprimer mon compte',
+  introSignup: "Ton adresse sert à te connecter et à recevoir un code. Rien d'autre : ni publicité, ni lettre d'information.",
+  introReset: 'Saisis ton adresse : tu recevras un code pour choisir un nouveau mot de passe.',
+  introCode: "Code envoyé à {adresse}. Il arrive en général en moins d'une minute ; regarde aussi dans les indésirables.",
+  introPassword: 'Tes autres appareils seront déconnectés.',
+  introDelete: 'Ton compte, ton adresse e-mail, ta partie sauvegardée sur le serveur et ton identité en ligne (surnom, drapeau, masquages, signalements) seront effacés. Ta partie reste sur cet appareil.',
+  labelEmail: 'Adresse e-mail',
+  labelPassword: 'Mot de passe',
+  labelCode: 'Code à 6 chiffres',
+  labelNewPassword: 'Choisis ton mot de passe',
+  labelNewPasswordReset: 'Nouveau mot de passe',
+  labelOldPassword: 'Mot de passe actuel',
+  labelAge: "J'ai 15 ans ou plus, ou un parent est d'accord",
+  hintPassword: '10 caractères au moins. Le plus simple : trois mots au hasard, séparés par des tirets.',
+  show: 'Afficher',
+  hide: 'Masquer',
+  forgot: 'Mot de passe oublié ?',
+  toSignup: 'Créer un compte',
+  sendCode: 'Recevoir un code',
+  resend: 'Renvoyer le code',
+  resendIn: 'Renvoyer le code (dans {s} s)',
+  changeEmail: "Changer d'adresse",
+  submitLogin: 'Me connecter',
+  submitSignup: 'Créer mon compte',
+  submitReset: 'Changer mon mot de passe',
+  submitDelete: 'Supprimer mon compte',
+  busy: 'Un instant…',
+  noteCreated: 'Compte créé : ta partie est sauvegardée en ligne.',
+  noteLogin: 'Connecté.',
+  loadingAdopt: 'Reprise de ta partie…',
+  noteAdopted: 'Partie du compte reprise.',
+  noteLogout: 'Déconnecté. Ta partie reste sur cet appareil.',
+  noteLogoutWipe: 'Déconnecté. Partie effacée de cet appareil.',
+  noteLogoutAll: 'Tous les appareils sont déconnectés.',
+  notePassword: 'Mot de passe changé. Tes autres appareils sont déconnectés.',
+  noteDeleted: 'Compte supprimé. Ta partie reste sur cet appareil.',
+  noteSessionLost: 'Tu as été déconnecté de ton compte. Ta partie reste sur cet appareil.',
+  noteExport: 'Fichier {nom} téléchargé.',
+  toastConflict: 'Deux parties différentes : à régler au menu',
+  onlineElsewhere: 'Ton compte joue en ligne ailleurs (autre appareil ou onglet)',
+  here: 'Jouer en ligne ici',
+  // Ligne d'état de la sauvegarde (5.5) ; {quand} : agoText.
+  cloudEgal: 'Partie sauvegardée sur le serveur {quand}',
+  cloudEnvoi: 'Envoi de la partie…',
+  cloudHorsLigne: 'Hors ligne : partie gardée sur cet appareil, envoi au retour du réseau',
+  cloudConflit: 'Deux parties différentes : choisis laquelle garder',
+  cloudLectureSeule: "Sauvegarde en ligne faite par l'autre onglet",
+  cloudAucune: "Aucune partie sur le serveur pour l'instant",
+  cloudTaille: 'Sauvegarde en ligne impossible : partie trop grosse',
+  myDataFile: 'Le fichier complet : Réglages du compte, puis « Exporter mes données ».',
+};
+
+// Message d'erreur d'un formulaire ou d'une action du compte (annexe A) ; `retryMs` pour « trop ».
+export function accountErrorText(code, retryMs = null) {
+  switch (code) {
+    case 'adresse': return 'Adresse e-mail invalide.';
+    case 'mdp-court': return '10 caractères au moins. Le plus simple : trois mots au hasard.';
+    case 'mdp-long': return '128 caractères au plus.';
+    case 'mdp-commun': return 'Ce mot de passe est trop courant : choisis-en un autre.';
+    case 'mdp-adresse': return 'Ton mot de passe ne doit pas reprendre ton adresse e-mail.';
+    case 'age': return 'Coche la case pour créer ton compte.';
+    case 'code': return 'Code faux ou expiré. Demande un nouveau code si besoin.';
+    case 'identifiants': return 'Adresse ou mot de passe incorrect.';
+    case 'trop': {
+      const min = Number.isFinite(retryMs) && retryMs >= 60000 ? Math.ceil(retryMs / 60000) : null;
+      return `Trop d'essais : réessaie ${min ? `dans ${min} min` : 'dans un instant'}.`;
+    }
+    case 'occupe': return 'Serveur occupé : réessaie dans un instant.';
+    case 'courrier': return "L'envoi d'e-mails ne marche pas pour l'instant : réessaie plus tard.";
+    case 'session': return ACCOUNT_TEXTS.noteSessionLost;
+    case 'conflit': return 'Ta partie en ligne vient encore de changer : compare à nouveau les deux versions.';
+    case 'taille': return 'Ta partie est trop grosse pour être sauvegardée en ligne.';
+    case 'ferme': return 'Les comptes ne sont pas encore ouverts.';
+    case 'reseau': return 'Le serveur ne répond pas. Vérifie ta connexion et réessaie.';
+    default: return 'Le serveur a un souci : réessaie dans quelques minutes.';
+  }
+}
+
+const DAY_MS = 86400000;
+const pad2 = (v) => String(v).padStart(2, '0');
+const clockText = (d) => `${d.getHours()} h ${pad2(d.getMinutes())}`;
+const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+// « le 4 oct. à 14 h 20 », avec l'année si elle n'est pas celle de `now` (heure locale de l'appareil).
+function dateAt(d, now) {
+  const day = `${d.getDate() === 1 ? '1er' : d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return `le ${day}${d.getFullYear() === now.getFullYear() ? '' : ` ${d.getFullYear()}`} à ${clockText(d)}`;
+}
+
+// Moment d'une sauvegarde : « à l'instant », « aujourd'hui à 15 h 02 », « hier à 9 h 40 », « le 4 oct. à 14 h 20 »,
+// « le 4 oct. 2025 à 14 h 20 » (autre année). '' si `ms` n'est pas une heure.
+export function whenText(ms, nowMs = Date.now()) {
+  if (!Number.isFinite(ms) || !Number.isFinite(nowMs)) return '';
+  if (Math.abs(nowMs - ms) < 60000) return "à l'instant";
+  const d = new Date(ms), now = new Date(nowMs);
+  if (sameDay(d, now)) return `aujourd'hui à ${clockText(d)}`;
+  if (sameDay(d, new Date(nowMs - DAY_MS))) return `hier à ${clockText(d)}`;
+  return dateAt(d, now);
+}
+
+// Âge d'une sauvegarde pour la ligne d'état : « à l'instant », « il y a 2 min », « il y a 3 h », puis la date.
+export function agoText(ms, nowMs = Date.now()) {
+  if (!Number.isFinite(ms) || !Number.isFinite(nowMs)) return '';
+  const age = nowMs - ms;
+  if (age < 60000) return "à l'instant";
+  if (age < 3600000) return `il y a ${Math.floor(age / 60000)} min`;
+  if (age < DAY_MS) return `il y a ${Math.floor(age / 3600000)} h`;
+  return dateAt(new Date(ms), new Date(nowMs));
+}
+
+// Taille en Ko arrondis, 1 Ko au moins.
+function sizeText(bytes) {
+  return `${Math.max(1, Math.round((Number.isFinite(bytes) ? bytes : 0) / 1024))} Ko`;
+}
+
+// « refuge à Lyon, 12 nuits tenues » : côté { refuge, nights, when } composé par account-ui.js.
+function sideText(side = {}) {
+  const nights = Number.isInteger(side.nights) && side.nights >= 0 ? side.nights : 0;
+  const refuge = typeof side.refuge === 'string' && side.refuge ? `refuge à ${side.refuge}` : 'pas de refuge';
+  return `${refuge}, ${nights} nuit${nights > 1 ? 's' : ''} tenue${nights > 1 ? 's' : ''}`;
+}
+
+// Conflit entre la partie du compte et celle de l'appareil : boutons 'dl-cloud', 'dl-local' (Exporter, puis la carte
+// revient), 'keep-cloud', 'keep-local' et 'later' (Échap).
+export function conflictCard({ cloud = {}, local = {} } = {}) {
+  const at = (w) => (typeof w === 'string' && w ? ` ${w}` : '');
+  return {
+    title: 'Deux parties différentes', tone: 'warn',
+    lines: [
+      "Ce compte a déjà une partie, et cet appareil en a une autre. Laquelle garder ? L'autre sera remplacée.",
+      { text: `Celle du compte : ${sideText(cloud)}, sauvegardée${at(cloud.when)}`, button: { id: 'dl-cloud', label: 'Exporter' } },
+      { text: `Celle de cet appareil : ${sideText(local)}, jouée${at(local.when)}`, button: { id: 'dl-local', label: 'Exporter' } },
+      'Exporter en garde une copie dans un fichier, à réimporter si besoin.',
+    ],
+    buttons: [
+      { id: 'keep-cloud', label: 'Garder celle du compte' },
+      { id: 'keep-local', label: 'Garder celle de cet appareil' },
+      { id: 'later', label: 'Plus tard' },
+    ],
+  };
+}
+
+// « Se déconnecter » : 'logout', 'logout-wipe' (seulement si la partie est à jour sur le serveur) et 'cancel'.
+export function logoutCard({ synced = false } = {}) {
+  return {
+    title: 'Se déconnecter',
+    lines: synced
+      ? ['Ta partie est sauvegardée sur le serveur : tu la retrouveras en te reconnectant.',
+        'Sur cet appareil, tu peux la garder pour jouer sans compte, ou l\'effacer (appareil partagé).']
+      : ["Ta dernière partie n'est pas encore sur le serveur. Elle reste sur cet appareil."],
+    buttons: [
+      { id: 'logout', label: 'Me déconnecter', primary: true },
+      ...(synced ? [{ id: 'logout-wipe', label: 'Me déconnecter et effacer la partie ici' }] : []),
+      { id: 'cancel', label: 'Annuler' },
+    ],
+  };
+}
+
+// « Déconnecter tous les appareils » : 'logout-all' et 'cancel'.
+export function logoutAllCard() {
+  return {
+    title: 'Déconnecter tous les appareils',
+    lines: ['Chaque appareil connecté à ton compte, celui-ci compris, devra se reconnecter. Les parties restent sur les appareils.'],
+    buttons: [{ id: 'logout-all', label: 'Déconnecter tout', primary: true }, { id: 'cancel', label: 'Annuler' }],
+  };
+}
+
+// « Supprimer mes données en ligne » : boutons 'erase' et 'cancel'.
+export function eraseCard() {
+  return {
+    title: 'Supprimer mes données en ligne', tone: 'danger', lines: [ONLINE_TEXTS.erase],
+    buttons: [{ id: 'erase', label: 'Supprimer', primary: true }, { id: 'cancel', label: 'Annuler' }],
+  };
+}
+
+// Avant « Exporter ma partie » (section 6.6) : boutons 'export' et 'cancel'.
+export function exportCard() {
+  return {
+    title: 'Exporter ma partie', tone: 'warn', lines: [ONLINE_TEXTS.exportWarn],
+    buttons: [{ id: 'export', label: 'Exporter', primary: true }, { id: 'cancel', label: 'Annuler' }],
+  };
+}
+
+// « Mes zones privées » : une ligne par zone avec « Retirer » (boutons 'z0', 'z1'…), puis 'close'.
+export function zonesCard(zones = []) {
+  const lines = zones.length
+    ? zones.map((z, i) => ({ text: z?.name || `Zone privée ${i + 1}`, button: { id: `z${i}`, label: 'Retirer' } }))
+    : ['Aucune zone privée. « Autour de moi » en crée une ; « Protéger ce lieu » aussi.'];
+  return {
+    title: 'Mes zones privées', lines: zones.length ? ['Personne ne t\'y voit, pas même le serveur.', ...lines] : lines,
+    buttons: [{ id: 'close', label: 'Fermer', primary: true }],
+  };
 }
 
 // ---------- Style ----------
@@ -451,6 +779,14 @@ body.panel-open #controls { display: none !important; }
   cursor: pointer; font: var(--fw-semibold, 600) var(--fs-sm, 13px) / 1.1 ${T.display}; letter-spacing: var(--ls-button, .08em); text-transform: uppercase; touch-action: manipulation;
   transition: background-color ${T.fast} ${T.easeStd}, transform ${T.fast} ${T.easeStd}; }
 .rp-cbtn-line { flex: 0 0 auto; min-height: ${T.touch}; }
+.rp-card-field { display: grid; gap: var(--sp-1, 4px); margin-top: var(--sp-4, 16px); }
+.rp-card-field-name { color: ${T.text2}; font: var(--fw-semibold, 600) var(--fs-2xs, 11px) / 1 ${T.display}; letter-spacing: var(--ls-label, .12em); text-transform: uppercase; }
+.rp-card-input { min-height: ${T.touch}; padding: 0 var(--sp-3, 12px); border: 1px solid ${T.lineStrong}; border-radius: ${T.rSm}; background: ${T.raised}; color: ${T.text};
+  font: var(--fw-medium, 500) var(--fs-md, 15px) / 1 ${T.textFont}; letter-spacing: .04em; }
+.rp-card-input:focus-visible { outline: 2px solid ${T.accent}; outline-offset: 1px; }
+.rp-card-link { margin: var(--sp-3, 12px) 0 0; font: var(--fw-medium, 500) var(--fs-sm, 13px) / 1.3 ${T.textFont}; }
+.rp-card-a { display: inline-flex; align-items: center; min-height: ${T.touch}; color: ${T.text2}; text-decoration: underline; text-underline-offset: 3px; }
+.rp-card-a:hover, .rp-card-a:focus-visible { color: ${T.text}; }
 .rp-cbtn-primary { --rp-btn-bg: ${T.accent}; border: 0; border-radius: 0; color: ${T.onAccent}; font-weight: var(--fw-bold, 700); font-size: var(--fs-md, 15px);
   background: linear-gradient(135deg, transparent calc(var(--chamfer, 10px) * .7071), var(--rp-btn-bg) 0) left / 51% 100% no-repeat,
     linear-gradient(-45deg, transparent calc(var(--chamfer, 10px) * .7071), var(--rp-btn-bg) 0) right / 51% 100% no-repeat; }
@@ -679,8 +1015,17 @@ export function createCard(root) {
     if (!b || !root.contains(b)) return;
     const h = handler;
     const id = b.dataset.cardBtn;
+    // Champ de la carte (code d'invitation) : sa valeur suit le bouton.
+    const field = root.querySelector('[data-card-field]');
+    const value = field ? field.value : undefined;
     hide();
-    h?.(id);
+    h?.(id, value);
+  });
+  // Entrée dans le champ : comme le bouton principal.
+  root.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !e.target.matches?.('[data-card-field]')) return;
+    e.preventDefault();
+    root.querySelector('.rp-cbtn-primary')?.click();
   });
 
   return { show, hide, isOpen: () => opened, el: root };

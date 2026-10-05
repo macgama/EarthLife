@@ -1,5 +1,6 @@
 // HUD en jeu : jauges (dont la fatigue), sac, équipement, ligne du refuge, boutons d'action #search et #action2,
-// boussole à plusieurs flèches, bandeau de horde et notifications.
+// boussole à plusieurs flèches (dont les autres survivants, en sarcelle avec leur distance), bandeau de horde,
+// notifications, pastille du jeu en ligne et roue des 6 gestes.
 // La boussole, le voile du coup reçu et les barres d'action suivent chaque image ; le reste est relu toutes les
 // 150 ms, et on ne réécrit que ce qui change (textes, largeurs des jauges, classes, icônes).
 import * as icons from './icons.js';
@@ -11,11 +12,14 @@ const VITAL_ICONS = { health: 'sante', stamina: 'endurance', food: 'faim', water
 const TOAST_ICONS = { danger: 'alerte', success: 'succes', loot: 'sac' };
 const EASE_OUT = 'cubic-bezier(.16, 1, .3, 1)';
 // Rayon de chaque flèche de boussole, en part de la plus petite dimension de la zone du HUD : elles ne se recouvrent pas.
-const ARROW_RADIUS = { quest: 0.22, home: 0.185, bag: 0.255, horde: 0.29 };
+const ARROW_RADIUS = { quest: 0.22, home: 0.185, bag: 0.255, horde: 0.29, survivor: 0.33 };
+// Flèches vers les autres survivants : 3 au plus (spec 3.1), créées ici si la page ne les a pas.
+const SURVIVOR_ARROWS = 3;
+const ARROW_PATH = 'M16 3 26.5 28 16 21.5 5.5 28Z';
 // Une flèche qui tomberait sur un panneau fixe du HUD se rapproche du centre (pas de 4 px), jusqu'à ce rayon au plus près ;
 // celle de la quête recule aussi tant que sa distance (posée 30 px plus loin, demi-hauteur 8 px) toucherait un panneau.
 const ARROW_MIN = 0.12, ARROW_HALF = 16, DIST_OUT = 30, DIST_HALF_H = 8;
-const BLOCKERS = ['conditions', 'quest', 'vitals', 'inventory', 'topbuttons', 'horde-banner', 'mapbox'];
+const BLOCKERS = ['conditions', 'quest', 'vitals', 'inventory', 'topbuttons', 'horde-banner', 'online-pill', 'mapbox'];
 // Notifications en file : 3 au plus, chacune visible au moins 1,2 s avant la suivante.
 const TOAST_QUEUE = 3, TOAST_MIN = 1.2;
 const FATIGUE_LOW = 85;
@@ -38,6 +42,30 @@ export function gearText(sv) {
   return `${clothing} · ${weapon}`;
 }
 
+// Flèches sarcelle des autres survivants et leur distance (« ≈ 350 m ») : ajoutées à #compass si absentes.
+function survivorArrows(compass) {
+  const doc = compass.ownerDocument;
+  const have = compass.querySelectorAll('.arrow[data-kind="survivor"]').length;
+  for (let i = have; i < SURVIVOR_ARROWS; i++) {
+    const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'arrow off');
+    svg.setAttribute('data-kind', 'survivor');
+    svg.setAttribute('viewBox', '0 0 32 32');
+    const path = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', ARROW_PATH);
+    svg.appendChild(path);
+    compass.appendChild(svg);
+  }
+  const dists = [...compass.querySelectorAll('.survivor-dist')];
+  for (let i = dists.length; i < SURVIVOR_ARROWS; i++) {
+    const span = doc.createElement('span');
+    span.className = 'compass-dist survivor-dist off';
+    compass.appendChild(span);
+    dists.push(span);
+  }
+  return dists;
+}
+
 export function createHud({ $, input }) {
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
   const el = {
@@ -48,7 +76,11 @@ export function createHud({ $, input }) {
     body: $('body'), bodyTemp: $('body-temp'), bodyState: $('body-state'), kills: $('kills'), killsCount: $('kills-count'),
     run: $('run'), stickBase: $('stick-base'), stickKnob: $('stick-knob'), stickHint: $('stick-hint'), refugeOpen: $('refuge-open'),
     saveWarn: $('save-warn'),
+    // Jeu à plusieurs : pastille, bouton et roue des gestes (absents : rien ne s'affiche).
+    online: $('online-pill'), onlineIcon: $('online-pill-icon'), onlineText: $('online-pill-text'),
+    wheelToggle: $('gesture-toggle'), wheel: $('gestures'),
   };
+  const survivorDists = survivorArrows(el.compass);
   // Boutons d'action : principal (#search, E) et secondaire (#action2, R).
   const buttons = {
     primary: { btn: $('search'), label: $('search-label'), icon: $('search-icon'), bar: $('search-progress') },
@@ -62,6 +94,8 @@ export function createHud({ $, input }) {
     arrows.get(kind).push(a);
   }
   const used = new Map();
+  // Flèches « survivant » déjà posées à cette image : deux survivants presque dans la même direction ne se recouvrent pas.
+  const placed = [];
   // Zone du HUD (à gauche du tiroir du refuge quand il est ouvert : main.js y centre aussi la vue 3D) et panneaux fixes,
   // relus quand la zone change et toutes les 150 ms.
   const zone = { x: 0, y: 0, w: 0, h: 0 };
@@ -73,6 +107,11 @@ export function createHud({ $, input }) {
       if (zone.w > 0) {
         el.compass.style.left = `${zone.x + zone.w / 2}px`;
         el.compass.style.top = `${zone.y + zone.h / 2}px`;
+        // Roue des gestes : centrée sur le joueur, comme la boussole.
+        if (el.wheel) {
+          el.wheel.style.left = el.compass.style.left;
+          el.wheel.style.top = el.compass.style.top;
+        }
       }
     }).observe(el.hud);
   }
@@ -89,7 +128,7 @@ export function createHud({ $, input }) {
   let distHalf = 24;
   const st = {
     last: 0, prev: {}, counts: {}, kills: undefined, player: null, start: 0, hurt: undefined, hurtPrev: 0,
-    toastShown: false, toastTimer: 0, toastAge: 0, toastText: '', queue: [],
+    toastShown: false, toastTimer: 0, toastAge: 0, toastText: '', queue: [], online: '', wheel: '',
   };
 
   function flash(node, cls, ms) {
@@ -143,6 +182,7 @@ export function createHud({ $, input }) {
     const side = Math.min(w, h);
     const cx = zone.x + w / 2, cy = zone.y + h / 2;
     used.clear();
+    placed.length = 0;
     for (const t of list ?? []) {
       const pool = arrows.get(t.kind);
       const i = used.get(t.kind) ?? 0;
@@ -152,8 +192,17 @@ export function createHud({ $, input }) {
       const a = -normalizeAngle(Math.atan2(t.x - p.x, t.z - p.z) - s.cameraYaw);
       const x = Math.sin(a), y = -Math.cos(a);
       let r = side * (ARROW_RADIUS[t.kind] ?? 0.22);
+      // Survivant dans la direction d'un autre (moins de 20°) : sa flèche passe en dedans, sa distance du côté intérieur.
+      let inner = false;
+      if (t.kind === 'survivor') {
+        while (r > side * ARROW_MIN && placed.some((q) => Math.abs(normalizeAngle(a - q.a)) < 0.35 && Math.abs(r - q.r) < 44)) {
+          r -= 48;
+          inner = true;
+        }
+      }
       const quest = t.kind === 'quest';
       while (r > side * ARROW_MIN && (blocked(cx + x * r, cy + y * r) || (quest && blocked(cx + x * (r + DIST_OUT), cy + y * (r + DIST_OUT), distHalf, DIST_HALF_H)))) r -= 4;
+      if (t.kind === 'survivor') placed.push({ a, r });
       svg.style.transform = `translate(${x * r}px, ${y * r}px) rotate(${a}rad)`;
       svg.classList.remove('off');
       svg.classList.toggle('near', !!t.near);
@@ -161,6 +210,15 @@ export function createHud({ $, input }) {
         // Distance du côté extérieur de la flèche, sans rotation.
         el.compassDist.style.transform = `translate(${x * (r + DIST_OUT)}px, ${y * (r + DIST_OUT)}px) translate(-50%, -50%)`;
         el.compassDist.classList.toggle('near', !!t.near);
+      } else if (t.kind === 'survivor') {
+        // Autre survivant : « 42 m » (précis) ou « ≈ 350 m » (secteur lointain), du côté extérieur.
+        const d = survivorDists[i];
+        if (d) {
+          setText(d, t.label ?? '');
+          const rd = inner ? r - 28 : r + 28;
+          d.style.transform = `translate(${x * rd}px, ${y * rd}px) translate(-50%, -50%)`;
+          d.classList.toggle('off', !t.label);
+        }
       }
     }
     for (const [kind, pool] of arrows) {
@@ -168,6 +226,35 @@ export function createHud({ $, input }) {
       for (let i = n; i < pool.length; i++) pool[i].classList.add('off');
     }
     el.compassDist.classList.toggle('off', !used.get('quest'));
+    for (let i = used.get('survivor') ?? 0; i < survivorDists.length; i++) survivorDists[i].classList.add('off');
+  }
+
+  // Pastille du jeu en ligne : { text, icon, tone } (textes de l'annexe A, composés par main.js), ou null : cachée.
+  function onlinePill(o) {
+    if (!el.online) return;
+    const key = o ? `${o.text}|${o.icon ?? ''}|${o.tone ?? ''}` : '';
+    if (key === st.online) return;
+    st.online = key;
+    el.online.classList.toggle('hidden', !o);
+    el.hud.classList.toggle('has-online', !!o);
+    if (!o) return;
+    setText(el.onlineText, o.text ?? '');
+    const name = o.icon === 'bouclier' ? 'bouclier' : 'antenne';
+    if (el.onlineIcon && el.onlineIcon.dataset.icon !== name) icons.setIcon(el.onlineIcon, name);
+    el.online.dataset.tone = o.tone ?? 'off';
+  }
+
+  // Roue des gestes : { open, enabled } ; le bouton n'existe qu'en ligne, la roue s'ouvre avec T ou ce bouton.
+  function gestureWheel(w) {
+    const open = !!w?.open && !!w?.enabled, enabled = !!w?.enabled;
+    const key = `${open}|${enabled}`;
+    if (key === st.wheel) return;
+    st.wheel = key;
+    el.wheelToggle?.classList.toggle('hidden', !enabled);
+    el.wheelToggle?.setAttribute('aria-expanded', String(open));
+    el.wheel?.classList.toggle('hidden', !open);
+    el.hud.classList.toggle('has-gestures', enabled);
+    el.hud.ownerDocument.body.classList.toggle('wheel-open', open);
   }
 
   // Bouton d'action : libellé, icône, barre d'avancement ; a = { label, icon, busy, progress, off } ou null. Grisé (off) :
@@ -191,6 +278,7 @@ export function createHud({ $, input }) {
     hurtVeil(p);
     tickToast(dt);
     compass(s, info.arrows);
+    gestureWheel(info.wheel);
     actionButton(buttons.primary, info.primary, s.ended);
     const two = actionButton(buttons.secondary, info.secondary, s.ended);
     // Bouton secondaire visible (seul ou avec le principal) : la notification remonte au-dessus de lui.
@@ -252,6 +340,7 @@ export function createHud({ $, input }) {
       el.base.classList.toggle('hidden', !info.baseLine);
       setText(el.baseText, info.baseLine ?? '');
     }
+    onlinePill(info.online ?? null);
     el.refugeOpen?.classList.toggle('hidden', !info.refugeButton);
     el.hud.classList.toggle('show-refuge-btn', !!info.refugeButton);
     // Onglet en lecture seule : rappel « Non sauvegardé » à côté du Menu.
@@ -369,11 +458,13 @@ export function createHud({ $, input }) {
     el.toast.style.opacity = '0';
     st.player = null;
     st.last = 0;
+    st.online = st.wheel = '';
   }
 
   // Temps de jeu qu'il faut avant que la file des notifications soit passée : de quoi faire attendre un conseil qui
   // doit laisser au butin son temps de lecture même quand un autre message (plan trouvé…) l'a retardé.
   const toastBacklog = () => st.queue.length * TOAST_MIN;
 
-  return { render, toast, toastBacklog, showObjective, reset };
+  // Panneaux du HUD (rectangles relus toutes les 150 ms) : les étiquettes des autres survivants les évitent aussi.
+  return { render, toast, toastBacklog, showObjective, reset, blockers: () => blockers };
 }

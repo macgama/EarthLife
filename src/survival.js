@@ -84,13 +84,15 @@ export function lootKind(kind) {
   return KIND_ALIASES[kind] ?? 'house';
 }
 
-// `draws` : nombre de tirages de la table (1 ; 2 au niveau facile d'une ville, quartier.js, NIVEAUX.loot), les butins s'additionnent.
-export function rollLoot(kind, rand = Math.random, draws = 1) {
+// Options : bâtiment fouillé par un autre survivant depuis moins de 6 h (REDUCED_LOOT de shared-world.js) : chances
+// multipliées par `factor`, quantité plafonnée à `maxPerLine`. `draws` : nombre de tirages de la table (1 ; 2 au niveau
+// facile d'une ville, quartier.js, NIVEAUX.loot), les butins s'additionnent. Sans option, même suite de tirages qu'avant.
+export function rollLoot(kind, rand = Math.random, { factor = 1, maxPerLine = Infinity, draws = 1 } = {}) {
   const table = LOOT[lootKind(kind)];
   const found = {};
   for (let d = 0; d < Math.max(1, draws | 0); d++) {
     for (const [item, chance, max] of table) {
-      if (rand() < chance) found[item] = (found[item] ?? 0) + 1 + Math.floor(rand() * max);
+      if (rand() < chance * factor) found[item] = (found[item] ?? 0) + Math.min(maxPerLine, 1 + Math.floor(rand() * max));
     }
   }
   return found;

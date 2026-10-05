@@ -4,6 +4,12 @@ import { ZOOM_STEP } from './view.js';
 // Zoom au clavier : rôle pris dans e.key (le − de l'AZERTY est sur Digit6, celui du QWERTY sur Minus) ; −1 rapproche.
 const ZOOM_KEYS = { '+': -1, '=': -1, '-': 1, '_': 1 };
 
+// Jeu à plusieurs : roue des 6 gestes (T, bouton #gesture-toggle, boutons [data-gesture]) et toucher sur la vue
+// (state.pick), que main.js passe à others-view pour ouvrir la carte d'un survivant.
+
+const GESTURE_KEYS = { Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 4, Digit6: 5 };
+const TAP_MS = 350, TAP_PX = 12;
+
 export function createInput(canvas, ui) {
   const keys = new Set();
   // Zoom tenu (touche par son code, ou bouton 'btn±') → { dir, t } : continu 250 ms après t.
@@ -23,7 +29,26 @@ export function createInput(canvas, ui) {
     cameraZoomDelta: 0,     // zoom demandé pendant l'image, en logarithme (> 0 : la caméra recule)
     map: false,             // agrandir ou réduire la carte des environs (C)
     touch: false,
+    gesture: null,          // geste choisi dans la roue (0 à 5), pendant une image
+    pick: null,             // { x, y } : clic ou toucher court sur la vue, pendant une image
+    wheelOpen: false,       // roue des gestes ouverte
   };
+  // Roue des gestes : seulement en ligne (main.js l'active) ; sinon T, 1 à 6 et le bouton ne font rien de plus.
+  let wheelEnabled = false;
+  function setWheelOpen(open) {
+    const on = !!open && wheelEnabled;
+    if (on === state.wheelOpen) return;
+    state.wheelOpen = on;
+    document.body.classList.toggle('wheel-open', on);
+    document.getElementById('gesture-toggle')?.setAttribute('aria-expanded', String(on));
+    // Tout de suite, sans attendre l'image suivante (hud.js pose ensuite la même classe).
+    document.getElementById('gestures')?.classList.toggle('hidden', !on);
+  }
+  function pickGesture(k) {
+    if (!wheelEnabled || !Number.isInteger(k) || k < 0 || k > 5) return;
+    state.gesture = k;
+    setWheelOpen(false);
+  }
 
   const down = (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
@@ -34,6 +59,12 @@ export function createInput(canvas, ui) {
     if (panelTab) e.preventDefault();
     // Une touche maintenue ne doit pas vider le sac ni relancer la fouille.
     if (e.repeat) return;
+    if (e.code === 'KeyT' && wheelEnabled) { setWheelOpen(!state.wheelOpen); return; }
+    // Roue ouverte : 1 à 6 choisissent un geste, Échap la ferme (sinon, 1 à 5 gardent leur rôle).
+    if (state.wheelOpen) {
+      if (e.code in GESTURE_KEYS) { pickGesture(GESTURE_KEYS[e.code]); return; }
+      if (e.code === 'Escape') { setWheelOpen(false); return; }
+    }
     if (e.code === 'KeyE') state.interact = true;
     if (e.code === 'KeyR') state.action2 = true;
     if (e.code === 'KeyB') state.fold = true;
@@ -107,7 +138,11 @@ export function createInput(canvas, ui) {
   });
   canvas.addEventListener('pointerup', (e) => {
     if (e.pointerType !== 'mouse' || !mouse) return;
-    if (mouse.moved < 6) state.attack = true;
+    // Clic bref : coup, et peut-être un survivant visé (main.js garde le coup s'il n'y en a pas).
+    if (mouse.moved < 6) {
+      state.attack = true;
+      state.pick = { x: e.clientX, y: e.clientY };
+    }
     mouse = null;
   });
 
@@ -119,10 +154,13 @@ export function createInput(canvas, ui) {
   let stickAt = 0;
   const knob = ui.stickKnob, base = ui.stickBase;
   const radius = 55;
+  const taps = new Map();       // toucher en cours → { x, y, at, moved }
   const startPinch = () => {
     const [a, b] = [...points.keys()];
     const pa = points.get(a), pb = points.get(b);
     pinch = { a, b, last: Math.max(ZOOM_STEP.pinchMinPx, Math.hypot(pa.x - pb.x, pa.y - pb.y)) };
+    taps.get(a) && (taps.get(a).moved = true); // un pincement n'est pas un toucher sur la vue
+    taps.get(b) && (taps.get(b).moved = true);
     look = null; // la rotation de la caméra est suspendue pendant le pincement
   };
   const cancelStick = () => {
@@ -135,6 +173,7 @@ export function createInput(canvas, ui) {
     // Classe posée une fois : la réécrire à chaque toucher relancerait la disposition de la carte (MutationObserver).
     if (!document.body.classList.contains('touch')) document.body.classList.add('touch');
     for (const t of e.changedTouches) {
+      taps.set(t.identifier, { x: t.clientX, y: t.clientY, at: performance.now(), moved: false });
       const left = t.clientX < window.innerWidth * 0.45, now = performance.now();
       if (stick && left && !pinch && points.size === 0 && now - stickAt < 120 && !stick.moved) {
         // Joystick tout juste créé, deuxième doigt à gauche : c'était un pincement.
@@ -162,6 +201,8 @@ export function createInput(canvas, ui) {
   }, { passive: false });
   canvas.addEventListener('touchmove', (e) => {
     for (const t of e.changedTouches) {
+      const tap = taps.get(t.identifier);
+      if (tap && Math.hypot(t.clientX - tap.x, t.clientY - tap.y) > TAP_PX) tap.moved = true;
       if (stick && t.identifier === stick.id) {
         let dx = t.clientX - stick.x0, dy = t.clientY - stick.y0;
         const len = Math.hypot(dx, dy);
@@ -191,6 +232,10 @@ export function createInput(canvas, ui) {
   }, { passive: false });
   const endTouch = (e) => {
     for (const t of e.changedTouches) {
+      // Toucher court et immobile : survivant touché ?
+      const tap = taps.get(t.identifier);
+      taps.delete(t.identifier);
+      if (tap && e.type === 'touchend' && !tap.moved && performance.now() - tap.at < TAP_MS) state.pick = { x: t.clientX, y: t.clientY };
       if (stick && t.identifier === stick.id) { cancelStick(); continue; }
       if (!points.delete(t.identifier)) continue;
       if (pinch && (t.identifier === pinch.a || t.identifier === pinch.b)) {
@@ -236,6 +281,13 @@ export function createInput(canvas, ui) {
   for (const el of ui.useButtons) {
     el.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); state.use = el.dataset.use; });
   }
+  // Roue des gestes : bouton à droite du joystick et 6 boutons (délégation : ils peuvent être créés plus tard).
+  document.addEventListener('click', (e) => {
+    const toggle = e.target.closest?.('#gesture-toggle');
+    if (toggle) { e.preventDefault(); setWheelOpen(!state.wheelOpen); return; }
+    const g = e.target.closest?.('[data-gesture]');
+    if (g) { e.preventDefault(); pickGesture(Number(g.dataset.gesture)); }
+  });
 
   function poll() {
     if (!stick) {
@@ -264,9 +316,17 @@ export function createInput(canvas, ui) {
     state.use = null;
     state.cameraYawDelta = 0;
     state.cameraPitchDelta = 0;
+    state.gesture = null;
+    state.pick = null;
     state.cameraZoomDelta = 0;
     state.map = false;
   }
 
-  return { state, poll, consume, keys };
+  // Jeu à plusieurs actif ou non : la roue n'existe qu'en ligne.
+  function setWheel(enabled) {
+    wheelEnabled = !!enabled;
+    if (!wheelEnabled) setWheelOpen(false);
+  }
+
+  return { state, poll, consume, keys, setWheel, closeWheel: () => setWheelOpen(false) };
 }

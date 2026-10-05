@@ -38,6 +38,8 @@ const DOOR_CELL = 4;          // porte possible : recalculée quand le joueur ch
 const CRATE_OUT = 2.0;        // caisse du surplus : 2 m devant l'ancienne porte, hors de portée de « Fouiller »
 const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const TAU = Math.PI * 2;
+// Jeu à plusieurs (spec 3.2) : bâtiment déjà refuge partagé d'un autre survivant.
+export const TAKEN_TEXT = "Déjà le refuge d'un autre survivant";
 
 // « 1er oct. », « 12 oct. » (date locale du refuge).
 export function dayLabel(ms, utcOffset) {
@@ -332,6 +334,8 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     if (!building) return { ok: false, why: 'Aucun bâtiment ici' };
     if (sourceOf() !== 'tiles') return { ok: false, why: 'Rues générées : pas de refuge dans la ville de secours' };
     if (base()?.id === building.id) return { ok: false, why: "C'est déjà ton refuge" };
+    // Jeu à plusieurs : le serveur a donné ce bâtiment à un autre survivant (premier arrivé).
+    if (ctx.taken) return { ok: false, why: TAKEN_TEXT };
     if (!searchedOf(building, ctx)) return { ok: false, why: "Il faut d'abord fouiller ce bâtiment" };
     const shape = claimableShape(building);
     if (!shape.ok) return shape;
@@ -753,8 +757,9 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     // pourquoi attendre.
     const bd = ctx.building;
     let why = '';
+    // Refuge partagé d'un autre survivant (jeu à plusieurs) : pas de bouton, R le rappelle.
     if (!secondary && bd && bd.id !== b?.id && sourceOf() === 'tiles' && searchedOf(bd, ctx)) {
-      const fit = wave ? claimableShape(bd) : suitable(bd, player);
+      const fit = ctx.taken ? { ok: false, why: TAKEN_TEXT } : wave ? claimableShape(bd) : suitable(bd, player);
       if (fit.ok || fit.side) {
         secondary = b
           ? act('move', bd.index, `Déménager ici${r}`, 0, 'secondary')

@@ -2,6 +2,8 @@
 // Un seul appel de dessin pour tous les zombies (InstancedMesh), un pour le joueur, un pour son contour,
 // un pour toutes les ombres de contact. Bras et jambes tournent autour de l'épaule ou de la hanche dans le shader :
 // ni os ni squelette, presque rien à calculer côté JavaScript.
+// Les autres survivants (jeu à plusieurs) reprennent la géométrie du joueur avec une veste sarcelle et partagent ses
+// matériaux (même programme) : deux appels de dessin de plus pour toute la foule (corps et contour).
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { ZOMBIE_TYPES } from './game.js';
@@ -21,6 +23,11 @@ const ZOMBIE_LOOK = {
   costaud: { scale: [1.35, 1.2, 1.35], hunch: 0.18, arms: -0.85, armSwing: 0.35 },
 };
 const DEAD_TINT = new THREE.Color(0x5d625c);
+// Veste du joueur (accent de l'interface) et des autres survivants (sarcelle, spec 1 et 7.2).
+export const PLAYER_JACKET = 0xff7f1f;
+export const SURVIVOR_JACKET = 0x2bb3a3;
+// Ombres de contact réservées aux autres survivants, dans le maillage d'ombres commun.
+export const GUEST_SHADOWS = 24;
 
 // ---------- Géométrie ----------
 
@@ -81,8 +88,9 @@ function addOutlineNormals(g) {
 }
 
 // Joueur : veste et casquette orange (l'accent de l'interface, lisible de dessus), bas sombre, sac à dos olive, batte.
-function playerGeometry() {
-  const JACKET = 0xff7f1f, PANTS = 0x3a3f46, SKIN = 0xd9a07a, DARK = 0x262b31, PACK = 0x5b6b3a, STRIP = 0xdfe3e6;
+// `jacket` : veste et casquette d'une autre couleur (sarcelle pour les autres survivants).
+export function playerGeometry({ jacket = PLAYER_JACKET } = {}) {
+  const JACKET = jacket, PANTS = 0x3a3f46, SKIN = 0xd9a07a, DARK = 0x262b31, PACK = 0x5b6b3a, STRIP = 0xdfe3e6;
   const pieces = [];
   for (const [side, leg] of [[1, LEG_L], [-1, LEG_R]]) {
     const x = side * 0.12;
@@ -145,8 +153,8 @@ const LIMB_PARS = /* glsl */`
 attribute vec4 aLimb;
 attribute vec4 aAnim;
 attribute vec2 aPose;
+attribute vec2 aCrowd;
 uniform float uKind;
-uniform float uCargo;
 uniform float uRightArm;
 mat3 persoRotX(float a) { float c = cos(a), s = sin(a); return mat3(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c); }
 mat3 persoRotY(float a) { float c = cos(a), s = sin(a); return mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c); }
@@ -154,6 +162,7 @@ mat3 persoRotY(float a) { float c = cos(a), s = sin(a); return mat3(c, 0.0, -s, 
 
 // aAnim : phase de marche, amplitude du pas, éclair (+ blanc, - rouge), action (coup de batte, morsure) de 0 à 1.
 // aPose : angle de repos des bras, part du balancement des bras.
+// aCrowd : cargaison visible (0 ou 1), opacité du fondu (1 : entier ; moins : pixels retirés par tramage).
 const LIMB_MAIN = /* glsl */`
   float persoPart = aLimb.w;
   if (persoPart > 0.5 && persoPart < 4.5) {
@@ -176,7 +185,7 @@ const LIMB_MAIN = /* glsl */`
     }
     transformed = persoRotY(yaw) * (persoRotX(pitch) * (transformed - aLimb.xyz)) + aLimb.xyz;
   } else if (persoPart > 4.5) {
-    transformed = mix(aLimb.xyz, transformed, uCargo);
+    transformed = mix(aLimb.xyz, transformed, aCrowd.x);
   }
 `;
 
@@ -188,6 +197,7 @@ varying float vPersoTintMask;
 varying float vPersoGlow;
 varying float vPersoAlert;
 varying float vPersoFlash;
+varying float vPersoFade;
 `;
 
 const LOOK_VERTEX_MAIN = /* glsl */`
@@ -197,6 +207,7 @@ const LOOK_VERTEX_MAIN = /* glsl */`
   vPersoGlow = aMask > 1.5 ? min(aLook.w, 1.0) : 0.0;
   vPersoAlert = step(1.5, aLook.w);
   vPersoFlash = aAnim.z;
+  vPersoFade = aCrowd.y;
 `;
 
 const LOOK_FRAGMENT_PARS = /* glsl */`
@@ -208,7 +219,13 @@ varying float vPersoTintMask;
 varying float vPersoGlow;
 varying float vPersoAlert;
 varying float vPersoFlash;
+varying float vPersoFade;
 `;
+
+// Fondu d'apparition et d'effacement sans transparence (ni tri, ni faces internes visibles) : un bruit fixe à
+// l'écran retire la part (1 − opacité) des pixels. Rien n'est retiré à opacité 1 (joueur, zombies).
+const FADE_FRAGMENT = /* glsl */`
+  if (vPersoFade < 0.999 && vPersoFade <= fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))))) discard;`;
 
 function patchCharacter(material, uniforms) {
   material.onBeforeCompile = (shader) => {
@@ -218,6 +235,7 @@ function patchCharacter(material, uniforms) {
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n${LIMB_MAIN}${LOOK_VERTEX_MAIN}`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${LOOK_FRAGMENT_PARS}`)
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>${FADE_FRAGMENT}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
   diffuseColor.rgb *= mix(vec3(1.0), vPersoTint, vPersoTintMask);
   vec3 persoFlashColor = vPersoFlash > 0.0 ? vec3(1.0) : vec3(1.0, 0.16, 0.1);
@@ -245,8 +263,11 @@ function patchOutline(material, uniforms) {
   material.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', `#include <common>\n${LIMB_PARS}\nattribute vec3 aOutline;\nuniform float uOutline;`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n  transformed += aOutline * uOutline;\n${LIMB_MAIN}`);
+      .replace('#include <common>', `#include <common>\n${LIMB_PARS}\nattribute vec3 aOutline;\nuniform float uOutline;\nvarying float vPersoFade;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n  transformed += aOutline * uOutline;\n  vPersoFade = aCrowd.y;\n${LIMB_MAIN}`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vPersoFade;')
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>${FADE_FRAGMENT}`);
   };
   material.customProgramCacheKey = () => 'earthlife-perso-contour';
 }
@@ -269,45 +290,55 @@ function blobTexture() {
 
 // ---------- Ensemble ----------
 
+// Attributs d'instance communs à tous les personnages (animation, teinte, pose, cargaison et fondu).
+function instanced(geo, capacity) {
+  geo.setAttribute('aAnim', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aLook', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4).fill(1), 4).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aPose', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2).setUsage(THREE.DynamicDrawUsage));
+  const crowd = new Float32Array(capacity * 2);
+  for (let i = 0; i < capacity; i++) crowd[i * 2 + 1] = 1; // sans cargaison, opacité 1
+  geo.setAttribute('aCrowd', new THREE.InstancedBufferAttribute(crowd, 2).setUsage(THREE.DynamicDrawUsage));
+}
+
+function lambert(uniforms) {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  patchCharacter(m, uniforms);
+  return m;
+}
+function depth(uniforms) {
+  const m = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+  patchDepth(m, uniforms);
+  return m;
+}
+function outlineMaterial(uniforms) {
+  const m = new THREE.MeshBasicMaterial({ color: 0x0a0d10, side: THREE.BackSide });
+  patchOutline(m, uniforms);
+  return m;
+}
+const humanUniforms = () => ({
+  uKind: { value: 0 }, uRightArm: { value: -0.22 },
+  uRim: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uAlert: { value: new THREE.Color(0, 0, 0) }, uOutline: { value: 0.045 },
+});
+
 export function createCharacters({ lowPower = false } = {}) {
   const root = new THREE.Group();
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-  const playerUniforms = {
-    uKind: { value: 0 }, uCargo: { value: 0 }, uRightArm: { value: -0.22 },
-    uRim: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uAlert: { value: new THREE.Color(0, 0, 0) }, uOutline: { value: 0.045 },
-  };
+  const playerUniforms = humanUniforms();
   const zombieUniforms = {
-    uKind: { value: 1 }, uCargo: { value: 0 }, uRightArm: { value: 0 },
+    uKind: { value: 1 }, uRightArm: { value: 0 },
     uRim: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uAlert: { value: new THREE.Color() },
   };
-
-  function instanced(geo, capacity) {
-    geo.setAttribute('aAnim', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(THREE.DynamicDrawUsage));
-    geo.setAttribute('aLook', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4).fill(1), 4).setUsage(THREE.DynamicDrawUsage));
-    geo.setAttribute('aPose', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2).setUsage(THREE.DynamicDrawUsage));
-  }
-
-  function lambert(uniforms) {
-    const m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-    patchCharacter(m, uniforms);
-    return m;
-  }
-  function depth(uniforms) {
-    const m = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
-    patchDepth(m, uniforms);
-    return m;
-  }
 
   // Joueur : un maillage d'une instance, plus son contour.
   const playerGeo = playerGeometry();
   instanced(playerGeo, 1);
-  const player = new THREE.InstancedMesh(playerGeo, lambert(playerUniforms), 1);
+  const playerMat = lambert(playerUniforms);
+  const player = new THREE.InstancedMesh(playerGeo, playerMat, 1);
   player.customDepthMaterial = depth(playerUniforms);
   player.castShadow = true;
   player.frustumCulled = false;
-  const outlineMat = new THREE.MeshBasicMaterial({ color: 0x0a0d10, side: THREE.BackSide });
-  patchOutline(outlineMat, playerUniforms);
+  const outlineMat = outlineMaterial(playerUniforms);
   const outline = new THREE.InstancedMesh(playerGeo, outlineMat, 1);
   outline.frustumCulled = false;
   root.add(outline, player);
@@ -335,7 +366,7 @@ export function createCharacters({ lowPower = false } = {}) {
     zombies.castShadow = true;
     zombies.frustumCulled = false;
     zombies.count = 0;
-    blobs = new THREE.InstancedMesh(blobGeo, blobMat, capacity + 1);
+    blobs = new THREE.InstancedMesh(blobGeo, blobMat, capacity + 1 + GUEST_SHADOWS);
     blobs.frustumCulled = false;
     blobs.count = 0;
     root.add(zombies, blobs);
@@ -399,6 +430,27 @@ export function createCharacters({ lowPower = false } = {}) {
     blobs.setMatrixAt(i, m4);
   }
 
+  // Ombres de contact des autres survivants (others-view.js), après celles du joueur et des zombies : aucun appel
+  // de dessin de plus. `list` : [{ x, z, r }], 24 au plus ; gardée pour les images suivantes.
+  const guests = new Float32Array(GUEST_SHADOWS * 3);
+  let guestCount = 0, guestFrom = 1;
+  function writeGuests(from) {
+    guestFrom = from;
+    for (let i = 0; i < guestCount; i++) writeBlob(from + i, guests[i * 3], guests[i * 3 + 1], guests[i * 3 + 2]);
+    blobs.count = from + guestCount;
+    blobs.instanceMatrix.needsUpdate = true;
+  }
+  function setGuests(list) {
+    guestCount = 0;
+    for (const g of list ?? []) {
+      if (guestCount >= GUEST_SHADOWS) break;
+      if (!Number.isFinite(g?.x) || !Number.isFinite(g?.z)) continue;
+      guests.set([g.x, g.z, Number.isFinite(g.r) ? g.r : 0.55], guestCount * 3);
+      guestCount++;
+    }
+    writeGuests(Math.min(guestFrom, blobs.instanceMatrix.count - GUEST_SHADOWS));
+  }
+
   function sync(s, dt, camera, daylight = 1) {
     const t = performance.now() / 1000;
     const calm = reduceMotion.matches;
@@ -448,7 +500,12 @@ export function createCharacters({ lowPower = false } = {}) {
     pa.aPose.setXY(0, 0.05, 0.75);
     pa.aLook.setXYZW(0, 1, 1, 1, 1);
     pa.aAnim.needsUpdate = pa.aPose.needsUpdate = pa.aLook.needsUpdate = true;
-    playerUniforms.uCargo.value = p.carrying ? 1 : 0;
+    // Cargaison de la quête sur le sac (attribut d'instance : les autres survivants ont chacun la leur).
+    const cargo = p.carrying ? 1 : 0;
+    if (pa.aCrowd.getX(0) !== cargo) {
+      pa.aCrowd.setXY(0, cargo, 1);
+      pa.aCrowd.needsUpdate = true;
+    }
     writeBlob(0, p.x, p.z, 0.55, playerY, grid);
 
     // ----- Zombies -----
@@ -513,8 +570,7 @@ export function createCharacters({ lowPower = false } = {}) {
     zombies.visible = list.length > 0;
     zombies.instanceMatrix.needsUpdate = true;
     za.aAnim.needsUpdate = za.aPose.needsUpdate = za.aLook.needsUpdate = true;
-    blobs.count = list.length + 1;
-    blobs.instanceMatrix.needsUpdate = true;
+    writeGuests(list.length + 1);
 
     // ----- Anneau d'impact -----
     if (hitAt) {
@@ -539,5 +595,122 @@ export function createCharacters({ lowPower = false } = {}) {
     } else shake.set(0, 0, 0);
   }
 
-  return { root, sync, shake, reduceMotion };
+  // Matériaux du joueur, partagés avec la foule des autres survivants (createSurvivorCrowd) : même programme.
+  const shared = { body: playerMat, outline: outlineMat, reduceMotion };
+  return { root, sync, shake, reduceMotion, shared, setGuests };
+}
+
+// ---------- Autres survivants (jeu à plusieurs) ----------
+
+// Foule des autres survivants : géométrie du joueur avec une veste sarcelle, un maillage instancié pour les corps et
+// un pour le contour (2 appels de dessin). Avec `characters` (createCharacters), les matériaux du joueur sont
+// partagés (même programme, liseré et lampe suivent le jour et la nuit) ; sans lui, la foule a les siens (tests).
+// Pas d'ombre portée (budget de la spec 9.3, O18) : leurs ombres de contact vont dans le maillage commun.
+export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVOR_JACKET, characters = null } = {}) {
+  const root = new THREE.Group();
+  root.name = 'survivants';
+  const own = characters?.shared ? null : humanUniforms();
+  const bodyMat = characters?.shared?.body ?? lambert(own);
+  const outlineMat = characters?.shared?.outline ?? outlineMaterial(own);
+  if (own) {
+    own.uRim.value.setHex(0xffb37a).multiplyScalar(0.25);
+    own.uGlow.value.setHex(0xfff0d8).multiplyScalar(0.15);
+  }
+  const reduceMotion = characters?.reduceMotion ?? characters?.shared?.reduceMotion ?? null;
+  const geo = playerGeometry({ jacket });
+  instanced(geo, capacity);
+  const body = new THREE.InstancedMesh(geo, bodyMat, capacity);
+  const outline = new THREE.InstancedMesh(geo, outlineMat, capacity);
+  for (const m of [outline, body]) {
+    m.frustumCulled = false;
+    m.castShadow = false;
+    m.count = 0;
+    m.visible = false;
+  }
+  outline.name = 'survivants-contour';
+  body.name = 'survivants-corps';
+  root.add(outline, body);
+
+  const states = new Map(); // clé (sid) → { lastX, lastZ, speed, phase, down }
+  const m4 = new THREE.Matrix4(), pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3();
+  const euler = new THREE.Euler(0, 0, 0, 'YXZ');
+  const seen = new Set();
+  const FLAG_RUN = 1, FLAG_CARRY = 4, FLAG_DOWN = 8;
+
+  // list : [{ key, x, z, yaw, flags, alpha }] (24 au plus, les plus proches d'abord). Les coups des autres ne sont
+  // pas animés (spec 2.1) : marche, course, caisse portée et chute seulement.
+  function sync(list, dt) {
+    const t = performance.now() / 1000;
+    const calm = !!reduceMotion?.matches;
+    const a = geo.attributes;
+    const n = Math.min(list?.length ?? 0, capacity);
+    seen.clear();
+    for (let i = 0; i < n; i++) {
+      const g = list[i];
+      seen.add(g.key);
+      let st = states.get(g.key);
+      if (!st) {
+        st = { lastX: g.x, lastZ: g.z, speed: 0, phase: Math.random() * 6.28, down: g.flags & FLAG_DOWN ? 1 : 0 };
+        states.set(g.key, st);
+      }
+      // Vitesse mesurée sur les positions rejouées (régulières) ; une réapparition ailleurs repart de l'arrêt.
+      const d = Math.hypot(g.x - st.lastX, g.z - st.lastZ);
+      if (d > 3) st.speed = 0;
+      else if (dt > 0) st.speed += (d / dt - st.speed) * Math.min(1, dt * 8);
+      st.lastX = g.x; st.lastZ = g.z;
+      const down = (g.flags & FLAG_DOWN) !== 0;
+      st.down = down ? Math.min(1, st.down + dt / 0.5) : Math.max(0, st.down - dt / 0.5);
+      const speed = st.down > 0 ? 0 : st.speed;
+      st.phase += dt * 2.2 * Math.pow(speed, 0.8);
+      const pace = Math.min(1.4, speed / WALK);
+      const moving = speed > 0.3;
+      const running = (g.flags & FLAG_RUN) !== 0;
+      euler.set(
+        (moving ? (running ? 0.12 : 0.06) * Math.min(1, pace) : 0) - st.down * st.down * (Math.PI / 2),
+        g.yaw,
+        moving && !calm ? Math.sin(st.phase) * 0.05 * Math.min(1, pace) : 0,
+      );
+      quat.setFromEuler(euler);
+      pos.set(g.x, moving ? Math.abs(Math.sin(st.phase)) * 0.08 * pace : 0, g.z);
+      scl.set(1, moving || st.down ? 1 : 1 + Math.sin(t * 2 + i) * 0.01, 1);
+      m4.compose(pos, quat, scl);
+      body.setMatrixAt(i, m4);
+      outline.setMatrixAt(i, m4);
+      a.aAnim.setXYZW(i, st.phase, moving ? Math.min(1.25, 0.35 + pace * 0.75) : 0, 0, 0);
+      a.aPose.setXY(i, 0.05, 0.75);
+      a.aLook.setXYZW(i, 1, 1, 1, 1);
+      a.aCrowd.setXY(i, g.flags & FLAG_CARRY ? 1 : 0, Math.max(0, Math.min(1, g.alpha ?? 1)));
+    }
+    for (const k of states.keys()) if (!seen.has(k)) states.delete(k);
+    body.count = outline.count = n;
+    body.visible = outline.visible = n > 0;
+    if (n > 0) {
+      body.instanceMatrix.needsUpdate = outline.instanceMatrix.needsUpdate = true;
+      a.aAnim.needsUpdate = a.aPose.needsUpdate = a.aLook.needsUpdate = a.aCrowd.needsUpdate = true;
+    }
+    return n;
+  }
+
+  // Vitesse lissée et chute d'un survivant (tests, débogage).
+  function stateOf(key) {
+    const st = states.get(key);
+    return st ? { speed: st.speed, down: st.down } : null;
+  }
+
+  function clear() {
+    states.clear();
+    body.count = outline.count = 0;
+    body.visible = outline.visible = false;
+  }
+
+  function dispose() {
+    root.removeFromParent();
+    geo.dispose();
+    body.dispose();
+    outline.dispose();
+    // Matériaux partagés avec le joueur : rendus seulement s'ils sont à la foule.
+    if (own) { bodyMat.dispose(); outlineMat.dispose(); }
+  }
+
+  return { root, sync, clear, dispose, stateOf, capacity, meshes: { body, outline } };
 }

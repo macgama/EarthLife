@@ -1321,14 +1321,15 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     return true;
   }
 
-  // Décor du morceau, gardé dans v.props (Prop[]) ; les objets démontés ne sont pas dessinés.
+  // Décor du morceau, gardé dans v.props (Prop[]) ; les objets démontés ne sont pas dessinés (une voiture démontée
+  // laisse sa tache d'huile : propsView la reçoit à part).
   function placeDecor(key, v, patch = ensurePatch(v.cx, v.cz, key), near = featuresAround(store, v.cx, v.cz)) {
     pending.delete(key);
     const d = propsForChunk(near, patch, v.cx, v.cz, size, proj, { marks: markBoxes(planFor(key, near, v.cx, v.cz)) });
     v.props = [...d.trees, ...d.cars, ...d.benches];
     if (relief) for (const p of v.props) seatProp(p, ground);
     for (const p of v.props) if (!gone.has(p.id) && isGone(p.id)) gone.add(p.id);
-    if (propsView) propsView.setChunk(key, v.props.filter((p) => !gone.has(p.id)));
+    if (propsView) propsView.setChunk(key, v.props.filter((p) => !gone.has(p.id)), d.cars.filter((p) => gone.has(p.id)));
     else showTrees(v);
   }
 

@@ -102,6 +102,23 @@ export function emptySave(now = Date.now()) {
   };
 }
 
+// Partie vide (spécification des comptes, 1.2) : ni refuge, ni caisse orpheline, ni sac perdu, compteurs du profil à 0,
+// pas de première vague, journal et plans vides, aucune fouille ni démontage en cours. Les besoins, le sac et la position
+// ne comptent pas : on les a dès la première minute de jeu. Sert à choisir entre reprise et conflit (account.js).
+export function isBlankSave(save) {
+  if (!isObj(save)) return true;
+  if (save.base || save.orphanChest || save.dropBag) return false;
+  const p = isObj(save.profile) ? save.profile : {};
+  if (COUNTERS.some((k) => finite(p[k]) && p[k] !== 0)) return false;
+  if (p.firstWaveDone === true) return false;
+  if (Array.isArray(p.journal) && p.journal.length) return false;
+  if (Array.isArray(p.plans) && p.plans.length) return false;
+  for (const field of ['searched', 'dismantled']) {
+    if (isObj(save[field]) && Object.keys(save[field]).length) return false;
+  }
+  return true;
+}
+
 // Migrations futures (v1 → v2…) avant la validation. La v1 passe telle quelle.
 export function migrate(raw) {
   return raw;
@@ -643,6 +660,8 @@ function halveEntries(save) {
 // `beforeWrite(save)` (facultatif) recopie l'état vivant (survivant, position) juste avant chaque écriture et chaque
 // export ; jamais pour l'écriture d'un import, d'une reprise (« Reprendre ici ») ou d'une partie neuve (?fresh), ni
 // ensuite : la partie en mémoire a été remplacée, l'état vivant de la page est périmé jusqu'au rechargement.
+// `onWrite({ why, text })` (facultatif) est appelé après chaque écriture réussie, avec le texte exact rangé (import,
+// reprise et partie neuve compris) : le module de compte s'en sert pour envoyer la partie (spécification des comptes, 5.7).
 // Dans un navigateur, il écoute aussi `storage` (autre onglet), `visibilitychange` et `pagehide` ; `listen: false` l'en empêche.
 // `companion` (facultatif, territory-store.js) : magasin rangé sous sa propre clé, écrit dans le même lot juste avant la
 // sauvegarde et jamais en lecture seule ; l'export le porte dans son champ (`companion.field`), l'import le lui rend
@@ -654,6 +673,7 @@ function halveEntries(save) {
 export function createSaveStore({
   storage = defaultStorage(), now = Date.now, fresh = false, onExternal = () => {},
   rand = Math.random, delayMs = 2000, itemKeys = ITEM_KEYS, beforeWrite = () => {}, listen = true, companion = null,
+  onWrite = () => {},
 } = {}) {
   const writer = newWriter(rand);
   let readOnly = false;
@@ -822,6 +842,11 @@ export function createSaveStore({
     dirty = false;
     wait = 0;
     lastError = null;
+    try {
+      onWrite({ why, text: out });
+    } catch {
+      // L'envoi en ligne ne doit jamais faire échouer la sauvegarde locale.
+    }
     return side ? { ok: true, error: null, companion: side } : { ok: true, error: null };
   }
 
@@ -967,6 +992,23 @@ export function createSaveStore({
     return w;
   }
 
+  // « Me déconnecter et effacer la partie ici » (spécification des comptes, 1.5) : retire la partie, sa copie et
+  // l'éventuelle partie illisible gardée à part. main.js recharge ensuite avec ?fresh=1. Rien n'est plus écrit ensuite.
+  function wipe() {
+    let ok = true;
+    for (const key of [SAVE_KEY, PREV_KEY, CORRUPT_KEY]) {
+      try {
+        storage?.removeItem(key);
+      } catch {
+        ok = false;
+      }
+    }
+    readOnly = true;
+    dirty = false;
+    lastSeen = null;
+    return ok;
+  }
+
   // Stockage persistant (demandé à la première installation d'un refuge) ; un refus est ignoré.
   async function persist() {
     try {
@@ -1014,8 +1056,9 @@ export function createSaveStore({
     get dirty() { return dirty; },
     get lastError() { return lastError; },
     get replaced() { return replaced; },
+    get storedText() { return lastSeen; },
     get stale() { return stale; },
     get conflict() { return conflict; },
-    markDirty, flush, tick, takeOver, exportText, importText, persist, onStorage, check, refresh, dispose,
+    markDirty, flush, tick, takeOver, exportText, importText, persist, onStorage, check, refresh, dispose, wipe,
   };
 }
