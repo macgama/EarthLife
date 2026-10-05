@@ -134,8 +134,8 @@ city = createCityGame({
 city.initMenu();
 
 // ---------- Jeu à plusieurs (online.js) ----------
-// ?online=0 : NULL_ONLINE, aucune requête. Sans ?server= local, tant que le vrai serveur n'est pas en service
-// (ONLINE.enabledByDefault, lot G), createOnline ne fait rien non plus : le jeu solo est celui d'avant.
+// ?online=0 : NULL_ONLINE, aucune requête. Sans ?server= local, le jeu parle au vrai serveur (ONLINE.enabledByDefault,
+// vrai depuis le lot G) ; le joueur choisit ensuite « Jouer à plusieurs » ou « Jouer seul ».
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
 let zones = picker.getZones(); // zones privées (privacy.js), rangées par picker.js, jamais envoyées
 const serverParam = params.get('server');
