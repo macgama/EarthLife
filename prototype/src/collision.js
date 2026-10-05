@@ -1,6 +1,9 @@
 // Grille d'occupation du sol (1 case = CELL mètres) : bâtiments et eau bloquent, les ponts laissent passer.
 // Deux formes : une grille fixe centrée sur l'origine (tests, ville de secours) et une grille en morceaux
 // (chunks) qui suit le joueur quand le monde se charge au fil de la marche.
+// Relief (terrain.js) : chaque morceau peut porter sa grille d'altitude (patch.relief) ; groundAt, groundNormal et
+// gradeAlong les lisent. La grille d'occupation, elle, reste en 2D : les règles du jeu n'ont pas besoin de l'altitude.
+import { reliefAt } from './terrain.js';
 
 export const FREE = 0, BUILDING = 1, WATER = 2, OUTSIDE = 3;
 
@@ -43,6 +46,35 @@ export function getAt(grid, x, z) {
   if (!g) return OUTSIDE;
   const k = indexAt(g, x, z);
   return k < 0 ? OUTSIDE : g.data[k];
+}
+
+// Hauteur du sol dessiné au point (x, z), en mètres relatifs à la référence : triangle du nœud du morceau (les pieds
+// sont exactement sur le sol dessiné), ou, hors des morceaux construits, le modèle d'altitude lissé (grid.terrain) ;
+// 0 partout sans relief (le jeu est plat comme avant).
+export function groundAt(grid, x, z) {
+  const g = grid.chunked ? patchAt(grid, x, z) : grid;
+  if (g?.relief) return reliefAt(g.relief, x, z);
+  return grid.terrain?.enabled ? grid.terrain.heightAt(x, z) : 0;
+}
+
+// Normale unitaire du sol au point (différences centrées sur ± 0,75 m), dans `out` ; (0, 1, 0) sur sol plat.
+export function groundNormal(grid, x, z, out = [0, 1, 0]) {
+  const e = 0.75;
+  const dx = (groundAt(grid, x + e, z) - groundAt(grid, x - e, z)) / (2 * e);
+  const dz = (groundAt(grid, x, z + e) - groundAt(grid, x, z - e)) / (2 * e);
+  const l = Math.hypot(dx, 1, dz);
+  out[0] = -dx / l + 0; out[1] = 1 / l; out[2] = -dz / l + 0; // + 0 : pas de zéro négatif sur sol plat
+  return out;
+}
+
+// Pente du sol dans le sens (dx, dz) : (hauteur à `reach` mètres devant − hauteur ici) / reach. Positive en montée,
+// négative en descente ; 0 si le sens est nul, ou sans relief. Fonction pure : aucune dépendance au rendu.
+export function gradeAlong(grid, x, z, dx, dz, reach = 1.5) {
+  const l = Math.hypot(dx, dz);
+  if (!(l > 1e-9)) return 0;
+  const here = groundAt(grid, x, z);
+  const ahead = groundAt(grid, x + (dx / l) * reach, z + (dz / l) * reach);
+  return (ahead - here) / reach;
 }
 
 export function isFree(grid, x, z) {

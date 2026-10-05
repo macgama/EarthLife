@@ -1,6 +1,7 @@
 // Survie : besoins vitaux (faim, soif, température du corps, fatigue), fouille des vrais bâtiments,
 // sac, équipement porté et usure de l'arme.
 // Inspiré de Project Zomboid, Don't Starve Together, The Wild Eight et The Flame in the Flood.
+import { thirstFactor } from './slope.js';
 
 // Tous les objets du jeu. `one` et `many` : noms courts au singulier et au pluriel (« 1 clou », « 2 clous »).
 export const ITEMS = {
@@ -165,7 +166,8 @@ function fatigueTier(f) {
 export const COMFORT_LOW = 18, COMFORT_HIGH = 28;
 
 export function updateSurvivor(s, env, dt) {
-  // env : { feelsLike, raining, snowing, sheltered, running, windKmh, inside, night, refugeWarmth }
+  // env : { feelsLike, raining, snowing, sheltered, running, windKmh, inside, night, refugeWarmth, climb } ; climb : pente de
+  // montée lissée (relief, slope.js), la soif monte plus vite en grimpant.
   const effects = { hypothermia: false, hyperthermia: false, starving: false, dehydrated: false, damage: 0, fatigue: 0 };
   s.warmth = Math.max(0, s.warmth - dt);
 
@@ -193,7 +195,7 @@ export function updateSurvivor(s, env, dt) {
 
   const hot = s.bodyTemp > 38.5;
   s.food = Math.max(0, s.food - (100 / 900) * (env.running ? 1.3 : 1) * dt);
-  s.water = Math.max(0, s.water - (100 / 600) * (hot ? 2.5 : 1) * (env.running ? 1.3 : 1) * dt);
+  s.water = Math.max(0, s.water - (100 / 600) * (hot ? 2.5 : 1) * (env.running ? 1.3 : 1) * thirstFactor(env.climb) * dt);
 
   if (s.bodyTemp < 35) { effects.hypothermia = true; effects.damage += 0.6 * dt; }
   if (hot) effects.hyperthermia = true;

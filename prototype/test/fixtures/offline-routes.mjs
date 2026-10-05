@@ -7,11 +7,14 @@
 // - carte du menu : un style vide ; recherche Photon et Nominatim : Pérouges ;
 // - communes et population (lot P) : geo.api.gouv.fr, Wikidata, géocodage Open-Meteo et limites Nominatim, réponses
 //   écrites à la main (test/fixtures/communes/routes.mjs, à confirmer avec le réseau).
+// - relief : tuiles d'altitude AWS Terrain Tiles (terrarium) fabriquées à la volée par make-dem-fixture.mjs (relief
+//   synthétique de Lyon et de Pérouges), rien d'enregistré ; RELIEF=off répond 404 (repli : sol plat) ;
 // Toute autre adresse extérieure est refusée : rien ne sort de la machine.
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { communeResponse } from './communes/routes.mjs';
+import { demTile } from './make-dem-fixture.mjs';
 
 const fixtures = path.dirname(fileURLToPath(import.meta.url));
 const cors = { 'access-control-allow-origin': '*' };
@@ -19,6 +22,8 @@ const json = (body) => ({ body: JSON.stringify(body), contentType: 'application/
 const feature = (lon, lat, properties) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [lon, lat] }, properties });
 const PEROUGES = { lat: 45.9034, lon: 5.1795 };
 const STYLE = { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#9db8c9' } }] };
+
+const demCache = new Map();
 
 // ctx : contexte Playwright ; root : dossier du prototype (pour node_modules).
 export default async function routes(ctx, root) {
@@ -45,6 +50,12 @@ export default async function routes(ctx, root) {
       if (url.pathname.startsWith('/styles/')) return route.fulfill(json(STYLE));
       return route.fulfill({ status: 404, headers: cors });
     }
+    if (url.host === 's3.amazonaws.com') {
+      const t = url.pathname.match(/^\/elevation-tiles-prod\/terrarium\/(\d+)\/(\d+)\/(\d+)\.png$/);
+      if (!t || process.env.RELIEF === 'off') return route.fulfill({ status: 404, headers: cors });
+      if (!demCache.has(url.pathname)) demCache.set(url.pathname, demTile(Number(t[1]), Number(t[2]), Number(t[3])));
+      return route.fulfill({ body: demCache.get(url.pathname), contentType: 'image/png', headers: cors });
+    }
     if (url.host === 'fonts.googleapis.com') return route.fulfill({ body: '', contentType: 'text/css', headers: cors });
     if (url.host === 'photon.komoot.io') {
       return route.fulfill(json({ type: 'FeatureCollection', features: [feature(PEROUGES.lon, PEROUGES.lat, { osm_type: 'N', osm_id: 26691411, osm_key: 'place', osm_value: 'village', type: 'city', countrycode: 'FR', name: 'Pérouges', county: 'Ain', country: 'France' })] }));
@@ -53,6 +64,7 @@ export default async function routes(ctx, root) {
       return route.fulfill(json({ lat: String(PEROUGES.lat), lon: String(PEROUGES.lon), name: 'Pérouges', display_name: 'Pérouges, Ain, France', address: { village: 'Pérouges', county: 'Ain', country: 'France' } }));
     }
     if (url.host === 'api.open-meteo.com') {
+      if (url.pathname.startsWith('/v1/elevation')) return route.fulfill({ status: 404, headers: cors });
       return route.fulfill({ body: readFileSync(path.join(fixtures, 'open-meteo-rain-night.json')), contentType: 'application/json', headers: cors });
     }
     return route.abort();

@@ -3,7 +3,8 @@
 // Les morceaux trop loin sont retirés de la mémoire ; ceux qui reviennent se reconstruisent en quelques millisecondes.
 // Le décor démontable (arbres, voitures, bancs : props.js) est calculé par morceau et dessiné par props-view.js.
 import * as THREE from 'three';
-import { chunkKey } from './collision.js';
+import { chunkKey, groundAt } from './collision.js';
+import { buildingFloor } from './terrain.js';
 import { chunkFeatures, chunkReady, buildPatch, insideRings } from './world.js';
 import { tilesForRect, tileKey } from './tiles.js';
 import { propsForChunk, featuresAround, nearestProp, PROP_KINDS, PROP_REACH } from './props.js';
@@ -1101,6 +1102,79 @@ const groundProgram = () => 'earthlife-sol-marques';
 
 const spotOf = (t) => ({ x: t.x, z: t.z, s: t.s, dark: t.dark });
 
+// Relief : pose un objet du décor sur le sol (p.gy : hauteur au pied ; voitures et bancs : tangage et roulis selon la
+// pente sous leurs roues, pieds ou roues sur le sol). Les arbres s'enfoncent un peu côté pente.
+const SEAT = { car: [1.3, 0.8], bench: [0.2, 0.8] }; // demi-longueur (avant, arrière) et demi-largeur d'appui
+export function seatProp(p, ground) {
+  const y = ground(p.x, p.z);
+  const half = SEAT[p.kind];
+  if (!half) {
+    const slope = Math.hypot(ground(p.x + 0.5, p.z) - ground(p.x - 0.5, p.z), ground(p.x, p.z + 0.5) - ground(p.x, p.z - 0.5));
+    p.gy = y - Math.min(0.15, 0.3 * slope);
+    return;
+  }
+  const sy = Math.sin(p.yaw ?? 0), cy = Math.cos(p.yaw ?? 0);
+  const front = ground(p.x + sy * half[0], p.z + cy * half[0]), back = ground(p.x - sy * half[0], p.z - cy * half[0]);
+  const right = ground(p.x + cy * half[1], p.z - sy * half[1]), left = ground(p.x - cy * half[1], p.z + sy * half[1]);
+  p.gy = (front + back + left + right) / 4;
+  p.pitch = -Math.atan2(front - back, 2 * half[0]);
+  p.roll = Math.atan2(right - left, 2 * half[1]);
+}
+
+// Fond lointain en relief (à la place du plan de base de 1 200 m) : grille de 41 × 41 nœuds de 30 m du modèle d'altitude,
+// abaissée de 2 m sous le sol fin, recalée sur la grille de 30 m et refaite quand le joueur s'est éloigné de plus de 60 m de
+// son centre. Son shader rejette les fragments du disque où le sol fin est construit.
+function makeFarGround(terrain) {
+  const N = 41, STEP = 30, DROP = 2;
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(N * N * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(N * N * 3), 3));
+  const index = new Uint16Array((N - 1) * (N - 1) * 6);
+  for (let j = 0, o = 0; j < N - 1; j++) {
+    for (let i = 0; i < N - 1; i++, o += 6) {
+      const a = j * N + i;
+      index.set([a, a + N, a + 1, a + N, a + N + 1, a + 1], o);
+    }
+  }
+  geo.setIndex(new THREE.BufferAttribute(index, 1));
+  const uniforms = { uAt: { value: new THREE.Vector2() }, uHole: { value: 0 } };
+  const mat = new THREE.MeshLambertMaterial({ color: PAL.ground });
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vFarXZ;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\n  vFarXZ = (modelMatrix * vec4(transformed, 1.0)).xz;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vFarXZ;\nuniform vec2 uAt;\nuniform float uHole;')
+      .replace('void main() {', 'void main() {\n  if (distance(vFarXZ, uAt) < uHole) discard;');
+  };
+  mat.customProgramCacheKey = () => 'earthlife-fond-lointain';
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true;
+  mesh.frustumCulled = false;
+  let cx = NaN, cz = NaN;
+  function refill(x, z) {
+    cx = Math.round(x / STEP) * STEP;
+    cz = Math.round(z / STEP) * STEP;
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const px = cx + (i - (N - 1) / 2) * STEP, pz = cz + (j - (N - 1) / 2) * STEP, o = (j * N + i) * 3;
+        pos[o] = px; pos[o + 1] = terrain.heightAt(px, pz) - DROP; pos[o + 2] = pz;
+      }
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.computeVertexNormals();
+    geo.computeBoundingSphere();
+  }
+  return {
+    mesh, mat,
+    follow(x, z) { if (!(Math.abs(x - cx) <= 2 * STEP && Math.abs(z - cz) <= 2 * STEP)) refill(x, z); },
+    hole(x, z, covered) { uniforms.uAt.value.set(x, z); uniforms.uHole.value = Math.max(0, covered - 12); },
+    dispose() { geo.dispose(); mat.dispose(); },
+  };
+}
+
 // Arbres des bois et des parcs, ancrés en latitude et longitude (props.js) : mêmes arbres quelle que soit l'origine.
 // f = éléments du morceau et de ses voisins (featuresAround(store, cx, cz)), proj = projection du monde (store.proj).
 export function treeSpots(f, patch, cx, cz, size, proj) {
@@ -1144,6 +1218,14 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
   base.position.y = -0.04;
   base.receiveShadow = true;
   root.add(base);
+  // Relief : hauteur du sol d'un point (0 sur sol plat), et fond lointain en relief à la place du plan de base.
+  const relief = !!store.terrain?.enabled;
+  const ground = (x, z) => groundAt(grid, x, z);
+  const far = relief ? makeFarGround(store.terrain) : null;
+  if (far) {
+    base.visible = false;
+    root.add(far.mesh);
+  }
   // Teinte du sol selon la météo : blanchi par la neige, assombri et refroidi par la pluie (sol mouillé).
   let tint = { r: 1, g: 1, b: 1, snow: 0 };
 
@@ -1199,11 +1281,11 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     mat.onBeforeCompile = groundShader;
     mat.customProgramCacheKey = groundProgram;
     applyTint(mat);
-    const geo = groundGeometry(plan, cx * size, cz * size, size);
-    const ground = new THREE.Mesh(geo, mat);
-    ground.position.set(cx * size + size / 2, 0, cz * size + size / 2);
-    ground.receiveShadow = true;
-    group.add(ground);
+    const geo = groundGeometry(plan, cx * size, cz * size, size, relief ? grid.chunks.get(key)?.relief ?? null : null);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(cx * size + size / 2, 0, cz * size + size / 2);
+    mesh.receiveShadow = true;
+    group.add(mesh);
     root.add(group);
     return { group, mat, tex, groundGeo: geo, marks: geo.userData.marks, geo: null, trees: null, props: null, cx, cz, buildings: 0, done: false };
   }
@@ -1212,7 +1294,8 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
   function finishView(key, v) {
     const f = chunkFeatures(store, v.cx, v.cz);
     const own = f.buildings.filter((b) => b.chunk === key);
-    const geo = buildingsGeometry(own);
+    // Relief : chaque bâtiment est posé sur le terrain (plancher à la porte, socle au point bas).
+    const geo = buildingsGeometry(own, relief ? (b) => buildingFloor(b, ground) : null);
     if (geo) {
       const mesh = new THREE.Mesh(geo, buildingMaterial({ lowPower }));
       mesh.castShadow = true;
@@ -1243,6 +1326,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     pending.delete(key);
     const d = propsForChunk(near, patch, v.cx, v.cz, size, proj, { marks: markBoxes(planFor(key, near, v.cx, v.cz)) });
     v.props = [...d.trees, ...d.cars, ...d.benches];
+    if (relief) for (const p of v.props) seatProp(p, ground);
     for (const p of v.props) if (!gone.has(p.id) && isGone(p.id)) gone.add(p.id);
     if (propsView) propsView.setChunk(key, v.props.filter((p) => !gone.has(p.id)));
     else showTrees(v);
@@ -1283,6 +1367,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     base.position.x = x;
     base.position.z = z;
     const t0 = performance.now();
+    far?.follow(x, z);
     const start = budgetMs / 2;
     let waiting = 0;
     for (const c of around(x, z, GRID_RADIUS)) {
@@ -1326,6 +1411,8 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
       const cx = Math.floor(key / 65536) - 32768, cz = (key % 65536) - 32768;
       if (distance(cx, cz, x, z) > DROP_GRID) grid.chunks.delete(key);
     }
+    // Fond lointain : troué là où le sol fin est construit (un creux pourrait le faire passer au-dessus).
+    far?.hole(x, z, covered ?? R);
     return { waiting, built: views.size, covered: covered ?? R, radius: R };
   }
 
@@ -1344,6 +1431,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     tint = kind === 'snow' ? { r: 0.62, g: 0.63, b: 0.65, snow: 0.42 }
       : kind === 'rain' || kind === 'storm' ? { r: 0.68, g: 0.72, b: 0.79, snow: 0 } : { r: 1, g: 1, b: 1, snow: 0 };
     applyTint(baseMat);
+    if (far) applyTint(far.mat);
     for (const v of views.values()) applyTint(v.mat);
   }
 
@@ -1397,6 +1485,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     scene.remove(root);
     base.geometry.dispose();
     baseMat.dispose();
+    far?.dispose();
   }
 
   function stats() {
