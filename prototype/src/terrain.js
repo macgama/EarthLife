@@ -240,3 +240,53 @@ export function nodeNormal(r, i, j, out = [0, 1, 0]) {
   out[0] = -dx / l; out[1] = 1 / l; out[2] = -dz / l;
   return out;
 }
+
+// ---------- Bâtiments posés sur le terrain ----------
+
+const EDGE_OUT = 0.6; // le plancher est lu à 0,6 m devant le mur de la porte, sur le trottoir
+const SOCLE = 0.3; // le socle descend à 0,3 m sous le point le plus bas du terrain de l'empreinte
+
+function insideRings(x, z, rings) {
+  let inside = false;
+  for (const r of rings) {
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      if ((r[i].z > z) !== (r[j].z > z) && x < ((r[j].x - r[i].x) * (z - r[i].z)) / (r[j].z - r[i].z) + r[i].x) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// Plancher d'un bâtiment (b : sortie de tiles.js ; ground(x, z) : hauteur du sol) :
+// - floor : hauteur du rez-de-chaussée, le sol devant la porte (sinon devant le milieu de la première arête sur rue,
+//   sinon le point le plus bas de l'emprise), si bien que la porte reste de plain-pied avec la rue ;
+// - drop : profondeur du socle sous le plancher, jusqu'à 0,3 m sous le point le plus bas du terrain de l'emprise (sommets,
+//   milieux d'arêtes et centre) : un bâtiment ne flotte jamais côté aval ; côté amont, le pied du mur est enterré.
+// Une partie surélevée (minHeight > 0) n'a pas de socle.
+export function buildingFloor(b, ground) {
+  const ring = b?.rings?.[0];
+  if (!ring || ring.length < 3) return { floor: 0, drop: 0 };
+  const n = ring.length;
+  const outside = (i, t) => {
+    const p = ring[i], q = ring[(i + 1) % n], l = Math.hypot(q.x - p.x, q.z - p.z) || 1;
+    const x = p.x + (q.x - p.x) * t, z = p.z + (q.z - p.z) * t;
+    let nx = -(q.z - p.z) / l, nz = (q.x - p.x) / l;
+    if (insideRings(x + nx * 0.2, z + nz * 0.2, b.rings)) { nx = -nx; nz = -nz; }
+    return ground(x + nx * EDGE_OUT, z + nz * EDGE_OUT);
+  };
+  let low = Infinity;
+  for (let i = 0; i < n; i++) {
+    const p = ring[i], q = ring[(i + 1) % n];
+    low = Math.min(low, ground(p.x, p.z), ground((p.x + q.x) / 2, (p.z + q.z) / 2));
+  }
+  if (Number.isFinite(b.cx) && Number.isFinite(b.cz)) low = Math.min(low, ground(b.cx, b.cz));
+  let floor = null;
+  if (b.door && b.door.edge >= 0 && b.door.edge < n) {
+    const p = ring[b.door.edge], q = ring[(b.door.edge + 1) % n], l = Math.hypot(q.x - p.x, q.z - p.z);
+    floor = outside(b.door.edge, l > 0 ? Math.max(0, Math.min(1, b.door.u / l)) : 0.5);
+  } else if (b.edges) {
+    const i = b.edges.indexOf(1);
+    if (i >= 0 && i < n) floor = outside(i, 0.5);
+  }
+  if (floor === null) floor = low;
+  return { floor, drop: (b.minHeight ?? 0) > 0 ? 0 : Math.max(0, floor - low) + SOCLE };
+}

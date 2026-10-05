@@ -4,7 +4,8 @@ import { CITIES } from './cities.js';
 import { createPicker, placeFromCity } from './picker.js';
 import { fetchWeather, forcedWeather, gameplayModifiers } from './weather.js';
 import { sunPosition, localTimeLabel } from './sun.js';
-import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, lineFree } from './collision.js';
+import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, lineFree, groundAt, groundNormal } from './collision.js';
+import { buildingFloor } from './terrain.js';
 import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate } from './world.js';
 import { DEM_ATTRIBUTION } from './dem.js';
 import { createChunkManager, VIEW_RADIUS } from './chunks.js';
@@ -283,6 +284,7 @@ let hudFrozen = false;
 const frustum = new THREE.Frustum();
 const frustumMatrix = new THREE.Matrix4();
 const probe = new THREE.Sphere(new THREE.Vector3(), 1.2);
+const beaconNormal = [0, 1, 0];
 
 $('play').addEventListener('click', () => startGame(picker.getPlace()));
 // Au menu la boucle de jeu ne lit pas les touches : Échap ferme tout de même la carte du niveau (« Annuler »).
@@ -689,6 +691,7 @@ function disposeSession() {
   baseView.setLure(null);
   session.chunks.dispose();
   session.loader.dispose();
+  baseView.setGround(null);
   scene.remove(session.root);
   // Balise propre à la partie : géométries et matériaux rendus au GPU (les personnages, eux, sont réutilisés).
   session.beacon.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } });
@@ -715,6 +718,9 @@ function buildSession(place, origin, home, store, grid, loader, chunks, start, l
   if (!home) refuge.inside = false;
   hud.reset();
   minimap.reset(store);
+  // Relief : le refuge, le sac, la caisse et le leurre sont posés sur le sol (groundAt) ; sans relief, à y = 0.
+  baseView.setGround(store.terrain?.enabled ? (x, z) => groundAt(grid, x, z) : null);
+  atmosphere.setRelief(!!store.terrain?.enabled);
 
   session = {
     place, origin, home, store, grid, loader, chunks, root, liveWeather, start, director, field, refuge,
@@ -779,7 +785,7 @@ const focus = new THREE.Vector3();
 const perfSamples = [];
 // Point hors du champ de la caméra (image précédente) : une horde n'apparaît jamais à l'écran.
 const offscreen = (x, z) => {
-  probe.center.set(x, 1, z);
+  probe.center.set(x, 1 + (session?.grid ? groundAt(session.grid, x, z) : 0), z); // relief : la sonde suit le sol
   return !frustum.intersectsSphere(probe);
 };
 renderer.setAnimationLoop(() => {
@@ -811,7 +817,7 @@ renderer.setAnimationLoop(() => {
 
   if (s.player) syncScene(s, dt);
   const at = s.viewAt ?? s.player;
-  focus.set(at?.x ?? 0, 0, at?.z ?? 0);
+  focus.set(at?.x ?? 0, s.groundY ?? 0, at?.z ?? 0);
   atmosphere.update(dt, focus, s.player?.yaw ?? 0);
   renderer.render(scene, camera);
   atmosphere.endFrame();
@@ -1784,7 +1790,10 @@ function syncScene(s, dt) {
   if (target) {
     const color = s.quest.stage === 'toPickup' ? 0xffc23d : 0x3fd08f;
     if (s.beaconColor !== color) { s.beacon.userData.setColor(color); s.beaconColor = color; }
-    s.beacon.position.set(target.x, 0, target.z);
+    // Relief : la balise est posée sur le sol, son réticule penché selon la pente.
+    const relief = !!s.grid.terrain?.enabled;
+    s.beacon.position.set(target.x, relief ? groundAt(s.grid, target.x, target.z) : 0, target.z);
+    if (relief) s.beacon.userData.tilt(groundNormal(s.grid, target.x, target.z, beaconNormal));
     s.beacon.userData.update(performance.now() / 1000, characters.reduceMotion.matches);
   }
 
@@ -1815,13 +1824,23 @@ function syncScene(s, dt) {
   s.camPitchEff = Math.max(pitchWant, pitchFloor(s.cameraDist, lowPower));
   s.viewRadius = viewRadius(goal, viewAspect, lowPower); // sur la distance visée : on construit avant d'y être
   const d = s.cameraDist, pitch = s.camPitchEff;
+  // Relief : la caméra suit la hauteur du sol sous le point visé, lissée (τ = 0,2 s : pas de sautillement sur les arêtes des
+  // triangles du sol), et reste à 2 m au moins au-dessus du sol à sa verticale. Sans relief, tout est à y = 0 comme avant.
+  const relief = !!s.grid.terrain?.enabled;
+  if (!relief) s.groundY = 0;
+  else {
+    const g = groundAt(s.grid, at.x, at.z);
+    s.groundY = !Number.isFinite(s.groundY) || Math.abs(g - s.groundY) > 6 ? g : s.groundY + (g - s.groundY) * (1 - Math.exp(-dt / 0.2));
+  }
+  const gy = s.groundY;
   camera.position.set(
     at.x - Math.sin(s.cameraYaw) * Math.cos(pitch) * d,
-    1.6 + Math.sin(pitch) * d,
+    gy + 1.6 + Math.sin(pitch) * d,
     at.z - Math.cos(s.cameraYaw) * Math.cos(pitch) * d,
   );
-  camera.lookAt(at.x, 1.6, at.z);
-  cutaway.player.value.set(at.x, 1.2, at.z);
+  if (relief) camera.position.y = Math.max(camera.position.y, groundAt(s.grid, camera.position.x, camera.position.z) + 2);
+  camera.lookAt(at.x, gy + 1.6, at.z);
+  cutaway.player.value.set(at.x, gy + 1.2, at.z);
   cutaway.camera.value.copy(camera.position);
   // Brouillard : même voile autour du joueur à toute distance, ramené devant le premier sol non construit visible. Le
   // trou le plus proche est rattrapé tout de suite et ne se relâche qu'en douceur (τ = 0,3 s). Au refuge, la caméra vise
@@ -1862,7 +1881,9 @@ function syncBase(s, dt) {
     s.viewInside = undefined;
     const door = a ? r.openingsWorld()[0] : null;
     const roof = !a ? 0 : bld ? roofTop(bld, a.x, a.z) ?? b.height : b.height;
-    baseView.setBase(a ? { x: a.x, z: a.z, roofHeight: roof, doorX: door?.ax ?? a.x, doorZ: door?.az ?? a.z } : null);
+    // Relief : le refuge est posé sur le terrain comme son bâtiment (plancher à la porte) ; ouvertures et drapeau le suivent.
+    const floor = a && bld && s.grid.terrain?.enabled ? buildingFloor(bld, (x, z) => groundAt(s.grid, x, z)).floor : 0;
+    baseView.setBase(a ? { x: a.x, z: a.z, roofHeight: roof, floor, doorX: door?.ax ?? a.x, doorZ: door?.az ?? a.z } : null);
   }
   if (a && r.version !== s.viewVersion) {
     s.viewVersion = r.version;
@@ -2080,6 +2101,8 @@ const debug = DEBUG ? {
     return { x, z };
   },
   props: (kind) => session?.chunks.props(kind) ?? [],
+  // Hauteur du sol (relief) au point, et pente lissée du joueur.
+  groundAt: (x, z) => (session ? groundAt(session.grid, x, z) : 0),
   // Relief : état (actif, référence, tuiles d'altitude) et altitude réelle au joueur.
   terrain() {
     const t = session?.store.terrain;

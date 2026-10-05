@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { ZOMBIE_TYPES } from './game.js';
+import { groundAt, groundNormal } from './collision.js';
 
 // Membres (aLimb.w) : 0 corps, 1 bras gauche, 2 bras droit, 3 jambe gauche, 4 jambe droite, 5 cargaison.
 const BODY = 0, ARM_L = 1, ARM_R = 2, LEG_L = 3, LEG_R = 4, CARGO = 5;
@@ -386,8 +387,15 @@ export function createCharacters({ lowPower = false } = {}) {
     fx.shakeT = seconds;
   }
 
-  function writeBlob(i, x, z, r) {
-    m4.makeScale(r * 2, 1, r * 2).setPosition(x, 0.025, z);
+  // Ombre de contact posée sur le sol (gy : hauteur du sol) ; avec le relief (grid), penchée selon la pente.
+  const blobPos = new THREE.Vector3(), blobScl = new THREE.Vector3(), blobQuat = new THREE.Quaternion(), blobUp = new THREE.Vector3(0, 1, 0), blobN = new THREE.Vector3();
+  const nrm = [0, 1, 0];
+  function writeBlob(i, x, z, r, gy = 0, grid = null) {
+    if (grid) {
+      groundNormal(grid, x, z, nrm);
+      blobQuat.setFromUnitVectors(blobUp, blobN.set(nrm[0], nrm[1], nrm[2]));
+      m4.compose(blobPos.set(x, gy + 0.025, z), blobQuat, blobScl.set(r * 2, 1, r * 2));
+    } else m4.makeScale(r * 2, 1, r * 2).setPosition(x, gy + 0.025, z);
     blobs.setMatrixAt(i, m4);
   }
 
@@ -400,6 +408,10 @@ export function createCharacters({ lowPower = false } = {}) {
     playerUniforms.uGlow.value.copy(PLAYER_GLOW).multiplyScalar(0.15 + 0.85 * night);
     zombieUniforms.uGlow.value.copy(ZOMBIE_GLOW).multiplyScalar(0.55 + 0.95 * night);
     zombieUniforms.uAlert.value.copy(ZOMBIE_ALERT).multiplyScalar(1 + 0.8 * night);
+
+    // Relief : les personnages marchent sur le sol dessiné (groundAt) ; sans lui, tout reste à y = 0 comme avant.
+    const grid = s.grid?.terrain?.enabled ? s.grid : null;
+    const gy = grid ? (x, z) => groundAt(grid, x, z) : () => 0;
 
     // ----- Joueur -----
     const p = s.player;
@@ -423,7 +435,8 @@ export function createCharacters({ lowPower = false } = {}) {
       moving && !calm ? Math.sin(ps.phase) * 0.05 * Math.min(1, pace) : 0,
     );
     quat.setFromEuler(euler);
-    pos.set(p.x, moving ? Math.abs(Math.sin(ps.phase)) * 0.08 * pace : 0, p.z);
+    const playerY = gy(p.x, p.z);
+    pos.set(p.x, playerY + (moving ? Math.abs(Math.sin(ps.phase)) * 0.08 * pace : 0), p.z);
     scl.set(1, moving || ps.down ? 1 : 1 + Math.sin(t * 2) * 0.01, 1);
     m4.compose(pos, quat, scl);
     player.setMatrixAt(0, m4);
@@ -436,7 +449,7 @@ export function createCharacters({ lowPower = false } = {}) {
     pa.aLook.setXYZW(0, 1, 1, 1, 1);
     pa.aAnim.needsUpdate = pa.aPose.needsUpdate = pa.aLook.needsUpdate = true;
     playerUniforms.uCargo.value = p.carrying ? 1 : 0;
-    writeBlob(0, p.x, p.z, 0.55);
+    writeBlob(0, p.x, p.z, 0.55, playerY, grid);
 
     // ----- Zombies -----
     const list = s.director.zombies;
@@ -479,7 +492,8 @@ export function createCharacters({ lowPower = false } = {}) {
       );
       quat.setFromEuler(euler);
       const x = z.x + st.ox, zz = z.z + st.oz;
-      pos.set(x, z.dead ? -sink : (walking ? Math.abs(Math.sin(st.phase)) * 0.08 * Math.max(0.35, zPace) : 0), zz);
+      const zy = gy(x, zz);
+      pos.set(x, zy + (z.dead ? -sink : (walking ? Math.abs(Math.sin(st.phase)) * 0.08 * Math.max(0.35, zPace) : 0)), zz);
       const sq = calm ? 0 : st.squash / 0.12;
       scl.set(look.scale[0] * (1 + 0.12 * sq), look.scale[1] * (1 - 0.12 * sq) * (walking || z.dead ? 1 : 1 + Math.sin(t * 2 + z.id) * 0.01), look.scale[2] * (1 + 0.12 * sq));
       m4.compose(pos, quat, scl);
@@ -493,7 +507,7 @@ export function createCharacters({ lowPower = false } = {}) {
       tint.setHex((ZOMBIE_TYPES[z.type] ?? ZOMBIE_TYPES.errant).color);
       if (z.dead) tint.lerp(DEAD_TINT, Math.min(1, z.dead / 0.4));
       za.aLook.setXYZW(i, tint.r, tint.g, tint.b, z.dead ? 0 : z.state === 'chase' || z.state === 'horde' ? 2 : 1);
-      writeBlob(i + 1, x, zz, z.dead ? Math.max(0, 0.5 * look.scale[0] * (1 - sink)) : 0.5 * look.scale[0]);
+      writeBlob(i + 1, x, zz, z.dead ? Math.max(0, 0.5 * look.scale[0] * (1 - sink)) : 0.5 * look.scale[0], zy, grid);
     }
     zombies.count = list.length;
     zombies.visible = list.length > 0;
@@ -506,7 +520,7 @@ export function createCharacters({ lowPower = false } = {}) {
     if (hitAt) {
       fx.impact = 0.25;
       const st = states.get(hitAt);
-      impact.position.set(hitAt.x + st.ox, 1.15, hitAt.z + st.oz);
+      impact.position.set(hitAt.x + st.ox, 1.15 + gy(hitAt.x + st.ox, hitAt.z + st.oz), hitAt.z + st.oz);
     }
     fx.impact = Math.max(0, fx.impact - dt);
     impact.visible = fx.impact > 0;
