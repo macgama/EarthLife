@@ -1,0 +1,29 @@
+{
+ "results": [
+  {
+   "id": 2987914,
+   "name": "Pérouges",
+   "latitude": 45.90414,
+   "longitude": 5.17991,
+   "elevation": 290,
+   "feature_code": "PPL",
+   "country_code": "FR",
+   "admin1_id": 11071625,
+   "admin2_id": 3038032,
+   "admin3_id": 3035880,
+   "admin4_id": 6446000,
+   "timezone": "Europe/Paris",
+   "population": 1208,
+   "postcodes": [
+    "01800"
+   ],
+   "country_id": 3017382,
+   "country": "France",
+   "admin1": "Auvergne-Rhône-Alpes",
+   "admin2": "Ain",
+   "admin3": "Arrondissement de Bourg-en-Bresse",
+   "admin4": "Pérouges"
+  }
+ ],
+ "generationtime_ms": 0.61
+}

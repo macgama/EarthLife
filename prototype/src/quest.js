@@ -111,6 +111,13 @@ export function refugeQuest() {
   return { type: 'refuge', stage: 'claim' };
 }
 
+// Première mission d'une partie de ville (« Sauver sa ville ») : le joueur est déjà chez lui, dans une vraie maison tirée parmi
+// les habitants. 'barricade' : cloue une planche sur sa porte ; 'return' : retourne chez lui (maison tirée à l'écart de sa
+// position). Pas de chrono, pas de cible ; elle se termine ailleurs (main.js : une ouverture renforcée, ou la porte franchie).
+export function homeQuest(stage = 'barricade') {
+  return { type: 'home', stage: stage === 'return' ? 'return' : 'barricade' };
+}
+
 // Livraisons proposées depuis la porte du refuge : toujours `n`, avec des lieux de ramassage différents.
 // D'abord de vrais lieux ; s'il en manque (campagne), des points génériques dans des directions
 // régulièrement espacées (120° pour 3), chacun avec son identifiant et son type de lieu.
@@ -161,6 +168,7 @@ export function durationLabel(seconds) {
 // « Pharmacie Bellecour → Poste de Police Municipale · 0,8 km · 3 min 16 après ramassage ».
 export function missionLine(q) {
   if (q.type === 'refuge') return 'Trouve un refuge';
+  if (q.type === 'home') return q.stage === 'return' ? 'Rentre chez toi' : 'Barricade ta porte';
   const name = (p) => p.name ?? p.label;
   const km = (q.walkDistance / 1000).toFixed(1).replace('.', ',');
   return `${name(q.pickup)} → ${name(q.dropoff)} · ${km} km · ${durationLabel(q.timeLimit)} après ramassage`;
@@ -168,6 +176,7 @@ export function missionLine(q) {
 
 export function questText(q) {
   if (q.type === 'refuge') return 'Fouille un bâtiment, puis touche « En faire mon refuge ».';
+  if (q.type === 'home') return q.stage === 'return' ? 'Ta maison est ton refuge : retrouve-la (flèche bleue).' : 'Cloue une planche sur ta porte : au refuge, onglet Défense.';
   return `Récupère ${q.item} ${placeWith('à', q.pickup)}, puis livre ta cargaison ${placeWith('à', q.dropoff)}.`;
 }
 
@@ -191,7 +200,7 @@ export function placeWith(prep, place) {
 // `touching` : indice du bâtiment contre lequel se tient le joueur (un grand hôpital compte dès sa façade).
 // Le chrono n'avance qu'après le ramassage. La mission « refuge » se termine ailleurs (à l'installation).
 export function updateQuest(q, player, dt, { reach = 6, touching = null } = {}) {
-  if (q.type === 'refuge' || q.stage === 'done' || q.stage === 'failed') return null;
+  if (q.type === 'refuge' || q.type === 'home' || q.stage === 'done' || q.stage === 'failed') return null;
   if (q.stage === 'toDropoff') {
     q.elapsed += dt;
     if (q.elapsed >= q.timeLimit) {
@@ -213,6 +222,6 @@ export function updateQuest(q, player, dt, { reach = 6, touching = null } = {}) 
 }
 
 export function currentTarget(q) {
-  if (!q || q.type === 'refuge' || q.stage === 'done' || q.stage === 'failed') return null;
+  if (!q || q.type === 'refuge' || q.type === 'home' || q.stage === 'done' || q.stage === 'failed') return null;
   return q.stage === 'toPickup' ? q.pickup : q.dropoff;
 }

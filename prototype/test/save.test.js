@@ -540,13 +540,111 @@ test('deux onglets sur le même stockage : le second écrit, le premier passe en
   assert.equal(JSON.parse(storage.map.get(SAVE_KEY)).writer, a.writer);
   assert.equal(b.flush('test').ok, false);
   assert.equal(b.readOnly, true);
-  // Événement `storage` du navigateur : un autre writer met l'onglet en lecture seule.
+  // Événement `storage` du navigateur : un autre writer met en lecture seule l'onglet qui joue (modification en attente).
   const c = createSaveStore({ storage: fakeStorage(), now: () => NOW, rand: seeded(5) });
+  c.markDirty();
   c.onStorage({ key: 'earthlife.place', newValue: '{}' });
   c.onStorage({ key: SAVE_KEY, newValue: JSON.stringify({ ...EXAMPLE, writer: c.writer }) });
   assert.equal(c.readOnly, false);
   c.onStorage({ key: SAVE_KEY, newValue: JSON.stringify(EXAMPLE) });
   assert.equal(c.readOnly, true);
+});
+
+test('page restée au menu : une écriture d\'une autre page ne la bloque pas, elle relit la partie au lancement', () => {
+  const other = { ...EXAMPLE, writer: 'wautrepage', rev: 7, savedAt: NOW - 12000 };
+  other.profile = { ...other.profile, kills: 42 };
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const seen = [];
+  const reloads = [];
+  const menu = createSaveStore({
+    storage, now: () => NOW, rand: seeded(11), onExternal: (e) => seen.push(e),
+    companion: { field: 'territory', write: () => ({ ok: true }), exportValue: () => null, importValue() {}, reload: () => reloads.push(1) },
+  });
+  const ref = menu.save;
+  assert.equal(menu.refresh(), false, 'rien n\'a changé : rien à relire');
+  storage.setItem(SAVE_KEY, JSON.stringify(other));
+  menu.onStorage({ key: SAVE_KEY, newValue: JSON.stringify(other) });
+  assert.equal(menu.readOnly, false, 'pas de lecture seule silencieuse');
+  assert.equal(menu.stale, true);
+  assert.deepEqual(seen, [], 'aucune carte pour une page qui ne jouait pas');
+  assert.deepEqual(menu.conflict, { writer: 'wautrepage', savedAt: NOW - 12000 });
+  // Lancement d'une partie : la partie de l'autre page est relue, sans rien écrire, puis cette page prend la main.
+  assert.equal(menu.refresh(), true);
+  assert.equal(menu.save, ref, 'même objet partagé');
+  assert.equal(menu.save.profile.kills, 42);
+  assert.equal(menu.stale, false);
+  assert.equal(reloads.length, 1, 'le territoire est relu aussi');
+  assert.equal(JSON.parse(storage.map.get(SAVE_KEY)).writer, 'wautrepage', 'rien d\'écrit par la relecture');
+  menu.markDirty();
+  assert.equal(menu.tick(5000).ok, true);
+  assert.equal(menu.readOnly, false);
+  assert.equal(JSON.parse(storage.map.get(SAVE_KEY)).writer, menu.writer);
+  assert.equal(JSON.parse(storage.map.get(SAVE_KEY)).profile.kills, 42);
+});
+
+test('page qui joue : la carte « autre onglet » dit quand l\'autre page a sauvegardé', () => {
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const seen = [];
+  const a = createSaveStore({ storage, now: () => NOW, rand: seeded(21), onExternal: (e) => seen.push(e) });
+  a.markDirty();
+  const other = { ...EXAMPLE, writer: 'wautrepage', savedAt: NOW - 90000 };
+  storage.setItem(SAVE_KEY, JSON.stringify(other));
+  assert.equal(a.tick(5000).ok, false);
+  assert.equal(a.readOnly, true);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].since, NOW - 90000);
+  assert.deepEqual(a.conflict, { writer: 'wautrepage', savedAt: NOW - 90000 });
+  // « Reprendre ici » efface le diagnostic.
+  assert.equal(a.takeOver().ok, true);
+  assert.equal(a.conflict, null);
+});
+
+test('page endormie (retour au premier plan, cache arrière/avant) : check() rattrape l\'écriture manquée', () => {
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const seen = [];
+  const playing = createSaveStore({ storage, now: () => NOW, rand: seeded(31), onExternal: (e) => seen.push(e) });
+  const idle = createSaveStore({ storage, now: () => NOW, rand: seeded(32) });
+  playing.markDirty();
+  assert.equal(playing.tick(5000).ok, true, 'cette page écrit une première fois');
+  playing.check();
+  idle.check();
+  assert.equal(playing.readOnly, false, 'ses propres écritures ne comptent pas');
+  assert.equal(idle.stale, true, 'l\'autre page a écrit pendant que celle-ci dormait');
+  assert.equal(idle.readOnly, false);
+  // L'autre page reprend la main : la page qui jouait passe en lecture seule au retour.
+  idle.refresh();
+  idle.markDirty();
+  assert.equal(idle.tick(5000).ok, true);
+  playing.check();
+  assert.equal(playing.readOnly, true);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].type, 'other-tab');
+  // Une sauvegarde sans écrivain (ancien format) ne déclenche rien.
+  const legacy = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const l = createSaveStore({ storage: legacy, now: () => NOW, rand: seeded(33) });
+  l.markDirty();
+  const { writer: _w, ...noWriter } = EXAMPLE;
+  legacy.setItem(SAVE_KEY, JSON.stringify(noWriter));
+  l.check();
+  assert.equal(l.readOnly, false);
+  assert.equal(l.stale, false);
+});
+
+test('refresh : sans effet pour une page qui a écrit, et une sauvegarde illisible ou plus récente n\'est jamais adoptée', () => {
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const w = createSaveStore({ storage, now: () => NOW, rand: seeded(41) });
+  w.markDirty();
+  assert.equal(w.tick(5000).ok, true);
+  storage.setItem(SAVE_KEY, JSON.stringify({ ...EXAMPLE, writer: 'wautrepage' }));
+  assert.equal(w.refresh(), false, 'une page qui a écrit ne relit pas : write() la met en lecture seule');
+  assert.equal(w.flush('test').ok, false);
+  const s2 = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const m = createSaveStore({ storage: s2, now: () => NOW, rand: seeded(42) });
+  s2.setItem(SAVE_KEY, '{pas du json');
+  assert.equal(m.refresh(), false);
+  s2.setItem(SAVE_KEY, JSON.stringify({ ...EXAMPLE, v: SAVE_VERSION + 1 }));
+  assert.equal(m.refresh(), false);
+  assert.equal(m.save.profile.kills, EXAMPLE.profile.kills);
 });
 
 test('?fresh : la sauvegarde actuelle part dans .prev, puis une partie neuve commence', () => {

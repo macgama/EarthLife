@@ -194,7 +194,7 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   let dropped = 0;
 
   const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
-  const _up = new THREE.Vector3(0, 1, 0), _c = new THREE.Color();
+  const _up = new THREE.Vector3(0, 1, 0), _c = new THREE.Color(), _e = new THREE.Euler(0, 0, 0, 'YXZ');
 
   function poolsFor(p) {
     if (p.kind === 'tree') return [trunks, p.dark ? darkCrowns : crowns];
@@ -207,8 +207,10 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   function writeMatrix(pl, slot) {
     const p = pl.props[slot];
     const s = hidden(p.id) ? 0 : (p.s ?? 1);
-    _q.setFromAxisAngle(_up, p.yaw ?? 0);
-    _m.compose(_p.set(p.x, 0, p.z), _q, _s.set(s, s, s));
+    // Relief : p.gy (hauteur du sol au pied), p.pitch et p.roll (voitures et bancs, selon la pente) posés par chunks.js.
+    if (p.pitch || p.roll) _q.setFromEuler(_e.set(p.pitch ?? 0, p.yaw ?? 0, p.roll ?? 0));
+    else _q.setFromAxisAngle(_up, p.yaw ?? 0);
+    _m.compose(_p.set(p.x, p.gy ?? 0, p.z), _q, _s.set(s, s, s));
     pl.mesh.setMatrixAt(slot, _m);
     touch(pl.trackers[0], slot);
   }

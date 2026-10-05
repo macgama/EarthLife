@@ -10,6 +10,7 @@
     "acceptance": "node test/base-acceptance.mjs",
     "acceptance:online": "node test/online-acceptance.mjs",
     "bench": "node test/bench-base.mjs",
+    "bench:blocks": "node test/bench-blocks.mjs",
     "smoke": "node test/browser-smoke.mjs",
     "smoke:offline": "ROUTES=test/fixtures/offline-routes.mjs node test/browser-smoke.mjs",
     "tiles:crop": "node test/fixtures/crop-tiles.mjs"

@@ -13,6 +13,8 @@ import { createZombieDirector, createPlayer } from '../src/game.js';
 import { createFlowField, reachableFrom } from '../src/flowfield.js';
 import { createRefuge } from '../src/refuge.js';
 import { createSaveStore, memoryStorage, SAVE_KEY, ITEM_KEYS } from '../src/save.js';
+import { createTerritoryStore, beginVille, TERRITORY_KEY } from '../src/territory-store.js';
+import { startVille, placeTile, lend, kill, blockInfo } from '../src/quartier.js';
 
 const LYON = { lat: 45.7578, lon: 4.832 };
 const lyon = (d, h, m = 0) => Date.UTC(2026, 9, d, h - 2, m);
@@ -208,6 +210,42 @@ if (!claimed.ok) throw new Error(`revendication impossible : ${claimed.why}`);
   const kb = Buffer.byteLength(text, 'utf8') / 1024;
   if (kb > 200) failures.push('taille de la sauvegarde');
   console.log(`${kb <= 200 ? 'OK ' : 'ÉCHEC'} texte de la sauvegarde écrite : ${kb.toFixed(1)} Ko ≤ 200 Ko`);
+}
+
+// Même lot de 2 s avec le territoire (territory-store.js, compagnon de la sauvegarde) au pire : la ville en cours a
+// 1 000 pâtés joués (jamais allégés), trois villes en pause 600 pâtés intacts chacune, allégés sur une copie à chaque
+// écriture. Le territoire change avant chaque écriture.
+{
+  const now = T0;
+  const storage = memoryStorage();
+  let s = null;
+  const territory = createTerritoryStore({ storage, now: () => now, onDirty: () => s?.markDirty() });
+  s = createSaveStore({ storage, now: () => now, listen: false, companion: territory });
+  const cut = (x, n) => ({
+    tile: `14/${x}/5844`, x, y: 5844, z: 14,
+    pates: Array.from({ length: n }, (_, i) => {
+      const lat = 45.75 + (i % 40) * 0.0002, lon = 4.83 + (x - 8411) * 0.022 + Math.floor(i / 40) * 0.0002;
+      return { key: `b${lat.toFixed(5)}_${lon.toFixed(5)}`, lat, lon, n: 6, floor: 300 + ((i * 7919) % 2500), homes: 6, qkey: 'q45.7578_4.8320' };
+    }),
+  });
+  const ville = (key, x, n, at) => {
+    const c = cut(x, n);
+    const v = startVille({ key, name: key, population: n * 20, level: 'facile', tiles: { [c.tile]: 1 }, at });
+    placeTile(v, c);
+    return v;
+  };
+  for (let i = 0; i < 3; i++) beginVille(territory.territory, ville(`c6938${i + 1}`, 8411 + i, 600, now + i));
+  const cur = ville('c69384', 8415, 1000, now + 9);
+  for (const k of Object.keys(cur.tiles['14/8415/5844'].b)) if (blockInfo(cur, k).zombies > 0) kill(cur, k, lend(cur, k, 1));
+  beginVille(territory.territory, cur);
+  const keys = Object.keys(cur.tiles['14/8415/5844'].b);
+  let j = 0;
+  const step = () => { const k = keys[j++ % keys.length]; kill(cur, k, lend(cur, k, 1)); territory.markDirty(); return s.flush('mesure'); };
+  for (let i = 0; i < 10; i++) step();
+  const times = [];
+  for (let i = 0; i < 100; i++) times.push(timed(step));
+  report('saveStore.flush avec le territoire (1 000 pâtés joués, 1 800 en pause)', times, 5);
+  console.log(`     texte du territoire écrit : ${((storage.getItem(TERRITORY_KEY) ?? '').length / 1024).toFixed(1)} Ko`);
 }
 
 if (failures.length) {

@@ -26,6 +26,7 @@ export const SAVE_MESSAGES = {
   corrupt: "Sauvegarde illisible : nouvelle partie (l'ancienne est gardée à part)",
   badFile: "Fichier illisible : ce n'est pas une sauvegarde EarthLife",
   newerFile: 'Sauvegarde créée par une version plus récente du jeu : import impossible',
+  companionFull: 'Territoire non enregistré : stockage du navigateur plein',
 };
 
 const DAY = 86400000;
@@ -625,6 +626,17 @@ function writerOf(text) {
   }
 }
 
+// Écrivain et heure d'enregistrement d'un texte de sauvegarde (diagnostic de la carte « Reprendre ici »).
+function metaOf(text) {
+  try {
+    const raw = JSON.parse(text);
+    if (!isObj(raw)) return { writer: null, savedAt: null };
+    return { writer: typeof raw.writer === 'string' ? raw.writer : null, savedAt: finite(raw.savedAt) ? raw.savedAt : null };
+  } catch {
+    return { writer: null, savedAt: null };
+  }
+}
+
 // Remplace le contenu d'un objet sans changer sa référence (partagée avec le refuge et main.js).
 function replaceInPlace(target, src) {
   for (const k of Object.keys(target)) delete target[k];
@@ -642,20 +654,25 @@ function halveEntries(save) {
 }
 
 // Magasin de la partie : lit au démarrage, écrit regroupé (tick) ou tout de suite (flush).
-// `onExternal({ type, message, action? })` : 'other-tab' (lecture seule, bouton « Reprendre ici ») ou 'full'
-// (stockage plein, une seule fois). `reason` garde le message de démarrage (illisible, version plus récente).
+// `onExternal({ type, message, action? })` : 'other-tab' (lecture seule, bouton « Reprendre ici »), 'full'
+// (stockage plein, une seule fois) ou 'companion-full' (le compagnon n'a pas pu s'écrire, une seule fois par lancement ;
+// le résultat de l'écriture porte alors `companion: 'full'` à chaque fois). `reason` garde le message de démarrage (illisible, version plus récente).
 // `beforeWrite(save)` (facultatif) recopie l'état vivant (survivant, position) juste avant chaque écriture et chaque
 // export ; jamais pour l'écriture d'un import, d'une reprise (« Reprendre ici ») ou d'une partie neuve (?fresh), ni
 // ensuite : la partie en mémoire a été remplacée, l'état vivant de la page est périmé jusqu'au rechargement.
 // `onWrite({ why, text })` (facultatif) est appelé après chaque écriture réussie, avec le texte exact rangé (import,
 // reprise et partie neuve compris) : le module de compte s'en sert pour envoyer la partie (spécification des comptes, 5.7).
 // Dans un navigateur, il écoute aussi `storage` (autre onglet), `visibilitychange` et `pagehide` ; `listen: false` l'en empêche.
+// `companion` (facultatif, territory-store.js) : magasin rangé sous sa propre clé, écrit dans le même lot juste avant la
+// sauvegarde et jamais en lecture seule ; l'export le porte dans son champ (`companion.field`), l'import le lui rend
+// (undefined pour un fichier d'avant), « Reprendre ici » le relit. Interface : { field, write(), exportValue(),
+// importValue(raw, save), reload() }.
 // Au passage en arrière-plan et à la fermeture, il écrit dès que cet onglet a la main (il a déjà écrit, ou une écriture
 // attend), même sans modification signalée : la position et les besoins changent sans cesse. Un onglet resté au menu
 // (jamais écrit) ne prend pas la main.
 export function createSaveStore({
   storage = defaultStorage(), now = Date.now, fresh = false, onExternal = () => {},
-  rand = Math.random, delayMs = 2000, itemKeys = ITEM_KEYS, beforeWrite = () => {}, listen = true,
+  rand = Math.random, delayMs = 2000, itemKeys = ITEM_KEYS, beforeWrite = () => {}, listen = true, companion = null,
   onWrite = () => {},
 } = {}) {
   const writer = newWriter(rand);
@@ -668,11 +685,14 @@ export function createSaveStore({
   let dirty = false;
   let wait = 0;
   let fullWarned = false;
+  let companionWarned = false;
   let purgedForSpace = false;
   let lastError = null;
   let wrote = false;        // cet onglet a déjà écrit lui-même : il a la main
   let replaced = false;     // partie remplacée (import, reprise) : l'état vivant de la page est périmé
   let quiet = false;        // écrit au passage en arrière-plan, rien ne s'est passé depuis
+  let stale = false;        // une autre page a écrit alors que celle-ci n'avait encore rien écrit ni modifié
+  let conflict = null;      // { writer, savedAt } de l'autre page, quand elle nous a retiré la main
 
   const read = (key) => {
     try {
@@ -727,12 +747,25 @@ export function createSaveStore({
     }
   }
 
-  function goReadOnly() {
+  function goReadOnly(text = null) {
     if (readOnly) return;
+    if (text !== null) conflict = metaOf(text);
     readOnly = true;
     reason = SAVE_MESSAGES.otherTab;
     dirty = false;
-    onExternal({ type: 'other-tab', message: SAVE_MESSAGES.otherTab, action: SAVE_MESSAGES.takeOver });
+    stale = false;
+    onExternal({ type: 'other-tab', message: SAVE_MESSAGES.otherTab, action: SAVE_MESSAGES.takeOver, since: conflict?.savedAt ?? null });
+  }
+
+  // Une autre page a écrit la partie (texte lu ou reçu). Une page qui n'a encore rien écrit ni modifié (restée au menu)
+  // n'a rien à perdre : elle relira la partie au lancement (refresh) au lieu de passer en lecture seule sans rien dire.
+  function noteForeign(text) {
+    conflict = metaOf(text);
+    if (!wrote && !dirty) {
+      stale = true;
+      return;
+    }
+    goReadOnly(text);
   }
 
   function markDirty() {
@@ -758,10 +791,23 @@ export function createSaveStore({
     const stored = read(SAVE_KEY);
     // Un autre onglet a écrit depuis notre dernière lecture ou écriture : on lui laisse la main.
     if (stored !== null && stored !== lastSeen && writerOf(stored) !== writer) {
-      goReadOnly();
+      goReadOnly(stored);
       return { ok: false, error: SAVE_MESSAGES.otherTab };
     }
     if (live) syncLive();
+    let side = null;
+    if (companion) {
+      try {
+        const c = companion.write();
+        if (c && c.ok === false && c.error === 'full') {
+          side = 'full';
+          if (!companionWarned) onExternal({ type: 'companion-full', field: companion.field, message: SAVE_MESSAGES.companionFull });
+          companionWarned = true;
+        }
+      } catch {
+        // Le compagnon garde ses modifications et réessaiera au prochain lot.
+      }
+    }
     const before = { writer: save.writer, rev: save.rev, savedAt: save.savedAt };
     save.v = SAVE_VERSION;
     save.writer = writer;
@@ -801,7 +847,7 @@ export function createSaveStore({
     } catch {
       // L'envoi en ligne ne doit jamais faire échouer la sauvegarde locale.
     }
-    return { ok: true, error: null };
+    return side ? { ok: true, error: null, companion: side } : { ok: true, error: null };
   }
 
   // Écrit tout de suite (état vivant compris). `why` sert au diagnostic (dernier motif d'écriture).
@@ -830,7 +876,44 @@ export function createSaveStore({
   function onStorage(e) {
     if (!e || e.key !== SAVE_KEY || e.newValue === null || e.newValue === undefined) return;
     const w = writerOf(e.newValue);
-    if (w && w !== writer) goReadOnly();
+    if (w && w !== writer) noteForeign(e.newValue);
+  }
+
+  // Retour au premier plan ou page restaurée du cache arrière/avant : les événements `storage` manqués pendant que la
+  // page dormait sont rattrapés en relisant la sauvegarde.
+  function check() {
+    if (readOnly) return;
+    const stored = read(SAVE_KEY);
+    if (stored === null || stored === lastSeen) return;
+    const w = writerOf(stored);
+    if (w && w !== writer) noteForeign(stored);
+  }
+
+  // Page restée au menu pendant qu'une autre écrivait : relit la partie, sans rien écrire. Sans effet pour une page qui a
+  // écrit ou qui a une écriture en attente (elle passe en lecture seule, voir write). Rend vrai si la partie a changé :
+  // main.js remet alors le menu à jour.
+  function refresh() {
+    if (readOnly || wrote || dirty || replaced) return false;
+    const stored = read(SAVE_KEY);
+    if (stored === null || stored === lastSeen) {
+      stale = false;
+      return false;
+    }
+    const r = parseSave(stored, now(), { itemKeys });
+    if (r.status !== 'ok') return false;
+    replaceInPlace(save, r.save);
+    fixes = r.fixes;
+    status = 'ok';
+    lastSeen = stored;
+    stale = false;
+    conflict = null;
+    try {
+      companion?.reload();
+    } catch {
+      // Compagnon illisible : il garde ce qu'il avait.
+    }
+    purgeOld(save, now());
+    return true;
   }
 
   // « Reprendre ici » : relit la sauvegarde, reprend la main et la réécrit telle quelle (sans l'état vivant périmé
@@ -844,9 +927,16 @@ export function createSaveStore({
       replaceInPlace(save, r.save);
       fixes = r.fixes;
       replaced = true;
+      try {
+        companion?.reload();
+      } catch {
+        // Compagnon illisible : il garde ce qu'il avait.
+      }
     }
     readOnly = false;
     reason = null;
+    stale = false;
+    conflict = null;
     lastSeen = stored;
     // Rien de lisible à relire : la partie de cet onglet reste la bonne, état vivant compris.
     return write('reprise', !reread);
@@ -855,12 +945,27 @@ export function createSaveStore({
   // Texte de « Exporter ma partie » : la partie avec l'état vivant du moment.
   function exportText() {
     if (!readOnly) syncLive();
-    return JSON.stringify(save, null, 2);
+    if (!companion) return JSON.stringify(save, null, 2);
+    return JSON.stringify({ ...save, [companion.field]: companion.exportValue() }, null, 2);
   }
 
   // « Importer une partie » : valide, remplace la partie en mémoire et l'écrit telle quelle (main.js recharge ensuite).
   // Écriture impossible (stockage plein) : la partie en cours est remise en place.
   function importText(text) {
+    // Le champ du compagnon est mis à part avant la validation (qui supprimerait ce champ inconnu).
+    let side;
+    if (companion) {
+      try {
+        const raw = JSON.parse(text);
+        if (isObj(raw) && Object.hasOwn(raw, companion.field)) {
+          side = raw[companion.field];
+          delete raw[companion.field];
+          text = JSON.stringify(raw);
+        }
+      } catch {
+        // parseSave dira que le fichier est illisible.
+      }
+    }
     const r = parseSave(text, now(), { itemKeys });
     if (r.status === 'newer') return { ok: false, error: SAVE_MESSAGES.newerFile };
     if (r.status !== 'ok') return { ok: false, error: SAVE_MESSAGES.badFile };
@@ -871,11 +976,18 @@ export function createSaveStore({
     replaced = true;
     readOnly = false;
     reason = null;
+    stale = false;
     lastSeen = read(SAVE_KEY);
     const w = write('import', false);
     if (!w.ok) {
       replaceInPlace(save, undo.save);
       ({ fixes, status, replaced, readOnly, reason, lastSeen } = undo);
+    } else if (companion) {
+      try {
+        companion.importValue(side, save);
+      } catch {
+        // Territoire du fichier illisible : le compagnon garde le sien.
+      }
     }
     return w;
   }
@@ -916,10 +1028,14 @@ export function createSaveStore({
     if (typeof document !== 'undefined' && document.addEventListener) {
       on(document, 'visibilitychange', () => {
         if (document.visibilityState === 'hidden') onHidden('arriere-plan');
-        else quiet = false;
+        else {
+          quiet = false;
+          check();
+        }
       });
     }
     on(window, 'pagehide', () => onHidden('fermeture'));
+    on(window, 'pageshow', (e) => { if (e?.persisted) check(); });
   }
   function dispose() {
     while (offs.length) offs.pop()();
@@ -941,6 +1057,8 @@ export function createSaveStore({
     get lastError() { return lastError; },
     get replaced() { return replaced; },
     get storedText() { return lastSeen; },
-    markDirty, flush, tick, takeOver, exportText, importText, persist, onStorage, dispose, wipe,
+    get stale() { return stale; },
+    get conflict() { return conflict; },
+    markDirty, flush, tick, takeOver, exportText, importText, persist, onStorage, check, refresh, dispose, wipe,
   };
 }

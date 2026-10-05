@@ -37,20 +37,23 @@ export function nightKey(ms, utcOffset) {
 const WEATHER_FACTOR = { rain: 0.8, storm: 1.2, snow: 0.9 };
 const RANK_FACTOR = [1, 1.2, 1.4];
 
-// N = clamp(round((6 + 18 × min(1, 2d)) × W × V × P × F), 4, 30)
-export function hordeSize({ density = 0, weatherKind = 'clear', k = 1, abri = false, siren = false, firstEver = false } = {}) {
+// N = clamp(round((6 + 18 × min(1, 2d)) × W × V × P × F × L), 4, 30) ; L : taille des hordes du niveau choisi (quartier.js,
+// NIVEAUX : 0,8 en facile, 1 en moyen, 1,3 en difficile), 1 sans ville.
+export function hordeSize({ density = 0, weatherKind = 'clear', k = 1, abri = false, siren = false, firstEver = false, level = 1 } = {}) {
   const d = Math.max(0, density);
   const W = WEATHER_FACTOR[weatherKind] ?? 1;
   const V = RANK_FACTOR[Math.min(RANK_FACTOR.length, Math.max(1, k | 0)) - 1];
   const P = (abri ? 0.8 : 1) * (siren ? HORDE.siren.scale : 1);
   const F = firstEver ? 0.6 : 1;
-  const n = Math.round((6 + 18 * Math.min(1, 2 * d)) * W * V * P * F);
+  const L = Number.isFinite(level) && level > 0 ? level : 1;
+  const n = Math.round((6 + 18 * Math.min(1, 2 * d)) * W * V * P * F * L);
   return Math.min(30, Math.max(4, n));
 }
 
 // Coureurs 30 %, costauds 10 % (au moins 1 dès 12 zombies, +1 à partir de la vague 2), errants pour le reste.
-export function hordeComposition(N, k = 1) {
-  const coureur = Math.round(0.3 * N);
+// `runners` : part de coureurs en plus (niveau difficile d'une ville : 0,1).
+export function hordeComposition(N, k = 1, runners = 0) {
+  const coureur = Math.round((0.3 + (Number.isFinite(runners) ? Math.max(0, runners) : 0)) * N);
   const costaud = Math.min(N - coureur, Math.max(N >= 12 ? 1 : 0, Math.round(0.1 * N)) + (k >= 2 ? 1 : 0));
   return { errant: Math.max(0, N - coureur - costaud), coureur, costaud };
 }

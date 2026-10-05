@@ -227,6 +227,13 @@ const snapshot = (page) => ev(page, () => {
   };
 });
 
+// Fiche du bâtiment tout près (sous la quête) : son texte dès qu'il correspond à `re` (texte du moment sinon, null si cachée).
+const ficheWith = (page, re) => until(page, (src) => {
+  const e = document.getElementById('fiche');
+  const t = e && !e.hidden ? e.textContent.replace(/\s+/g, ' ').trim() : null;
+  return t && new RegExp(src).test(t) ? t : null;
+}, re.source, 10000);
+
 // Installation (scénarios 1 et 9) : bâtiment le plus proche, fouille (E ou toucher #search), puis R ou #action2.
 // Un bâtiment sans entrée accessible depuis la rue (« Aucune entrée accessible ») est refusé à juste titre :
 // on passe alors au suivant.
@@ -244,6 +251,8 @@ async function install(page, device, tag) {
       const want = device === 'mobile' ? /^Fouiller : .+[^)]$/ : /^Fouiller : .+ \(E\)$/;
       check(want.test(label ?? ''), `${tag} : bouton « ${label} »`);
       await shot(page, `${tag.split(' ')[0]}-01-fouiller`);
+      const f1 = await ficheWith(page, /Pas encore fouillé/);
+      check(!!f1, `${tag} : fiche du bâtiment « ${f1} »`);
     }
     const t0 = Date.now();
     await press(page, device, 'KeyE', 'search');
@@ -252,6 +261,10 @@ async function install(page, device, tag) {
     const restarted = search.restarts ? `, relancée ${search.restarts} fois` : '';
     if (attempt === 0) check(search.done && Math.abs(time - 2.2) < 0.01, `${tag} : fouille de ${time} s en temps de jeu (${round((Date.now() - t0) / 1000, 1)} s à la montre${restarted})`);
     if (!search.done) note(`${tag} : fouille inachevée, ${await state(page)}`);
+    if (attempt === 0 && search.done) {
+      const f2 = await ficheWith(page, /Fouillé il y a/);
+      check(!!f2, `${tag} : fiche après la fouille « ${f2} »`);
+    }
     const l2 = await until(page, (id) => window.__label(id), 'action2', 10000);
     if (attempt === 0) check(l2 === (device === 'mobile' ? 'En faire mon refuge' : 'En faire mon refuge (R)'), `${tag} : bouton secondaire « ${l2} »`);
     // Matériaux du sac avant l'installation : ils passent au coffre avec le kit.
@@ -560,11 +573,21 @@ async function desktop() {
   // 2. Fabriquer 3 planches, puis clouer une planche sur la porte (3 s).
   await page.click('#rp-tab-craft');
   const craftBefore = await snapshot(page);
+  // La fabrication prend du temps (4 s de jeu pour des planches) : rien au coffre avant la fin, une seule à la fois.
+  let craftAct = null;
   for (let i = 0; i < 3; i++) {
     await page.click(panelButton('craft', 'planches'));
-    await wait(250);
+    if (i === 0) {
+      craftAct = await page.evaluate(() => {
+        const a = window.__earthlife.session.action;
+        return a ? { id: a.id, time: a.time, planches: window.__earthlife.save.base.chest.planche ?? 0 } : null;
+      });
+    }
+    await until(page, () => (window.__earthlife.session.action ? null : 1), null, 90000);
   }
   const s2a = await snapshot(page);
+  check(craftAct?.id === 'craft' && craftAct.time >= 4 && craftAct.planches === (craftBefore.base.chest.planche ?? 0),
+    `${tag} 2 : fabrication chronométrée (${craftAct?.time} s), rien au coffre avant la fin`);
   check((s2a.base.chest.planche ?? 0) - (craftBefore.base.chest.planche ?? 0) === 3, `${tag} 2 : 3 planches fabriquées (« ${await toastSeen(page, 'Fabriqué')} »)`);
   await shot(page, `${tag}-03-fabriquer`);
   await page.click('#rp-tab-defense');
@@ -581,6 +604,27 @@ async function desktop() {
   await shot(page, `${tag}-04-cloue`);
   const calls = await drawCalls(page);
   check(calls.groups.length === 2 && calls.all - calls.without <= 10, `${tag} 9.3 : appels de dessin au refuge ${calls.all}, dont ${calls.all - calls.without} pour le décor et le refuge (≤ 10)`);
+
+  // 2b. Sommeil : tant qu'on dort, rien d'autre n'est possible (boutons du panneau grisés, Échap sans effet).
+  await page.evaluate(() => { window.__earthlife.session.survivor.fatigue = 80; });
+  await page.click('#rp-tab-defense');
+  const sleepReady = await until(page, () => { const b = document.querySelector('#refuge-panel button[data-act="sleep"]'); return b && !b.disabled ? 1 : null; }, null, 5000);
+  if (!check(!!sleepReady, `${tag} 2b : bouton « Dormir » actif (fatigue 80)`)) {
+    // Sommeil impossible ici : pas de contrôle de verrou.
+  } else {
+    await page.click('#refuge-panel button[data-act="sleep"]');
+    const sleepTime = await until(page, () => (window.__earthlife.session.action?.id === 'sleep' ? window.__earthlife.session.action.time : null), null, 5000);
+    await wait(500);
+    const sleepOpen = await page.evaluate(() => [...document.querySelectorAll('#refuge-panel button[data-act]:not([disabled])')].map((b) => b.dataset.act));
+    await page.keyboard.press('Escape');
+    await wait(300);
+    const sleepState = await page.evaluate(() => ({ inside: window.__earthlife.session.refuge.inside, sleeping: window.__earthlife.session.action?.id === 'sleep' }));
+    check(sleepTime === 25 && sleepOpen.length === 0 && sleepState.inside && sleepState.sleeping,
+      `${tag} 2b : pendant le sommeil (${sleepTime} s) aucun bouton actif (${sleepOpen.join(', ') || 'aucun'}), Échap sans effet`);
+    await shot(page, `${tag}-04b-sommeil`);
+    const woke = await until(page, () => (window.__earthlife.session.action ? null : window.__earthlife.session.survivor.fatigue), null, 300000);
+    check(woke !== null && woke < 80, `${tag} 2b : réveillé, fatigue ${woke === null ? '?' : woke.toFixed(0)} (80 avant)`);
+  }
 
   // 3. Reprise : rechargement de la page.
   await until(page, () => !window.__earthlife.saveStore.dirty, null, 10000);
@@ -2220,16 +2264,63 @@ async function relocation(device) {
   await ctx.close();
 }
 
+// ---------- Embuscade (scénario 14, sur ordinateur) ----------
+
+// Les essais éteignent les embuscades (?debug=1) : on en force une de deux zombies. À la fin d'une fouille (sans refuge :
+// la fouille est proposée à tout joueur), ils sortent par la façade à 2,5 à 4 m du joueur et le chassent aussitôt, avec
+// la notification « Embuscade ». On vide les autres zombies pendant la fouille (comme searchSafely, mais sans toucher à
+// ceux de l'embuscade, qui n'existent qu'à la fin).
+async function ambushScenario() {
+  const tag = 'pc 14';
+  const ctx = await newContext('desktop');
+  const page = await ctx.newPage();
+  watchErrors(page, 'pc');
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  const spot = await claimSpot(page, []);
+  if (!check(!!spot, `${tag} : bâtiment à fouiller`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  await debug(page, 'teleport', spot.x, spot.z);
+  const label = await until(page, (id) => (window.__label(id)?.startsWith('Fouiller') ? window.__label(id) : null), 'search', 20000);
+  check(/^Fouiller : /.test(label ?? ''), `${tag} : bâtiment ${spot.id} (${spot.loot}, ${spot.area} m²), bouton « ${label} »`);
+  await debug(page, 'ambush', { rate: 1, force: 2 });
+  await press(page, 'desktop', 'KeyE', 'search');
+  const start = Date.now();
+  let res = null;
+  while (Date.now() - start < 240000 && !res) {
+    res = await ev(page, (id) => {
+      const { session: s, save } = window.__earthlife;
+      const zs = s.director.zombies;
+      for (let i = zs.length - 1; i >= 0; i--) if (!zs[i].tags?.ambush) zs.splice(i, 1);
+      if (!save.searched[id]) return null;
+      const out = zs.filter((z) => z.tags?.ambush && !z.dead);
+      return { n: out.length, chase: out.every((z) => z.state === 'chase'), far: Math.max(0, ...out.map((z) => Math.hypot(z.x - s.player.x, z.z - s.player.z))) };
+    }, spot.id);
+    if (!res) await wait(100);
+  }
+  if (!check(!!res, `${tag} : fouille terminée`)) { await ctx.close(); return; }
+  check(res.n >= 1 && res.chase && res.far < 12, `${tag} : ${res.n} zombie(s) d'embuscade, tous à la chasse, à ${round(res.far)} m au plus du joueur`);
+  const toast = await toastSeen(page, 'Embuscade', 5000);
+  check(!!toast, `${tag} : notification « ${toast} »`);
+  await shot(page, 'pc-14-embuscade');
+  await debug(page, 'ambush', { rate: 0 });
+  check(await ev(page, () => window.__earthlife.session.director.zombies.every((z) => !z.tags?.ambush || z.dead || !z.horde)), `${tag} : les zombies d'embuscade ne sont pas de la horde`);
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
-  if (only === 'vue') {
+  if (only === 'ambush') {
+    await ambushScenario();
+  } else if (only === 'vue') {
     await vueSeule('desktop');
     await vueSeule('mobile');
   } else {
     if (only !== 'mobile') await desktop();
     if (only !== 'desktop') await mobile();
     if (only !== 'mobile') await relocation('desktop');
+    if (only !== 'mobile') await ambushScenario();
     if (only !== 'desktop') await relocation('mobile');
   }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);

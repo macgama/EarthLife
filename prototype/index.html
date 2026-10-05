@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <!-- Politique de sécurité du contenu (spec 6.2) : les deux scripts en ligne (importmap et message d'erreur fatale) sont
      autorisés par leur empreinte SHA-256 ; un changement d'un seul caractère de l'un d'eux demande de la recalculer. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/three@0.170.0/ https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/ 'sha256-gjRsd/fgGZ+ke0ZAjm4YhOLuzwFKv0y+coY0Ga2e5C4=' 'sha256-1iIOm2hactO0ZlM3/NLmPRCobpDHq/3PaANEg3OM64U='; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/; connect-src 'self' https://tiles.openfreemap.org https://api.open-meteo.com https://photon.komoot.io https://nominatim.openstreetmap.org https://cdn.jsdelivr.net https://earthlife.needhelpapp.com wss://earthlife.needhelpapp.com http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*; img-src 'self' data: blob: https:; worker-src 'self' blob: https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/; font-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/three@0.170.0/ https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/ 'sha256-gjRsd/fgGZ+ke0ZAjm4YhOLuzwFKv0y+coY0Ga2e5C4=' 'sha256-1iIOm2hactO0ZlM3/NLmPRCobpDHq/3PaANEg3OM64U='; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/; connect-src 'self' https://tiles.openfreemap.org https://api.open-meteo.com https://photon.komoot.io https://nominatim.openstreetmap.org https://geo.api.gouv.fr https://www.wikidata.org https://geocoding-api.open-meteo.com https://s3.amazonaws.com https://cdn.jsdelivr.net https://earthlife.needhelpapp.com wss://earthlife.needhelpapp.com http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*; img-src 'self' data: blob: https:; worker-src 'self' blob: https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/; font-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'">
 <title>EarthLife</title>
 <style>
 /* Polices auto-hébergées : paquets @fontsource (sous-ensemble latin, licence OFL dans assets/fonts). */
@@ -250,6 +250,13 @@ select, button { font: inherit; }
 .pick-chip[aria-pressed="true"] { border-color: var(--c-accent); background: var(--c-accent-soft); color: var(--c-text); }
 .pick-chip.locate .icon { color: var(--c-thirst); }
 .pick-chip:disabled { opacity: var(--o-dim); cursor: progress; }
+/* Sauver sa ville : trois niveaux côte à côte, la règle en clair dessous, puis les communes voisines à sauver. */
+.level-row { display: flex; flex: none; gap: var(--sp-2); }
+.level-chip { flex: 1; justify-content: center; gap: 5px; padding: 0 var(--sp-2); }
+.level-pct { color: var(--c-text-2); font-weight: var(--fw-medium); font-size: var(--fs-xs); }
+.level-chip[aria-pressed="true"] .level-pct { color: var(--c-text); }
+.level-rule { margin-top: 0; }
+.city-restart { justify-content: center; white-space: normal; padding-top: 6px; padding-bottom: 6px; text-align: center; }
 /* Lieu choisi : carte à icône, étiquette au-dessus, nom et région sur deux lignes au plus. */
 .place-card { display: grid; grid-template-columns: var(--icon-md) 1fr; align-items: center; column-gap: var(--sp-3); padding: var(--sp-2) var(--sp-3); background: var(--c-bg-2); border: 1px solid var(--c-line); border-radius: var(--r-sm); }
 .place-ico { display: inline-flex; color: var(--c-accent); }
@@ -308,6 +315,9 @@ select, button { font: inherit; }
 /* Téléphone : recherche en haut, panneau en bas ; pendant la saisie le panneau s'efface. */
 @media (max-width: 759px) {
   #menu.searching .sheet, #menu.has-suggestions .sheet { display: none; }
+  /* Avec un refuge (lignes en plus) : la règle du niveau se lit sur la carte du choix, le panneau gagne un peu de hauteur. */
+  #menu.has-base .level-rule { display: none; }
+  #menu.has-base .sheet { max-height: 70%; }
   /* --vv-h : hauteur visible au-dessus du clavier virtuel (src/picker.js). */
   #place-suggestions { max-height: calc(100vh - 150px); max-height: calc(var(--vv-h, 100dvh) - 150px); }
   #menu #play { font-size: var(--fs-md); }
@@ -324,6 +334,7 @@ select, button { font: inherit; }
 @media (max-width: 759px) and (max-height: 600px) {
   .sheet { gap: var(--sp-2); }
   .place-title { display: none; }
+  .level-rule { display: none; }
 }
 /* Ordinateur et tablette : carte latérale à gauche, globe à droite. */
 @media (min-width: 760px) {
@@ -346,19 +357,32 @@ select, button { font: inherit; }
 @media (min-width: 760px) and (pointer: coarse) {
   .pick-chip { min-height: var(--touch); }
 }
+/* Écran de portable (jusqu'à 860 px de haut) : la présentation laisse la place (comme avec un refuge), météo et heure
+   côte à côte, et, avec un refuge (lignes en plus), la règle du niveau ne se lit plus sous les boutons mais sur la carte du
+   choix de la ville : « Jouer » reste à l'écran (1280 × 800). */
+@media (min-width: 760px) and (max-height: 860px) {
+  .menu-top .lead { display: none; }
+  .sheet { padding-top: var(--sp-3); padding-bottom: var(--sp-4); }
+  .options { grid-template-columns: 1fr 1fr; }
+  .opt { grid-template-columns: 1fr; }
+  .opt-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #menu.has-base .level-rule { display: none; }
+}
 /* Téléphone à l'horizontale : carte latérale plus large et plus courte, raccourcis sur une ligne,
    météo et heure côte à côte (leurs étiquettes restent lues par les lecteurs d'écran) : « Jouer ici » tient sans défiler. */
 @media (min-width: 760px) and (max-height: 560px) {
   .menu-top .lead, .brand-tag, .sheet-label, .place-title { display: none; }
   #menu .logo { font-size: var(--fs-2xl); }
-  .menu-ui { width: 460px; }
-  .menu-top { padding-top: var(--sp-3); }
-  .sheet { gap: var(--sp-2); padding-top: var(--sp-3); padding-bottom: var(--sp-3); }
+  .menu-ui { inset: var(--sp-2) auto auto var(--sp-2); width: 460px; max-height: calc(100% - 2 * var(--sp-2)); }
+  .menu-top { padding-top: var(--sp-2); }
+  .sheet { gap: 6px; padding-top: var(--sp-2); padding-bottom: var(--sp-2); }
   .quick { flex-wrap: nowrap; overflow-x: auto; -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent); mask-image: linear-gradient(90deg, #000 88%, transparent); }
   .options { grid-template-columns: 1fr 1fr; }
   .opt { grid-template-columns: 1fr; }
   .opt-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  #menu #play { min-height: 48px; }
+  #menu #play { min-height: 46px; }
+  .level-chip { min-height: 32px; }
+  .level-rule { display: none; }
 }
 
 /* Chargement : logo, journal des étapes, jauge animée, conseil de survie.
@@ -464,6 +488,17 @@ select, button { font: inherit; }
 .quest-val.low, #quest .timer.low { color: var(--c-danger); }
 #quest .timer.low { animation: hud-pulse 1s var(--ease-std) infinite; }
 #quest.explore .quest-pips, #quest.explore .meta, #quest.no-target .meta, #quest.no-timer .quest-timer-val { display: none; }
+/* Sauver sa ville : compteurs (zombies restants, habitants sauvés, pâtés libérés) puis la ligne du pâté où l'on est. */
+#quest.city .quest-pips { display: none; }
+#fiche { margin-top: var(--sp-1); padding-top: var(--sp-1); border-top: 1px solid var(--c-line); font-size: var(--fs-xs); line-height: 1.35; }
+#fiche[hidden] { display: none; }
+.fiche-title { overflow: hidden; color: var(--c-text); font-weight: var(--fw-semibold); text-overflow: ellipsis; white-space: nowrap; }
+#fiche-lines { margin: 0; padding: 0; list-style: none; color: var(--c-text-2); }
+#fiche-lines li { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+#city-meta { margin-top: var(--sp-1); color: var(--c-text-2); font-size: var(--fs-xs); line-height: 1.35; }
+#city-meta > div:first-child { color: var(--c-text); font-weight: var(--fw-medium); }
+#city-meta > div { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+#city-meta > div:empty { display: none; }
 
 /* État : jauges segmentées (10 segments), température du corps, zombies à terre, équipement. */
 #vitals { grid-column: 3; grid-row: 1; min-width: 0; padding: 10px var(--sp-3); }
@@ -716,7 +751,9 @@ body.touch #controls { display: block; }
   #hud { grid-template-columns: minmax(0, 320px) 1fr 224px; grid-template-rows: auto auto 1fr; }
   #leftcol { display: flex; grid-column: 1; grid-row: 1 / -1; gap: 6px; }
   #conditions { grid-column: auto; grid-row: auto; height: 36px; margin-right: 0; }
-  #quest { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'head meta' 'text text'; align-items: center; column-gap: var(--sp-2); }
+  #quest { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: 'head meta' 'text text' 'city city'; align-items: center; column-gap: var(--sp-2); }
+  #city-meta { grid-area: city; margin-top: 2px; }
+  #city-meta > div { -webkit-line-clamp: 1; }
   .quest-head { grid-area: head; }
   #quest .meta { grid-area: meta; margin: 0; }
   #quest-text { grid-area: text; margin-top: 2px; -webkit-line-clamp: 1; }
@@ -1113,6 +1150,18 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         </div>
       </div>
       <p class="picker-note" id="picker-note" role="status" aria-live="polite"></p>
+      <!-- Sauver sa ville (src/ville-ecran.js) : le niveau dit la part des habitants devenus zombies ; sans niveau, la partie reste libre. -->
+      <p class="label sheet-label" aria-hidden="true">Niveau</p>
+      <div class="level-row" id="level-row" role="group" aria-label="Niveau de jeu : part des habitants devenus zombies" aria-describedby="level-rule">
+        <button type="button" class="pick-chip level-chip" data-level="facile" aria-pressed="false">Facile<span class="level-pct">20 %</span></button>
+        <button type="button" class="pick-chip level-chip" data-level="moyen" aria-pressed="false">Moyen<span class="level-pct">35 %</span></button>
+        <button type="button" class="pick-chip level-chip" data-level="difficile" aria-pressed="false">Difficile<span class="level-pct">50 %</span></button>
+      </div>
+      <p class="picker-note level-rule" id="level-rule" role="status" aria-live="polite"></p>
+      <p class="picker-note" id="city-line" hidden></p>
+      <div class="quick city-next" id="city-next" role="group" aria-label="Communes voisines à sauver" hidden></div>
+      <p class="picker-note" id="city-note" role="status" hidden></p>
+      <button type="button" class="pick-chip city-restart" id="city-restart" hidden></button>
       <p class="label sheet-label" aria-hidden="true">Conditions</p>
       <div class="options">
         <label class="opt"><span class="label opt-name"><span class="btn-icon" data-icon="nuages"></span>Météo</span>
@@ -1201,6 +1250,11 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <section class="help-sec">
       <h3 class="label"><span class="btn-icon" data-icon="carte"></span>Choisis ton départ</h3>
       <p>Cherche une ville, un village ou une adresse, touche la carte ou prends un raccourci. Les rues et les bâtiments sont les vrais, ceux d'<b>OpenStreetMap</b>.</p>
+    </section>
+    <section class="help-sec">
+      <h3 class="label"><span class="btn-icon" data-icon="refuge"></span>Sauve ta ville</h3>
+      <p>Choisis un niveau, Facile, Moyen ou Difficile&nbsp;: on compte les vrais habitants de la ville, 20&nbsp;%, 35&nbsp;% ou 50&nbsp;% d'entre eux sont devenus des zombies, les autres se cachent chez eux, et tu prends la place de l'un d'eux.</p>
+      <p>Nettoie un pâté de maisons, ouvre son nid, plante un fanion et tiens la contre-attaque&nbsp;: ses habitants sortent. Quand la ville est sauvée, passe au village d'à côté, jusqu'à la planète entière. Sans niveau choisi, la partie reste libre.</p>
     </section>
     <section class="help-sec">
       <h3 class="label"><span class="btn-icon" data-icon="sante"></span>Survis</h3>
@@ -1411,6 +1465,9 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
   <div id="quest" class="pill">
     <div class="quest-head"><span class="quest-icon" data-icon="quete"></span><span class="stage" id="quest-stage"></span><span class="quest-pips" aria-hidden="true"><i></i><i></i></span></div>
     <div id="quest-text"></div>
+    <div id="city-meta" hidden><div></div><div></div></div>
+    <!-- Fiche du bâtiment tout près (src/fiche.js) : nom, fouille, état de la zone. -->
+    <div id="fiche" hidden aria-live="polite"><div class="fiche-title" id="fiche-title"></div><ul id="fiche-lines"></ul></div>
     <div class="meta"><span class="quest-val"><span data-icon="cible"></span><span class="sr-only">Distance :</span><span class="num" id="quest-dist"></span></span><span class="quest-val quest-timer-val"><span data-icon="horloge"></span><span class="sr-only">Temps restant :</span><span class="timer num" id="quest-timer"></span></span></div>
   </div>
   <!-- Pastille du jeu en ligne (hud.js) : cachée en solo. -->

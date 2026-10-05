@@ -1,0 +1,17 @@
+{
+ "results": [
+  {
+   "id": 1546557,
+   "name": "Îles Kerguelen",
+   "latitude": -49.25,
+   "longitude": 69.58333,
+   "elevation": 0,
+   "feature_code": "ISLS",
+   "country_code": "TF",
+   "timezone": "Indian/Kerguelen",
+   "country_id": 1546748,
+   "country": "Terres australes et antarctiques françaises"
+  }
+ ],
+ "generationtime_ms": 0.33
+}

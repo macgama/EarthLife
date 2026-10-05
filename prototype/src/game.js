@@ -1,5 +1,6 @@
 // Règles de jeu : joueur, zombies, combat. Aucune dépendance au rendu, pour pouvoir les tester.
-import { isFree, moveWithCollisions, nearestFree, lineFree, BUILDING, getAt } from './collision.js';
+import { isFree, moveWithCollisions, nearestFree, lineFree, BUILDING, getAt, gradeAlong } from './collision.js';
+import { SLOPE, SLOPE_RULES, slopeFactor, smoothGrade } from './slope.js';
 
 export const PLAYER = { walk: 5.5, run: 9.5, radius: 0.4, maxHealth: 100, maxStamina: 100 };
 // strike : PV retirés à une ouverture du refuge, toutes les 1,5 s.
@@ -60,6 +61,11 @@ export function targetZombieCount(mods, density) {
 export function createZombieDirector(grid, rand = Math.random) {
   const zombies = [];
   let nextId = 1;
+  // Source des zombies dans une ville (« Sauver sa ville », ville-jeu.js) : un zombie n'apparaît jamais de rien, il sort du
+  // stock d'un pâté. { pick(player, isNight) -> { key, x, z, r } | null (prête 1 zombie du pâté), claim(x, z, tags) -> clé |
+  // null (horde, rôdeurs : le pâté le plus proche qui en a), cancel({ key }) (apparition manquée : le zombie est rendu),
+  // attach(zb, key) }. Sans source, comme avant : apparitions libres. Le zombie garde la clé de son pâté dans `pate`.
+  let supply = null;
   // Places de frappe occupées : id d'ouverture → numéros de place (0 à 2), refait à chaque image.
   let taken = new Map();
 
@@ -91,31 +97,65 @@ export function createZombieDirector(grid, rand = Math.random) {
     }
   }
 
+  function randomType(isNight) {
+    const roll = rand();
+    const runnerShare = isNight ? 0.4 : 0.2;
+    return roll < runnerShare ? 'coureur' : roll > 0.92 ? 'costaud' : 'errant';
+  }
+
   function spawn(player, isNight) {
+    if (supply) return spawnFromSupply(player, isNight);
     for (let tries = 0; tries < 20; tries++) {
       const a = rand() * Math.PI * 2, r = 40 + rand() * 45;
       const spot = nearestFree(grid, player.x + Math.cos(a) * r, player.z + Math.sin(a) * r, 8);
       if (!spot) continue;
-      const roll = rand();
-      const runnerShare = isNight ? 0.4 : 0.2;
-      const type = roll < runnerShare ? 'coureur' : roll > 0.92 ? 'costaud' : 'errant';
-      const z = makeZombie(type, spot.x, spot.z, rand() * Math.PI * 2);
+      const z = makeZombie(randomType(isNight), spot.x, spot.z, rand() * Math.PI * 2);
       zombies.push(z);
       return z;
     }
     return null;
   }
 
+  // Dans une ville : le pâté choisi prête un zombie, qui sort de ses rues à 38 m du joueur au moins ; sans case libre, il
+  // est rendu à son pâté.
+  function spawnFromSupply(player, isNight) {
+    const pick = supply.pick(player, isNight);
+    if (!pick) return null;
+    for (let tries = 0; tries < 12; tries++) {
+      const a = rand() * Math.PI * 2, r = rand() * (pick.r ?? 20);
+      const spot = nearestFree(grid, pick.x + Math.cos(a) * r, pick.z + Math.sin(a) * r, 8);
+      if (!spot || Math.hypot(spot.x - player.x, spot.z - player.z) < 38) continue;
+      const z = makeZombie(randomType(isNight), spot.x, spot.z, rand() * Math.PI * 2);
+      z.pate = pick.key;
+      zombies.push(z);
+      supply.attach?.(z, pick.key);
+      return z;
+    }
+    supply.cancel?.(pick);
+    return null;
+  }
+
   // Apparition en un point précis (horde, rôdeurs du siège d'absence) ; tags.horde marque un zombie de horde.
+  // Dans une ville, le zombie sort du stock du pâté le plus proche qui en a (sinon rien n'apparaît) ; tags.lent : déjà prêté
+  // par ce pâté (contre-attaque), tags.free : apparition libre (essais).
   function spawnAt(x, z, type = 'errant', tags = {}) {
     const kind = ZOMBIE_TYPES[type] ? type : 'errant';
+    let key = null;
+    if (supply && !tags?.free) {
+      key = tags?.lent ?? supply.claim(x, z, tags ?? {});
+      if (key === null || key === undefined) return null;
+    }
     const spot = isFree(grid, x, z) ? { x, z } : nearestFree(grid, x, z, 4, 0.3);
-    if (!spot) return null;
+    if (!spot) {
+      if (key !== null && !tags?.lent) supply.cancel?.({ key });
+      return null;
+    }
     const zb = makeZombie(kind, spot.x, spot.z, rand() * Math.PI * 2);
     zb.tags = { ...(tags ?? {}) };
     zb.horde = !!zb.tags.horde;
     zb.wave = zb.tags.wave ?? null;
     if (zb.horde) zb.state = 'horde';
+    if (key !== null) { zb.pate = key; supply.attach?.(zb, key); }
     zombies.push(zb);
     return zb;
   }
@@ -362,7 +402,13 @@ export function createZombieDirector(grid, rand = Math.random) {
   // ---------- Image ----------
 
   function stepZombie(zb, move, dt, wander) {
-    const step = Math.min(move.speed * dt, move.max ?? Infinity);
+    // Relief : la pente dans le sens du cap ralentit ou accélère le zombie comme le joueur (facteur 1 sur sol plat).
+    let slope = 1;
+    if (SLOPE_RULES && grid.terrain?.enabled && move.speed > 0) {
+      zb.grade = smoothGrade(zb.grade ?? 0, gradeAlong(grid, zb.x, zb.z, Math.sin(move.heading), Math.cos(move.heading), SLOPE.reach), dt);
+      slope = slopeFactor(zb.grade);
+    }
+    const step = Math.min(move.speed * slope * dt, move.max ?? Infinity);
     if (!(step > 0)) {
       zb.yaw = lerpAngle(zb.yaw, move.heading, Math.min(1, dt * 8));
       return;
@@ -517,7 +563,11 @@ export function createZombieDirector(grid, rand = Math.random) {
     return events;
   }
 
-  return { zombies, update, spawn, spawnAt, alertAll, lureAt, siege, fleeFrom, removeWhere, counts };
+  return {
+    zombies, update, spawn, spawnAt, alertAll, lureAt, siege, fleeFrom, removeWhere, counts,
+    setSupply(source) { supply = source ?? null; },
+    get supplied() { return supply !== null; },
+  };
 }
 
 // Déplacement vers un point, arrêté à `stop` mètres (sans le dépasser).
@@ -583,12 +633,19 @@ export function updatePlayer(player, grid, input, cameraYaw, mods, dt) {
   if (wantsRun) player.stamina = Math.min(cap, Math.max(0, player.stamina - 14 * mods.staminaDrain * dt));
   else player.stamina = Math.min(cap, player.stamina + ((moving ? 6 : 12) / mods.staminaDrain) * regen * dt);
 
-  const speed = (wantsRun ? PLAYER.run : PLAYER.walk) * mods.moveSpeed;
   // Direction relative à la caméra : avant = là où regarde la caméra.
   const sin = Math.sin(cameraYaw), cos = Math.cos(cameraYaw);
   // Avant = (sin, cos), droite = (-cos, sin) pour une caméra qui regarde selon son lacet.
-  const tx = (-mx * cos + my * sin) * speed;
-  const tz = (mx * sin + my * cos) * speed;
+  const dirX = -mx * cos + my * sin, dirZ = mx * sin + my * cos;
+  let speed = (wantsRun ? PLAYER.run : PLAYER.walk) * mods.moveSpeed;
+  // Relief (pentes qui comptent, slope.js) : monter ralentit, descendre accélère un peu ; pente lissée sur 0,3 s, mesurée
+  // dans le sens de la marche. Sans relief, la pente est 0 et rien ne change.
+  if (SLOPE_RULES && grid.terrain?.enabled) {
+    player.grade = smoothGrade(player.grade ?? 0, moving ? gradeAlong(grid, player.x, player.z, dirX, dirZ, SLOPE.reach) : 0, dt);
+    speed *= slopeFactor(player.grade);
+  }
+  const tx = dirX * speed;
+  const tz = dirZ * speed;
   // Sur sol mouillé ou enneigé, on accélère et on freine moins vite : ça glisse.
   const grip = Math.min(1, dt * 12 * mods.traction * mods.traction);
   player.vx += (tx - player.vx) * grip;

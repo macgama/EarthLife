@@ -173,7 +173,7 @@ export function createAtmosphere(scene, { lowPower }) {
     const fx = Math.sin(playerYaw), fz = Math.cos(playerYaw);
     torch.position.set(focus.x + fx * 0.45, focus.y + 1.5, focus.z + fz * 0.45);
     lantern.position.set(focus.x, focus.y + 6, focus.z);
-    torch.target.position.set(focus.x + fx * 12, 0, focus.z + fz * 12);
+    torch.target.position.set(focus.x + fx * 12, focus.y, focus.z + fz * 12);
     if (beam.visible) {
       beam.position.copy(torch.position);
       beam.lookAt(torch.target.position);
@@ -195,13 +195,13 @@ export function createAtmosphere(scene, { lowPower }) {
         if (z > box) z -= box * 2; if (z < -box) z += box * 2;
         rainDrops[i * 3] = x; rainDrops[i * 3 + 1] = y; rainDrops[i * 3 + 2] = z;
         const o = i * 6;
-        rainPos[o] = focus.x + x; rainPos[o + 1] = y; rainPos[o + 2] = focus.z + z;
-        rainPos[o + 3] = focus.x + x - wx * streak; rainPos[o + 4] = y + fall * streak; rainPos[o + 5] = focus.z + z - wz * streak;
+        rainPos[o] = focus.x + x; rainPos[o + 1] = focus.y + y; rainPos[o + 2] = focus.z + z;
+        rainPos[o + 3] = focus.x + x - wx * streak; rainPos[o + 4] = focus.y + y + fall * streak; rainPos[o + 5] = focus.z + z - wz * streak;
       }
       rainGeo.attributes.position.needsUpdate = true;
     }
     if (snow.visible) {
-      snow.position.set(focus.x, 0, focus.z);
+      snow.position.set(focus.x, focus.y, focus.z);
       const t = performance.now() / 1000;
       for (let i = 0; i < snowCount; i++) {
         const o = i * 3;
@@ -234,11 +234,16 @@ export function createAtmosphere(scene, { lowPower }) {
     if (state.flash > 0) hemi.intensity -= state.flash * 2.5;
   }
 
+  // Relief : sur les pentes, un peu de biais le long de la normale évite l'acné d'ombre (le sol reçoit les ombres).
+  function setRelief(on) {
+    sun.shadow.normalBias = on ? 0.04 : 0;
+  }
+
   function setGroundMaterials(mats) {
     groundMaterials = mats.map((m) => [m, m.color.getHex()]);
   }
 
-  return { state, setConditions, setView, update, endFrame, setGroundMaterials };
+  return { state, setConditions, setView, update, endFrame, setGroundMaterials, setRelief };
 }
 
 function flakeTexture() {

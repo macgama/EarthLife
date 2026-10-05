@@ -122,6 +122,11 @@ export function createBaseView(scene, { reduceMotion = null, cutaway = undefined
   group.add(glow);
 
   let base = null, openings = [], inside = false, bag = null, orphan = null, lure = null;
+  // Relief : hauteur du sol d'un point (groundAt) ; sans relief, tout est posé à y = 0 comme avant. Le plancher du bâtiment
+  // du refuge (base.floor) décale les ouvertures et le drapeau.
+  let ground = null;
+  const gy = (x, z) => (ground ? ground(x, z) : 0);
+  let floor = 0;
   let time = 0, night = false;
   const lastHp = new Map(), shake = new Map();
 
@@ -151,6 +156,7 @@ export function createBaseView(scene, { reduceMotion = null, cutaway = undefined
   // Matrice d'une pièce posée sur le mur de l'ouverture `o` : repère (le long du mur, vertical, normale),
   // tournée de `angle` dans le plan du mur.
   function wallMatrix(o, along, y, depth, w, h, d, angle = 0) {
+    y += floor;
     const tx = o.nz, tz = -o.nx; // tangente : t × haut = normale
     const c = Math.cos(angle), s = Math.sin(angle);
     const px = o.x + o.nx * depth + tx * along, pz = o.z + o.nz * depth + tz * along;
@@ -208,10 +214,13 @@ export function createBaseView(scene, { reduceMotion = null, cutaway = undefined
     }
     if (o.trap > 0) {
       // Piège : plaque au sol à 0,8 m devant l'ouverture, 5 pointes.
-      wallMatrix(o, 0, 0.02, TRAP_AHEAD, 0.9, 0.04, 0.5);
+      // Elle est posée sur le sol devant l'ouverture (le côté aval peut être plus bas que le plancher).
+      const trapY = ground ? gy(o.x + o.nx * TRAP_AHEAD, o.z + o.nz * TRAP_AHEAD) - floor : 0;
+      wallMatrix(o, 0, 0.02 + trapY, TRAP_AHEAD, 0.9, 0.04, 0.5);
       put(boxes, COLORS.trapBase);
       for (const [a, d] of SPIKES) {
-        _m.makeTranslation(o.x + o.nx * (TRAP_AHEAD + d) + o.nz * a, 0.04, o.z + o.nz * (TRAP_AHEAD + d) - o.nx * a);
+        const sx = o.x + o.nx * (TRAP_AHEAD + d) + o.nz * a, sz = o.z + o.nz * (TRAP_AHEAD + d) - o.nx * a;
+        _m.makeTranslation(sx, 0.04 + gy(sx, sz), sz);
         put(spikes);
       }
     }
@@ -224,7 +233,7 @@ export function createBaseView(scene, { reduceMotion = null, cutaway = undefined
   }
 
   function placeRing(x, z, scale, color) {
-    _m.makeScale(scale, scale, scale).setPosition(x, 0.06, z);
+    _m.makeScale(scale, scale, scale).setPosition(x, 0.06 + gy(x, z), z);
     put(rings, color);
   }
 
@@ -238,7 +247,7 @@ export function createBaseView(scene, { reduceMotion = null, cutaway = undefined
     for (const o of openings) placeOpening(o);
     if (base) {
       // Drapeau bleu sur un mât, au centre du toit (hauteur du bâtiment + 2,5 m).
-      const top = (base.roofHeight ?? 0) + 2.5;
+      const top = (base.roofHeight ?? 0) + floor + 2.5;
       _m.makeScale(0.09, 2.9, 0.09).setPosition(base.x, top - 1.05, base.z);
       put(boxes, COLORS.mast);
       const a = 0.6 + (still ? 0 : 0.25 * Math.sin(time * 1.7));
@@ -251,15 +260,15 @@ export function createBaseView(scene, { reduceMotion = null, cutaway = undefined
       if (dx !== undefined && dz !== undefined) placeRing(dx, dz, 1.1 * (still ? 1 : 1 + 0.04 * Math.sin(time * 3)), COLORS.home);
     }
     if (bag) {
-      placeBox(bag.x, 0.25, bag.z, 0.5, 0.4, COLORS.bag);
+      placeBox(bag.x, 0.25 + gy(bag.x, bag.z), bag.z, 0.5, 0.4, COLORS.bag);
       placeRing(bag.x, bag.z, 0.75 * (still ? 1 : 1 + 0.15 * (0.5 + 0.5 * Math.sin(time * 4))), COLORS.bag);
     }
-    if (orphan) placeBox(orphan.x, 0.4, orphan.z, 0.8, 0.2, COLORS.orphan);
+    if (orphan) placeBox(orphan.x, 0.4 + gy(orphan.x, orphan.z), orphan.z, 0.8, 0.2, COLORS.orphan);
     if (lure) {
       // Lancé en arc pendant 0,6 s, puis anneau orange pulsant au sol.
       const k = Math.min(1, lure.t / LURE.flight);
       const x = lure.fx + (lure.x - lure.fx) * k, z = lure.fz + (lure.z - lure.fz) * k;
-      const y = (1 - k) * LURE.from + k * 0.13 + 4 * k * (1 - k) * LURE.apex;
+      const y = (1 - k) * LURE.from + k * 0.13 + 4 * k * (1 - k) * LURE.apex + (1 - k) * gy(lure.fx, lure.fz) + k * gy(lure.x, lure.z);
       _q.setFromAxisAngle(_up, still ? 0 : lure.t * 9);
       _m.compose(_p.set(x, y, z), _q, _s.set(0.14, 0.26, 0.14));
       put(boxes, COLORS.lureBody);
@@ -271,16 +280,18 @@ export function createBaseView(scene, { reduceMotion = null, cutaway = undefined
     const gx = d ? d.x + d.nx * 1.2 : base?.doorX, gz = d ? d.z + d.nz * 1.2 : base?.doorZ;
     glow.visible = inside && !!base && gx !== undefined && gz !== undefined;
     if (glow.visible) {
-      glow.position.set(gx, 0.05, gz);
+      glow.position.set(gx, 0.05 + gy(gx, gz), gz);
       glow.scale.setScalar(4);
       const flicker = still ? 1 : 0.92 + 0.08 * Math.sin(time * 7.3) * Math.sin(time * 3.1);
       glowMat.opacity = (night ? 0.85 : 0.35) * flicker;
     }
   }
 
-  // info : { x, z, roofHeight, doorX, doorZ } (centre du bâtiment et point d'approche de la porte), ou null.
+  // info : { x, z, roofHeight, floor, doorX, doorZ } (centre du bâtiment, plancher du refuge (relief) et point d'approche de la
+  // porte), ou null.
   function setBase(info) {
     base = info ? { ...info } : null;
+    floor = base?.floor ?? 0;
     if (!base) {
       openings = [];
       lastHp.clear();
@@ -363,5 +374,11 @@ export function createBaseView(scene, { reduceMotion = null, cutaway = undefined
     openings = [];
   }
 
-  return { setBase, setOpenings, setInside, setBag, setOrphan, setLure, update, dispose, stats, group };
+  // fn(x, z) → hauteur du sol (relief), ou null pour un sol plat.
+  function setGround(fn) {
+    ground = fn ?? null;
+    layout();
+  }
+
+  return { setBase, setOpenings, setInside, setBag, setOrphan, setLure, setGround, update, dispose, stats, group };
 }

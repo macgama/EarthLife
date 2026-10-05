@@ -227,7 +227,8 @@ function rectFor(place, x, y) {
   return { minX: nw.x - x, maxX: se.x - x, minY: nw.y - y, maxY: se.y - y };
 }
 
-export function cropTile(bytes, place, x, y) {
+// `layers` : couches gardées (par défaut celles du jeu ; la découpe en pâtés, blocks.js, en lit d'autres).
+export function cropTile(bytes, place, x, y, layers = LAYERS) {
   const rect = rectFor(place, x, y);
   const out = [];
   const counts = {};
@@ -236,7 +237,7 @@ export function cropTile(bytes, place, x, y) {
     const layer = bytes.subarray(f.dataStart, f.dataEnd);
     const nameField = fields(layer).find((p) => p.field === 1);
     const name = nameField ? layer.subarray(nameField.dataStart, nameField.dataEnd).toString() : '';
-    if (!LAYERS.includes(name)) continue;
+    if (!layers.includes(name)) continue;
     const res = cropLayer(layer, rect, KEEP_KEYS[name] ?? null);
     if (!res) continue;
     counts[name] = res.count;

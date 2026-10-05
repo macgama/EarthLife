@@ -1,0 +1,79 @@
+{
+ "place_id": 220136541,
+ "licence": "Data © OpenStreetMap contributors, ODbL 1.0. http://osm.org/copyright",
+ "osm_type": "relation",
+ "osm_id": 2186658,
+ "lat": "-49.3496",
+ "lon": "70.2185",
+ "category": "boundary",
+ "type": "administrative",
+ "place_rank": 12,
+ "importance": 0.5,
+ "addresstype": "state_district",
+ "name": "Îles Kerguelen",
+ "display_name": "Îles Kerguelen, Terres australes et antarctiques françaises, France",
+ "address": {
+  "state_district": "Îles Kerguelen",
+  "state": "Terres australes et antarctiques françaises",
+  "ISO3166-2-lvl3": "TF",
+  "country": "France",
+  "country_code": "tf"
+ },
+ "extratags": {
+  "wikidata": "Q46772",
+  "wikipedia": "fr:Îles Kerguelen"
+ },
+ "boundingbox": [
+  "-49.7500000",
+  "-48.4500000",
+  "68.4000000",
+  "70.6000000"
+ ],
+ "geojson": {
+  "type": "Polygon",
+  "coordinates": [
+   [
+    [
+     68.4,
+     -48.55
+    ],
+    [
+     69.2,
+     -48.45
+    ],
+    [
+     70.1,
+     -48.7
+    ],
+    [
+     70.6,
+     -49.1
+    ],
+    [
+     70.55,
+     -49.7
+    ],
+    [
+     69.8,
+     -49.75
+    ],
+    [
+     69,
+     -49.7
+    ],
+    [
+     68.6,
+     -49.4
+    ],
+    [
+     68.45,
+     -49
+    ],
+    [
+     68.4,
+     -48.55
+    ]
+   ]
+  ]
+ }
+}

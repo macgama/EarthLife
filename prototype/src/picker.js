@@ -72,7 +72,10 @@ export function normalizePlace(p) {
   const lat = num(p.lat), lon = num(p.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90) return null;
   const wrapped = ((((lon + 180) % 360) + 360) % 360) - 180;
-  return { lat: round6(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat))), lon: round6(wrapped), name: clean(p.name).slice(0, 120) || DEFAULT_NAME, area: clean(p.area).slice(0, 160) };
+  const place = { lat: round6(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat))), lon: round6(wrapped), name: clean(p.name).slice(0, 120) || DEFAULT_NAME, area: clean(p.area).slice(0, 160) };
+  // « Autour de moi » (position de l'appareil) : la maison de départ d'une ville se tire plus loin de ce point (ville-ecran.js).
+  if (p.aroundMe === true) place.aroundMe = true;
+  return place;
 }
 
 // Morceaux d'adresse uniques, sans répéter le nom du lieu.
@@ -712,7 +715,7 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
       // Zone privée autour du point arrondi ; une zone proche est réutilisée sans nouveau décalage, et agrandie
       // s'il le faut pour couvrir ce point (privacy.js, zoneFor).
       const r = keepZone(zoneFor(zones, lat, lon, rand, { now: now() }));
-      choose({ lat, lon, name: MY_POSITION, area: r.zone.name }, { zoom: PLACE_ZOOM, reverse: 'mine', note: zoneNote(MY_POSITION_NOTE, r) });
+      choose({ lat, lon, name: MY_POSITION, area: r.zone.name, aroundMe: true }, { zoom: PLACE_ZOOM, reverse: 'mine', note: zoneNote(MY_POSITION_NOTE, r) });
       onMyPosition?.(current ? { ...current } : null, r);
     }, (err) => {
       done();

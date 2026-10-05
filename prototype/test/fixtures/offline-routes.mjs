@@ -8,6 +8,10 @@
 //   l'adresse (index.html, picker.js) : une autre version installée répond 404, pour qu'aucun essai ne passe avec
 //   une bibliothèque que le jeu publié ne charge pas (montée de version par Dependabot sans les adresses) ;
 // - carte du menu : un style vide ; recherche Photon et Nominatim : Pérouges ;
+// - communes et population (lot P) : geo.api.gouv.fr, Wikidata, géocodage Open-Meteo et limites Nominatim, réponses
+//   écrites à la main (test/fixtures/communes/routes.mjs, à confirmer avec le réseau) ;
+// - relief : tuiles d'altitude AWS Terrain Tiles (terrarium) fabriquées à la volée par make-dem-fixture.mjs (relief
+//   synthétique de Lyon et de Pérouges), rien d'enregistré ; RELIEF=off répond 404 (repli : sol plat) ;
 // - serveur du jeu en ligne (earthlife.needhelpapp.com) : en maintenance (spec 9.4), comme avec MAINTENANCE=1 ; le
 //   jeu reste en solo, sans carte « Jouer à plusieurs », et une WebSocket vers lui est refermée aussitôt.
 // Toute autre adresse extérieure est refusée : rien ne sort de la machine. Le faux serveur local (127.0.0.1) passe.
@@ -15,6 +19,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROTOCOL } from '../../src/net/protocol.js';
+import { communeResponse } from './communes/routes.mjs';
+import { demTile } from './make-dem-fixture.mjs';
 
 const fixtures = path.dirname(fileURLToPath(import.meta.url));
 const cors = { 'access-control-allow-origin': '*' };
@@ -50,6 +56,8 @@ function installed(root, pkg) {
 const warned = new Set();
 const warnOnce = (t) => { if (!warned.has(t)) { warned.add(t); console.error(t); } };
 
+const demCache = new Map();
+
 // ctx : contexte Playwright ; root : dossier du prototype (pour node_modules).
 export default async function routes(ctx, root) {
   // WebSocket vers le serveur du jeu : refermée (1012, comme un redémarrage) sans joindre le réseau ; celles du faux
@@ -61,6 +69,8 @@ export default async function routes(ctx, root) {
     const url = new URL(route.request().url());
     if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') return route.continue();
     if (url.hostname === GAME_SERVER) return maintenance(route, url);
+    const commune = communeResponse(url.href);
+    if (commune) return route.fulfill(commune.status === 200 ? json(commune.body) : { status: commune.status, headers: cors });
     if (url.host === 'cdn.jsdelivr.net') {
       const m = url.pathname.match(/^\/npm\/(three|maplibre-gl)@([^/]+)\/(.*)$/);
       const f = m && path.join(root, 'node_modules', m[1], m[3]);
@@ -83,6 +93,12 @@ export default async function routes(ctx, root) {
       if (url.pathname.startsWith('/styles/')) return route.fulfill(json(STYLE));
       return route.fulfill({ status: 404, headers: cors });
     }
+    if (url.host === 's3.amazonaws.com') {
+      const t = url.pathname.match(/^\/elevation-tiles-prod\/terrarium\/(\d+)\/(\d+)\/(\d+)\.png$/);
+      if (!t || process.env.RELIEF === 'off') return route.fulfill({ status: 404, headers: cors });
+      if (!demCache.has(url.pathname)) demCache.set(url.pathname, demTile(Number(t[1]), Number(t[2]), Number(t[3])));
+      return route.fulfill({ body: demCache.get(url.pathname), contentType: 'image/png', headers: cors });
+    }
     if (url.host === 'fonts.googleapis.com') return route.fulfill({ body: '', contentType: 'text/css', headers: cors });
     if (url.host === 'photon.komoot.io') {
       return route.fulfill(json({ type: 'FeatureCollection', features: [feature(PEROUGES.lon, PEROUGES.lat, { osm_type: 'N', osm_id: 26691411, osm_key: 'place', osm_value: 'village', type: 'city', countrycode: 'FR', name: 'Pérouges', county: 'Ain', country: 'France' })] }));
@@ -91,6 +107,7 @@ export default async function routes(ctx, root) {
       return route.fulfill(json({ lat: String(PEROUGES.lat), lon: String(PEROUGES.lon), name: 'Pérouges', display_name: 'Pérouges, Ain, France', address: { village: 'Pérouges', county: 'Ain', country: 'France' } }));
     }
     if (url.host === 'api.open-meteo.com') {
+      if (url.pathname.startsWith('/v1/elevation')) return route.fulfill({ status: 404, headers: cors });
       return route.fulfill({ body: readFileSync(path.join(fixtures, 'open-meteo-rain-night.json')), contentType: 'application/json', headers: cors });
     }
     return route.abort();
