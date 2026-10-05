@@ -1,7 +1,8 @@
 name: Sonde HTTP
 
 # Sonde jetable (branche claude/sonde-http, jamais fusionnée) : des requêtes du jeu reçoivent par moments un 404
-# sans en-tête CORS du vrai serveur. Chaque requête part ici sur une connexion neuve, pour voir qui répond.
+# sans en-tête CORS du vrai serveur. Hypothèse : après plus de 5 s de silence (keepAliveTimeout de Node), le proxy
+# d'Infomaniak réutilise une connexion que Node a fermée, et ne rejoue pas un POST.
 # Rien n'est créé sur le serveur (session et jeton inventés). Aucun secret.
 on:
   push:
@@ -45,21 +46,22 @@ jobs:
               r.end();
             });
           }
-          const tally = {};
-          async function run(label, method, path, body, n, gapMs = 300) {
-            for (let i = 1; i <= n; i++) {
-              const r = await req(method, path, typeof body === 'function' ? body() : body);
-              const key = `${label} ${r.status} cors=${r.h?.['access-control-allow-origin'] ? 'oui' : 'non'}`;
-              tally[key] = (tally[key] ?? 0) + 1;
-              console.log(`${label} #${i} -> ${r.status} ${r.ms ?? ''} ms ip=${r.ip ?? '?'} ${JSON.stringify(r.h ?? {})} ${JSON.stringify((r.text ?? '').slice(0, 160))}`);
-              await new Promise((s) => setTimeout(s, gapMs));
-            }
-          }
           const ses = () => JSON.stringify({ v: 1, ses: randomBytes(32).toString('base64url') });
-          await run('santé', 'GET', '/v1/health', undefined, 12);
-          await run('compte', 'POST', '/v1/account/me', ses, 20);
-          await run('me', 'POST', '/v1/me', JSON.stringify({ v: 1, tok: 'x'.repeat(43), op: 'erase' }), 10);
-          await run('racine', 'GET', '/', undefined, 6);
-          console.log('\nBilan', JSON.stringify(tally, null, 1));
+          const sleep = (ms) => new Promise((s) => setTimeout(s, ms));
+          const show = (label, r) => {
+            const cors = !!r.h?.['access-control-allow-origin'];
+            const bad = !(r.status === 401 || r.status === 200) || !cors;
+            console.log(`${label} -> ${r.status} cors=${cors ? 'oui' : 'non'} ${r.ms ?? ''} ms` + (bad ? ` ${JSON.stringify(r.h ?? {})} ${JSON.stringify((r.text ?? '').slice(0, 300))}` : ''));
+          };
+          // Une requête, puis un silence de N s, puis un POST (et un GET après certains silences).
+          show('départ POST', await req('POST', '/v1/account/me', ses()));
+          for (const gap of [2, 7, 3, 8, 4, 10, 6, 5.5, 4.5]) {
+            await sleep(gap * 1000);
+            show(`après ${gap} s de silence, POST`, await req('POST', '/v1/account/me', ses()));
+            show(`  aussitôt après, POST`, await req('POST', '/v1/account/me', ses()));
+          }
+          await sleep(8000);
+          show('après 8 s de silence, GET santé', await req('GET', '/v1/health'));
+          show('  aussitôt après, POST', await req('POST', '/v1/account/me', ses()));
           EOF
           node sonde.mjs
