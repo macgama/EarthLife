@@ -1,0 +1,77 @@
+name: Sonde HTTP
+
+# Sonde jetable (branche claude/sonde-http, jamais fusionnée) : pourquoi les POST du jeu vers le vrai serveur
+# reçoivent 404 alors que GET /v1/health et les WebSocket marchent. Aucun secret.
+on:
+  push:
+    branches: [claude/sonde-http]
+
+permissions:
+  contents: read
+
+jobs:
+  sonde:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Sonde
+        run: |
+          cat > sonde.mjs <<'EOF'
+          import dns from 'node:dns/promises';
+          import { randomBytes } from 'node:crypto';
+          const URL0 = 'https://earthlife.needhelpapp.com';
+          const ORIGIN = 'https://macgama.github.io';
+          console.log('DNS', JSON.stringify(await dns.lookup('earthlife.needhelpapp.com', { all: true })));
+          const hello = JSON.stringify({ v: 1, tok: null, sid: null, msgs: [{ t: 'hello', v: 1, cl: 1, tok: null, c: 'dev' }] });
+          const ses = () => JSON.stringify({ v: 1, ses: randomBytes(32).toString('base64url') });
+          const toks = [];
+          async function probe(label, path, { method = 'POST', ct, body, origin = ORIGIN } = {}) {
+            const headers = {};
+            if (origin) headers.Origin = origin;
+            if (ct) headers['Content-Type'] = ct;
+            let b = body;
+            if (b !== undefined && !ct) b = Buffer.from(b);
+            const t0 = performance.now();
+            try {
+              const res = await fetch(URL0 + path, { method, headers, body: b, redirect: 'manual' });
+              const text = await res.text();
+              const h = {};
+              for (const [k, v] of res.headers) if (!['date', 'strict-transport-security', 'x-content-type-options'].includes(k)) h[k] = v;
+              console.log(`\n== ${label} : ${method} ${path} ct=${ct ?? '(aucun)'} -> HTTP ${res.status} en ${Math.round(performance.now() - t0)} ms`);
+              console.log('   en-têtes', JSON.stringify(h));
+              console.log('   corps', JSON.stringify(text.slice(0, 300)));
+              try { for (const m of JSON.parse(text).msgs ?? []) if (m.t === 'welcome' && m.tok) toks.push(m.tok); } catch {}
+            } catch (e) {
+              console.log(`\n== ${label} : erreur ${e?.cause?.code ?? e?.code ?? e?.name}`);
+            }
+          }
+          await probe('A santé', '/v1/health', { method: 'GET' });
+          await probe('B sync, comme le jeu', '/v1/sync', { ct: 'text/plain;charset=UTF-8', body: hello });
+          await probe('C sync, JSON', '/v1/sync', { ct: 'application/json', body: hello });
+          await probe('D sync, sans type', '/v1/sync', { body: hello });
+          await probe('E sync, texte non JSON', '/v1/sync', { ct: 'text/plain;charset=UTF-8', body: 'x' });
+          await probe('F sync, corps vide', '/v1/sync', { ct: 'text/plain;charset=UTF-8', body: '' });
+          await probe('G compte, comme le jeu', '/v1/account/me', { ct: 'text/plain;charset=UTF-8', body: ses() });
+          await probe('H compte, JSON', '/v1/account/me', { ct: 'application/json', body: ses() });
+          await probe('I compte, sans type', '/v1/account/me', { body: ses() });
+          await probe('J sync sans Origin', '/v1/sync', { ct: 'text/plain;charset=UTF-8', body: hello, origin: null });
+          await probe('K me, jeton inventé, JSON', '/v1/me', { ct: 'application/json', body: JSON.stringify({ v: 1, tok: 'x'.repeat(43), op: 'erase' }) });
+          await probe('L chemin inconnu', '/v1/inconnu', { ct: 'text/plain;charset=UTF-8', body: 'x' });
+          console.log(`\nJetons créés : ${toks.length}`);
+          for (const tok of toks) {
+            for (const ct of ['application/json', undefined, 'text/plain;charset=UTF-8']) {
+              const headers = { Origin: ORIGIN };
+              if (ct) headers['Content-Type'] = ct;
+              const body = JSON.stringify({ v: 1, tok, op: 'erase' });
+              const res = await fetch(URL0 + '/v1/me', { method: 'POST', headers, body: ct ? body : Buffer.from(body) });
+              const ok = res.status === 200;
+              console.log(`effacement ct=${ct ?? '(aucun)'} -> HTTP ${res.status}`);
+              await res.text();
+              if (ok) break;
+            }
+          }
+          EOF
+          node sonde.mjs
