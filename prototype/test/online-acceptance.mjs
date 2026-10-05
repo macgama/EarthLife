@@ -194,6 +194,9 @@ const started = (t, timeout = 180000) => until(t, () => !!window.__earthlife?.se
 // Contexte : routes hors ligne, requêtes et WebSocket observées, erreurs de console ; `choice` rangé avant chargement.
 async function open(tag, device, url, { choice = 'on', proxy = false, blockWs = false, before = null, waitGame = true } = {}) {
   const ctx = await browser.newContext(device);
+  // Sous swiftshader, avec deux pages déjà en jeu (A et B), le chargement d'une page de plus dépasse parfois les 30 s
+  // par défaut (O13 : C) ; le délai de lancement de la partie (`started`, 180 s) reste la vraie limite.
+  ctx.setDefaultNavigationTimeout(120000);
   await routes(ctx, root);
   const t = { tag, device, ctx, page: null, errors: [], requests: [], wsUrls: [], frames: [], sids: new Set(), link: null, proxy, blockWs, csp: null, lastJump: 0 };
   all.push(t);
@@ -205,10 +208,13 @@ async function open(tag, device, url, { choice = 'on', proxy = false, blockWs = 
   if (before) await before(ctx, t);
   t.page = watch(t, await ctx.newPage());
   const t0 = Date.now();
-  await t.page.goto(url);
+  // Page qui ne charge pas : le contexte est refermé, sinon son jeu continuerait de tourner et ralentirait les
+  // scénarios suivants (la page n'est pas encore dans `active`, personne ne la fermerait).
+  try { await t.page.goto(url); } catch (e) { await ctx.close().catch(() => {}); throw e; }
+  const tLoad = Date.now();
   if (waitGame) {
     t.started = !!(await started(t));
-    note(`${tag} : partie lancée en ${Math.round((Date.now() - t0) / 1000)} s`);
+    note(`${tag} : partie lancée en ${Math.round((Date.now() - t0) / 1000)} s (page chargée en ${Math.round((tLoad - t0) / 1000)} s)`);
   }
   return t;
 }

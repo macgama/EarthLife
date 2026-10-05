@@ -52,9 +52,35 @@ jobs:
       - run: node test/real-data-smoke.mjs lyon paris tokyo newyork reykjavik perouges
 
   acceptance:
-    # Tests d'acceptation dans Chromium, sans réseau (tuiles de Lyon et météo enregistrées dans test/fixtures) : la
-    # base (spec 9.2 et 9.3 du jeu solo), puis le jeu à plusieurs (spec multijoueur 9.3, O1 à O21) contre le faux
-    # serveur (server/dev.mjs, magasin en mémoire, lancé dans le même processus). Ce contrôle bloque la publication.
+    # Tests d'acceptation de la base dans Chromium, sans réseau (tuiles de Lyon et météo enregistrées dans
+    # test/fixtures) : le jeu solo (spec 9.2 et 9.3). Ce contrôle bloque la publication. Il tourne en même temps que
+    # acceptance-online, sur une autre machine : deux fois moins longtemps que les deux séries à la suite.
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm install --no-save playwright@1
+      - run: npx playwright install --with-deps chromium
+      - run: node test/base-acceptance.mjs browser-shots/acceptance
+        env:
+          ROUTES: test/fixtures/offline-routes.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: captures-acceptation
+          path: prototype/browser-shots/acceptance
+          retention-days: 14
+
+  acceptance-online:
+    # Jeu à plusieurs (spec multijoueur 9.3, O1 à O27) dans Chromium, contre le faux serveur (server/dev.mjs, magasin
+    # en mémoire, lancé dans le même processus), sans réseau. Ce contrôle bloque la publication.
     runs-on: ubuntu-latest
     timeout-minutes: 120
     defaults:
@@ -71,19 +97,8 @@ jobs:
         working-directory: server
       - run: npm install --no-save playwright@1
       - run: npx playwright install --with-deps chromium
-      - run: node test/base-acceptance.mjs browser-shots/acceptance
-        env:
-          ROUTES: test/fixtures/offline-routes.mjs
-      # Jeu à plusieurs : lancé même si la base a échoué, pour que les deux résultats soient connus.
       - run: node test/online-acceptance.mjs browser-shots/online
-        if: ${{ !cancelled() }}
         timeout-minutes: 80
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: captures-acceptation
-          path: prototype/browser-shots/acceptance
-          retention-days: 14
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -115,7 +130,7 @@ jobs:
           retention-days: 14
 
   deploy:
-    needs: [test, acceptance]
+    needs: [test, acceptance, acceptance-online]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
