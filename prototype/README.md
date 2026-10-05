@@ -87,13 +87,14 @@ Pendant l'alerte et la vague, la caméra ne recule pas assez pour voir la horde 
 | --- | --- | --- |
 | Bâtiments (hauteurs réelles), rues, ponts, voies ferrées, eau, parcs, bois | OpenStreetMap, en tuiles vectorielles OpenFreeMap (zoom 14) | Décor 3D, collisions, ponts praticables, arbres |
 | Lieux (pharmacies, hôpitaux, supermarchés, gares…) | OpenStreetMap, mêmes tuiles | Butin selon le lieu, points A et B de la quête |
+| Relief (altitude du sol), avec `?relief=1` seulement | AWS Terrain Tiles (AWS Open Data), encodage terrarium, zoom 13 | Sol en relief (rues, bâtiments, personnages, décor), eau à niveau, pentes qui ralentissent ou accélèrent la marche ; sans altitude, le sol reste plat |
 | Recherche de lieu | Photon (autocomplétion) et Nominatim | Choix du point de départ |
 | Météo actuelle à l'endroit du joueur | Open-Meteo, relue toutes les 15 min | Pluie (sol glissant, pas couverts), orage (éclairs qui alertent les zombies), neige (‑20 % de vitesse), brouillard (vision réduite), froid ou chaleur (température du corps) |
 | Heure et soleil | Calcul astronomique | Éclairage, fenêtres allumées la nuit, nuit plus dangereuse |
 
 Le menu permet de forcer une météo ou la nuit pour tester.
 
-Crédits : © les contributeurs d'OpenStreetMap (licence ODbL), tuiles OpenFreeMap au schéma OpenMapTiles, météo Open-Meteo (CC BY 4.0), recherche Photon (Komoot) et Nominatim, carte du menu MapLibre GL, polices Chakra Petch et Barlow Semi Condensed (SIL Open Font License, paquets Fontsource).
+Crédits : © les contributeurs d'OpenStreetMap (licence ODbL), tuiles OpenFreeMap au schéma OpenMapTiles, météo Open-Meteo (CC BY 4.0), relief (avec `?relief=1`) : Terrain Tiles (AWS Open Data) construites d'après Copernicus EU-DEM, USGS SRTM et 3DEP et d'autres sources nationales, recherche Photon (Komoot) et Nominatim, carte du menu MapLibre GL, polices Chakra Petch et Barlow Semi Condensed (SIL Open Font License, paquets Fontsource).
 
 ## Tests
 

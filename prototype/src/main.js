@@ -6,6 +6,7 @@ import { fetchWeather, forcedWeather, gameplayModifiers } from './weather.js';
 import { sunPosition, localTimeLabel } from './sun.js';
 import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, lineFree } from './collision.js';
 import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate } from './world.js';
+import { DEM_ATTRIBUTION } from './dem.js';
 import { createChunkManager, VIEW_RADIUS } from './chunks.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
@@ -56,6 +57,9 @@ if (window.matchMedia('(pointer: coarse)').matches) document.body.classList.add(
 // ---------- Menu : choix du lieu de départ sur la carte du monde ----------
 const params = new URLSearchParams(location.search);
 const DEBUG = params.get('debug') === '1';
+// Relief réel (altitude des tuiles AWS Terrain Tiles) : pas activé par défaut, ?relief=1 dans l'adresse. Sans lui, ou
+// si l'altitude n'arrive pas, le jeu est plat exactement comme avant.
+const reliefRequested = () => params.get('relief') === '1';
 // Un paramètre inconnu (?weather=foo) laisserait la liste vide : on ne garde que les valeurs proposées.
 const setOption = (select, value) => { if (value && [...select.options].some((o) => o.value === value)) select.value = value; };
 setOption($('weather-mode'), params.get('weather'));
@@ -462,8 +466,9 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
   const weatherPromise = loadWeather(origin);
 
   // Le monde réel arrive par tuiles d'environ 1,7 km ; on attend seulement celles qui touchent le quartier de départ.
-  const store = createWorldStore(origin);
+  const store = createWorldStore(origin, { relief: reliefRequested() });
   const grid = createChunkedGrid(store.chunkSize);
+  grid.terrain = store.terrain; // hauteur du sol hors des morceaux construits (groundAt, collision.js)
   const loader = createTileLoader(store, { onTile: (key, info) => onTile(key, info) });
   setLoading('Téléchargement des rues réelles…');
   loader.ensureAround(0, 0, QUEST_RADIUS);
@@ -476,6 +481,12 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
     // Les lieux plus loin servent aux missions ; une partie qui a déjà un refuge ne les attend pas.
     setLoading('Repérage des lieux du quartier…');
     await loader.settled(0, 0, QUEST_RADIUS, 6000);
+  }
+  // Relief : tout ou rien au départ. Les tuiles d'altitude du quartier sont arrivées avec les rues (settled) : la référence
+  // est l'altitude à l'origine ; sinon le relief est coupé pour toute la partie et le sol est plat.
+  if (store.terrain && store.source === 'tiles') {
+    const R = VIEW_RADIUS + 50;
+    if (!store.terrain.settle(-R, -R, R, R)) console.warn('Altitude du relief indisponible, sol plat', store.terrain.info());
   }
   setLoading('Construction du quartier en 3D…');
   await nextFrame();
@@ -1915,10 +1926,15 @@ function renderConditions() {
   const streets = s.store.source === 'tiles'
     ? `<span class="live">Rues réelles</span> OpenStreetMap via OpenFreeMap, ${nbsp(s.store.buildings.length.toLocaleString('fr-FR'))} bâtiments chargés${s.streaming ? ' · chargement…' : ''}`
     : '<span class="warn">Rues générées</span> (cartes injoignables)';
+  // Relief demandé : réel (sources à citer) ou indisponible (sol plat, comme sans relief).
+  const rt = s.store.terrain;
+  const relief = !rt ? ''
+    : rt.enabled ? `<div><span class="live">Relief réel</span> ${DEM_ATTRIBUTION.replace('Relief : ', '')}, départ à ${nbsp(`${rt.ref} m`)}</div>`
+      : '<div><span class="warn">Relief indisponible</span> (sol plat)</div>';
   const meteo = w.source === 'live'
     ? `<span class="live">Météo en direct</span> Open-Meteo, relevée à ${nbsp(localTimeLabel(new Date(w.fetchedAt), w.utcOffsetSeconds))}`
     : w.source === 'forced' ? '<span class="warn">Météo forcée</span> pour le test' : '<span class="warn">Météo réelle indisponible</span>';
-  $('data-line').innerHTML = `<div>${streets}</div><div>${meteo}</div>`;
+  $('data-line').innerHTML = `<div>${streets}</div>${relief}<div>${meteo}</div>`;
   const mods = $('mods');
   mods.replaceChildren(...(s.mods.notes.length ? s.mods.notes : ['Conditions calmes : aucun effet particulier']).map((n) => {
     const li = document.createElement('li');
@@ -2064,6 +2080,13 @@ const debug = DEBUG ? {
     return { x, z };
   },
   props: (kind) => session?.chunks.props(kind) ?? [],
+  // Relief : état (actif, référence, tuiles d'altitude) et altitude réelle au joueur.
+  terrain() {
+    const t = session?.store.terrain;
+    if (!t) return { requested: false, enabled: false };
+    const p = session.player;
+    return { requested: true, ...t.info(), here: t.enabled ? t.absoluteAt(p.x, p.z) : 0 };
+  },
   hurt(n) {
     const p = session?.player;
     if (!p) return null;

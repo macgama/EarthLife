@@ -5,17 +5,22 @@ import { chunkKey, createGridPatch, fillRings, strokeLine, FREE, WATER, BUILDING
 import { TILE_ZOOM, tilesForRect, tileKey, tileUrl, fetchTemplate, pruneTileCache, POI_PRIORITY } from './tiles.js';
 import { proceduralWorld } from './osm.js';
 import { lootKind } from './survival.js';
+import { createTerrain, chunkHeights } from './terrain.js';
+import { DEM_URL, demUrl, loadDemTile } from './dem.js';
 
 export const CHUNK = 64;
 const EMPTY = Object.freeze({ buildings: [], roads: [], water: [], waterLines: [], areas: [], zones: [], pois: [] });
 const ZONE_LOOT = { commercial: 'commercial', retail: 'retail', industrial: 'industrial', residential: 'house' };
 
-export function createWorldStore(origin, { chunkSize = CHUNK } = {}) {
+// relief : lire aussi les tuiles d'altitude (terrain.js) ; sans lui, ou si l'altitude n'arrive pas, le sol est plat.
+export function createWorldStore(origin, { chunkSize = CHUNK, relief = false } = {}) {
+  const proj = makeProjection(origin.lat, origin.lon);
   return {
-    origin, chunkSize, proj: makeProjection(origin.lat, origin.lon),
+    origin, chunkSize, proj,
     source: 'tiles', // 'tiles' ou 'procedural' (ville de secours)
     buildings: [], buildingIds: new Map(), pois: [], poiIds: new Set(),
     buckets: new Map(), tiles: new Map(),
+    terrain: relief && chunkSize === CHUNK ? createTerrain({ proj }) : null,
   };
 }
 
@@ -126,10 +131,12 @@ export function addFeatures(store, f) {
   return fresh.length;
 }
 
-// Un morceau peut être construit quand toutes les tuiles qui le recouvrent sont arrivées (ou ont échoué).
+// Un morceau peut être construit quand toutes les tuiles qui le recouvrent sont arrivées (ou ont échoué), celles de
+// l'altitude comprises : le sol ne change jamais après coup.
 export function chunkReady(store, cx, cz) {
   if (store.source === 'procedural') return true;
   const cs = store.chunkSize;
+  if (store.terrain?.enabled && !store.terrain.ready(cx * cs, cz * cs, (cx + 1) * cs, (cz + 1) * cs)) return false;
   for (const t of tilesForRect(store.proj, cx * cs, cz * cs, (cx + 1) * cs - 0.01, (cz + 1) * cs - 0.01)) {
     const state = store.tiles.get(tileKey(t.x, t.y, t.z))?.state;
     if (state !== 'ready' && state !== 'failed') return false;
@@ -137,11 +144,32 @@ export function chunkReady(store, cx, cz) {
   return true;
 }
 
-// Grille de collision d'un morceau : eau, rivières, ponts (routes au-dessus de l'eau) puis bâtiments.
+// Le point est dans l'eau (polygone d'eau, ou rivière bloquante) : fonction de la position seule, lue dans le seau du
+// morceau qui contient le point. Deux morceaux voisins donnent donc la même réponse pour un nœud de leur bord commun.
+export function waterAt(store, x, z) {
+  const cs = store.chunkSize;
+  const f = bucket(store, Math.floor(x / cs), Math.floor(z / cs), false);
+  if (!f) return false;
+  for (const w of f.water) if (within(w.bounds, x, z) && insideRings(x, z, w.rings)) return true;
+  for (const w of f.waterLines) {
+    if (!w.blocking || !within(w.bounds, x, z)) continue;
+    const half = w.width / 2, pts = w.points;
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = pts[i], b = pts[i + 1], dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
+      const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / l2)) : 0;
+      if (Math.hypot(a.x + t * dx - x, a.z + t * dz - z) <= half) return true;
+    }
+  }
+  return false;
+}
+
+// Grille de collision d'un morceau : eau, rivières, ponts (routes au-dessus de l'eau) puis bâtiments ; avec le relief,
+// aussi la grille d'altitude du morceau (g.relief : terrain.js), eau à niveau.
 export function buildPatch(store, cx, cz) {
   const cs = store.chunkSize;
   const g = createGridPatch(cx * cs, cz * cs, cs, 1);
   const f = chunkFeatures(store, cx, cz);
+  if (store.terrain?.enabled) g.relief = chunkHeights(store.terrain, cx * cs, cz * cs, (x, z) => waterAt(store, x, z));
   for (const w of f.water) fillRings(g, w.rings, WATER);
   for (const w of f.waterLines) if (w.blocking) strokeLine(g, w.points, w.width, WATER);
   for (const r of f.roads) if (!r.rail) strokeLine(g, r.points, r.width, FREE, WATER);
@@ -158,6 +186,7 @@ export function useProceduralWorld(store, radius = 700) {
     return { minX: Math.min(...xs) - pad, maxX: Math.max(...xs) + pad, minZ: Math.min(...zs) - pad, maxZ: Math.max(...zs) + pad };
   };
   store.source = 'procedural';
+  store.terrain?.disable(); // ville de secours : sol plat
   addFeatures(store, {
     buildings: w.buildings.map((b) => {
       const cx = b.points.reduce((s, p) => s + p.x, 0) / b.points.length, cz = b.points.reduce((s, p) => s + p.z, 0) / b.points.length;
@@ -209,7 +238,7 @@ export function tileTemplate() {
 }
 
 // Charge les tuiles autour du joueur. `onTile(key, info)` est appelé à chaque tuile prête ou en échec.
-export function createTileLoader(store, { onTile, maxConcurrent = 2, retries = 2 } = {}) {
+export function createTileLoader(store, { onTile, maxConcurrent = 2, retries = 2, demTemplate = DEM_URL } = {}) {
   let template = null;
   let templatePromise = null;
   let worker = null;
@@ -218,7 +247,10 @@ export function createTileLoader(store, { onTile, maxConcurrent = 2, retries = 2
   const pendingJobs = new Map();
   const queue = [];
   let active = 0;
-  const stats = { loaded: 0, cached: 0, failed: 0, bytes: 0, decodeMs: 0 };
+  // Tuiles d'altitude du relief : une file à part, pour ne pas retarder les rues.
+  const demQueue = [];
+  let demActive = 0;
+  const stats = { loaded: 0, cached: 0, failed: 0, bytes: 0, decodeMs: 0, dem: { loaded: 0, cached: 0, failed: 0, bytes: 0, decodeMs: 0 } };
 
   function getTemplate() {
     if (template) return Promise.resolve(template);
@@ -248,7 +280,7 @@ export function createTileLoader(store, { onTile, maxConcurrent = 2, retries = 2
         const job = pendingJobs.get(e.data.id);
         if (!job) return;
         pendingJobs.delete(e.data.id);
-        if (e.data.error) job.reject(new Error(e.data.error));
+        if (e.data.error) job.reject(Object.assign(new Error(e.data.error), { status: e.data.status }));
         else job.resolve(e.data);
       };
       worker.onerror = (e) => {
@@ -284,6 +316,46 @@ export function createTileLoader(store, { onTile, maxConcurrent = 2, retries = 2
       pendingJobs.set(id, { resolve, reject, retryOnMain: () => loadOnMain(url, t).then(resolve, reject) });
       w.postMessage({ id, url, x: t.x, y: t.y, z: t.z, origin: { lat: store.origin.lat, lon: store.origin.lon } });
     });
+  }
+
+  // Tuile d'altitude : téléchargée et décodée dans le worker, sinon sur le fil principal.
+  function loadDem(url) {
+    const w = startWorker();
+    if (!w) return loadDemTile(url);
+    return new Promise((resolve, reject) => {
+      const id = nextId++;
+      pendingJobs.set(id, { resolve, reject, retryOnMain: () => loadDemTile(url).then(resolve, reject) });
+      w.postMessage({ id, kind: 'relief', url });
+    });
+  }
+
+  function demPump() {
+    while (demActive < maxConcurrent && demQueue.length) {
+      const job = demQueue.shift();
+      demActive++;
+      runDem(job).finally(() => { demActive--; demPump(); });
+    }
+  }
+
+  async function runDem(job) {
+    const terrain = store.terrain;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const res = await loadDem(demUrl(job.z, job.x, job.y, demTemplate));
+        terrain.finish(job.key, res.elev);
+        stats.dem.loaded++;
+        if (res.cached) stats.dem.cached++;
+        stats.dem.bytes += res.size ?? 0;
+        stats.dem.decodeMs += res.ms ?? 0;
+        return;
+      } catch (err) {
+        // Tuile absente (4xx) : inutile de réessayer.
+        if (err?.status >= 400 && err.status < 500) break;
+        if (attempt < retries) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      }
+    }
+    terrain.finish(job.key, null);
+    stats.dem.failed++;
   }
 
   function pump() {
@@ -329,13 +401,19 @@ export function createTileLoader(store, { onTile, maxConcurrent = 2, retries = 2
       queue.push({ key, ...t });
     }
     pump();
+    if (store.terrain?.enabled) {
+      for (const t of store.terrain.want(x - radius, z - radius, x + radius, z + radius)) demQueue.push(t);
+      demPump();
+    }
   }
 
   // Attend que les tuiles demandées autour d'un point soient arrivées (ou aient échoué).
   async function settled(x, z, radius, timeoutMs = 30000) {
     const t0 = performance.now();
     const keys = tilesForRect(store.proj, x - radius, z - radius, x + radius, z + radius, TILE_ZOOM).map((t) => tileKey(t.x, t.y, t.z));
-    while (keys.some((k) => store.tiles.get(k)?.state === 'loading')) {
+    // Les tuiles d'altitude du relief sont attendues aussi (elles ne changent pas le résultat rendu).
+    const demLoading = () => store.terrain?.enabled && store.terrain.states(x - radius, z - radius, x + radius, z + radius).includes('loading');
+    while (keys.some((k) => store.tiles.get(k)?.state === 'loading') || demLoading()) {
       if (performance.now() - t0 > timeoutMs) break;
       await new Promise((r) => setTimeout(r, 50));
     }
@@ -346,7 +424,8 @@ export function createTileLoader(store, { onTile, maxConcurrent = 2, retries = 2
     worker?.terminate();
     worker = null;
     queue.length = 0;
+    demQueue.length = 0;
   }
 
-  return { ensureAround, settled, dispose, stats, get loading() { return active + queue.length; } };
+  return { ensureAround, settled, dispose, stats, get loading() { return active + queue.length + demActive + demQueue.length; } };
 }
