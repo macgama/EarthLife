@@ -1,0 +1,60 @@
+name: Diagnostic SSH
+
+# Essai à la demande (Actions, « Diagnostic SSH », Run workflow) quand le déploiement du serveur échoue à la connexion SSH :
+# refait les connexions de server/tools/deploy.sh avec le journal détaillé de ssh (-vv), en lecture seule sur l'hébergement.
+# Même environnement `production` que le déploiement (approbation de Gaël, branche main seulement) ; le mot de passe n'est
+# jamais affiché (ssh ne l'écrit pas) et l'hôte et l'utilisateur sont masqués par GitHub (ce sont des secrets).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Connexions SSH détaillées
+        env:
+          INFOMANIAK_SSH_HOST: ${{ secrets.INFOMANIAK_SSH_HOST }}
+          INFOMANIAK_SSH_USER: ${{ secrets.INFOMANIAK_SSH_USER }}
+          INFOMANIAK_SSH_PORT: ${{ vars.INFOMANIAK_SSH_PORT }}
+          INFOMANIAK_APP_DIR: ${{ secrets.INFOMANIAK_APP_DIR }}
+          INFOMANIAK_SSH_KNOWN_HOSTS: ${{ secrets.INFOMANIAK_SSH_KNOWN_HOSTS }}
+          INFOMANIAK_SSH_PASSWORD: ${{ secrets.INFOMANIAK_SSH_PASSWORD }}
+        run: |
+          set +e
+          ssh -V
+          umask 077
+          T=$(mktemp -d)
+          printf '%s\n' "$INFOMANIAK_SSH_KNOWN_HOSTS" | tr -d '\r' > "$T/known_hosts"
+          cat > "$T/askpass" <<'ASK'
+          #!/bin/sh
+          printf '%s\n' "$INFOMANIAK_SSH_PASSWORD"
+          ASK
+          chmod 700 "$T/askpass"
+          export INFOMANIAK_SSH_PASSWORD
+          # Les mêmes options que server/tools/deploy.sh (identification par mot de passe), avec -vv en plus.
+          OPTS=(-F /dev/null -T -p "${INFOMANIAK_SSH_PORT:-22}"
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$T/known_hosts" -o GlobalKnownHostsFile=/dev/null
+            -o CheckHostIP=no -o UpdateHostKeys=no -o IdentityAgent=none -o IdentitiesOnly=yes
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4
+            -o BatchMode=no -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive
+            -o NumberOfPasswordPrompts=1)
+
+          echo "::group::Essai 1 : commande courte (echo, pwd)"
+          env SSH_ASKPASS="$T/askpass" SSH_ASKPASS_REQUIRE=force \
+            ssh -vv "${OPTS[@]}" -- "$INFOMANIAK_SSH_USER@$INFOMANIAK_SSH_HOST" 'echo CONNEXION_OK; pwd; echo $HOME' 2>&1 | tail -90
+          echo "code de sortie : ${PIPESTATUS[0]}"
+          echo "::endgroup::"
+
+          echo "::group::Essai 2 : la vérification de deploy.sh (check), ssh en -vv"
+          mkdir -p "$T/bin"
+          printf '%s\n' '#!/bin/sh' 'exec /usr/bin/ssh -vv "$@"' > "$T/bin/ssh"
+          chmod 700 "$T/bin/ssh"
+          PATH="$T/bin:$PATH" bash server/tools/deploy.sh check 2>&1 | tail -120
+          echo "code de sortie : ${PIPESTATUS[0]}"
+          echo "::endgroup::"
