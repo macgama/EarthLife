@@ -137,11 +137,13 @@ flat varying vec4 vFacP;
 flat varying vec4 vSty;
 flat varying vec4 vFacM;
 flat varying float vFacB;
+flat varying float vFloor;
 varying float vFacU;`;
 
 // Décodage par sommet des attributs aFacade = (u, L, genre + 16 × graine, porte) et aStyle = (rdc, étage, H, code).
 const FACADE_VERTEX = `
   vFacU = aFacade.x;
+  vFloor = aFloor;
   float fg = aFacade.z;
   float fSeed = floor((fg + 0.5) / 16.0);
   float fKind = fg - 16.0 * fSeed;
@@ -194,7 +196,7 @@ const FACADES = `
     float facShop = vFacK.y, facSeed = vFacK.z, facUse = vFacK.w;
     float facRegion = vFacR.x, facShut = vFacR.y, facFam = vFacR.z;
     float facL = vFacM.x, facDoor = vFacM.y, dw = vFacM.z, dh = vFacM.w;
-    float facU = vFacU, facY = vCutWorld.y;
+    float facU = vFacU, facY = vCutWorld.y - vFloor;
     float facRdc = vSty.x, facFl = vSty.y, facH = vSty.z, cor = vSty.w;
     vec3 facCol = diffuseColor.rgb;
     if (facKind > 3.5) {
@@ -204,6 +206,7 @@ const FACADES = `
       float apart = 1.0 - step(0.5, abs(facUse - 1.0));
       // Soubassement, base de l'immeuble, corniche, mur mitoyen.
       if (facY < 0.45) facCol *= 0.82;
+      if (facY < 0.0) facCol *= 0.8; // socle sous le plancher (relief) : soubassement uni et plus sombre
       else if (apart > 0.5 && facShop < 0.5 && facKind < 1.5 && facY < facRdc) facCol *= 0.93;
       if (facKind > 1.5) facCol *= 0.94;
       if (facY > facH - cor && facY < facH) facCol *= 0.85;
@@ -325,7 +328,7 @@ const FACADES_LITE = `
   vec3 facadeN = normalize(cross(dFdx(vCutWorld), dFdy(vCutWorld)));
   float facKind = vFacK.x;
   if (facKind > -0.5 && facKind < 2.5 && vFacM.x > 0.5) {
-    float facY = vCutWorld.y, facH = vSty.z, cor = vSty.w;
+    float facY = vCutWorld.y - vFloor, facH = vSty.z, cor = vSty.w;
     float shade = (facY < 0.45 ? 0.82 : 1.0) * (facKind > 1.5 ? 0.94 : 1.0) * (facY > facH - cor ? 0.85 : 1.0);
     vec3 facCol = diffuseColor.rgb * shade;
     float bw = vFacB;
@@ -363,7 +366,7 @@ function addCutaway(material, { facades = false, lite = false } = {}) {
     shader.uniforms.uWet = weatherLook.wet;
     if (facades) {
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', `#include <common>\nattribute vec4 aFacade;\nattribute vec4 aStyle;${FACADE_VARYINGS}`)
+        .replace('#include <common>', `#include <common>\nattribute vec4 aFacade;\nattribute vec4 aStyle;\nattribute float aFloor;${FACADE_VARYINGS}`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>${FACADE_VERTEX}`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>${FACADE_LIB}\n#define CUT_EXTRA (abs(vFacK.x - ${AWNING.toFixed(1)}) < 0.5 ? ${AWNING_CUT.toFixed(2)} : 0.0)`)
@@ -456,13 +459,13 @@ function orientedRect(ring) {
 }
 
 // Tableaux de sommets réutilisés d'un appel à l'autre (pas de ramasse-miettes pendant la marche).
-const geo = { n: 0, cap: 0, pos: null, col: null, nor: null, fac: null, sty: null };
+const geo = { n: 0, cap: 0, pos: null, col: null, nor: null, fac: null, sty: null, flo: null };
 function reserve(extra) {
   if (geo.n + extra <= geo.cap) return;
   const cap = Math.max(4096, (geo.n + extra) * 2);
   const grow = (a, k) => { const b = new Float32Array(cap * k); if (a) b.set(a.subarray(0, geo.n * k)); return b; };
   geo.pos = grow(geo.pos, 3); geo.col = grow(geo.col, 3); geo.nor = grow(geo.nor, 3);
-  geo.fac = grow(geo.fac, 4); geo.sty = grow(geo.sty, 4);
+  geo.fac = grow(geo.fac, 4); geo.sty = grow(geo.sty, 4); geo.flo = grow(geo.flo, 1);
   geo.cap = cap;
 }
 
@@ -657,10 +660,15 @@ export function roofTop(b, x = b?.cx, z = b?.cz) {
 // Extrusion rapide de bâtiments à trous, sans biseau ni UV : bien plus légère qu'ExtrudeGeometry, pour construire un
 // morceau de ville pendant la marche sans à-coup. Façades par arête (attributs aFacade, aStyle), acrotères, toits à
 // pans, stores : un seul maillage et un seul matériau.
-export function buildingsGeometry(buildings) {
+// floorOf(b) → { floor, drop } (terrain.js, buildingFloor) pose chaque bâtiment sur le terrain : tous ses y montent du plancher,
+// et ses murs descendent de `drop` mètres sous lui (socle) ; l'attribut aFloor donne le plancher au shader des façades
+// (étages, fenêtres et portes se comptent depuis lui). Sans floorOf (sol plat), la géométrie est celle d'avant.
+export function buildingsGeometry(buildings, floorOf = null) {
   geo.n = 0;
   for (const b of buildings) {
     if (b.hide3d || !b.rings?.length || b.rings[0].length < 3) continue;
+    const start = geo.n;
+    const fl = floorOf ? floorOf(b) : null;
     const seed = hash(b.id ?? '');
     const outerArea = signedArea(b.rings[0]);
     const area = b.area ?? Math.abs(outerArea);
@@ -722,7 +730,7 @@ export function buildingsGeometry(buildings) {
         tri.L = L;
         tri.g = kind + (front ? SHOPFRONT : 0) + 16 * bseed;
         tri.door = k === 0 && i === doorEdge && y0 === 0 ? Math.min(Math.max(doorU, 0), L) : -1;
-        wallQuad(p, q, y0, top, L);
+        wallQuad(p, q, fl && y0 === 0 ? -fl.drop : y0, top, L);
         if (parapet) {
           // Face intérieure de l'acrotère : le mur vu depuis le toit.
           tri.col = inner;
@@ -852,6 +860,12 @@ export function buildingsGeometry(buildings) {
         }
       }
     }
+    // Bâtiment posé sur le terrain : tout monte du plancher, et chaque sommet le porte (aFloor).
+    const lift = fl ? fl.floor : 0;
+    for (let v = start; v < geo.n; v++) {
+      geo.pos[v * 3 + 1] += lift;
+      geo.flo[v] = lift;
+    }
   }
   if (!geo.n) return null;
   const n = geo.n;
@@ -861,6 +875,7 @@ export function buildingsGeometry(buildings) {
   g.setAttribute('color', new THREE.BufferAttribute(geo.col.slice(0, n * 3), 3));
   g.setAttribute('aFacade', new THREE.BufferAttribute(geo.fac.slice(0, n * 4), 4));
   g.setAttribute('aStyle', new THREE.BufferAttribute(geo.sty.slice(0, n * 4), 4));
+  g.setAttribute('aFloor', new THREE.BufferAttribute(geo.flo.slice(0, n), 1));
   g.computeBoundingSphere();
   return g;
 }
@@ -1015,7 +1030,12 @@ export function makeBeacon(color) {
     new THREE.MeshBasicMaterial({ color, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
   );
   pulse.position.y = 0.05;
-  group.add(beam, ring, pulse);
+  // Réticule et onde sur un pivot : penchés selon la pente du sol (userData.tilt), le faisceau reste vertical.
+  const pivot = new THREE.Group();
+  pivot.add(ring, pulse);
+  group.add(beam, pivot);
+  const tiltUp = new THREE.Vector3(0, 1, 0), tiltTo = new THREE.Vector3();
+  group.userData.tilt = (n) => pivot.quaternion.setFromUnitVectors(tiltUp, tiltTo.set(n[0], n[1], n[2]));
   group.userData.setColor = (hex) => {
     for (const m of [beam, ring, pulse]) m.material.color.setHex(hex);
   };
