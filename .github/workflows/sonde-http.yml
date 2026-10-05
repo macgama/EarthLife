@@ -1,8 +1,8 @@
 name: Sonde HTTP
 
 # Sonde jetable (branche claude/sonde-http, jamais fusionnée) : des requêtes du jeu reçoivent par moments un 404
-# sans en-tête CORS du vrai serveur. Hypothèse : après plus de 5 s de silence (keepAliveTimeout de Node), le proxy
-# d'Infomaniak réutilise une connexion que Node a fermée, et ne rejoue pas un POST.
+# sans en-tête CORS du vrai serveur. Silences seuls : sans effet (sonde précédente). Ici : connexion du client
+# réutilisée après un silence, et requêtes juste après des WebSocket. Identités de test effacées à la fin.
 # Rien n'est créé sur le serveur (session et jeton inventés). Aucun secret.
 on:
   push:
@@ -21,25 +21,23 @@ jobs:
           node-version: 24
       - name: Sonde
         run: |
+          npm i --silent --no-save ws@8 >/dev/null 2>&1
           cat > sonde.mjs <<'EOF'
           import https from 'node:https';
           import { randomBytes } from 'node:crypto';
+          import { WebSocket } from 'ws';
           const HOST = 'earthlife.needhelpapp.com';
           const ORIGIN = 'https://macgama.github.io';
-          const skip = new Set(['date', 'strict-transport-security', 'x-content-type-options', 'cache-control', 'vary']);
-          function req(method, path, body) {
+          const sleep = (ms) => new Promise((s) => setTimeout(s, ms));
+          function req(method, path, body, agent = false) {
             return new Promise((resolve) => {
               const t0 = performance.now();
               const headers = { Origin: ORIGIN };
               if (body !== undefined) { headers['Content-Type'] = 'text/plain;charset=UTF-8'; headers['Content-Length'] = Buffer.byteLength(body); }
-              const r = https.request({ host: HOST, path, method, headers, agent: false }, (res) => {
+              const r = https.request({ host: HOST, path, method, headers, agent }, (res) => {
                 let text = '';
                 res.on('data', (c) => { text += c; });
-                res.on('end', () => {
-                  const h = {};
-                  for (const [k, v] of Object.entries(res.headers)) if (!skip.has(k)) h[k] = v;
-                  resolve({ status: res.statusCode, ip: res.socket?.remoteAddress, ms: Math.round(performance.now() - t0), h, text });
-                });
+                res.on('end', () => resolve({ status: res.statusCode, port: res.socket?.localPort, ms: Math.round(performance.now() - t0), h: res.headers, text }));
               });
               r.on('error', (e) => resolve({ status: 'erreur ' + (e.code ?? e.name) }));
               if (body !== undefined) r.write(body);
@@ -47,21 +45,45 @@ jobs:
             });
           }
           const ses = () => JSON.stringify({ v: 1, ses: randomBytes(32).toString('base64url') });
-          const sleep = (ms) => new Promise((s) => setTimeout(s, ms));
           const show = (label, r) => {
             const cors = !!r.h?.['access-control-allow-origin'];
-            const bad = !(r.status === 401 || r.status === 200) || !cors;
-            console.log(`${label} -> ${r.status} cors=${cors ? 'oui' : 'non'} ${r.ms ?? ''} ms` + (bad ? ` ${JSON.stringify(r.h ?? {})} ${JSON.stringify((r.text ?? '').slice(0, 300))}` : ''));
+            const ok = (r.status === 401 || r.status === 200) && cors;
+            const h = { ...(r.h ?? {}) }; delete h.date; delete h['strict-transport-security'];
+            console.log(`${ok ? 'ok   ' : 'ÉCHEC'} ${label} -> ${r.status} cors=${cors ? 'oui' : 'non'} port=${r.port ?? '?'} ${r.ms ?? ''} ms` + (ok ? '' : ` ${JSON.stringify(h)} ${JSON.stringify((r.text ?? '').slice(0, 300))}`));
           };
-          // Une requête, puis un silence de N s, puis un POST (et un GET après certains silences).
-          show('départ POST', await req('POST', '/v1/account/me', ses()));
-          for (const gap of [2, 7, 3, 8, 4, 10, 6, 5.5, 4.5]) {
+          // 1. Une connexion gardée ouverte côté client, réutilisée après des silences.
+          const ka = new https.Agent({ keepAlive: true, maxSockets: 1 });
+          show('1 connexion gardée : départ', await req('POST', '/v1/account/me', ses(), ka));
+          for (const gap of [2, 4, 7, 3, 10]) {
             await sleep(gap * 1000);
-            show(`après ${gap} s de silence, POST`, await req('POST', '/v1/account/me', ses()));
-            show(`  aussitôt après, POST`, await req('POST', '/v1/account/me', ses()));
+            show(`1 même connexion après ${gap} s`, await req('POST', '/v1/account/me', ses(), ka));
           }
           await sleep(8000);
-          show('après 8 s de silence, GET santé', await req('GET', '/v1/health'));
-          show('  aussitôt après, POST', await req('POST', '/v1/account/me', ses()));
+          show('1 même connexion après 8 s, GET santé', await req('GET', '/v1/health', undefined, ka));
+          show('1 aussitôt après, POST', await req('POST', '/v1/account/me', ses(), ka));
+          ka.destroy();
+          // 2. Deux WebSocket (hello, 3 s, bye), puis des POST sur connexions neuves ; 3. idem sur une connexion gardée.
+          const toks = [];
+          async function wsSession() {
+            const pair = [0, 1].map(() => new WebSocket(`wss://${HOST}/v1/ws`, { headers: { Origin: ORIGIN } }));
+            await Promise.all(pair.map((w) => new Promise((r) => { w.on('open', r); w.on('error', r); })));
+            for (const w of pair) {
+              w.on('message', (d) => { try { const m = JSON.parse(String(d)); if (m.t === 'welcome' && m.tok) toks.push(m.tok); } catch {} });
+              if (w.readyState === 1) w.send(JSON.stringify({ t: 'hello', v: 1, cl: 1, tok: null, c: 'dev' }));
+            }
+            await sleep(3000);
+            for (const w of pair) { if (w.readyState === 1) w.send(JSON.stringify({ t: 'bye' })); w.close(); }
+            await Promise.all(pair.map((w) => new Promise((r) => { if (w.readyState === 3) r(); else w.on('close', r); })));
+          }
+          await wsSession();
+          for (let i = 1; i <= 5; i++) { show(`2 après WebSocket, connexion neuve #${i}`, await req('POST', '/v1/account/me', ses())); await sleep(100); }
+          const ka2 = new https.Agent({ keepAlive: true, maxSockets: 1 });
+          show('3 connexion gardée : départ', await req('POST', '/v1/account/me', ses(), ka2));
+          await wsSession();
+          for (let i = 1; i <= 4; i++) show(`3 même connexion après WebSocket #${i}`, await req('POST', '/v1/account/me', ses(), ka2));
+          ka2.destroy();
+          let erased = 0;
+          for (const tok of toks) { const r = await req('POST', '/v1/me', JSON.stringify({ v: 1, tok, op: 'erase' })); if (r.status === 200) erased++; }
+          console.log(`identités de test : ${toks.length}, effacées : ${erased}`);
           EOF
           node sonde.mjs
