@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RECIPES, PLAN, PLAN_FOUND_TEXT, stockOf, canCraft, craft, recipeRows, rollPlan } from '../src/crafting.js';
+import { RECIPES, PLAN, PLAN_FOUND_TEXT, stockOf, canCraft, craft, craftTime, recipeRows, rollPlan } from '../src/crafting.js';
 import { createSurvivor, ITEMS } from '../src/survival.js';
 
 const ctxWith = (o = {}) => ({ chest: {}, bag: {}, upgrades: [], plans: [], chestCap: 200, ...o });
@@ -166,7 +166,7 @@ test('onglet Fabriquer : une ligne par recette, coût comparé au stock', () => 
   const rows = recipeRows(ctxWith({ chest: { bois: 10, clous: 3 }, bag: { bois: 2, clous: 1 } }));
   assert.equal(rows.length, 12);
   const planches = rows.find((r) => r.key === 'planches');
-  assert.deepEqual(planches, { key: 'planches', name: 'Planches', desc: 'Donne 1 planche', cost: '2 bois (12) · 1 clou (4)', ok: true, why: '' });
+  assert.deepEqual(planches, { key: 'planches', name: 'Planches', desc: 'Donne 1 planche', cost: '2 bois (12) · 1 clou (4)', time: 4, ok: true, why: '' });
   const piege = rows.find((r) => r.key === 'piege');
   assert.equal(piege.cost, '1 bois (12) · 3 clous (4) · 1 ferraille (0)');
   assert.deepEqual([piege.ok, piege.why], [false, 'Il manque 1 ferraille']);
@@ -203,4 +203,18 @@ test('plan de l\'établi : 50 % en quincaillerie, 4 % ailleurs, garanti à la 15
   let found = 0;
   for (let i = 0; i < 4000; i++) if (rollPlan('hardware', { plans: [], sinceLastPlan: 0 }, rand)) found++;
   assert.ok(Math.abs(found / 4000 - 0.5) < 0.03, `fréquence ${found / 4000}`);
+});
+
+test('chaque recette a une durée de fabrication en secondes, et les lignes du panneau la portent', () => {
+  for (const [key, r] of Object.entries(RECIPES)) {
+    assert.ok(Number.isFinite(r.time) && r.time >= 3, `${key} : durée ${r.time} s (au moins celle d'un clouage)`);
+    assert.equal(craftTime(key), r.time, key);
+  }
+  assert.equal(craftTime('inconnue'), 0);
+  // Un aménagement pèse plus qu'un petit objet : l'établi est la recette la plus longue, le bandage la plus courte.
+  const times = Object.values(RECIPES).map((r) => r.time);
+  assert.equal(RECIPES.etabli.time, Math.max(...times));
+  assert.equal(RECIPES.bandage.time, Math.min(...times));
+  const rows = recipeRows(ctxWith());
+  assert.deepEqual(rows.map((r) => [r.key, r.time]), Object.entries(RECIPES).map(([k, r]) => [k, r.time]));
 });
