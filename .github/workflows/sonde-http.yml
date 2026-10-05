@@ -44,27 +44,22 @@ jobs:
               r.end();
             });
           }
-          const ses = () => JSON.stringify({ v: 1, ses: randomBytes(32).toString('base64url') });
-          const show = (label, r) => {
-            const cors = !!r.h?.['access-control-allow-origin'];
-            const ok = (r.status === 401 || r.status === 200) && cors;
-            const h = { ...(r.h ?? {}) }; delete h.date; delete h['strict-transport-security'];
-            console.log(`${ok ? 'ok   ' : 'ÉCHEC'} ${label} -> ${r.status} cors=${cors ? 'oui' : 'non'} port=${r.port ?? '?'} ${r.ms ?? ''} ms` + (ok ? '' : ` ${JSON.stringify(h)} ${JSON.stringify((r.text ?? '').slice(0, 300))}`));
-          };
-          // 1. Une connexion gardée ouverte côté client, réutilisée après des silences.
-          const ka = new https.Agent({ keepAlive: true, maxSockets: 1 });
-          show('1 connexion gardée : départ', await req('POST', '/v1/account/me', ses(), ka));
-          for (const gap of [2, 4, 7, 3, 10]) {
-            await sleep(gap * 1000);
-            show(`1 même connexion après ${gap} s`, await req('POST', '/v1/account/me', ses(), ka));
+          // Qui répond (connexion neuve, GET /) : o = notre serveur, X = un autre (Express), ! = erreur réseau.
+          let firstOther = null;
+          async function who() {
+            const r = await req('GET', '/');
+            if (typeof r.status !== 'number') return '!';
+            if (r.text === 'EarthLife : serveur du jeu à plusieurs.\n') return 'o';
+            if (!firstOther) { const h = { ...r.h }; delete h.date; firstOther = `${r.status} ${JSON.stringify(h)} ${JSON.stringify(r.text.slice(0, 400))}`; }
+            return 'X';
           }
-          await sleep(8000);
-          show('1 même connexion après 8 s, GET santé', await req('GET', '/v1/health', undefined, ka));
-          show('1 aussitôt après, POST', await req('POST', '/v1/account/me', ses(), ka));
-          ka.destroy();
-          // 2. Deux WebSocket (hello, 3 s, bye), puis des POST sur connexions neuves ; 3. idem sur une connexion gardée.
+          async function timeline(label, n, everyMs) {
+            let line = '';
+            for (let i = 0; i < n; i++) { line += await who(); await sleep(everyMs); }
+            console.log(`${label} : ${line}`);
+          }
           const toks = [];
-          async function wsSession() {
+          async function wsOpen() {
             const pair = [0, 1].map(() => new WebSocket(`wss://${HOST}/v1/ws`, { headers: { Origin: ORIGIN } }));
             await Promise.all(pair.map((w) => new Promise((r) => { w.on('open', r); w.on('error', r); })));
             for (const w of pair) {
@@ -72,18 +67,24 @@ jobs:
               if (w.readyState === 1) w.send(JSON.stringify({ t: 'hello', v: 1, cl: 1, tok: null, c: 'dev' }));
             }
             await sleep(3000);
-            for (const w of pair) { if (w.readyState === 1) w.send(JSON.stringify({ t: 'bye' })); w.close(); }
-            await Promise.all(pair.map((w) => new Promise((r) => { if (w.readyState === 3) r(); else w.on('close', r); })));
+            return pair;
           }
-          await wsSession();
-          for (let i = 1; i <= 5; i++) { show(`2 après WebSocket, connexion neuve #${i}`, await req('POST', '/v1/account/me', ses())); await sleep(100); }
-          const ka2 = new https.Agent({ keepAlive: true, maxSockets: 1 });
-          show('3 connexion gardée : départ', await req('POST', '/v1/account/me', ses(), ka2));
-          await wsSession();
-          for (let i = 1; i <= 4; i++) show(`3 même connexion après WebSocket #${i}`, await req('POST', '/v1/account/me', ses(), ka2));
-          ka2.destroy();
+          const closed = (pair) => Promise.all(pair.map((w) => new Promise((r) => { if (w.readyState === 3) r(); else w.on('close', r); })));
+          await timeline('0 sans WebSocket, 20 requêtes à 0,5 s', 20, 500);
+          let pair = await wsOpen();
+          await timeline('C WebSocket ouvertes, 10 requêtes à 0,5 s', 10, 500);
+          for (const w of pair) { w.send(JSON.stringify({ t: 'bye' })); w.close(); }
+          await closed(pair);
+          await timeline('A après bye et fermeture, 40 requêtes à 0,5 s', 40, 500);
+          await sleep(20000);
+          await timeline('A 20 s plus tard, 10 requêtes à 0,5 s', 10, 500);
+          pair = await wsOpen();
+          for (const w of pair) w.close();
+          await closed(pair);
+          await timeline('B après fermeture par le client sans bye, 30 requêtes à 0,5 s', 30, 500);
+          console.log(`autre serveur, première réponse : ${firstOther ?? 'jamais vu'}`);
           let erased = 0;
           for (const tok of toks) { const r = await req('POST', '/v1/me', JSON.stringify({ v: 1, tok, op: 'erase' })); if (r.status === 200) erased++; }
-          console.log(`identités de test : ${toks.length}, effacées : ${erased}`);
+          console.log(`identités de test : ${toks.length}, effacées : ${erased} (une réponse de l'autre serveur compte comme non effacée)`);
           EOF
           node sonde.mjs
