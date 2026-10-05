@@ -1259,9 +1259,11 @@ function searchedAtOf(s, b) {
 // Fiche du bâtiment tout près (sous la quête) : mise à jour quatre fois par seconde, texte réécrit seulement s'il change.
 function updateFiche(s, dt) {
   s.ficheWait = (s.ficheWait ?? 0) - dt;
-  if (s.ficheWait > 0) return;
+  // Au refuge (ou partie finie), la fiche disparaît tout de suite : sur téléphone elle allongerait la quête sous le bandeau de la horde.
+  const away = s.refuge.inside || s.ended;
+  if (s.ficheWait > 0 && !(away && s.ficheKey)) return;
   s.ficheWait = 0.25;
-  const near = s.refuge.inside || s.ended ? null : buildingNear(s.grid, s.player.x, s.player.z, FICHE.reach);
+  const near = away ? null : buildingNear(s.grid, s.player.x, s.player.z, FICHE.reach);
   const b = near === null ? null : s.store.buildings[near];
   const fiche = !b ? null : ficheOf({
     title: buildingTitle(b), home: s.refuge.base?.id === b.id, searchedAt: searchedAtOf(s, b), searchedMs: LIMITS.searchedMs,
