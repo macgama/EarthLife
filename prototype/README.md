@@ -94,6 +94,15 @@ Pendant l'alerte et la vague, la caméra ne recule pas assez pour voir la horde 
 
 Le menu permet de forcer une météo ou la nuit pour tester.
 
+### Relief (`?relief=1`)
+
+Le relief réel est un essai : il ne s'active qu'avec `?relief=1` dans l'adresse (par exemple `?lat=45.7578&lon=4.832&relief=1`). Sans ce paramètre, ou si les tuiles d'altitude n'arrivent pas, le jeu est plat, exactement comme avant ; le panneau des conditions dit « Relief indisponible » dans ce second cas.
+
+- Les altitudes viennent des AWS Terrain Tiles (zoom 13, une tuile de 256 × 256 pixels à 13 m par pixel, lue par un décodeur PNG maison, mise en cache sur l'appareil à part des tuiles vectorielles). Le jeu attend les deux ou trois tuiles autour du joueur avant de commencer : il démarre en relief ou à plat, jamais à moitié.
+- Hauteurs de jeu relatives : 0 à l'altitude du point de départ. Le sol (noeuds tous les 4 m), les rues et leurs marquages, les bâtiments (plancher à la hauteur de la porte côté rue, les murs descendent jusqu'au sol en pente), le refuge et la base, les personnages, le décor (voitures et bancs inclinés selon la pente), la balise, la pluie et la caméra suivent le sol. Les plans d'eau sont aplanis à leur niveau (rives comprises, sans fente entre deux carrés).
+- Pentes qui comptent (`src/slope.js`) : la pente mesurée sur 1,5 m devant, lissée sur 0,3 s et bornée à ± 30 %, change la vitesse (montée × (1 − pente), au moins × 0,8 ; descente × (1 + 0,5 × pente), au plus × 1,1) pour le joueur comme pour les zombies, et la soif du joueur (× (1 + 3 × pente de montée)). `SLOPE_RULES = false` dans `src/slope.js` donne un relief « visuel seulement » : tout est dessiné en relief mais les règles, la horde et la soif ne changent pas.
+- Tests : `test/relief.test.js` (décodage, cache, altitude, eau), `test/relief-monde.test.js` (carrés, couture entre carrés, bâtiments, marquages) et `test/pentes.test.js`. Les routes hors ligne fabriquent des tuiles d'altitude synthétiques (colline, plateau, falaise : `test/fixtures/make-dem-fixture.mjs`), aucune vraie tuile n'est stockée.
+
 Crédits : © les contributeurs d'OpenStreetMap (licence ODbL), tuiles OpenFreeMap au schéma OpenMapTiles, météo Open-Meteo (CC BY 4.0), relief (avec `?relief=1`) : Terrain Tiles (AWS Open Data) construites d'après Copernicus EU-DEM, USGS SRTM et 3DEP et d'autres sources nationales, recherche Photon (Komoot) et Nominatim, carte du menu MapLibre GL, polices Chakra Petch et Barlow Semi Condensed (SIL Open Font License, paquets Fontsource).
 
 ## Tests
@@ -129,7 +138,8 @@ Les réponses du réseau viennent de `test/fixtures/offline-routes.mjs` : de vra
 - `src/osm.js` : ville de secours générée quand les tuiles sont injoignables
 - `src/weather.js` : météo Open-Meteo et règles de jeu qui en découlent
 - `src/sun.js` : position du soleil
-- `src/collision.js` : grille d'occupation (murs, eau, ponts) par carrés, point de départ accessible
+- `src/collision.js` : grille d'occupation (murs, eau, ponts) par carrés, point de départ accessible, hauteur et pente du sol (`groundAt`, `groundNormal`, `gradeAlong`)
+- `src/dem.js`, `src/terrain.js`, `src/slope.js` : relief réel (avec `?relief=1`) : tuiles d'altitude AWS (décodeur PNG, cache), hauteur du sol, eau à niveau, plancher des bâtiments, puis pentes qui comptent
 - `src/quest.js` : choix des lieux A et B, déroulé de la quête
 - `src/game.js` : joueur, zombies, combat
 - `src/survival.js` : faim, soif, température du corps, butin selon le type de lieu, inventaire

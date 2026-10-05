@@ -910,6 +910,7 @@ function step(s, inp, dt) {
     feelsLike: w.feelsLike ?? w.temperature, raining: w.kind === 'rain' || w.kind === 'storm', snowing: w.kind === 'snow',
     sheltered, running: p.running && !inside, windKmh: w.windKmh, inside, night: s.isNight,
     refugeWarmth: inside ? refugeWarmth(r.base) : 0,
+    climb: inside ? 0 : p.grade ?? 0, // relief : pente de montée lissée (la soif monte plus vite en grimpant)
   }, dt);
   s.effects = effects;
   if (effects.damage) {
@@ -2103,6 +2104,7 @@ const debug = DEBUG ? {
   props: (kind) => session?.chunks.props(kind) ?? [],
   // Hauteur du sol (relief) au point, et pente lissée du joueur.
   groundAt: (x, z) => (session ? groundAt(session.grid, x, z) : 0),
+  grade: () => session?.player?.grade ?? 0,
   // Relief : état (actif, référence, tuiles d'altitude) et altitude réelle au joueur.
   terrain() {
     const t = session?.store.terrain;
