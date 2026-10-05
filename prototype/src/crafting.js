@@ -5,22 +5,26 @@ import { ITEMS, equipOrStoreInfo, discardText, itemLabel, countsLabel, lootKind,
 
 const PLAN_WHY = "Il faut le plan de l'établi (quincailleries, entrepôts)";
 
-// Clé de recette → { name, desc, needs, makes, upgrade, requires, plan } (tableau 3.3).
+// Clé de recette → { name, time, desc, needs, makes, upgrade, requires, plan } (tableau 3.3).
+// `time` : secondes de fabrication (temps de jeu, allongé par la fatigue comme les autres actions du refuge) ;
 // `upgrade` : aménagement installé au refuge ; `requires` : aménagement nécessaire ; `plan` : plan à connaître.
 export const RECIPES = {
-  planches: { name: 'Planches', desc: 'Donne 1 planche', needs: { bois: 2, clous: 1 }, makes: { planche: 1 }, upgrade: null, requires: null, plan: null },
-  plaque: { name: 'Plaque de métal', desc: 'Donne 1 plaque', needs: { ferraille: 3, clous: 2 }, makes: { plaque: 1 }, upgrade: null, requires: 'etabli', plan: null },
-  piege: { name: 'Piège à pointes', desc: 'Donne 1 piège (6 charges de 35 dégâts)', needs: { bois: 1, clous: 3, ferraille: 1 }, makes: { piege: 1 }, upgrade: null, requires: null, plan: null },
-  batte_cloutee: { name: 'Batte cloutée', desc: 'Arme : 75 dégâts, 60 coups', needs: { bois: 1, clous: 3 }, makes: { batte_cloutee: 1 }, upgrade: null, requires: null, plan: null },
-  bandage: { name: 'Bandage', desc: 'Donne 1 bandage (+15 PV)', needs: { tissu: 2 }, makes: { bandage: 1 }, upgrade: null, requires: null, plan: null },
-  manteau: { name: 'Manteau chaud', desc: 'Vêtement : +12 °C ressentis par temps froid', needs: { tissu: 4, ruban: 1 }, makes: { manteau: 1 }, upgrade: null, requires: null, plan: null },
-  poncho: { name: 'Poncho', desc: 'Vêtement : mouillure ×0,25, +4 °C', needs: { tissu: 2, ruban: 2 }, makes: { poncho: 1 }, upgrade: null, requires: null, plan: null },
-  leurre: { name: 'Leurre', desc: 'Se lance (touche 5) : attire les zombies à 45 m pendant 20 s', needs: { ferraille: 1, ruban: 1 }, makes: { leurre: 1 }, upgrade: null, requires: null, plan: null },
-  etabli: { name: 'Établi', desc: 'Aménagement : débloque plaque, hache, récupérateur, sirène', needs: { bois: 4, clous: 3, ferraille: 2 }, makes: null, upgrade: 'etabli', requires: null, plan: 'etabli' },
-  hache: { name: 'Hache', desc: 'Arme : 90 dégâts, 50 coups ; abat un arbre en 1,5 s pour +1 bois', needs: { bois: 1, ferraille: 2, ruban: 1 }, makes: { hache: 1 }, upgrade: null, requires: 'etabli', plan: null },
-  recuperateur: { name: "Récupérateur d'eau", desc: "Aménagement : +1 eau au coffre par tranche de 240 s de vraie pluie (ou d'orage), à 2 km ou moins du refuge", needs: { ferraille: 2, tissu: 1, ruban: 1 }, makes: null, upgrade: 'recuperateur', requires: 'etabli', plan: null },
-  sirene: { name: 'Sirène', desc: 'Aménagement : appelle une horde 60 s plus tard (×0,8), au plus une fois toutes les 30 min', needs: { ferraille: 2, clous: 2, ruban: 1 }, makes: null, upgrade: 'sirene', requires: 'etabli', plan: null },
+  planches: { name: 'Planches', time: 4, desc: 'Donne 1 planche', needs: { bois: 2, clous: 1 }, makes: { planche: 1 }, upgrade: null, requires: null, plan: null },
+  plaque: { name: 'Plaque de métal', time: 6, desc: 'Donne 1 plaque', needs: { ferraille: 3, clous: 2 }, makes: { plaque: 1 }, upgrade: null, requires: 'etabli', plan: null },
+  piege: { name: 'Piège à pointes', time: 6, desc: 'Donne 1 piège (6 charges de 35 dégâts)', needs: { bois: 1, clous: 3, ferraille: 1 }, makes: { piege: 1 }, upgrade: null, requires: null, plan: null },
+  batte_cloutee: { name: 'Batte cloutée', time: 8, desc: 'Arme : 75 dégâts, 60 coups', needs: { bois: 1, clous: 3 }, makes: { batte_cloutee: 1 }, upgrade: null, requires: null, plan: null },
+  bandage: { name: 'Bandage', time: 3, desc: 'Donne 1 bandage (+15 PV)', needs: { tissu: 2 }, makes: { bandage: 1 }, upgrade: null, requires: null, plan: null },
+  manteau: { name: 'Manteau chaud', time: 12, desc: 'Vêtement : +12 °C ressentis par temps froid', needs: { tissu: 4, ruban: 1 }, makes: { manteau: 1 }, upgrade: null, requires: null, plan: null },
+  poncho: { name: 'Poncho', time: 8, desc: 'Vêtement : mouillure ×0,25, +4 °C', needs: { tissu: 2, ruban: 2 }, makes: { poncho: 1 }, upgrade: null, requires: null, plan: null },
+  leurre: { name: 'Leurre', time: 4, desc: 'Se lance (touche 5) : attire les zombies à 45 m pendant 20 s', needs: { ferraille: 1, ruban: 1 }, makes: { leurre: 1 }, upgrade: null, requires: null, plan: null },
+  etabli: { name: 'Établi', time: 20, desc: 'Aménagement : débloque plaque, hache, récupérateur, sirène', needs: { bois: 4, clous: 3, ferraille: 2 }, makes: null, upgrade: 'etabli', requires: null, plan: 'etabli' },
+  hache: { name: 'Hache', time: 10, desc: 'Arme : 90 dégâts, 50 coups ; abat un arbre en 1,5 s pour +1 bois', needs: { bois: 1, ferraille: 2, ruban: 1 }, makes: { hache: 1 }, upgrade: null, requires: 'etabli', plan: null },
+  recuperateur: { name: "Récupérateur d'eau", time: 12, desc: "Aménagement : +1 eau au coffre par tranche de 240 s de vraie pluie (ou d'orage), à 2 km ou moins du refuge", needs: { ferraille: 2, tissu: 1, ruban: 1 }, makes: null, upgrade: 'recuperateur', requires: 'etabli', plan: null },
+  sirene: { name: 'Sirène', time: 12, desc: 'Aménagement : appelle une horde 60 s plus tard (×0,8), au plus une fois toutes les 30 min', needs: { ferraille: 2, clous: 2, ruban: 1 }, makes: null, upgrade: 'sirene', requires: 'etabli', plan: null },
 };
+
+// Durée de fabrication d'une recette, en secondes de jeu (0 si la clé est inconnue).
+export const craftTime = (key) => RECIPES[key]?.time ?? 0;
 
 // Plan de l'établi : chance par fouille, plus forte en quincaillerie et en entrepôt, garanti à la 15e fouille sans plan.
 export const PLAN = { chance: 0.04, rich: { hardware: 0.5, industrial: 0.5 }, pity: 15 };
@@ -122,7 +126,7 @@ export function recipeRows(ctx, survivor = null) {
   return Object.entries(RECIPES).map(([key, r]) => {
     const { ok, why } = canCraft(key, ctx, survivor);
     const cost = Object.entries(r.needs).map(([k, n]) => `${itemLabel(k, n)} (${stock[k] ?? 0})`).join(' · ');
-    return { key, name: r.name, desc: r.desc, cost, ok, why };
+    return { key, name: r.name, desc: r.desc, cost, time: r.time, ok, why };
   });
 }
 

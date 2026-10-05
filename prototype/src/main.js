@@ -30,7 +30,8 @@ import { createSaveStore, LIMITS, exportFileName, SAVE_MESSAGES } from './save.j
 import { createRefuge, clockLabel, durationLabel } from './refuge.js';
 import { kindLabel, countsLabel, countOf, chestCap, moveItems, depositAll, prepareBag, storeItems, refugeWarmth, TIMES } from './base.js';
 import { frontVector, nextNightChange, nightKey, utcOffsetFor, clockTargets, HORDE } from './horde.js';
-import { craft, recipeRows, rollPlan, PLAN_FOUND_TEXT } from './crafting.js';
+import { craft, canCraft, craftTime, RECIPES, recipeRows, rollPlan, PLAN_FOUND_TEXT } from './crafting.js';
+import { ambushCount, ambushSpots, ambushText } from './embuscade.js';
 import { PROP_KINDS, PROP_TEXTS, rollPropLoot, propTime, propLabel, propLootText, goneChecker } from './props.js';
 import { createPropsView } from './props-view.js';
 import { createBaseView } from './base-view.js';
@@ -925,7 +926,7 @@ function step(s, inp, dt) {
   if (effects.hypothermia) mods.moveSpeed *= 0.85;
   if (effects.hyperthermia) mods.staminaDrain = (mods.staminaDrain ?? 1) * 1.6;
   // 4. Objets du sac (1 à 4) et leurre (5).
-  if (inp.use) useItem(s, inp.use);
+  if (inp.use && !asleep(s)) useItem(s, inp.use);
   // 5. Monde au fil de la marche : morceaux proches construits (plus loin quand la caméra recule), tuiles suivantes
   // demandées à l'avance ; distance du trou le plus proche, pour le brouillard.
   const built = s.chunks.update(p.x, p.z, { budgetMs: lowPower ? 4 : 6, radius: s.viewRadius });
@@ -1018,7 +1019,7 @@ const FEMININE_ITEMS = new Set(['conserve', 'barre', 'eau', 'ferraille', 'planch
 // Icône du bouton selon l'action (les objets du décor par leur sorte).
 const ACTION_ICONS = {
   search: 'fouiller', enter: 'refuge', claim: 'refuge', move: 'refuge', exit: 'fleche', nail: 'marteau', repair: 'marteau',
-  plate: 'marteau', trap: 'piege', sleep: 'lune', orphan: 'sac', tree: 'hache', car: 'cle', bench: 'cle', nest: 'cle', flag: 'marteau',
+  plate: 'marteau', trap: 'piege', sleep: 'lune', craft: 'marteau', orphan: 'sac', tree: 'hache', car: 'cle', bench: 'cle', nest: 'cle', flag: 'marteau',
 };
 // Libellé du bouton pendant l'action.
 const BUSY_LABELS = { nail: 'Clouage…', repair: 'Réparation…', plate: 'Pose de la plaque…', trap: 'Pose du piège…', sleep: 'Tu dors…' };
@@ -1136,6 +1137,13 @@ function startAction(s, a) {
     };
     return;
   }
+  if (a.id === 'craft') {
+    // Fabrication au refuge : la durée de la recette, allongée par la fatigue ; le coût n'est pris qu'à la fin.
+    const can = canCraft(a.arg, craftCtx(s), s.survivor);
+    if (!can.ok) { toast(can.why, 2.5); return; }
+    s.action = { ...base, time: craftTime(a.arg) * s.actionMul, label: `Fabrication : ${RECIPES[a.arg].name}…`, icon: actionIcon(a) };
+    return;
+  }
   const c = r.check(a.id, a.arg, refugeCtx(s, a.id === 'claim' || a.id === 'move' ? claimCtx(s, a.arg) : {}));
   if (!c.ok) { toast(c.why, 2.5); return; }
   if (!c.time) { runRefuge(s, a); return; }
@@ -1153,7 +1161,16 @@ function finishAction(s, a) {
   if (a.id === 'search') finishSearch(s, a);
   else if (a.id === 'prop') finishProp(s, a);
   else if (a.id === 'nest' || a.id === 'flag') city.runAction(s, a);
+  else if (a.id === 'craft') finishCraft(s, a);
   else runRefuge(s, a);
+}
+
+// Fabrication terminée : le coût est pris maintenant (le stock a pu changer pendant l'attente), le produit va au coffre.
+function finishCraft(s, a) {
+  if (!s.refuge.base) return;
+  const res = craft(a.arg, craftCtx(s), s.survivor);
+  toast(res.msg, 2.5, res.ok ? 'success' : '');
+  if (res.ok) saveStore.flush('fabrication');
 }
 
 // Fouille terminée : plan de l'établi (vraies rues), butin au sac dans la limite de sa place.
@@ -1161,6 +1178,7 @@ function finishSearch(s, a) {
   const b = s.store.buildings[a.arg];
   if (!b) return;
   markSearched(s, b);
+  ambush(s, b);
   const found = rollLoot(b.loot, Math.random, city.lootDraws(s));
   if (s.store.source === 'tiles' && rollPlan(b.loot, save.profile)) toast(PLAN_FOUND_TEXT, 4, 'success');
   const res = addLoot(s.survivor, found);
@@ -1170,6 +1188,21 @@ function finishSearch(s, a) {
   lootNotes(res);
   claimHint(s, b, a.arg);
   saveStore.markDirty();
+}
+
+// Embuscade (src/embuscade.js) : la fouille terminée peut faire sortir un ou deux zombies par la façade, qui chassent
+// aussitôt le joueur. Dans une ville à sauver ils sortent du stock d'un pâté voisin (rien ne sort s'il n'en reste pas) et
+// comptent à leur mort. Les essais (?debug=1) l'éteignent, sauf debug.ambush.
+let ambushRate = DEBUG ? 0 : 1, ambushForce = null;
+function ambush(s, b) {
+  if (s.refuge.inside) return;
+  const n = ambushCount(b.loot, { hearing: s.mods.hearing, night: s.isNight, rate: ambushRate, force: ambushForce }, Math.random);
+  let out = 0;
+  for (const spot of ambushSpots(s.player, b, n)) {
+    const zb = s.director.spawnAt(spot.x, spot.z, 'errant', { ambush: true });
+    if (zb) { zb.state = 'chase'; out++; }
+  }
+  if (out) toast(ambushText(out), 2, 'danger');
 }
 
 // Après une fouille (vraies rues) : ce bâtiment peut-il devenir le refuge ? Oui, et le joueur en a déjà un : le bouton
@@ -1459,7 +1492,7 @@ function refugeView(s) {
   const wear = weapon.uses && Number.isFinite(sv.weapon?.uses) ? ` ${sv.weapon.uses}/${weapon.uses}` : '';
   const clothing = sv.clothing ? ITEMS[sv.clothing]?.name ?? 'Veste légère' : 'Veste légère';
   const sleep = r.check('sleep', null, ctx);
-  return {
+  const view = {
     title: r.title(),
     perk: r.perkLine(),
     night: graceText(s, r.nightLine(ctx)),
@@ -1467,7 +1500,7 @@ function refugeView(s) {
     extras: r.extras(ctx),
     craft: recipeRows(craftCtx(s), sv).map((row) => ({
       key: row.key, name: row.name, desc: row.desc, cost: row.cost,
-      button: { action: 'craft', arg: row.key, label: 'Fabriquer', enabled: row.ok, why: row.why },
+      button: { action: 'craft', arg: row.key, label: `Fabriquer · ${row.time} s`, enabled: row.ok && !s.action, why: s.action ? 'Action en cours' : row.why },
     })),
     chest: {
       head: `Coffre ${chestN}/${cap} · Sac ${bagN}/${BAG_CAPACITY}`,
@@ -1487,6 +1520,19 @@ function refugeView(s) {
     ],
     journal: save.profile.journal.map((l) => l.text),
   };
+  return asleep(s) ? lockButtons(view, 'Tu dors') : view;
+}
+
+// Le joueur dort : rien d'autre n'est possible (ni fabriquer, ni ranger, ni sortir) tant que le sommeil dure ; seule
+// l'alerte de la horde le réveille.
+const asleep = (s) => s.action?.id === 'sleep';
+
+// Copie de la vue du panneau où tous les boutons sont grisés, avec le motif `why`.
+function lockButtons(v, why) {
+  if (Array.isArray(v)) return v.map((x) => lockButtons(x, why));
+  if (!v || typeof v !== 'object') return v;
+  const out = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, lockButtons(x, why)]));
+  return typeof out.action === 'string' && typeof out.label === 'string' ? { ...out, enabled: false, why } : out;
 }
 
 // Ouvre le panneau du refuge (onglet Défense), ou le met à jour s'il l'est déjà.
@@ -1512,6 +1558,7 @@ function onPanelAction(action, arg) {
   const s = session;
   if (!s?.player || s.ended || !s.refuge.base) return;
   const b = s.refuge.base, sv = s.survivor;
+  if (asleep(s)) { toast('Tu dors : tu ne peux rien faire d\'autre', 1.5); return; }
   switch (action) {
     case 'nail': case 'repair': case 'plate': case 'trap': case 'sleep':
       if (s.action) toast('Une action est déjà en cours', 1.5);
@@ -1523,12 +1570,10 @@ function onPanelAction(action, arg) {
     case 'siren':
       runRefuge(s, { id: 'siren', arg: null });
       break;
-    case 'craft': {
-      const res = craft(arg, craftCtx(s), sv);
-      toast(res.msg, 2.5, res.ok ? 'success' : '');
-      if (res.ok) saveStore.flush('fabrication');
+    case 'craft':
+      if (s.action) toast('Une action est déjà en cours', 1.5);
+      else startAction(s, { id: 'craft', arg, slot: 'primary' });
       break;
-    }
     case 'take':
       if (moveItems(b.chest, sv.inventory, arg, 1, BAG_CAPACITY)) saveStore.markDirty();
       break;
@@ -2118,6 +2163,12 @@ const debug = DEBUG ? {
     p.health = Math.max(0, p.health - n);
     p.hurt = 0.35;
     return p.health;
+  },
+  // Embuscades : `rate` multiplie leur probabilité (0 : aucune, par défaut en essai), `force` impose le nombre de zombies (0 à 2).
+  ambush({ rate = ambushRate, force = null } = {}) {
+    ambushRate = rate;
+    ambushForce = force;
+    return { rate: ambushRate, force: ambushForce };
   },
   spawnLog: () => session?.refuge.spawnLog.slice() ?? [],
   // Caméra de jeu (tests d'acceptation : apparitions de horde projetées à l'écran).
