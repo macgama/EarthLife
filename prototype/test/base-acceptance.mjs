@@ -227,6 +227,13 @@ const snapshot = (page) => ev(page, () => {
   };
 });
 
+// Fiche du bâtiment tout près (sous la quête) : son texte dès qu'il correspond à `re` (texte du moment sinon, null si cachée).
+const ficheWith = (page, re) => until(page, (src) => {
+  const e = document.getElementById('fiche');
+  const t = e && !e.hidden ? e.textContent.replace(/\s+/g, ' ').trim() : null;
+  return t && new RegExp(src).test(t) ? t : null;
+}, re.source, 10000);
+
 // Installation (scénarios 1 et 9) : bâtiment le plus proche, fouille (E ou toucher #search), puis R ou #action2.
 // Un bâtiment sans entrée accessible depuis la rue (« Aucune entrée accessible ») est refusé à juste titre :
 // on passe alors au suivant.
@@ -244,6 +251,8 @@ async function install(page, device, tag) {
       const want = device === 'mobile' ? /^Fouiller : .+[^)]$/ : /^Fouiller : .+ \(E\)$/;
       check(want.test(label ?? ''), `${tag} : bouton « ${label} »`);
       await shot(page, `${tag.split(' ')[0]}-01-fouiller`);
+      const f1 = await ficheWith(page, /Pas encore fouillé/);
+      check(!!f1, `${tag} : fiche du bâtiment « ${f1} »`);
     }
     const t0 = Date.now();
     await press(page, device, 'KeyE', 'search');
@@ -252,6 +261,10 @@ async function install(page, device, tag) {
     const restarted = search.restarts ? `, relancée ${search.restarts} fois` : '';
     if (attempt === 0) check(search.done && Math.abs(time - 2.2) < 0.01, `${tag} : fouille de ${time} s en temps de jeu (${round((Date.now() - t0) / 1000, 1)} s à la montre${restarted})`);
     if (!search.done) note(`${tag} : fouille inachevée, ${await state(page)}`);
+    if (attempt === 0 && search.done) {
+      const f2 = await ficheWith(page, /Fouillé il y a/);
+      check(!!f2, `${tag} : fiche après la fouille « ${f2} »`);
+    }
     const l2 = await until(page, (id) => window.__label(id), 'action2', 10000);
     if (attempt === 0) check(l2 === (device === 'mobile' ? 'En faire mon refuge' : 'En faire mon refuge (R)'), `${tag} : bouton secondaire « ${l2} »`);
     // Matériaux du sac avant l'installation : ils passent au coffre avec le kit.
