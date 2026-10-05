@@ -164,12 +164,30 @@ test('relief : tuile en échec en cours de partie, le bord de la voisine est pro
   assert.ok(Math.abs(terrain.heightAt(edge.x + 300, 50) - terrain.heightAt(edge.x + 900, 50)) < 1e-6);
 });
 
-test('relief : le niveau de l\'eau est un minimum glissant, fonction de la position seule', async () => {
+test('relief : le niveau de l\'eau est un bas centile du modèle alentour, fonction de la position seule', async () => {
   const { terrain } = await loaded();
   terrain.settle(-160, -160, 160, 160);
   const level = terrain.waterLevelAt(-250, 0);
-  for (let k = -2; k <= 2; k++) for (let l = -2; l <= 2; l++) assert.ok(level <= terrain.heightAt(-250 + k * 15, l * 15) + 1e-9);
+  const v = [];
+  for (let k = -3; k <= 3; k++) for (let l = -3; l <= 3; l++) v.push(terrain.heightAt(-250 + k * 12, l * 12));
+  v.sort((a, b) => a - b);
+  assert.equal(level, v[11], 'le 12e plus bas des 49 points');
+  assert.ok(level >= v[0] && level <= v[24], 'entre le minimum et la médiane');
   assert.equal(terrain.waterLevelAt(-250, 0), level, 'même réponse à chaque appel');
+});
+
+test('relief : un creux isolé de la donnée ne baisse pas le niveau de l\'eau', async () => {
+  const proj = makeProjection(LYON.lat, LYON.lon);
+  const terrain = createTerrain({ proj });
+  const [t] = terrain.want(...rectOfTile(proj, 4205, 2922));
+  const elev = new Float32Array(256 * 256).fill(300);
+  // Un seul pixel (13 m) 6 m plus bas, sous le point (60, 40) : le minimum le verrait, le bas centile non.
+  const ll = proj.toLatLon(60, 40), tp = lonLatToTile(ll.lon, ll.lat, 13);
+  elev[Math.round(tp.y * 256 - 0.5 - 256 * 2922) * 256 + Math.round(tp.x * 256 - 0.5 - 256 * 4205)] = 294;
+  terrain.finish(t.key, elev);
+  terrain.settle(0, 0, 1, 1);
+  assert.ok(terrain.heightAt(60, 40) < -3, `le creux est bien dans le modèle : ${terrain.heightAt(60, 40)}`);
+  assert.ok(Math.abs(terrain.waterLevelAt(60, 40)) < 1e-6, `niveau de l'eau : ${terrain.waterLevelAt(60, 40)}`);
 });
 
 // ---------- Grille d'un morceau ----------
