@@ -50,6 +50,8 @@ export function createTerrain({ proj, zoom = DEM_ZOOM, enabled = true } = {}) {
   let on = enabled;
   let ref = 0;
   let last = null; // dernière tuile lue (presque toutes les lectures tombent dans la même)
+  const waterMemo = new Map(); // niveau de l'eau déjà calculé aux points entiers (waterLevelAt)
+  const waterSamples = new Float64Array(49); // les 7 × 7 points d'un niveau de l'eau, triés sur place
 
   // Pixel (fractionnaire) du point (x, z) dans la grille mondiale des pixels du zoom ; le centre du pixel i est en i + 0,5.
   function pixelOf(x, z) {
@@ -129,6 +131,7 @@ export function createTerrain({ proj, zoom = DEM_ZOOM, enabled = true } = {}) {
       if (!t) return;
       t.state = elev ? 'ready' : 'failed';
       t.elev = elev ?? null;
+      waterMemo.clear(); // une tuile de plus change ce que les points du bord lisent
     },
     // États des tuiles du rectangle : 'ready', 'failed', 'loading' ou 'missing'.
     states(minX, minZ, maxX, maxZ, pad = PAD) {
@@ -151,10 +154,11 @@ export function createTerrain({ proj, zoom = DEM_ZOOM, enabled = true } = {}) {
       const a = absoluteModel(0, 0);
       if (!Number.isFinite(a)) { on = false; return false; }
       ref = Math.round(a);
+      waterMemo.clear();
       return true;
     },
     // Référence fixée à la main (essais).
-    setReference(m) { ref = m; },
+    setReference(m) { ref = m; waterMemo.clear(); },
 
     // Hauteur du sol (m) au point (x, z), relative à la référence ; 0 si le relief est coupé.
     heightAt(x, z) {
@@ -171,12 +175,23 @@ export function createTerrain({ proj, zoom = DEM_ZOOM, enabled = true } = {}) {
     // minimum glissant prenait les creux isolés de la donnée, 3 à 5 m sous l'eau. Mer : 0 m, soit −ref.
     waterLevelAt(x, z) {
       if (!on) return 0;
-      const v = [];
-      for (let k = -3; k <= 3; k++) {
-        for (let l = -3; l <= 3; l++) v.push(api.heightAt(x + k * WATER_STEP, z + l * WATER_STEP));
+      // Mémoire pour les points entiers (ceux du réseau de berges, relus par chaque morceau voisin) ; vidée à chaque tuile.
+      const key = Number.isInteger(x) && Number.isInteger(z) && Math.abs(x) < 1e6 && Math.abs(z) < 1e6 ? (x + 1e6) * 2e6 + (z + 1e6) : -1;
+      if (key >= 0) {
+        const hit = waterMemo.get(key);
+        if (hit !== undefined) return hit;
       }
-      v.sort((a, b) => a - b);
-      return v[WATER_RANK - 1];
+      let m = 0;
+      for (let k = -3; k <= 3; k++) {
+        for (let l = -3; l <= 3; l++) waterSamples[m++] = api.heightAt(x + k * WATER_STEP, z + l * WATER_STEP);
+      }
+      waterSamples.sort();
+      const v = waterSamples[WATER_RANK - 1];
+      if (key >= 0) {
+        if (waterMemo.size > 40000) waterMemo.clear();
+        waterMemo.set(key, v);
+      }
+      return v;
     },
     info() {
       const c = { ready: 0, failed: 0, loading: 0 };
@@ -264,31 +279,44 @@ const bankFloor = (d) => RIM - 200 * smooth01((d - (BANK_REACH - BANK_BLEND)) / 
 // Distance à l'eau (m) de chaque nœud d'un morceau (RELIEF_N × RELIEF_N, même indexation que les hauteurs) et niveau de l'eau
 // du point d'eau le plus proche ; null si aucune eau à portée. L'eau est lue sur un réseau de points tous les LATTICE m,
 // ancré à l'origine du monde : la distance et le niveau d'un point ne dépendent que de sa position, donc deux morceaux
-// voisins donnent la même hauteur à leur nœud commun (l'égalité de distance se départage dans l'ordre du réseau).
+// voisins donnent la même hauteur à leur nœud commun (l'égalité de distance se départage dans l'ordre de la recherche,
+// anneau par anneau autour de la case du nœud, le même pour tous les morceaux).
 function bankField(terrain, wet, x0, z0, n) {
-  const lo = (v) => Math.floor((v - NODE - BANK_REACH) / LATTICE) * LATTICE;
-  const hi = (v) => Math.ceil((v + (n - 2) * NODE + BANK_REACH) / LATTICE) * LATTICE;
-  const px = [], pz = [];
-  for (let gz = lo(z0); gz <= hi(z0); gz += LATTICE) {
-    for (let gx = lo(x0); gx <= hi(x0); gx += LATTICE) if (wet(gx, gz)) { px.push(gx); pz.push(gz); }
+  const ring = Math.ceil(BANK_REACH / LATTICE) + 1; // anneaux de points à parcourir, au plus
+  const gx0 = Math.floor((x0 - NODE - BANK_REACH) / LATTICE) - 1, gz0 = Math.floor((z0 - NODE - BANK_REACH) / LATTICE) - 1;
+  const gw = Math.ceil((x0 + (n - 2) * NODE + BANK_REACH) / LATTICE) + 2 - gx0, gh = Math.ceil((z0 + (n - 2) * NODE + BANK_REACH) / LATTICE) + 2 - gz0;
+  const lat = new Uint8Array(gw * gh);
+  let any = false;
+  for (let gz = 0; gz < gh; gz++) {
+    for (let gx = 0; gx < gw; gx++) if (wet((gx0 + gx) * LATTICE, (gz0 + gz) * LATTICE)) { lat[gz * gw + gx] = 1; any = true; }
   }
-  if (!px.length) return null;
+  if (!any) return null;
   const d = new Float32Array(n * n).fill(Infinity), level = new Float32Array(n * n);
   const levels = new Map();
   const r2 = BANK_REACH * BANK_REACH;
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {
       const x = x0 + (i - 1) * NODE, z = z0 + (j - 1) * NODE;
+      const cx = Math.floor(x / LATTICE) - gx0, cz = Math.floor(z / LATTICE) - gz0;
       let best = r2, at = -1;
-      for (let k = 0; k < px.length; k++) {
-        const dx = px[k] - x, dz = pz[k] - z;
-        if (dx > BANK_REACH || dx < -BANK_REACH || dz > BANK_REACH || dz < -BANK_REACH) continue;
-        const q = dx * dx + dz * dz;
-        if (q < best) { best = q; at = k; }
+      for (let r = 0; r <= ring; r++) {
+        // Les points des anneaux suivants sont à plus de r × LATTICE du nœud : inutile de chercher plus loin.
+        const lim = r * LATTICE;
+        if (best <= lim * lim) break;
+        for (let gz = cz - r; gz <= cz + r; gz++) {
+          if (gz < 0 || gz >= gh) continue;
+          const edge = gz === cz - r || gz === cz + r; // rangée du haut ou du bas : tous les points ; sinon, les deux bouts
+          for (let gx = cx - r; gx <= cx + r; gx += edge || r === 0 ? 1 : 2 * r) {
+            if (gx < 0 || gx >= gw || !lat[gz * gw + gx]) continue;
+            const dx = (gx0 + gx) * LATTICE - x, dz = (gz0 + gz) * LATTICE - z;
+            const q = dx * dx + dz * dz;
+            if (q < best) { best = q; at = gz * gw + gx; }
+          }
+        }
       }
       if (at < 0) continue;
       let lv = levels.get(at);
-      if (lv === undefined) { lv = terrain.waterLevelAt(px[at], pz[at]); levels.set(at, lv); }
+      if (lv === undefined) { lv = terrain.waterLevelAt((gx0 + (at % gw)) * LATTICE, (gz0 + Math.floor(at / gw)) * LATTICE); levels.set(at, lv); }
       d[j * n + i] = Math.sqrt(best);
       level[j * n + i] = lv;
     }
