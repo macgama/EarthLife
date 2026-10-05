@@ -5,8 +5,9 @@
 #   deploy.sh build      construit $DEPLOY_DIST/<sha> : les fichiers de server/ suivis par Git, sans test/, tools/ ni
 #                        probe/, avec les modules de production, protocol.js, prototype/package.json réduit à
 #                        {"type":"module"} et VERSION ; puis vérifie que le paquet se charge
-#   deploy.sh check      connexion SSH et garde-fous ; tar présent sur l'hébergement ; état de current
-#   deploy.sh upload     envoie le paquet dans INFOMANIAK_APP_DIR/releases/<sha> (tar par SSH, sans rsync)
+#   deploy.sh check      connexion SSH et garde-fous ; tar et head -c présents sur l'hébergement ; état de current
+#   deploy.sh upload     envoie le paquet dans INFOMANIAK_APP_DIR/releases/<sha> (archive tar par SSH, sans rsync,
+#                        dont l'hébergement lit exactement la taille annoncée)
 #   deploy.sh switch     previous ← cible de current ; current → releases/<sha> (d'un coup) ; touch restart.request
 #   deploy.sh wait       attend que GET /v1/health serve la version <sha>
 #   deploy.sh rollback   current → cible de previous ; touch restart.request
@@ -37,7 +38,8 @@
 # Commandes distantes : des textes fixes, entre apostrophes, passés à sh -c ; le dossier et l'empreinte n'y entrent
 # que comme arguments positionnels ($1, $2), après validation stricte ici (lettres, chiffres, . _ / - seulement). Les
 # deux garde-fous du dossier (ici sa forme, puis sur l'hébergement sa place sous le vrai $HOME) passent avant toute
-# écriture, et rien n'est jamais effacé hors de releases/.
+# écriture, et rien n'est jamais effacé hors de releases/. L'entrée de ssh reste ouverte jusqu'à la fin de chaque
+# commande : le serveur SSH des sites Node.js d'Infomaniak arrête la commande dès qu'elle se ferme (voir remote).
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -88,6 +90,26 @@ SSH_OPTS=()
 SSH_ENV=()
 SSH_DEST=
 TMP_SSH=
+HOLDER=
+
+stop_holder() { if [[ -n $HOLDER ]]; then kill "$HOLDER" 2>/dev/null || true; HOLDER=; fi; }
+cleanup() {
+  stop_holder
+  if [[ -n $TMP_SSH ]]; then rm -rf -- "$TMP_SSH"; fi
+}
+trap cleanup EXIT
+
+# Dossier temporaire (empreinte, clé ou mot de passe, archive), lisible par ce seul utilisateur (ssh refuse une clé
+# privée trop ouverte), effacé en sortant.
+tmp_dir() {
+  [[ -n $TMP_SSH ]] && return 0
+  local mask
+  mask=$(umask)
+  umask 077
+  TMP_SSH=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/earthlife-ssh.XXXXXX")
+  umask "$mask"
+  trap cleanup EXIT
+}
 
 ssh_setup() {
   [[ $SSH_READY == 1 ]] && return 0
@@ -104,12 +126,10 @@ ssh_setup() {
   [[ $port =~ ^[0-9]{1,5}$ ]] || die "INFOMANIAK_SSH_PORT invalide"
   command -v ssh >/dev/null || die "ssh introuvable"
 
-  # Fichiers lisibles par ce seul utilisateur (ssh refuse une clé privée trop ouverte), effacés en sortant.
+  tmp_dir
   local mask
   mask=$(umask)
   umask 077
-  TMP_SSH=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/earthlife-ssh.XXXXXX")
-  trap 'rm -rf -- "$TMP_SSH"' EXIT
   printf '%s\n' "${INFOMANIAK_SSH_KNOWN_HOSTS:-}" | tr -d '\r' > "$TMP_SSH/known_hosts"
   grep -qEv '^[[:space:]]*(#|$)' "$TMP_SSH/known_hosts" || die "INFOMANIAK_SSH_KNOWN_HOSTS vide : empreinte du serveur inconnue"
 
@@ -143,10 +163,15 @@ EOF
   SSH_READY=1
 }
 
-# remote SCRIPT [ARG…] : lance le texte fixe SCRIPT par sh -c sur l'hébergement, avec ARG… comme $1, $2… L'entrée
-# standard est transmise (envoi de l'archive).
+# remote SCRIPT [ARG…] : lance le texte fixe SCRIPT par sh -c sur l'hébergement, avec ARG… comme $1, $2…
+# L'entrée standard de l'appelant (l'archive, sinon /dev/null) est transmise, puis l'entrée de ssh reste ouverte, sans
+# rien envoyer, jusqu'à la fin de la commande : le serveur SSH des sites Node.js d'Infomaniak (ContainerSSH) arrête la
+# commande dès que cette entrée se ferme, sans rendre de code de sortie, et ssh rend alors 255 sans rien dire (constaté
+# le 5 octobre 2026, même avec ssh -n). ssh sort dès que la commande distante a fini ; ce qui tenait son entrée
+# ouverte (HOLDER, un sleep qui n'écrit rien) est alors arrêté. Aucune commande distante n'attend donc la fin de son
+# entrée : l'envoi de l'archive en annonce la taille (R_UPLOAD).
 remote() {
-  local script=$1 cmd a
+  local script=$1 cmd a rc=0
   shift
   [[ $script != *"'"* ]] || die "commande distante mal formée (apostrophe)"
   cmd="sh -c '$script' earthlife-deploy"
@@ -155,11 +180,21 @@ remote() {
     cmd+=" '$a'"
   done
   ssh_setup
+  exec 7<&0
+  exec 8< <(exec 2>/dev/null; cat <&7; exec sleep 86400)
+  HOLDER=$!
+  exec 7<&-
   if [[ -n ${DEPLOY_FAKE_REMOTE:-} ]]; then
-    (cd "$DEPLOY_FAKE_REMOTE" && HOME=$DEPLOY_FAKE_REMOTE bash -c "$cmd")
+    (cd "$DEPLOY_FAKE_REMOTE" && HOME=$DEPLOY_FAKE_REMOTE bash -c "$cmd") <&8 8<&- || rc=$?
   else
-    env ${SSH_ENV[@]+"${SSH_ENV[@]}"} ssh "${SSH_OPTS[@]}" -- "$SSH_DEST" "$cmd"
+    env ${SSH_ENV[@]+"${SSH_ENV[@]}"} ssh "${SSH_OPTS[@]}" -- "$SSH_DEST" "$cmd" <&8 8<&- || rc=$?
   fi
+  exec 8<&-
+  stop_holder
+  if [[ $rc == 255 && -z ${DEPLOY_FAKE_REMOTE:-} ]]; then
+    fail "ssh a rendu 255 : connexion refusée ou coupée, ou commande arrêtée par l'hébergement sans code de sortie" >&2
+  fi
+  return "$rc"
 }
 
 # ---------- Commandes distantes (POSIX sh, sans apostrophe droite) ----------
@@ -173,22 +208,25 @@ case "$1" in "$h"/?*) ;; *) echo "Dossier refusé : hors du dossier personnel" >
 '
 R_CHECK=$R_HEAD'
 if command -v node >/dev/null 2>&1; then echo "Node.js en SSH : $(node -v)"; else echo "Node.js absent du PATH de SSH (sans gravité : le Manager lance le serveur)"; fi
-for c in tar gzip mkdir mv ln readlink touch rm ls cat grep sed tr; do
+for c in tar gzip head mkdir mv ln readlink touch rm ls cat grep sed tr; do
   command -v "$c" >/dev/null 2>&1 || { echo "Commande absente sur l’hébergement : $c" >&2; exit 6; }
 done
+[ "$(printf abc | head -c 2)" = ab ] || { echo "head -c ne marche pas sur l’hébergement" >&2; exit 6; }
 if [ -L "$1/current" ]; then echo "Version en service : $(readlink "$1/current")"
 elif [ -e "$1/current" ]; then echo "current existe mais n’est pas un lien : rien ne sera touché" >&2; exit 5
 else echo "Aucune version en service : premier déploiement"; fi
 '
-# L'archive est d'abord déballée dans releases/.part-<sha>, puis renommée : une version à moitié envoyée n'existe
-# jamais sous son nom. Une version déjà présente (même commit) est gardée telle quelle. La date du dossier devient
-# celle de l'envoi (ordre de ls -t pour clean).
+# L'archive, de $3 octets, est d'abord déballée dans releases/.part-<sha>, puis renommée : une version à moitié
+# envoyée n'existe jamais sous son nom. head -c en lit exactement $3 octets, sans attendre la fin de l'entrée (voir
+# remote). Une version déjà présente (même commit) est gardée telle quelle. La date du dossier devient celle de
+# l'envoi (ordre de ls -t pour clean).
 R_UPLOAD=$R_HEAD'
+case "$3" in ""|*[!0-9]*) echo "Taille de l’archive invalide" >&2; exit 4 ;; esac
 mkdir -p "$1/releases"
 cd "$1/releases"
 rm -rf ".part-$2"
 mkdir ".part-$2"
-tar -xzf - -C ".part-$2"
+head -c "$3" | tar -xzf - -C ".part-$2"
 [ -d ".part-$2/$2" ] || { rm -rf ".part-$2"; echo "Archive inattendue" >&2; exit 4; }
 if [ -d "$2" ]; then echo "Version $2 déjà présente : gardée telle quelle"; else mv ".part-$2/$2" "$2"; echo "Version $2 envoyée"; fi
 rm -rf ".part-$2"
@@ -292,7 +330,15 @@ cmd_upload() {
   need_dir
   [[ -f $DIST/$SHA/VERSION ]] || die "Paquet $SHA absent de $DIST : lancer d'abord deploy.sh build"
   ssh_setup
-  tar -C "$DIST" -czf - "$SHA" | remote "$R_UPLOAD" "$DIR" "$SHA"
+  # Archive faite d'avance, pour en annoncer la taille (R_UPLOAD).
+  local archive size
+  tmp_dir
+  archive=$TMP_SSH/paquet-$SHA.tgz
+  tar -C "$DIST" -czf "$archive" "$SHA"
+  size=$(( $(wc -c < "$archive") ))
+  echo "Archive : $(( (size + 1023) / 1024 )) Ko"
+  remote "$R_UPLOAD" "$DIR" "$SHA" "$size" < "$archive"
+  rm -f -- "$archive"
 }
 
 # Bascule ; rend first=0 ou first=1 dans la variable FIRST.

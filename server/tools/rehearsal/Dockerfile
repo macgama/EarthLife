@@ -4,7 +4,8 @@
 # Construit et lancé par repetition.sh. Le mot de passe et la clé publique, jetables, n'arrivent qu'au démarrage du
 # conteneur (variables REHEARSAL_PASSWORD et REHEARSAL_PUBKEY), jamais dans l'image ; les clés d'hôte sont tirées à
 # chaque démarrage. pam_loginuid devient facultatif : dans un conteneur, il ne peut pas écrire loginuid et ferait
-# échouer chaque connexion.
+# échouer chaque connexion. Comme chez Infomaniak, une commande SSH est coupée dès que le client ferme son entrée
+# (commande-infomaniak.sh, lancé par sshd à la place de chaque commande).
 ARG NODE_MAJOR=20
 FROM node:${NODE_MAJOR}-bookworm-slim
 RUN apt-get update \
@@ -15,7 +16,7 @@ RUN apt-get update \
  && mkdir -p /run/sshd /srv/customer/sites/earthlife.needhelpapp.com \
  && chown -R client:client /srv/customer
 COPY sshd-repetition.conf /etc/ssh/sshd_config.d/repetition.conf
-COPY entree.sh superviseur.sh /usr/local/bin/
-RUN chmod 755 /usr/local/bin/entree.sh /usr/local/bin/superviseur.sh
+COPY entree.sh superviseur.sh commande-infomaniak.sh /usr/local/bin/
+RUN chmod 755 /usr/local/bin/entree.sh /usr/local/bin/superviseur.sh /usr/local/bin/commande-infomaniak.sh
 EXPOSE 22 3000
 ENTRYPOINT ["/usr/local/bin/entree.sh"]
