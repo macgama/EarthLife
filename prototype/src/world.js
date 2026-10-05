@@ -5,7 +5,7 @@ import { chunkKey, createGridPatch, fillRings, strokeLine, FREE, WATER, BUILDING
 import { TILE_ZOOM, tilesForRect, tileKey, tileUrl, fetchTemplate, pruneTileCache, POI_PRIORITY } from './tiles.js';
 import { proceduralWorld } from './osm.js';
 import { lootKind } from './survival.js';
-import { createTerrain, chunkHeights } from './terrain.js';
+import { createTerrain, chunkHeights, DECK_REACH } from './terrain.js';
 import { DEM_URL, demUrl, loadDemTile } from './dem.js';
 
 export const CHUNK = 64;
@@ -131,15 +131,50 @@ export function addFeatures(store, f) {
   return fresh.length;
 }
 
+// Voies en pont (rails compris) qui touchent le morceau, à 12 m près (marge des nœuds de bord) : les morceaux voisins
+// comptent, une voie coupée par une tuile est dans les seaux des deux morceaux.
+const BRIDGE_PAD = 12;
+export function bridgesNear(store, cx, cz) {
+  const cs = store.chunkSize;
+  const minX = cx * cs - BRIDGE_PAD, maxX = (cx + 1) * cs + BRIDGE_PAD, minZ = cz * cs - BRIDGE_PAD, maxZ = (cz + 1) * cs + BRIDGE_PAD;
+  const out = new Set();
+  for (let i = cx - 1; i <= cx + 1; i++) {
+    for (let j = cz - 1; j <= cz + 1; j++) {
+      for (const r of bucket(store, i, j, false)?.roads ?? []) {
+        if (r.bridge && r.bounds.maxX >= minX && r.bounds.minX <= maxX && r.bounds.maxZ >= minZ && r.bounds.minZ <= maxZ) out.add(r);
+      }
+    }
+  }
+  return [...out];
+}
+
 // Un morceau peut être construit quand toutes les tuiles qui le recouvrent sont arrivées (ou ont échoué), celles de
-// l'altitude comprises : le sol ne change jamais après coup.
+// l'altitude comprises : le sol ne change jamais après coup. Avec le relief, un morceau qui touche un pont attend aussi
+// les tuiles des 180 m alentour, où le tablier cherche ses culées dans l'eau des tuiles voisines.
 export function chunkReady(store, cx, cz) {
   if (store.source === 'procedural') return true;
   const cs = store.chunkSize;
   if (store.terrain?.enabled && !store.terrain.ready(cx * cs, cz * cs, (cx + 1) * cs, (cz + 1) * cs)) return false;
-  for (const t of tilesForRect(store.proj, cx * cs, cz * cs, (cx + 1) * cs - 0.01, (cz + 1) * cs - 0.01)) {
-    const state = store.tiles.get(tileKey(t.x, t.y, t.z))?.state;
-    if (state !== 'ready' && state !== 'failed') return false;
+  const rectReady = (x0, z0, x1, z1) => {
+    for (const t of tilesForRect(store.proj, x0, z0, x1, z1)) {
+      const state = store.tiles.get(tileKey(t.x, t.y, t.z))?.state;
+      if (state !== 'ready' && state !== 'failed') return false;
+    }
+    return true;
+  };
+  if (!rectReady(cx * cs, cz * cs, (cx + 1) * cs - 0.01, (cz + 1) * cs - 0.01)) return false;
+  if (store.terrain?.enabled) {
+    // Le résultat positif est gardé : la liste des ponts ne se lit qu'une fois par morceau.
+    const done = (store.deckReady ??= new Set());
+    const key = chunkKey(cx, cz);
+    if (!done.has(key)) {
+      if (bridgesNear(store, cx, cz).length) {
+        const pad = DECK_REACH + BRIDGE_PAD;
+        if (!rectReady(cx * cs - pad, cz * cs - pad, (cx + 1) * cs + pad, (cz + 1) * cs + pad)) return false;
+        if (!store.terrain.ready(cx * cs - pad, cz * cs - pad, (cx + 1) * cs + pad, (cz + 1) * cs + pad)) return false;
+      }
+      done.add(key);
+    }
   }
   return true;
 }
@@ -169,7 +204,7 @@ export function buildPatch(store, cx, cz) {
   const cs = store.chunkSize;
   const g = createGridPatch(cx * cs, cz * cs, cs, 1);
   const f = chunkFeatures(store, cx, cz);
-  if (store.terrain?.enabled) g.relief = chunkHeights(store.terrain, cx * cs, cz * cs, (x, z) => waterAt(store, x, z));
+  if (store.terrain?.enabled) g.relief = chunkHeights(store.terrain, cx * cs, cz * cs, (x, z) => waterAt(store, x, z), bridgesNear(store, cx, cz));
   for (const w of f.water) fillRings(g, w.rings, WATER);
   for (const w of f.waterLines) if (w.blocking) strokeLine(g, w.points, w.width, WATER);
   for (const r of f.roads) if (!r.rail) strokeLine(g, r.points, r.width, FREE, WATER);

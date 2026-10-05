@@ -12,6 +12,9 @@
 //   normales), eau à niveau. Les nœuds viennent de fonctions de la position seule : les nœuds de bord de deux morceaux
 //   voisins sont identiques au bit près.
 // - reliefAt : hauteur du sol dessiné en un point, sur le triangle du nœud avec la même diagonale que le maillage.
+// - ponts sur l'eau (deckBuilder) : le tablier reste à niveau entre les deux culées au lieu de plonger dans la vallée ;
+//   les nœuds de sa largeur montent à sa hauteur (un ruban surélevé aux flancs en pente) : le pas du maillage, 4 m, ne
+//   permet pas mieux sans maillage de pont à part.
 import { DEM_ZOOM, DEM_SIZE } from './dem.js';
 
 export const NODE = 4; // écart des nœuds (m)
@@ -20,6 +23,9 @@ export const RELIEF_N = NODES + 2; // avec la marge d'un nœud de chaque côté
 const WATER_WINDOW = 30; // le niveau de l'eau est le minimum du modèle sur ± 30 m
 const RIM = 0.5; // les nœuds de rive restent à 0,5 m au moins au-dessus de l'eau
 const PAD = 6; // marge (pixels) des tuiles à attendre autour d'un rectangle : noyau bicubique, nœud de marge et fenêtre de l'eau
+export const DECK_REACH = 180; // un pont sur l'eau cherche ses culées jusqu'à 180 m de part et d'autre
+const DECK_STEP = 6; // pas de la recherche (m)
+const DECK_PAD = 3; // le tablier (trottoirs, bordures) déborde de 3 m de la demi-largeur de la voie
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -185,9 +191,10 @@ function weights(t) {
 // l'eau (polygone d'eau ou rivière bloquante), en fonction de la position seule. Eau à niveau : un nœud dans l'eau prend
 // le niveau de l'eau ; un nœud de rive (voisin d'un nœud d'eau) reste à 0,5 m au moins au-dessus. Renvoie null si le
 // relief est coupé.
-export function chunkHeights(terrain, x0, z0, wet) {
+export function chunkHeights(terrain, x0, z0, wet, bridges = null) {
   if (!terrain?.enabled) return null;
   const n = RELIEF_N, m = n + 2;
+  const deck = bridges?.length ? deckBuilder(terrain, wet, bridges) : null;
   // Eau sur 21 × 21 nœuds (deux de marge) : les nœuds de la marge connaissent leurs voisins, donc les normales de bord
   // viennent des mêmes valeurs des deux côtés.
   const water = new Uint8Array(m * m);
@@ -212,11 +219,63 @@ export function chunkHeights(terrain, x0, z0, wet) {
           v = water[w] ? level : Math.max(v, level + RIM);
         }
       }
+      if (deck) {
+        const d = deck(x, z);
+        if (d > v) v = d;
+      }
       h[j * n + i] = v;
       if (i > 0 && j > 0 && i <= NODES && j <= NODES) { if (v < min) min = v; if (v > max) max = v; }
     }
   }
   return { x0, z0, h, min, max, flat: max - min < 1e-4 };
+}
+
+// ---------- Ponts sur l'eau ----------
+
+// Hauteur du tablier au point (x, z), ou −Infinity hors d'un pont sur l'eau. bridges : voies en pont { points, width }
+// (celles des morceaux voisins comprises) ; wet(x, z) : le point est dans l'eau. Une fonction de la position et de la
+// géométrie des voies seules (jamais du morceau ni de la tuile), pour que les nœuds de bord de deux morceaux voisins
+// aient la même hauteur.
+// - le point de l'axe le plus proche, q, doit être dans l'eau (sinon : rampe d'accès ou pont au-dessus de la terre, le
+//   sol reste celui du modèle) ;
+// - on marche le long de la tangente de q, dans les deux sens, jusqu'à la première terre : les culées A et B (un îlot
+//   ou une pile en eau ferme une travée) ; sans culée à 180 m, rien ne change ;
+// - le tablier est la droite entre les hauteurs des culées (au moins niveau de l'eau + 0,5 m), plate sur la largeur.
+export function deckBuilder(terrain, wet, bridges) {
+  const list = bridges.map((b) => {
+    const pad = b.width / 2 + DECK_PAD;
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const p of b.points) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z); }
+    return { pts: b.points, pad, minX: minX - pad, maxX: maxX + pad, minZ: minZ - pad, maxZ: maxZ + pad };
+  });
+  const steps = Math.floor(DECK_REACH / DECK_STEP);
+  return (x, z) => {
+    let best = null, bestD = Infinity;
+    for (const b of list) {
+      if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) continue;
+      const pts = b.pts;
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const a = pts[i], c = pts[i + 1], dx = c.x - a.x, dz = c.z - a.z, l2 = dx * dx + dz * dz;
+        if (l2 === 0) continue;
+        const u = clamp(((x - a.x) * dx + (z - a.z) * dz) / l2, 0, 1);
+        const qx = a.x + u * dx, qz = a.z + u * dz, d = Math.hypot(qx - x, qz - z);
+        if (d <= b.pad && d < bestD) { bestD = d; best = { qx, qz, tx: dx / Math.sqrt(l2), tz: dz / Math.sqrt(l2) }; }
+      }
+    }
+    if (!best || !wet(best.qx, best.qz)) return -Infinity;
+    const abutment = (sign) => {
+      for (let k = 1; k <= steps; k++) {
+        const px = best.qx + best.tx * sign * k * DECK_STEP, pz = best.qz + best.tz * sign * k * DECK_STEP;
+        if (!wet(px, pz)) return { x: px, z: pz, s: k * DECK_STEP };
+      }
+      return null;
+    };
+    const a = abutment(-1), b = abutment(1);
+    if (!a || !b) return -Infinity;
+    const level = terrain.waterLevelAt(best.qx, best.qz) + RIM;
+    const ha = Math.max(terrain.heightAt(a.x, a.z), level), hb = Math.max(terrain.heightAt(b.x, b.z), level);
+    return ha + ((hb - ha) * a.s) / (a.s + b.s);
+  };
 }
 
 // Hauteur du sol dessiné au point (x, z) d'un morceau (r : sortie de chunkHeights) : interpolation sur le triangle du
