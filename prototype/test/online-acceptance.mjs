@@ -664,6 +664,34 @@ try {
   const sidA = await sidOf(A), sidB = await sidOf(B);
   const seen = await Promise.all([until(A, SEES, [sidB, 0.99], 20000), until(B, SEES, [sidA, 0.99], 20000)]);
   check(seen.every(Boolean), 'A et B se voient au départ (après les 3 s du premier saut)');
+  if (!seen.every(Boolean) || process.env.DIAG) {
+    // Qui ne voit pas qui, et pourquoi : sids, positions envoyées, instantanés reçus (trames du relais ou de la page).
+    const view = (t) => ev(t, () => {
+      const el = window.__earthlife, o = el.online;
+      return { status: o?.status, sid: o?.me?.sid ?? null, others: (o?.others?.() ?? []).map((x) => `${x.sid}:${Number(x.alpha).toFixed(2)}`).join(' '),
+        drawn: (el.othersView?.stats().survivors ?? []).map((x) => `${x.sid}:${x.alpha.toFixed(2)}@${Math.round(x.d)}m`).join(' ') };
+    });
+    const trace = (t, other) => {
+      const f = t.frames.filter((e) => e.at >= t.lastJump - 2000 && e.m);
+      const kinds = (dir) => Object.entries(f.filter((e) => e.dir === dir).reduce((o, e) => ((o[e.m.t] = (o[e.m.t] ?? 0) + 1), o), {})).map(([k, n]) => `${k}×${n}`).join(' ');
+      const at = (e) => (e ? `${((e.at - t.lastJump) / 1000).toFixed(1)} s` : 'jamais');
+      const pos = f.filter((e) => e.dir === 'up' && e.m.t === 'p');
+      const near = f.filter((e) => e.dir === 'down' && e.m.t === 'near' && e.m.p?.length);
+      const withOther = near.find((e) => JSON.stringify(e.m.p).includes(String(other)));
+      // Fil des trames, positions regroupées : hello, welcome, sauts (p j), leave, bye… depuis 30 s avant « en-ligne ».
+      const line = [];
+      for (const e of t.frames.filter((x) => x.m && x.at >= t.lastJump - 30000)) {
+        const k = e.m.t === 'p' ? (e.m.j === 1 ? 'p(saut)' : 'p') : e.m.t;
+        if (k === 'near' || k === 'count') continue;
+        const tag = `${e.dir === 'up' ? '↑' : '↓'}${k}${e.m.why ? `(${e.m.why})` : ''}`;
+        const last = line[line.length - 1];
+        if (last && last.tag === tag && k === 'p') { last.n++; continue; }
+        line.push({ tag, n: 1, at: ((e.at - t.lastJump) / 1000).toFixed(1) });
+      }
+      return `${t.wsUrls.length} WebSocket, sids ${[...t.sids].join('/')}, montant ${kinds('up')}, descendant ${kinds('down')} ; 1re position ${at(pos[0])} (sauts ${pos.filter((e) => e.m.j === 1).length}), 1er instantané non vide ${at(near[0])}, avec l'autre ${at(withOther)} ; fil ${line.slice(0, 40).map((x) => `${x.tag}${x.n > 1 ? `×${x.n}` : ''}@${x.at}`).join(' ')}`;
+    };
+    note(`diagnostic : A voit B ${seen[0] ? 'oui' : 'non'}, B voit A ${seen[1] ? 'oui' : 'non'} ; A ${JSON.stringify(await view(A))}, ${trace(A, sidB)} ; B ${JSON.stringify(await view(B))}, ${trace(B, sidA)} ; serveur ${JSON.stringify(srv.room.stats())}`);
+  }
   const fps = await Promise.all([A, B].map(fpsOf));
   note(`images par seconde : A ${fps[0]}, B ${fps[1]} (swiftshader ; le temps du jeu suit dt plafonné à 0,05 s par image)`);
 } catch (e) {
