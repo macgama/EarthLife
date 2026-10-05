@@ -45,13 +45,21 @@ jobs:
             -o BatchMode=no -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive
             -o NumberOfPasswordPrompts=1)
 
-          echo "::group::Essai 1 : commande courte (echo, pwd)"
-          env SSH_ASKPASS="$T/askpass" SSH_ASKPASS_REQUIRE=force \
-            ssh -vv "${OPTS[@]}" -- "$INFOMANIAK_SSH_USER@$INFOMANIAK_SSH_HOST" 'echo CONNEXION_OK; pwd; echo $HOME' 2>&1 | tail -90
-          echo "code de sortie : ${PIPESTATUS[0]}"
-          echo "::endgroup::"
+          DEST="$INFOMANIAK_SSH_USER@$INFOMANIAK_SSH_HOST"
+          # essai TITRE NIVEAU COMMANDE : une connexion, journal de ssh (NIVEAU : -v ou -vv) ; l'entrée standard est transmise.
+          essai() {
+            echo "::group::$1"
+            env SSH_ASKPASS="$T/askpass" SSH_ASKPASS_REQUIRE=force ssh "$2" "${OPTS[@]}" -- "$DEST" "$3" 2>&1 | tail -60
+            echo "code de sortie : ${PIPESTATUS[0]}"
+            echo "::endgroup::"
+          }
 
-          echo "::group::Essai 2 : la vérification de deploy.sh (check), ssh en -vv"
+          essai "Essai 1 : commande courte (echo, pwd)" -vv 'echo CONNEXION_OK; pwd; echo $HOME' </dev/null
+          essai "Essai 2 : commande sur deux lignes (ASCII)" -v "$(printf 'echo LIGNE_1\necho LIGNE_2')" </dev/null
+          essai "Essai 3 : commande avec accents et apostrophe typographique" -v 'echo "l’hébergement é à"' </dev/null
+          printf '%s\n' 'set -eu' 'echo STDIN_OK' 'pwd' | essai "Essai 4 : script envoyé par l'entrée standard (sh -s)" -v 'sh -s -- /srv/customer/earthlife-server'
+
+          echo "::group::Essai 5 : la vérification de deploy.sh (check), ssh en -vv"
           mkdir -p "$T/bin"
           printf '%s\n' '#!/bin/sh' 'exec /usr/bin/ssh -vv "$@"' > "$T/bin/ssh"
           chmod 700 "$T/bin/ssh"
