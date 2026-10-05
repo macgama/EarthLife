@@ -191,7 +191,7 @@ function renderSaveLine() {
     : `Caisse de ${n} objet${n > 1 ? 's' : ''} là où était ton refuge.`;
   crate.hidden = !n;
   const note = $('save-note');
-  const text = saveStore.readOnly || saveStore.reason ? saveStore.reason ?? '' : '';
+  const text = saveStore.readOnly || saveStore.reason ? [saveStore.reason ?? '', otherTab() ? otherPageLine() : ''].filter(Boolean).join(' ') : '';
   note.textContent = text;
   note.hidden = !text;
   $('save-take').hidden = !otherTab();
@@ -416,6 +416,9 @@ async function startGame(place, { spawn = 'place', confirmed = false } = {}) {
   if (!place || starting) return;
   starting = true;
   try {
+    // Page restée au menu pendant qu'une autre écrivait : on relit la partie avant de jouer (sinon cette page jouerait en
+    // lecture seule, sans sauvegarde).
+    if (saveStore.refresh()) syncMenu();
     // Quelle partie ? Libre (comme avant), ta ville en cours, ou une ville à commencer (commune, recensement, niveau) ;
     // null : le joueur annule, on reste où l'on est (menu ou partie).
     const plan = await city.prepareLaunch(place, { spawn, confirmed });
@@ -519,8 +522,9 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
   else if (s.refuge.inside) openPanel(s);
   // Mort en expédition : le réveil a rechargé le monde du refuge, cette partie-ci n'existe plus.
   if (session !== s) return;
-  // Première écriture : cet onglet prend la main sur la sauvegarde.
+  // Première écriture : cet onglet prend la main sur la sauvegarde (sans effet en lecture seule : la carte l'explique).
   saveStore.markDirty();
+  if (otherTab()) showTakeOverCard();
   city.afterLaunch(s);
   if (save.base && !s.home && store.source === 'tiles') {
     const km = (geoDistance(home, origin) / 1000).toFixed(1).replace('.', ',');
@@ -2039,9 +2043,17 @@ function otherTab() {
   return saveStore.readOnly && saveStore.reason === SAVE_MESSAGES.otherTab;
 }
 
+// « L'autre page a sauvegardé il y a 12 s » : de quoi reconnaître une page oubliée.
+function otherPageLine() {
+  const at = saveStore.conflict?.savedAt;
+  if (!Number.isFinite(at)) return '';
+  const ms = Math.max(0, Date.now() - at);
+  return `L'autre page a sauvegardé il y a ${ms < 60000 ? `${Math.round(ms / 1000)}\u00a0s` : durationLabel(ms)}.`;
+}
+
 function showTakeOverCard() {
   showCard({
-    title: 'Sauvegarde', tone: 'warn', lines: [SAVE_MESSAGES.otherTab],
+    title: 'Sauvegarde', tone: 'warn', lines: [SAVE_MESSAGES.otherTab, otherPageLine()].filter(Boolean),
     buttons: [{ id: 'take', label: SAVE_MESSAGES.takeOver, primary: true }, { id: 'close', label: 'Fermer' }],
   }, (id) => { if (id === 'take') takeOver(); }, { escape: 'close' });
 }
