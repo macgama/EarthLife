@@ -53,7 +53,10 @@ export function normalizePlace(p) {
   const lat = num(p.lat), lon = num(p.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90) return null;
   const wrapped = ((((lon + 180) % 360) + 360) % 360) - 180;
-  return { lat: round6(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat))), lon: round6(wrapped), name: clean(p.name).slice(0, 120) || DEFAULT_NAME, area: clean(p.area).slice(0, 160) };
+  const place = { lat: round6(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat))), lon: round6(wrapped), name: clean(p.name).slice(0, 120) || DEFAULT_NAME, area: clean(p.area).slice(0, 160) };
+  // « Autour de moi » (position de l'appareil) : la maison de départ d'une ville se tire plus loin de ce point (ville-ecran.js).
+  if (p.aroundMe === true) place.aroundMe = true;
+  return place;
 }
 
 // Morceaux d'adresse uniques, sans répéter le nom du lieu.
@@ -518,7 +521,7 @@ export function createPicker({ root, cities = [], onChange } = {}) {
       if (t !== token) return; // un autre lieu a été choisi pendant l'attente
       const { latitude: lat, longitude: lon } = pos.coords;
       closeList();
-      choose({ lat, lon, name: 'Ma position', area: coordLabel(lat, lon) }, { zoom: PLACE_ZOOM, reverse: true });
+      choose({ lat, lon, name: 'Ma position', area: coordLabel(lat, lon), aroundMe: true }, { zoom: PLACE_ZOOM, reverse: true });
     }, (err) => {
       done();
       setNote(err?.code === 1

@@ -186,6 +186,28 @@ function saveTemplate(template) {
   try { localStorage.setItem(TEMPLATE_KEY, JSON.stringify({ template, at: Date.now() })); } catch { /* stockage indisponible */ }
 }
 
+// Modèle d'adresse des tuiles pour les autres modules (recensement et pâtés de « Sauver sa ville » : ils lisent les mêmes
+// tuiles, déjà dans le cache de l'appareil) : celui d'OpenFreeMap, sinon le dernier connu ; la même version que celle du
+// chargeur ci-dessous, avec le même nettoyage du cache quand elle change. Une promesse pour toute la page.
+let sharedTemplate = null;
+export function tileTemplate() {
+  if (!sharedTemplate) {
+    const saved = readTemplate();
+    sharedTemplate = fetchTemplate()
+      .then((t) => {
+        if (saved?.template && saved.template !== t) pruneTileCache(t);
+        saveTemplate(t);
+        return t;
+      })
+      .catch((err) => {
+        sharedTemplate = null;
+        if (saved?.template) return saved.template;
+        throw err;
+      });
+  }
+  return sharedTemplate;
+}
+
 // Charge les tuiles autour du joueur. `onTile(key, info)` est appelé à chaque tuile prête ou en échec.
 export function createTileLoader(store, { onTile, maxConcurrent = 2, retries = 2 } = {}) {
   let template = null;

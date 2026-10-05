@@ -779,9 +779,15 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     return fronts.map((f) => `par ${directionLabel(f)}`).join(' et ');
   }
 
+  // Taille de la vague k. Sans ville, celle de horde.js ; dans une ville, ctx.hordeLevel (taille des hordes du niveau) et,
+  // pour la Nuit du cœur, ctx.hordeSizes (une taille par vague, prises dans la réserve du cœur : 0 = pas de vague).
   function sizeFor(ctx, { k, siren, firstEver = !profile().firstWaveDone, weatherKind = ctx?.weather?.kind ?? 'clear' }) {
     const b = base();
-    return hordeSize({ density: b.density, weatherKind, k, abri: b.perk === 'abri', siren, firstEver });
+    const forced = ctx?.hordeSizes;
+    if (Array.isArray(forced) && !siren) return Math.max(0, Math.floor(forced[Math.max(1, k | 0) - 1] ?? 0));
+    const n = hordeSize({ density: b.density, weatherKind, k, abri: b.perk === 'abri', siren, firstEver, level: ctx?.hordeLevel ?? 1 });
+    // Ville : pas plus de zombies que les pâtés rouges n'en ont à donner (ctx.hordeCap) ; rien à donner, pas de vague.
+    return Number.isFinite(ctx?.hordeCap) && !siren ? Math.min(n, Math.max(0, Math.floor(ctx.hordeCap))) : n;
   }
 
   function prepareAlert(ctx, events, siren = false) {
@@ -811,7 +817,15 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     const k = siren ? 1 : h.waves + 1;
     const weatherKind = ctx.weather?.kind ?? 'clear';
     const N = sizeFor(ctx, { k, siren, weatherKind });
-    const comp = hordeComposition(N, k);
+    // Plus aucun zombie à lui donner (Nuit du cœur sans réserve) : la vague passe sans bruit.
+    if (N <= 0) {
+      alertInfo = null;
+      attackAt = null;
+      if (!siren) { h.waves += 1; h.lastWaveEnd = h.t; }
+      dirty(events);
+      return;
+    }
+    const comp = hordeComposition(N, k, ctx.hordeRunners ?? 0);
     const forced = ctx.forcedTime === 'night';
     if (!siren) { pushLimited(h.played, h.nightKey); attackAt = null; }
     // Joueur loin au début de l'attaque : la vague est subie en son absence, rien n'apparaît.
