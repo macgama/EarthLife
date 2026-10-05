@@ -1,0 +1,102 @@
+{
+ "place_id": 297493118,
+ "licence": "Data © OpenStreetMap contributors, ODbL 1.0. http://osm.org/copyright",
+ "osm_type": "relation",
+ "osm_id": 357794,
+ "lat": "35.0116363",
+ "lon": "135.7680294",
+ "category": "boundary",
+ "type": "administrative",
+ "place_rank": 14,
+ "importance": 0.7590520945344406,
+ "addresstype": "city",
+ "name": "Kyoto",
+ "display_name": "Kyoto, Préfecture de Kyoto, Japon",
+ "address": {
+  "city": "Kyoto",
+  "province": "Préfecture de Kyoto",
+  "ISO3166-2-lvl4": "JP-26",
+  "country": "Japon",
+  "country_code": "jp"
+ },
+ "extratags": {
+  "wikidata": "Q34600",
+  "wikipedia": "ja:京都市",
+  "population": "1474570",
+  "population:date": "2015-10-01",
+  "linked_place": "city"
+ },
+ "boundingbox": [
+  "34.8700000",
+  "35.3200000",
+  "135.5600000",
+  "135.8800000"
+ ],
+ "geojson": {
+  "type": "Polygon",
+  "coordinates": [
+   [
+    [
+     135.56,
+     35.04
+    ],
+    [
+     135.62,
+     35.12
+    ],
+    [
+     135.65,
+     35.23
+    ],
+    [
+     135.74,
+     35.32
+    ],
+    [
+     135.83,
+     35.28
+    ],
+    [
+     135.86,
+     35.15
+    ],
+    [
+     135.84,
+     35.05
+    ],
+    [
+     135.88,
+     34.96
+    ],
+    [
+     135.82,
+     34.9
+    ],
+    [
+     135.77,
+     34.88
+    ],
+    [
+     135.71,
+     34.87
+    ],
+    [
+     135.66,
+     34.91
+    ],
+    [
+     135.62,
+     34.96
+    ],
+    [
+     135.58,
+     34.99
+    ],
+    [
+     135.56,
+     35.04
+    ]
+   ]
+  ]
+ }
+}

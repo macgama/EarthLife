@@ -1,0 +1,1035 @@
+// Choix du point de départ sur la carte du monde : recherche, tap sur la carte, raccourcis, position.
+// MapLibre n'est chargé qu'à l'affichage du menu. Sans carte, la recherche et les raccourcis suffisent.
+// Vie privée : « Autour de moi » est arrondi à 3 décimales dès la lecture et crée une zone privée (privacy.js) ;
+// la position précise n'est ni gardée, ni affichée, ni envoyée.
+
+import { PRIVATE, roundCoord, forThirdParty, loadZones, saveZones, zoneFor, coverIndex, nameZone, ZONES_KEY } from './privacy.js';
+
+// MapLibre 6 : module ES (son worker est chargé depuis le même CDN). Les versions <= 6.4.0 ont une faille XSS connue.
+const MAPLIBRE_JS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.mjs';
+const MAPLIBRE_CSS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.css';
+const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
+const PHOTON_URL = 'https://photon.komoot.io/api/';
+const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/';
+const STORAGE_KEY = 'earthlife.place';
+const LEGACY_CITY_KEY = 'earthlife.city';
+const PLACE_ZOOM = 14; // après une recherche ou un raccourci
+const APPROACH_ZOOM = 11; // quand on touche la carte de loin
+const MAP_TIMEOUT_MS = 20000;
+const SUGGEST_DELAY_MS = 350;
+const SUGGEST_MIN_CHARS = 3;
+const NOMINATIM_GAP_MS = 1100; // règle d'usage de Nominatim : une requête par seconde au plus, avec une marge
+const MAX_LAT = 85; // au-delà, plus de tuiles Web Mercator (main.js refuse aussi ces latitudes)
+const SIDE_LAYOUT = '(min-width: 760px)';
+const DEFAULT_NAME = 'Point sur la carte';
+const MY_POSITION = 'Ma position';
+const MY_POSITION_NOTE = `Position arrondie à 100 m. Une zone privée de ${PRIVATE.radius} m t'entoure : personne ne t'y voit.`;
+const PROTECT_NOTE = `Lieu protégé : personne ne te verra à moins de ${PRIVATE.radius} m`; // annexe A, sans point
+const MAP_LOCALE = {
+  'AttributionControl.ToggleAttribution': 'Afficher les crédits',
+  'Map.Title': 'Carte du monde',
+  'Marker.Title': 'Point de départ',
+  'NavigationControl.ZoomIn': 'Zoomer',
+  'NavigationControl.ZoomOut': 'Dézoomer',
+};
+// Repère de départ aux couleurs de l'accent (#ff7f1f, contour #170b00), ombre au sol dessinée dans le SVG (pas de filtre CSS).
+const MARKER_SVG = '<svg viewBox="0 0 34 46" width="34" height="46" aria-hidden="true"><ellipse cx="17" cy="43.5" rx="7" ry="2.5" fill="#000" fill-opacity=".35"/><path d="M17 1.5C8.4 1.5 1.5 8.3 1.5 16.8 1.5 28.4 17 44.5 17 44.5s15.5-16.1 15.5-27.7C32.5 8.3 25.6 1.5 17 1.5z" fill="#ff7f1f" stroke="#170b00" stroke-width="2.5"/><circle cx="17" cy="17" r="6" fill="#170b00"/><circle cx="17" cy="17" r="2.2" fill="#ff7f1f"/></svg>';
+// Repères du refuge (bleu #5fb7ff, maison) et du sac perdu (violet #c58bff, sac), sur le modèle du repère de départ,
+// un peu plus petits : celui-ci reste devant eux quand on choisit de partir du refuge.
+const pinSvg = (fill, glyph) => `<svg viewBox="0 0 34 46" width="30" height="41" aria-hidden="true"><ellipse cx="17" cy="43.5" rx="7" ry="2.5" fill="#000" fill-opacity=".35"/><path d="M17 1.5C8.4 1.5 1.5 8.3 1.5 16.8 1.5 28.4 17 44.5 17 44.5s15.5-16.1 15.5-27.7C32.5 8.3 25.6 1.5 17 1.5z" fill="${fill}" stroke="#0a0d10" stroke-width="2.5"/>${glyph}</svg>`;
+const HOME_SVG = pinSvg('#5fb7ff', '<path d="M17 9.8 10.2 16h2.3v7.2h9V16h2.3z" fill="#0a0d10"/><rect x="15.5" y="18.4" width="3" height="4.8" fill="#5fb7ff"/>');
+const BAG_SVG = pinSvg('#c58bff', '<path d="M14.4 9.6 17 11.6l2.6-2-.7 3.1h-3.8z" fill="#0a0d10"/><path d="M15.1 13.3c-2.4 1.3-3.8 3.6-3.8 6 0 2.6 2.4 4.1 5.7 4.1s5.7-1.5 5.7-4.1c0-2.4-1.4-4.7-3.8-6z" fill="#0a0d10"/>');
+// Étiquette « Ton refuge » à droite du repère (jetons du guide de style seulement) ; injectée au premier repère posé.
+const PIN_CSS = `
+#picker-map .map-pin-tag { position: absolute; top: 5px; left: calc(100% + 2px); padding: 3px 6px 2px; border: 1px solid var(--c-line-strong); border-radius: var(--r-xs); background: var(--c-panel-solid); box-shadow: var(--sh-1); color: var(--c-text); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; white-space: nowrap; pointer-events: none; }
+`;
+// Bouton « Protéger ce lieu » : 3e colonne de la fiche du lieu, sur deux lignes au plus, pour ne pas grandir le panneau.
+const PROTECT_CSS = `
+#menu .place-card.can-protect { grid-template-columns: var(--icon-md) 1fr auto; }
+#menu .place-protect { display: inline-flex; align-items: center; gap: 6px; min-width: var(--touch); min-height: var(--touch); max-width: 112px; padding: 4px 10px; border: 1px solid var(--c-line); border-radius: var(--r-sm); background: rgba(255, 255, 255, .04); color: var(--c-text); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-align: left; text-transform: uppercase; cursor: pointer; }
+#menu .place-protect svg { flex: none; width: var(--icon-sm); height: var(--icon-sm); color: var(--c-refuge); }
+#menu .place-protect[aria-disabled="true"] { border-color: transparent; background: none; color: var(--c-text-2); cursor: default; }
+#menu .place-protect[aria-disabled="true"] svg { color: var(--c-success); }
+@media (hover: hover) { #menu .place-protect:not([aria-disabled="true"]):hover { border-color: var(--c-line-strong); background: rgba(255, 255, 255, .08); } }
+`;
+const SHIELD = (inner = '') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3 5 6v5.5c0 4.2 2.9 7.9 7 9.5 4.1-1.6 7-5.3 7-9.5V6z"/>${inner}</svg>`;
+const PROTECT_HTML = `${SHIELD()}<span>Protéger ce lieu</span>`;
+const PROTECTED_HTML = `${SHIELD('<path d="m9 12 2 2 4-4"/>')}<span>Lieu protégé</span>`;
+
+// ---------- Données ----------
+export function placeFromCity(city) {
+  return { lat: city.lat, lon: city.lon, name: city.name, area: city.area };
+}
+
+const clean = (s) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : '');
+const round6 = (v) => Math.round(v * 1e6) / 1e6;
+const num = (v) => (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '') ? Number(v) : NaN);
+
+// Valide un lieu et le ramène à { lat, lon, name, area } (longitude repliée entre -180 et 180,
+// latitude ramenée à ±85° : près des pôles il n'y a ni tuiles ni projection locale utilisable).
+export function normalizePlace(p) {
+  if (!p || typeof p !== 'object') return null;
+  const lat = num(p.lat), lon = num(p.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90) return null;
+  const wrapped = ((((lon + 180) % 360) + 360) % 360) - 180;
+  const place = { lat: round6(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat))), lon: round6(wrapped), name: clean(p.name).slice(0, 120) || DEFAULT_NAME, area: clean(p.area).slice(0, 160) };
+  // « Autour de moi » (position de l'appareil) : la maison de départ d'une ville se tire plus loin de ce point (ville-ecran.js).
+  if (p.aroundMe === true) place.aroundMe = true;
+  return place;
+}
+
+// Morceaux d'adresse uniques, sans répéter le nom du lieu.
+function joinParts(parts, exclude = '') {
+  const out = [];
+  for (const p of parts) {
+    const s = clean(p);
+    if (s && s !== exclude && !out.includes(s)) out.push(s);
+  }
+  return out.join(', ');
+}
+
+export function coordLabel(lat, lon) {
+  const f = (v) => Math.abs(v).toFixed(4).replace('.', ',');
+  return `${f(lat)}° ${lat >= 0 ? 'N' : 'S'} · ${f(lon)}° ${lon >= 0 ? 'E' : 'O'}`;
+}
+
+// Réponse Photon -> suggestions, les lieux habités (osm_key = place) d'abord.
+export function photonPlaces(json) {
+  const list = [];
+  (Array.isArray(json?.features) ? json.features : []).forEach((f, i) => {
+    const p = f?.properties ?? {};
+    const [lon, lat] = Array.isArray(f?.geometry?.coordinates) ? f.geometry.coordinates : [];
+    const name = clean(p.name) || clean([p.housenumber, p.street].filter(Boolean).join(' ')) || clean(p.city);
+    const place = normalizePlace({ lat, lon, name, area: joinParts([p.city, p.county || p.state, p.country], name) });
+    if (!place || !name) return;
+    list.push({ ...place, detail: joinParts([p.city, p.county, p.state, p.country], name), rank: p.osm_key === 'place' ? 0 : 1, i });
+  });
+  // Tri stable puis doublons retirés (un village revient souvent aussi comme limite administrative).
+  const seen = new Set();
+  return list.sort((a, b) => a.rank - b.rank || a.i - b.i).filter((item) => {
+    const key = `${item.name}|${item.detail}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(({ rank, i, ...item }) => item);
+}
+
+// Réponse Nominatim /search -> suggestions.
+export function nominatimPlaces(json) {
+  const out = [];
+  for (const r of Array.isArray(json) ? json : []) {
+    const a = r?.address ?? {};
+    const parts = clean(r?.display_name).split(',').map(clean).filter(Boolean);
+    const name = clean(r?.name) || clean(a.village || a.town || a.city || a.hamlet || a.suburb) || parts[0] || '';
+    if (!name) continue;
+    const rest = parts.slice(1).filter((s) => !/^\d[\d\s-]*$/.test(s));
+    const area = joinParts([a.county || a.state, a.country], name) || joinParts([rest[0], rest[rest.length - 1]], name);
+    const place = normalizePlace({ lat: r.lat, lon: r.lon, name, area });
+    if (place) out.push({ ...place, detail: joinParts(rest, name) });
+  }
+  return out;
+}
+
+// Réponse Nominatim /reverse -> { name, area }, ou null si l'endroit n'a pas de nom.
+export function reversePlace(json) {
+  if (!json || json.error) return null;
+  const a = json.address ?? {};
+  const name = clean(a.village || a.town || a.city || a.hamlet || a.suburb || json.name) || clean(a.municipality || a.county || a.state);
+  if (!name) return null;
+  return { name: name.slice(0, 120), area: joinParts([a.county || a.state, a.country], name) };
+}
+
+// Quartier de « Ma position » : l'arrondissement s'il porte le nom de la commune (« Lyon 7e »), sinon la commune.
+// Jamais plus fin (ni rue, ni lieu-dit avant la commune) : le nom reste lisible sur une capture d'écran.
+export function districtLabel(json) {
+  if (!json || json.error) return '';
+  const a = json.address ?? {};
+  const town = clean(a.city || a.town || a.village || a.municipality || a.hamlet);
+  if (town) {
+    for (const raw of [a.city_district, a.borough, a.suburb, a.quarter]) {
+      const d = clean(raw).replace(/\s+arrondissement$/i, '');
+      if (d.length > town.length && d.toLowerCase().startsWith(`${town.toLowerCase()} `)) return d.slice(0, 120);
+    }
+    return town.slice(0, 120);
+  }
+  return clean(a.county || a.state).slice(0, 120);
+}
+
+// Paramètres du géocodage inverse : 3 décimales (environ 100 m), le nom du quartier ne change pas.
+export function reverseQuery(lat, lon) {
+  const at = forThirdParty(lat, lon, 'reverse');
+  return { format: 'jsonv2', zoom: '14', 'accept-language': 'fr', lat: at.lat.toFixed(3), lon: at.lon.toFixed(3) };
+}
+
+const looksLikeCoords = (s) => /\d+[,.]\d+\s*°/.test(s);
+
+// Format de earthlife.place : 2 = rangé par cette version (section 6.6). Sans lui, le lieu vient d'une version
+// d'avant, où « Autour de moi » gardait la position GPS précise, parfois renommée par le géocodage inverse
+// (« Pérouges ») et donc impossible à reconnaître.
+const PLACE_FORMAT = 2;
+const stamp = (place) => JSON.stringify({ ...place, v: PLACE_FORMAT });
+const isShortcut = (p, cities) => cities.some((c) => c.name === p.name && Math.abs(c.lat - p.lat) < 1e-5 && Math.abs(c.lon - p.lon) < 1e-5);
+
+// Lieu d'une version d'avant : arrondi à 3 décimales (68 m au plus) sauf s'il s'agit d'une ville des raccourcis ;
+// les coordonnées affichées suivent le point arrondi (aucune pour « Ma position »).
+function migratePlace(p, cities) {
+  if (isShortcut(p, cities)) return p;
+  const lat = roundCoord(p.lat), lon = roundCoord(p.lon);
+  const area = !looksLikeCoords(p.area) ? p.area : p.name === MY_POSITION ? '' : coordLabel(lat, lon);
+  return { ...p, lat, lon, area };
+}
+
+// Lieu rangé : { place, legacyHome } ou null. legacyHome : « Ma position » rangée par une version d'avant (sans v: 2),
+// dont la zone privée promise (section 6.6) n'a jamais été créée ; createPicker la crée, puis marque le lieu.
+function readSaved(cities, storage) {
+  try {
+    const text = storage?.getItem(STORAGE_KEY) ?? null;
+    const raw = JSON.parse(text ?? 'null');
+    const saved = normalizePlace(raw);
+    if (saved) {
+      const legacy = raw.v !== PLACE_FORMAT;
+      let place = legacy ? migratePlace(saved, cities) : saved;
+      // « Ma position » vient toujours du GPS : jamais plus de 3 décimales, jamais de coordonnées affichées.
+      if (place.name === MY_POSITION) {
+        place = { ...place, lat: roundCoord(place.lat), lon: roundCoord(place.lon), area: looksLikeCoords(place.area) ? '' : place.area };
+      }
+      const legacyHome = legacy && place.name === MY_POSITION;
+      // Réécrit aussitôt : la position précise ne reste pas dans le stockage (sans v: 2 tant que la zone manque).
+      if (legacyHome) save(storage, place, { stamped: false });
+      else if (stamp(place) !== text) save(storage, place);
+      return { place, legacyHome };
+    }
+    // Ancienne version du menu : seul l'identifiant de la ville était gardé.
+    const city = cities.find((c) => c.id === storage?.getItem(LEGACY_CITY_KEY));
+    return city ? { place: normalizePlace(placeFromCity(city)), legacyHome: false } : null;
+  } catch {
+    return null;
+  }
+}
+
+function save(storage, place, { stamped = true } = {}) {
+  try { storage.setItem(STORAGE_KEY, stamped ? stamp(place) : JSON.stringify(place)); } catch { /* stockage indisponible */ }
+}
+
+function defaultStorage() {
+  try { return globalThis.localStorage ?? null; } catch { return null; }
+}
+
+// ---------- Réseau ----------
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason); return; }
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(t); reject(signal.reason); }, { once: true });
+  });
+}
+
+const isAbort = (err) => err?.name === 'AbortError';
+
+async function fetchJson(url, signal, ms) {
+  // Délai maximal propre à la requête, en plus de l'annulation par l'appelant.
+  const ctrl = new AbortController();
+  const onAbort = () => ctrl.abort(signal.reason);
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => ctrl.abort(new Error('délai dépassé')), ms);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    if (signal?.aborted) throw new DOMException('Annulé', 'AbortError');
+    throw isAbort(err) ? new Error('délai dépassé') : err;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+let nominatimLast = 0;
+async function nominatimJson(path, params, signal) {
+  for (;;) {
+    const wait = nominatimLast + NOMINATIM_GAP_MS - Date.now();
+    if (wait <= 0) break;
+    await sleep(wait, signal);
+  }
+  nominatimLast = Date.now();
+  return fetchJson(`${NOMINATIM_URL}${path}?${new URLSearchParams(params)}`, signal, 10000);
+}
+
+// ---------- Chargement de MapLibre ----------
+let maplibrePromise = null, maplibreTries = 0;
+
+function loadMapLibre() {
+  if (!maplibrePromise) {
+    const css = new Promise((resolve) => {
+      let link = document.querySelector(`link[href="${MAPLIBRE_CSS}"]`);
+      if (link?.sheet) { resolve(); return; }
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = MAPLIBRE_CSS;
+        document.head.append(link);
+      }
+      // Une feuille de style absente ne doit pas bloquer la carte.
+      link.addEventListener('load', resolve, { once: true });
+      link.addEventListener('error', resolve, { once: true });
+      setTimeout(resolve, 8000);
+    });
+    // Un import raté reste en mémoire dans certains navigateurs : on change l'adresse pour réessayer.
+    maplibreTries += 1;
+    const js = import(maplibreTries > 1 ? `${MAPLIBRE_JS}?essai=${maplibreTries}` : MAPLIBRE_JS).then((gl) => {
+      if (typeof gl.Map !== 'function') throw new Error('MapLibre absent');
+      return gl;
+    });
+    maplibrePromise = Promise.all([js, css]).then(([gl]) => gl);
+    maplibrePromise.catch(() => { maplibrePromise = null; });
+  }
+  return maplibrePromise;
+}
+
+// Feuille de style injectée une seule fois (repères de la carte, bouton de la fiche du lieu).
+function injectStyle(id, css) {
+  if (document.getElementById(id)) return;
+  const style = document.createElement('style');
+  style.id = id;
+  style.textContent = css;
+  document.head.append(style);
+}
+
+function hasWebGL() {
+  try {
+    const c = document.createElement('canvas');
+    return !!(c.getContext('webgl2') || c.getContext('webgl'));
+  } catch {
+    return false;
+  }
+}
+
+// ---------- Sélecteur ----------
+// onMyPosition(place, r) et onProtect(place, r) : zone créée ou réutilisée (r = résultat de zoneFor, zones à jour).
+// storage, rand et now sont injectables pour les tests.
+export function createPicker({ root, cities = [], onChange, onMyPosition, onProtect, storage = defaultStorage(), rand, now = Date.now } = {}) {
+  const $ = (sel) => root.querySelector(sel);
+  const mapEl = $('#picker-map');
+  const ui = $('.menu-ui');
+  const topBar = $('.menu-top');
+  const sheet = $('.sheet');
+  const form = $('#place-form');
+  const input = $('#place-search');
+  const clearBtn = $('#place-clear');
+  const list = $('#place-suggestions');
+  const lineEl = $('#place-line');
+  const nameEl = $('#place-name');
+  const areaEl = $('#place-area');
+  const quick = $('#quick');
+  const locateBtn = $('#locate');
+  const noteEl = $('#picker-note');
+  const placeCard = $('.place-card');
+  const playBtn = $('#play');
+  const helpBtn = $('#help-toggle');
+  const help = $('#help');
+  const helpClose = $('#help-close');
+  const sideQuery = window.matchMedia(SIDE_LAYOUT);
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const finePointer = window.matchMedia('(pointer: fine)');
+
+  const saved = readSaved(cities, storage);
+  let current = saved?.place ?? null;
+  let zones = loadZones(storage); // zones privées ; gardées en mémoire même si le stockage est bloqué ou plein
+  let zonesSaved = true; // dernière écriture des zones réussie ; sinon, la liste en mémoire fait foi
+  // Ancien « Autour de moi » : sa zone privée est créée une fois, autour du point arrondi (une zone proche est
+  // réutilisée sans nouveau tirage). Le lieu ne passe au format 2 qu'une fois la zone rangée : sinon, on réessaie
+  // au prochain chargement.
+  if (saved?.legacyHome) {
+    keepZone(zoneFor(zones, current.lat, current.lon, rand, { now: now(), name: current.area }));
+    if (zonesSaved) save(storage, current);
+  }
+  let placeNote = ''; // note propre au lieu choisi (zone privée), rétablie après le géocodage inverse
+  let token = 0; // change à chaque nouveau lieu : une réponse en retard ne l'écrase pas
+  let visible = false;
+  let map = null, gl = null, marker = null, markerOnMap = false;
+  let mapState = 'idle'; // idle | loading | ready | failed
+  let mapTimer = 0, mapErrors = 0, mapAttempt = 0;
+  let spinning = false, ignoreClick = false;
+  let items = [], active = -1, debounce = 0;
+  let suggestCtrl = null, searchCtrl = null, reverseCtrl = null;
+  let mapNote = '', lastSheetH = 0, layoutFrame = 0;
+  // Repères du refuge et du sac : gardés sans carte, posés dès qu'une carte est prête.
+  // Ordre d'empilement : refuge et son étiquette au fond, puis sac, puis départ (un repère passe devant une étiquette).
+  const pins = [
+    { kind: 'home', svg: HOME_SVG, tag: 'Ton refuge', spot: null, text: '', marker: null },
+    { kind: 'bag', svg: BAG_SVG, tag: '', spot: null, text: '', marker: null },
+  ];
+  const pinOf = (kind) => pins.find((p) => p.kind === kind);
+  const photonCache = new Map();
+  const reverseCache = new Map();
+
+  // ----- Raccourcis : les villes vitrines -----
+  const chips = cities.map((city) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pick-chip';
+    b.dataset.city = city.id;
+    b.textContent = city.name;
+    b.title = `${city.name} · ${city.area}`;
+    b.setAttribute('aria-pressed', 'false');
+    b.addEventListener('click', () => {
+      closeList();
+      choose(placeFromCity(city), { zoom: PLACE_ZOOM });
+    });
+    quick?.append(b);
+    return { city, b };
+  });
+
+  // ----- Zones privées : « Protéger ce lieu » -----
+  let protectBtn = null;
+  if (placeCard) {
+    injectStyle('picker-protect-style', PROTECT_CSS);
+    protectBtn = document.createElement('button');
+    protectBtn.type = 'button';
+    protectBtn.id = 'place-protect';
+    protectBtn.className = 'place-protect';
+    protectBtn.hidden = true;
+    placeCard.append(protectBtn);
+    // aria-disabled plutôt que disabled : le bouton garde le focus du clavier une fois le lieu protégé.
+    protectBtn.addEventListener('click', () => {
+      if (!current || protectBtn.getAttribute('aria-disabled') === 'true') return;
+      const r = keepZone(zoneFor(zones, current.lat, current.lon, rand, { now: now(), name: zoneLabel(current) }));
+      placeNote = zoneNote(PROTECT_NOTE, r);
+      setNote(placeNote);
+      render();
+      onProtect?.({ ...current }, r);
+    });
+  }
+
+  function keepZone(r) {
+    zones = r.zones;
+    zonesSaved = saveZones(storage, zones);
+    return r;
+  }
+
+  // Le stockage fait foi s'il est lisible et à jour (main.js peut y retirer une zone). Si la dernière écriture
+  // a échoué (stockage plein), on la refait ; tant qu'elle échoue, la liste en mémoire reste : sinon, le même
+  // domicile recevrait un nouveau centre tiré au hasard (section 3.3).
+  function reloadZones() {
+    if (!storage) return;
+    if (!zonesSaved) {
+      zonesSaved = saveZones(storage, zones);
+      if (!zonesSaved) return;
+    }
+    try {
+      storage.getItem(ZONES_KEY);
+      zones = loadZones(storage);
+    } catch { /* stockage bloqué */ }
+  }
+
+  function zoneLabel(place) {
+    if (place.name === MY_POSITION) return place.area;
+    return place.name === DEFAULT_NAME ? '' : place.name;
+  }
+
+  function zoneNote(text, r) {
+    if (!r.dropped) return text;
+    return `${text}${text.endsWith('.') ? '' : '.'} Zone privée la plus ancienne retirée${r.dropped.name ? ` : ${r.dropped.name}` : ''}.`;
+  }
+
+  function renderProtect() {
+    if (!protectBtn) return;
+    protectBtn.hidden = !current;
+    placeCard.classList.toggle('can-protect', !!current);
+    if (!current) return;
+    // Protégé seulement si une zone couvre vraiment le lieu (212 m au moins jusqu'au bord), pas si elle est proche.
+    const done = coverIndex(zones, current.lat, current.lon) >= 0;
+    if (protectBtn.getAttribute('aria-disabled') === String(done) && protectBtn.childElementCount) return;
+    protectBtn.setAttribute('aria-disabled', String(done));
+    protectBtn.innerHTML = done ? PROTECTED_HTML : PROTECT_HTML;
+    protectBtn.title = done
+      ? `Zone privée : personne ne te voit à moins de ${PRIVATE.radius} m`
+      : `Personne ne te verra à moins de ${PRIVATE.radius} m de ce lieu`;
+  }
+
+  // Le nom du quartier vient après la zone : il sert à la reconnaître dans la liste des zones.
+  function nameZoneAt(place, name) {
+    const next = nameZone(zones, place.lat, place.lon, name);
+    if (next !== zones) keepZone({ zones: next });
+  }
+
+  // ----- Lieu choisi -----
+  // reverse : true pour nommer le lieu touché, 'mine' pour le quartier de « Ma position ».
+  function choose(raw, { zoom = null, reverse = false, note = '' } = {}) {
+    const place = normalizePlace(raw);
+    if (!place) return;
+    token += 1;
+    cancelSearch();
+    reverseCtrl?.abort();
+    current = place;
+    placeNote = note;
+    save(storage, place);
+    render();
+    syncMarker();
+    if (zoom !== null) flyTo(place, zoom);
+    if (reverse) nameFromCoords(place, token, reverse);
+    else setNote(placeNote);
+    onChange?.({ ...place });
+  }
+
+  function render() {
+    lineEl?.classList.toggle('empty', !current);
+    if (nameEl) nameEl.textContent = current ? current.name : '';
+    if (areaEl) areaEl.textContent = current?.area ?? '';
+    if (playBtn) playBtn.disabled = !current;
+    for (const { city, b } of chips) {
+      const on = !!current && current.name === city.name && Math.abs(current.lat - city.lat) < 1e-5 && Math.abs(current.lon - city.lon) < 1e-5;
+      b.setAttribute('aria-pressed', String(on));
+    }
+    renderProtect();
+  }
+
+  function setNote(text, kind = '') {
+    if (!noteEl) return;
+    const shown = text || mapNote;
+    noteEl.textContent = shown;
+    noteEl.className = `picker-note${shown && (kind === 'warn' || !text) ? ' warn' : ''}`;
+  }
+
+  // Nom du lieu touché sur la carte, ou quartier de « Ma position » (géocodage inverse à 3 décimales,
+  // une requête par seconde au plus).
+  async function nameFromCoords(place, t, mode) {
+    const mine = mode === 'mine';
+    const query = reverseQuery(place.lat, place.lon);
+    const key = `${query.lat},${query.lon}`;
+    reverseCtrl = new AbortController();
+    const { signal } = reverseCtrl;
+    setNote(mine ? placeNote : 'Recherche du nom du lieu…');
+    try {
+      let found = reverseCache.get(key);
+      if (found === undefined) {
+        const json = await nominatimJson('reverse', query, signal);
+        found = { named: reversePlace(json), district: districtLabel(json) };
+        reverseCache.set(key, found);
+      }
+      if (t !== token) return;
+      if (mine) {
+        if (!found.district) { setNote(placeNote); return; }
+        current = { ...current, area: found.district };
+        nameZoneAt(current, found.district);
+      } else {
+        const { named } = found;
+        if (!named) { setNote('Endroit sans nom : tu partiras de ce point précis.'); return; }
+        current = { ...current, name: named.name, area: named.area || current.area };
+        nameZoneAt(current, named.name);
+      }
+      save(storage, current);
+      render();
+      setNote(placeNote);
+      onChange?.({ ...current });
+    } catch (err) {
+      if (isAbort(err) || t !== token) return;
+      console.warn('Géocodage inverse indisponible', err);
+      setNote(mine ? placeNote : 'Nom du lieu introuvable : tu partiras quand même de ce point.');
+    }
+  }
+
+  // ----- Recherche : Photon pour les suggestions, Nominatim sur validation -----
+  // Annule la recherche en cours : une réponse en retard n'écrase pas un lieu choisi autrement.
+  function cancelSearch() {
+    clearTimeout(debounce);
+    suggestCtrl?.abort();
+    searchCtrl?.abort();
+  }
+
+  function openList(entries, info = '') {
+    items = entries;
+    active = -1;
+    list.replaceChildren();
+    entries.forEach((item, i) => {
+      const li = document.createElement('li');
+      li.id = `place-option-${i}`;
+      li.className = 'suggestion';
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      li.tabIndex = -1;
+      const name = document.createElement('span');
+      name.className = 's-name';
+      name.textContent = item.name;
+      const detail = document.createElement('span');
+      detail.className = 's-detail';
+      detail.textContent = item.detail || item.area || coordLabel(item.lat, item.lon);
+      li.append(name, detail);
+      li.addEventListener('mousedown', (e) => e.preventDefault());
+      li.addEventListener('click', () => pick(item));
+      list.append(li);
+    });
+    if (info) {
+      const li = document.createElement('li');
+      li.className = 'suggestion info';
+      li.setAttribute('role', 'presentation');
+      li.textContent = info;
+      list.append(li);
+    }
+    list.hidden = false;
+    input.setAttribute('aria-expanded', String(entries.length > 0));
+    input.removeAttribute('aria-activedescendant');
+    root.classList.add('has-suggestions');
+  }
+
+  function closeList() {
+    items = [];
+    active = -1;
+    if (!list) return;
+    list.hidden = true;
+    list.replaceChildren();
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    root.classList.remove('has-suggestions');
+  }
+
+  function highlight(i) {
+    active = i;
+    [...list.querySelectorAll('[role="option"]')].forEach((li, k) => {
+      li.setAttribute('aria-selected', String(k === i));
+      if (k === i) li.scrollIntoView({ block: 'nearest' });
+    });
+    if (i >= 0) input.setAttribute('aria-activedescendant', `place-option-${i}`);
+    else input.removeAttribute('aria-activedescendant');
+  }
+
+  function pick(item) {
+    input.value = item.name;
+    if (clearBtn) clearBtn.hidden = false;
+    closeList();
+    input.blur();
+    root.classList.remove('searching');
+    choose(item, { zoom: PLACE_ZOOM });
+  }
+
+  async function suggest(q) {
+    suggestCtrl?.abort();
+    const ctrl = suggestCtrl = new AbortController();
+    try {
+      let found = photonCache.get(q);
+      if (!found) {
+        const json = await fetchJson(`${PHOTON_URL}?q=${encodeURIComponent(q)}&limit=6&lang=fr`, ctrl.signal, 8000);
+        found = photonPlaces(json);
+        if (photonCache.size > 40) photonCache.delete(photonCache.keys().next().value);
+        photonCache.set(q, found);
+      }
+      if (ctrl !== suggestCtrl || input.value.trim() !== q) return;
+      if (found.length) openList(found);
+      else openList([], 'Aucune suggestion. Appuie sur Entrée pour chercher plus largement.');
+    } catch (err) {
+      if (isAbort(err) || ctrl !== suggestCtrl) return;
+      console.warn('Suggestions Photon indisponibles', err);
+      openList([], 'Suggestions indisponibles. Appuie sur Entrée pour lancer la recherche.');
+    }
+  }
+
+  async function search(q) {
+    clearTimeout(debounce);
+    suggestCtrl?.abort();
+    searchCtrl?.abort();
+    const ctrl = searchCtrl = new AbortController();
+    openList([], 'Recherche…');
+    try {
+      const found = nominatimPlaces(await nominatimJson('search', { format: 'jsonv2', limit: '5', 'accept-language': 'fr', addressdetails: '1', q }, ctrl.signal));
+      if (ctrl !== searchCtrl) return;
+      if (found.length) pick(found[0]);
+      else openList([], `Aucun lieu trouvé pour « ${q} ».`);
+    } catch (err) {
+      if (isAbort(err) || ctrl !== searchCtrl) return;
+      console.warn('Recherche Nominatim indisponible', err);
+      openList([], 'Recherche impossible pour l\'instant. Touche la carte ou choisis une ville.');
+    }
+  }
+
+  input?.addEventListener('input', () => {
+    clearTimeout(debounce);
+    suggestCtrl?.abort();
+    searchCtrl?.abort();
+    if (clearBtn) clearBtn.hidden = !input.value;
+    const q = input.value.trim();
+    if (q.length < SUGGEST_MIN_CHARS) { closeList(); return; }
+    debounce = setTimeout(() => suggest(q), SUGGEST_DELAY_MS);
+  });
+
+  input?.addEventListener('keydown', (e) => {
+    const n = items.length;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (!n || list.hidden) return;
+      e.preventDefault();
+      highlight(e.key === 'ArrowDown' ? (active + 1) % n : (active <= 0 ? n - 1 : active - 1));
+    } else if (e.key === 'Escape') {
+      if (!list.hidden) { e.preventDefault(); cancelSearch(); closeList(); }
+      else if (input.value) { e.preventDefault(); input.value = ''; if (clearBtn) clearBtn.hidden = true; }
+    }
+  });
+
+  form?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (active >= 0 && items[active]) { pick(items[active]); return; }
+    const q = input.value.trim();
+    if (q.length >= 2) search(q);
+  });
+
+  clearBtn?.addEventListener('click', () => {
+    clearTimeout(debounce);
+    suggestCtrl?.abort();
+    searchCtrl?.abort();
+    input.value = '';
+    clearBtn.hidden = true;
+    closeList();
+    input.focus();
+  });
+
+  // Sur téléphone, le panneau du bas s'efface pendant la saisie pour laisser la place aux suggestions.
+  form?.addEventListener('focusin', () => root.classList.add('searching'));
+  form?.addEventListener('focusout', () => {
+    setTimeout(() => { if (!form.contains(document.activeElement)) root.classList.remove('searching'); }, 0);
+  });
+  // Toucher ailleurs ferme les suggestions ; sur la carte, ce premier geste ne choisit pas de lieu.
+  document.addEventListener('pointerdown', (e) => {
+    const listOpen = !!list && !list.hidden;
+    if (listOpen && !form.contains(e.target)) closeList();
+    if (mapEl?.contains(e.target)) {
+      ignoreClick = listOpen || (!sideQuery.matches && document.activeElement === input);
+      if (ignoreClick) input.blur();
+    }
+  }, true);
+
+  // ----- Autour de moi -----
+  locateBtn?.addEventListener('click', () => {
+    if (!navigator.geolocation) { setNote('La localisation n\'est pas disponible sur cet appareil.', 'warn'); return; }
+    if (window.isSecureContext === false) { setNote('La localisation demande une adresse sécurisée (https). Cherche ta ville à la place.', 'warn'); return; }
+    locateBtn.disabled = true;
+    locateBtn.setAttribute('aria-busy', 'true');
+    setNote('Recherche de ta position…');
+    const done = () => { locateBtn.disabled = false; locateBtn.removeAttribute('aria-busy'); };
+    const t = token;
+    navigator.geolocation.getCurrentPosition((pos) => {
+      // Arrondi à 3 décimales (environ 100 m) avant toute autre chose : la position précise n'est ni gardée,
+      // ni affichée, ni envoyée (le nom du quartier vient de ce point arrondi).
+      const lat = roundCoord(pos.coords.latitude), lon = roundCoord(pos.coords.longitude);
+      done();
+      if (t !== token) return; // un autre lieu a été choisi pendant l'attente
+      closeList();
+      // Zone privée autour du point arrondi ; une zone proche est réutilisée sans nouveau décalage, et agrandie
+      // s'il le faut pour couvrir ce point (privacy.js, zoneFor).
+      const r = keepZone(zoneFor(zones, lat, lon, rand, { now: now() }));
+      choose({ lat, lon, name: MY_POSITION, area: r.zone.name, aroundMe: true }, { zoom: PLACE_ZOOM, reverse: 'mine', note: zoneNote(MY_POSITION_NOTE, r) });
+      onMyPosition?.(current ? { ...current } : null, r);
+    }, (err) => {
+      done();
+      setNote(err?.code === 1
+        ? 'Localisation refusée. Cherche ta ville ou touche la carte.'
+        : 'Position introuvable pour l\'instant. Cherche ta ville ou touche la carte.', 'warn');
+    }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
+  });
+
+  // ----- Aide -----
+  function toggleHelp(open) {
+    if (!help) return;
+    help.hidden = !open;
+    root.classList.toggle('help-open', open);
+    helpBtn?.setAttribute('aria-expanded', String(open));
+    if (open) helpClose?.focus();
+  }
+  helpBtn?.addEventListener('click', () => toggleHelp(help.hidden));
+  // Le voile derrière l'aide (#menu::after) la ferme au clic, sans toucher la carte dessous.
+  root.addEventListener('click', (e) => { if (help && !help.hidden && e.target === root) toggleHelp(false); });
+  helpClose?.addEventListener('click', () => { toggleHelp(false); helpBtn?.focus(); });
+  help?.addEventListener('keydown', (e) => { if (e.key === 'Escape') { toggleHelp(false); helpBtn?.focus(); } });
+
+  // ----- Disposition : zone de carte visible entre les panneaux -----
+  function measure() {
+    const box = root.getBoundingClientRect();
+    if (!box.width || !box.height) return null;
+    if (sideQuery.matches) {
+      const card = ui.getBoundingClientRect();
+      lastSheetH = 0;
+      return { box, pad: { top: 0, bottom: 0, left: Math.max(0, Math.round(card.right - box.left)), right: 0 } };
+    }
+    const top = topBar ? Math.round(topBar.getBoundingClientRect().bottom - box.top) : 0;
+    if (sheet && sheet.offsetParent) lastSheetH = Math.round(box.bottom - sheet.getBoundingClientRect().top);
+    return { box, pad: { top, bottom: lastSheetH, left: 0, right: 0 } };
+  }
+
+  function updateLayout({ padding = true } = {}) {
+    const m = measure();
+    if (!m) return;
+    root.style.setProperty('--map-top', `${m.pad.top}px`);
+    root.style.setProperty('--map-left', `${m.pad.left}px`);
+    root.style.setProperty('--sheet-h', `${m.pad.bottom}px`);
+    if (padding && map) map.setPadding(m.pad);
+  }
+
+  function globeZoom(m) {
+    if (!m) return 1;
+    const w = m.box.width - m.pad.left - m.pad.right;
+    const h = m.box.height - m.pad.top - m.pad.bottom;
+    const d = Math.max(160, Math.min(w, h) * 0.86);
+    return Math.min(2.6, Math.max(0, Math.log2((d * Math.PI) / 512)));
+  }
+
+  const onWindowResize = () => {
+    cancelAnimationFrame(layoutFrame);
+    layoutFrame = requestAnimationFrame(() => { if (visible) updateLayout(); });
+  };
+  window.addEventListener('resize', onWindowResize);
+  // Clavier virtuel : il recouvre le bas de l'écran sans changer sa taille ; les suggestions restent au-dessus.
+  const vv = window.visualViewport;
+  if (vv) {
+    const onViewport = () => root.style.setProperty('--vv-h', `${Math.round(vv.height)}px`);
+    vv.addEventListener('resize', onViewport);
+    onViewport();
+  }
+  if (typeof ResizeObserver === 'function') {
+    // Les crédits de la carte restent au-dessus du panneau du bas, sans déplacer la carte.
+    const ro = new ResizeObserver(() => { if (visible) updateLayout({ padding: false }); });
+    if (sheet) ro.observe(sheet);
+    if (topBar) ro.observe(topBar);
+  }
+
+  // ----- Carte -----
+  function syncMarker() {
+    if (!map || !gl) return;
+    if (!current) {
+      marker?.remove();
+      markerOnMap = false;
+      return;
+    }
+    if (!marker) {
+      const el = document.createElement('div');
+      el.className = 'start-marker';
+      el.innerHTML = MARKER_SVG;
+      marker = new gl.Marker({ element: el, anchor: 'bottom' });
+    }
+    marker.setLngLat([current.lon, current.lat]);
+    if (!markerOnMap) { marker.addTo(map); markerOnMap = true; }
+  }
+
+  function makePin(pin) {
+    injectStyle('picker-pin-style', PIN_CSS);
+    const el = document.createElement('div');
+    el.className = `map-pin map-pin-${pin.kind}`;
+    el.setAttribute('role', 'img');
+    el.innerHTML = pin.svg;
+    if (pin.tag) {
+      const tag = document.createElement('span');
+      tag.className = 'map-pin-tag';
+      tag.setAttribute('aria-hidden', 'true');
+      tag.textContent = pin.tag;
+      el.append(tag);
+    }
+    return new gl.Marker({ element: el, anchor: 'bottom' });
+  }
+
+  // Pose, déplace ou retire les repères ; rien tant que la carte n'est pas prête (mapReady les rejoue).
+  function syncPins() {
+    if (!map || !gl || mapState !== 'ready') return;
+    const box = map.getCanvasContainer();
+    let added = false;
+    for (const pin of pins) {
+      if (!pin.spot) {
+        pin.marker?.remove();
+        pin.marker = null;
+        continue;
+      }
+      if (!pin.marker) pin.marker = makePin(pin);
+      const el = pin.marker.getElement();
+      el.setAttribute('aria-label', pin.text);
+      el.title = pin.text;
+      pin.marker.setLngLat([pin.spot.lon, pin.spot.lat]);
+      if (el.parentNode !== box) { pin.marker.addTo(map); added = true; }
+    }
+    // Un repère ajouté est remis à sa place dans l'empilement : refuge, sac, puis départ au premier plan.
+    if (!added) return;
+    for (const m of [...pins.map((p) => p.marker), markerOnMap ? marker : null]) {
+      const el = m?.getElement();
+      if (el?.parentNode === box) box.append(el);
+    }
+  }
+
+  function setPin(kind, raw, text) {
+    const pin = pinOf(kind);
+    const p = raw ? normalizePlace(raw) : null;
+    pin.spot = p ? { lat: p.lat, lon: p.lon } : null;
+    pin.text = text;
+    syncPins();
+  }
+
+  // La carte détruite emporte les éléments des repères ; leur position reste pour la prochaine carte.
+  function dropPins() {
+    for (const pin of pins) pin.marker = null;
+  }
+
+  function flyTo(place, zoom) {
+    if (!map || mapState === 'failed') return;
+    stopSpin();
+    map.flyTo({ center: [place.lon, place.lat], zoom, speed: 1.6, curve: 1.42, maxDuration: 4500 });
+  }
+
+  // Le globe tourne doucement tant que rien n'est choisi, jusqu'au premier geste.
+  function startSpin() {
+    if (!map || current || reducedMotion.matches || !visible || spinning) return;
+    spinning = true;
+    spinStep();
+  }
+  function spinStep() {
+    if (!spinning || !map) return;
+    if (map.getZoom() > 3) { spinning = false; return; }
+    const c = map.getCenter();
+    map.easeTo({ center: [c.lng - 3, c.lat], duration: 1000, easing: (t) => t });
+  }
+  function stopSpin() {
+    if (!spinning) return;
+    spinning = false;
+    map?.stop();
+  }
+
+  function failMap(err) {
+    if (mapState === 'failed') return;
+    console.warn('Carte du monde indisponible', err);
+    clearTimeout(mapTimer);
+    mapState = 'failed';
+    stopSpin();
+    try { map?.remove(); } catch { /* déjà détruite */ }
+    map = null;
+    marker = null;
+    markerOnMap = false;
+    dropPins();
+    root.classList.remove('map-loading');
+    root.classList.add('no-map');
+    mapNote = 'Carte indisponible : cherche un lieu, choisis une ville ou utilise ta position.';
+    setNote('');
+  }
+
+  // Sur téléphone et tablette, la carte est détruite pendant la partie : deux contextes WebGL pèsent trop lourd.
+  // Elle est recréée au retour au menu (style et tuiles viennent alors du cache du navigateur).
+  function releaseMap() {
+    mapAttempt += 1;
+    clearTimeout(mapTimer);
+    try { map?.remove(); } catch { /* déjà détruite */ }
+    map = null;
+    marker = null;
+    markerOnMap = false;
+    dropPins();
+    mapState = 'idle';
+    root.classList.remove('map-loading');
+  }
+
+  function mapReady() {
+    if (mapState === 'ready' || !map) return;
+    clearTimeout(mapTimer);
+    mapState = 'ready';
+    root.classList.remove('map-loading', 'no-map');
+    if (mapNote) { mapNote = ''; setNote(''); }
+    try { map.setProjection({ type: 'globe' }); } catch (err) { console.warn('Globe indisponible', err); }
+    syncMarker();
+    syncPins();
+    startSpin();
+  }
+
+  async function startMap() {
+    if (!mapEl || mapState === 'loading' || mapState === 'ready') return;
+    if (!hasWebGL()) { mapState = 'loading'; failMap(new Error('WebGL indisponible')); return; }
+    mapState = 'loading';
+    mapErrors = 0;
+    root.classList.add('map-loading');
+    mapTimer = setTimeout(() => { if (mapState === 'loading') failMap(new Error('délai dépassé')); }, MAP_TIMEOUT_MS);
+    // Un essai abandonné (délai dépassé) ne doit pas créer une seconde carte quand MapLibre finit par arriver.
+    const attempt = ++mapAttempt;
+    try {
+      gl = await loadMapLibre();
+    } catch (err) {
+      if (attempt === mapAttempt) failMap(err);
+      return;
+    }
+    if (mapState !== 'loading' || attempt !== mapAttempt) return;
+    const m = measure();
+    try {
+      map = new gl.Map({
+        container: mapEl,
+        style: STYLE_URL,
+        center: current ? [current.lon, current.lat] : [8, 28],
+        zoom: current ? APPROACH_ZOOM : globeZoom(m),
+        attributionControl: false,
+        dragRotate: false,
+        pitchWithRotate: false,
+        touchPitch: false,
+        maxPitch: 0,
+        locale: MAP_LOCALE,
+      });
+    } catch (err) {
+      failMap(err);
+      return;
+    }
+    if (m) map.setPadding(m.pad);
+    map.touchZoomRotate.disableRotation();
+    map.keyboard.disableRotation();
+    map.addControl(new gl.AttributionControl({ compact: true }), 'bottom-right');
+    if (finePointer.matches) map.addControl(new gl.NavigationControl({ showCompass: false }), 'bottom-right');
+    map.on('style.load', mapReady);
+    map.on('error', (e) => {
+      const url = e?.error?.url ?? '';
+      // Avant le style, seule une erreur sur le style lui-même (ou sans adresse) est fatale.
+      if (mapState === 'loading' && (!url || url.startsWith(STYLE_URL))) { failMap(e.error ?? e); return; }
+      if (mapErrors++ < 3) console.warn('Carte :', e?.error?.message ?? e);
+    });
+    for (const ev of ['mousedown', 'touchstart', 'wheel', 'dragstart']) map.on(ev, stopSpin);
+    map.on('moveend', () => { if (spinning) spinStep(); });
+    map.on('click', (e) => {
+      if (ignoreClick) { ignoreClick = false; return; }
+      const { lng, lat } = e.lngLat.wrap();
+      closeList();
+      choose({ lat, lon: lng, name: DEFAULT_NAME, area: coordLabel(lat, lng) }, { zoom: map.getZoom() < 9 ? APPROACH_ZOOM : null, reverse: true });
+    });
+  }
+
+  render();
+
+  return {
+    getPlace: () => (current ? { ...current } : null),
+    setPlace(place, { fly = true } = {}) {
+      choose(place, { zoom: fly ? PLACE_ZOOM : null });
+      if (!fly && map && current) map.jumpTo({ center: [current.lon, current.lat] });
+    },
+    // Repère bleu du refuge ({ lat, lon, label } ou null) et repère violet du sac perdu ({ lat, lon } ou null).
+    setHome(home) {
+      const label = clean(home?.label).slice(0, 120);
+      setPin('home', home, label ? `Ton refuge : ${label}` : 'Ton refuge');
+    },
+    setBag(bag) {
+      setPin('bag', bag, 'Ton sac');
+    },
+    // Zones privées (privacy.js) : copie de la liste ; setZones après un retrait fait ailleurs (menu), qui la range aussi.
+    getZones: () => zones.map((z) => ({ ...z })),
+    setZones(list) {
+      zones = Array.isArray(list) ? list.map((z) => ({ ...z })) : [];
+      zonesSaved = saveZones(storage, zones);
+      render();
+    },
+    show() {
+      visible = true;
+      reloadZones();
+      render();
+      updateLayout({ padding: false });
+      if (mapState === 'idle' || mapState === 'failed') startMap();
+      else if (map) { map.resize(); updateLayout(); startSpin(); }
+    },
+    hide() {
+      visible = false;
+      clearTimeout(debounce);
+      suggestCtrl?.abort();
+      searchCtrl?.abort();
+      closeList();
+      toggleHelp(false);
+      stopSpin();
+      map?.stop();
+      if (!finePointer.matches && mapState !== 'failed') releaseMap();
+    },
+    resize() {
+      map?.resize();
+      updateLayout();
+    },
+  };
+}

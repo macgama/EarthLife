@@ -1,0 +1,285 @@
+name: Serveur
+
+# Serveur du jeu à plusieurs (section 4.8) : tests (server-test, mariadb et abuse réunis dans « test », sous la
+# version de Node de production et sous la plus récente), contrôle « aucun secret », audit des dépendances, scénarios
+# Playwright à deux joueurs, répétition du déploiement contre un conteneur OpenSSH jetable, puis mise en ligne sur
+# Infomaniak (deploy) et essai réel (live-check) ; charge de 1 000 survivants pour information (load-1000).
+# deploy et live-check ne tournent que si la variable EARTHLIFE_DEPLOY vaut « on » (posée par Gaël au lot G) ; sinon,
+# un envoi vers main le signale par un avertissement (deploy-off). EARTHLIFE_DEPLOY, NODE_MAJOR et
+# EARTHLIFE_SERVER_URL sont des variables du dépôt (Settings → Secrets and variables → Actions → Variables), pas de
+# l'environnement production : le « if » d'un travail est lu avant son environnement, et test, deploy-rehearsal et
+# live-check n'en ont pas (sans elles : 20 et https://earthlife.needhelpapp.com). deploy seulement sur un envoi vers
+# main, après tous les contrôles et l'approbation de Gaël (environnement production). Seul deploy lit des secrets,
+# ceux de l'environnement production (noms seulement) : INFOMANIAK_SSH_HOST,
+# INFOMANIAK_SSH_USER, INFOMANIAK_APP_DIR, INFOMANIAK_SSH_KNOWN_HOSTS, et INFOMANIAK_SSH_PASSWORD (aujourd'hui, le
+# Manager n'acceptant pas encore de clé pour les sites Node.js) ou INFOMANIAK_SSH_KEY (qui l'emporte quand elle
+# existe). Les identifiants de la base de test et de la répétition sont des valeurs jetables, propres à ces travaux.
+on:
+  push:
+    branches: [main, claude/multijoueur]
+    paths: ['server/**', 'prototype/src/net/**', 'prototype/test/online-acceptance.mjs', '.github/workflows/server.yml']
+  pull_request:
+    paths: ['server/**', 'prototype/src/net/**', 'prototype/test/online-acceptance.mjs', '.github/workflows/server.yml']
+  schedule:
+    # Essai réel quotidien (section 9.6), à 7 h UTC ; les autres travaux ne tournent pas à cette occasion.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+# Sur main, chaque passage a son propre groupe : rien n'y est jamais annulé (un déploiement coupé en pleine bascule
+# laisserait le serveur entre deux versions) ; deploy a en plus son groupe à lui, qui met les déploiements en file.
+# Ailleurs, un nouvel envoi annule le passage précédent.
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && format('server-main-{0}', github.run_id) || format('server-{0}-{1}', github.ref, github.event_name) }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # Version de production (NODE_MAJOR, lue par la sonde) et la plus récente.
+        node: ["${{ vars.NODE_MAJOR || '20' }}", '24']
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: racine-de-test-jetable
+          MARIADB_DATABASE: earthlife_test
+          MARIADB_USER: earthlife_test
+          MARIADB_PASSWORD: test-jetable
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=24
+    env:
+      # La suite du magasin (test/store.test.js) tourne aussi sur MariaDB quand cette adresse est fournie.
+      EARTHLIFE_TEST_DB: mysql://earthlife_test:test-jetable@127.0.0.1:3306/earthlife_test
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      # Tableau de la section 9.5 (attaques simulées, 200 survivants pendant 2 min) contre le faux serveur.
+      - name: Attaques simulées et charge
+        run: node tools/abuse.mjs
+      # Sonde : elle tourne sous la version de la matrice (NODE_SONDE) ; l'essai, faux navigateur qui a besoin des
+      # WebSocket et EventSource de Node 22 ou plus, tourne sous Node 24. En dernier : les étapes d'avant restent sous
+      # la version de la matrice.
+      - name: Node de la matrice pour la sonde
+        run: echo "NODE_SONDE=$(command -v node)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm run test:probe
+
+  secrets-check:
+    # Échec si un fichier .env ou .env.* (sauf *.example), une clé privée, ou une affectation à PASSWORD, SECRET ou
+    # HMAC_SECRET d'une valeur écrite en clair apparaît dans server/, prototype/ ou .github/ (fichiers suivis par
+    # Git). Une valeur tirée d'une variable ($X, ${{ … }}) n'est pas un secret écrit. La racine, qui garde les
+    # fichiers de l'ancienne application, est couverte par la protection à l'envoi de GitHub (section 4.7, étape 15).
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Aucun secret dans server/, prototype/ et .github/
+        env:
+          # Clés OpenSSH, RSA, EC, DSA, PKCS#8 (chiffrées ou non), PGP et PuTTY.
+          KEY_RE: 'BEGIN ([A-Z0-9]+ )*PRIVATE KEY|PuTTY-User-Key-File-[0-9]'
+          VALUE_RE: '(PASSWORD|SECRET)[[:space:]]*=[[:space:]]*["'']?[^$"''`[:space:]]'
+          # Dans un workflow, un secret collé s'écrit « CLÉ: valeur » ; les identifiants de test sont nommés « jetable ».
+          YAML_RE: '(PASSWORD|SECRET)[A-Z_]*:[[:space:]]+["'']?[^$"''[:space:]#{]'
+        run: |
+          bad=0
+          files=$(git ls-files -- server prototype .github | grep -E '(^|/)\.env(\.[^/]*)?$' | grep -v '\.example$' || true)
+          if [ -n "$files" ]; then
+            echo "::error::Fichier d'environnement suivi par Git :"; echo "$files"; bad=1
+          fi
+          if git grep -nIE "$KEY_RE" -- server prototype .github; then
+            echo "::error::Clé privée dans le dépôt (lignes ci-dessus)"; bad=1
+          fi
+          if git grep -nIE "$VALUE_RE" -- server prototype .github; then
+            echo "::error::Mot de passe ou secret écrit en clair (lignes ci-dessus)"; bad=1
+          fi
+          if git grep -nIE "$YAML_RE" -- .github | grep -v jetable; then
+            echo "::error::Mot de passe ou secret écrit en clair dans un workflow (lignes ci-dessus)"; bad=1
+          fi
+          if [ "$bad" = 0 ]; then echo "Aucun secret trouvé."; fi
+          exit "$bad"
+
+  audit:
+    # Dépendances de production du serveur (ws, mysql2 et les leurs), lues dans package-lock.json : échec sur une
+    # faille de gravité haute ou critique.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm audit --omit=dev --audit-level=high
+
+  online-acceptance:
+    # Scénarios à deux joueurs (section 9.3) dans Chromium, contre le faux serveur lancé dans le même processus, sans
+    # réseau : tuiles de Lyon et météo enregistrées dans prototype/test/fixtures.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    # Le script s'arrête de lui-même à 80 min (18 à 25 min sur une machine à 4 cœurs sans carte graphique).
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Le faux serveur (server/dev.mjs) a besoin de ws.
+      - run: npm ci --ignore-scripts
+        working-directory: server
+      - run: npm ci
+      - run: npm install --no-save playwright@1
+      - run: npx playwright install --with-deps chromium
+      - run: node test/online-acceptance.mjs
+        env:
+          ROUTES: test/fixtures/offline-routes.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: captures-en-ligne
+          path: prototype/browser-shots
+          if-no-files-found: ignore
+          retention-days: 14
+
+  deploy-rehearsal:
+    # Répétition du déploiement (lot F) : server/tools/deploy.sh, le même que pour deploy, contre un conteneur OpenSSH
+    # jetable qui imite Infomaniak (server/tools/rehearsal/), une fois par mot de passe et une fois par clé : envoi,
+    # bascule, relance du vrai serveur sur la nouvelle version, retour arrière, nettoyage.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ vars.NODE_MAJOR || '20' }}
+      - run: bash server/tools/rehearsal/repetition.sh
+        env:
+          NODE_MAJOR: ${{ vars.NODE_MAJOR || '20' }}
+
+  deploy:
+    # Mise en ligne (sections 4.8 et 4.9) : construction du paquet, puis envoi, bascule, attente de la nouvelle
+    # version sur /v1/health (15 min au premier déploiement, le temps de régler la commande de démarrage ; 2 min
+    # ensuite), retour arrière si elle ne répond pas, nettoyage des anciennes versions.
+    needs: [test, secrets-check, audit, online-acceptance, deploy-rehearsal]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.EARTHLIFE_DEPLOY == 'on'
+    runs-on: ubuntu-latest
+    # Attente de 15 min au plus au premier déploiement (deploy.sh wait), plus la construction et l'envoi.
+    timeout-minutes: 40
+    environment: production
+    concurrency:
+      group: deploy-server
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ vars.NODE_MAJOR || '20' }}
+      - name: Construire le paquet
+        run: bash server/tools/deploy.sh build
+      - name: Envoyer, basculer, vérifier, nettoyer
+        env:
+          EARTHLIFE_SERVER_URL: ${{ vars.EARTHLIFE_SERVER_URL || 'https://earthlife.needhelpapp.com' }}
+          INFOMANIAK_SSH_HOST: ${{ secrets.INFOMANIAK_SSH_HOST }}
+          INFOMANIAK_SSH_USER: ${{ secrets.INFOMANIAK_SSH_USER }}
+          # Facultatif (22 par défaut).
+          INFOMANIAK_SSH_PORT: ${{ vars.INFOMANIAK_SSH_PORT }}
+          INFOMANIAK_APP_DIR: ${{ secrets.INFOMANIAK_APP_DIR }}
+          INFOMANIAK_SSH_KNOWN_HOSTS: ${{ secrets.INFOMANIAK_SSH_KNOWN_HOSTS }}
+          INFOMANIAK_SSH_PASSWORD: ${{ secrets.INFOMANIAK_SSH_PASSWORD }}
+          INFOMANIAK_SSH_KEY: ${{ secrets.INFOMANIAK_SSH_KEY }}
+        run: bash server/tools/deploy.sh release
+
+  deploy-off:
+    # Envoi vers main sans EARTHLIFE_DEPLOY = « on » : deploy est sauté, et l'avertissement le dit (sinon rien ne
+    # signalerait que le serveur n'a pas été mis à jour).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.EARTHLIFE_DEPLOY != 'on'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Signaler le déploiement sauté
+        run: |
+          echo "::warning::Serveur non déployé : la variable du dépôt EARTHLIFE_DEPLOY ne vaut pas « on » (Settings → Secrets and variables → Actions → Variables ; section 4.7, étape 13)"
+
+  load-1000:
+    # Pour information (section 9.5, plan B de la section 4.6), sans rien bloquer : 1 000 survivants simulés pendant
+    # 2 min contre le faux serveur ; mémoire, temps de processeur et durée du tic dans le résumé du travail.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ vars.NODE_MAJOR || '20' }}
+      - run: npm ci --ignore-scripts
+      - name: 1 000 survivants simulés
+        run: |
+          set +e
+          node tools/bots.mjs 1000 --seconds 120 > bots-1000.log 2>&1
+          code=$?
+          cat bots-1000.log
+          {
+            echo "### Charge de 1 000 survivants (faux serveur, pour information)"
+            echo
+            echo '```'
+            grep -E 'survivants|mémoire|^\{' bots-1000.log | tail -n 40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+
+  live-check:
+    # Essai réel (section 9.6) après chaque déploiement, réussi ou non (après un retour arrière, la version remise en
+    # service doit répondre), puis chaque jour à 7 h UTC : il informe sans bloquer (rien n'en dépend ; en cas
+    # d'échec, le travail est rouge et GitHub prévient par e-mail). Aucun secret : seulement l'adresse publique du
+    # serveur.
+    needs: [deploy]
+    if: ${{ !cancelled() && vars.EARTHLIFE_DEPLOY == 'on' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.deploy.result == 'success' || needs.deploy.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - name: Essai réel
+        env:
+          EARTHLIFE_SERVER_URL: ${{ vars.EARTHLIFE_SERVER_URL || 'https://earthlife.needhelpapp.com' }}
+          AFTER_DEPLOY: ${{ needs.deploy.result == 'success' }}
+        run: |
+          # Juste après un déploiement, la version servie doit être celle de ce commit ; sinon, seule la santé compte.
+          if [ "$AFTER_DEPLOY" = true ]; then export EXPECTED_VERSION="${GITHUB_SHA::7}"; fi
+          node tools/live-check.mjs
