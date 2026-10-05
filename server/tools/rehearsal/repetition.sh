@@ -10,7 +10,8 @@
 # (retour arrière automatique) ; retour arrière demandé ; nettoyage (3 versions gardées, jamais current ni previous).
 # En plus : garde-fous du dossier ; avec Docker, empreinte du serveur fausse ou absente, mauvais mot de passe,
 # conteneur sans mot de passe pour le passage par clé, et aucun secret dans les journaux ni sur le disque. Le mot de
-# passe et la clé sont tirés ici, jetables, et ne vivent que le temps du travail.
+# passe et la clé sont tirés ici, jetables, et ne vivent que le temps du travail. Le conteneur coupe, comme
+# Infomaniak, toute commande dont le client ferme l'entrée (commande-infomaniak.sh) : deploy.sh doit la garder ouverte.
 # Réglages : REHEARSAL_SSH_PORT (2222), REHEARSAL_WEB_PORT (3000), NODE_MAJOR (20 : image node officielle du
 # conteneur) ; en local, DEPLOY_MODULES_FROM (server/node_modules par défaut, au lieu de npm ci).
 set -euo pipefail
@@ -79,6 +80,17 @@ not_in_logs() {
   ! grep -qF -- "$1" "$LOG" && ! grep -qF -- "$1" <<< "$l"
 }
 tmp_empty() { [[ -z $(ls -A "$WORK/tmp") ]]; }
+# Le conteneur coupe bien une commande dont le client ferme l'entrée (ssh -n), sans code de sortie ni sortie : sans
+# cela, la répétition ne prouverait pas que deploy.sh garde l'entrée ouverte.
+cut_on_eof() {
+  local rc=0 out
+  printf '%s\n' "$INFOMANIAK_SSH_KNOWN_HOSTS" > "$WORK/empreintes"
+  out=$(ssh -F /dev/null -T -n -p "$SSH_PORT" -i "$WORK/cle" -o IdentitiesOnly=yes -o IdentityAgent=none \
+    -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$WORK/empreintes" \
+    -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR client@127.0.0.1 'echo commande lancée' 2>&1) || rc=$?
+  echo "ssh -n : code $rc, sortie : ${out:-aucune}"
+  [[ $rc == 255 && -z $out ]]
+}
 # Partie secrète de la clé privée absente des journaux : chaque ligne base64 sauf la première, qui ne porte que l'en-tête
 # du format (openssh-key-v1, none, none…), la même pour toute clé ed25519 sans phrase de passe.
 key_not_in_logs() {
@@ -224,6 +236,7 @@ else
   export INFOMANIAK_SSH_KEY
   refused "conteneur du passage par clé : le mot de passe ne passe pas" dep INFOMANIAK_SSH_KEY= INFOMANIAK_SSH_PASSWORD="$PW" check
   refused "empreinte du serveur fausse (clé)" dep INFOMANIAK_SSH_KNOWN_HOSTS="$BAD_KH" check
+  step "le conteneur coupe une commande dont l'entrée se ferme, comme Infomaniak" cut_on_eof
   run_pass "clé"
 
   step "le mot de passe n'apparaît dans aucun journal" not_in_logs "$PW"
