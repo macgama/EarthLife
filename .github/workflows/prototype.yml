@@ -27,8 +27,8 @@ jobs:
       run:
         working-directory: prototype
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm ci
@@ -44,8 +44,8 @@ jobs:
       run:
         working-directory: prototype
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm ci
@@ -61,8 +61,8 @@ jobs:
       run:
         working-directory: prototype
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm ci
@@ -71,7 +71,7 @@ jobs:
       - run: node test/base-acceptance.mjs browser-shots/acceptance
         env:
           ROUTES: test/fixtures/offline-routes.mjs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: captures-acceptation
@@ -87,8 +87,8 @@ jobs:
       run:
         working-directory: prototype
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm ci
@@ -99,7 +99,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: node test/online-acceptance.mjs browser-shots/online
         timeout-minutes: 80
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: captures-en-ligne
@@ -114,15 +114,15 @@ jobs:
       run:
         working-directory: prototype
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm ci
       - run: npm install --no-save playwright@1
       - run: npx playwright install --with-deps chromium
       - run: node test/browser-smoke.mjs browser-shots
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: captures-navigateur
@@ -136,7 +136,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Préparer le site
         run: |
           mkdir -p _site
