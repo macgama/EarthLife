@@ -1,6 +1,7 @@
 // Fiche du bâtiment tout près du joueur : ce que le jeu en sait (nom, fouille, état de la zone). Règles pures ; main.js lit
 // les données (sauvegarde, ville à sauver) et affiche les lignes sous la quête.
 import { durationLabel } from './refuge.js';
+import { roomsLine } from './interieur.js';
 
 export const FICHE = Object.freeze({
   reach: 3,   // m : distance au bâtiment à partir de laquelle la fiche s'affiche
@@ -10,8 +11,14 @@ const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
 const span = (ms) => (ms < 60000 ? 'moins d’une minute' : durationLabel(ms));
 
 // Ligne de la fouille. `searchedAt` : heure de la fouille (ms), true (fouillé pendant cette partie, heure inconnue) ou null.
-export function searchLine({ home = false, searchedAt = null, searchedMs = 0, now = Date.now() } = {}) {
+// `rooms` : { done, total } quand le bâtiment a un intérieur (pièces fouillées sur pièces à fouiller) ; tant qu'il reste des
+// pièces, la ligne les compte, et le bâtiment n'est « fouillé » qu'une fois toutes fouillées.
+export function searchLine({ home = false, searchedAt = null, searchedMs = 0, now = Date.now(), rooms = null } = {}) {
   if (home) return 'Ton refuge';
+  if (rooms && rooms.total > 0 && rooms.done < rooms.total) {
+    if (rooms.done > 0) return roomsLine(rooms.done, rooms.total);
+    return rooms.total > 1 ? `Pas encore fouillé · ${rooms.total} pièces` : 'Pas encore fouillé';
+  }
   if (Number.isFinite(searchedAt)) {
     const age = Math.max(0, now - searchedAt);
     const left = searchedMs - age;
@@ -34,8 +41,8 @@ export function zoneLine(zone, by = 'toi') {
 }
 
 // La fiche : { title, lines }.
-export function ficheOf({ title, home = false, searchedAt = null, searchedMs = 0, now = Date.now(), zone = null, by = 'toi' } = {}) {
-  const lines = [searchLine({ home, searchedAt, searchedMs, now })];
+export function ficheOf({ title, home = false, searchedAt = null, searchedMs = 0, now = Date.now(), zone = null, by = 'toi', rooms = null } = {}) {
+  const lines = [searchLine({ home, searchedAt, searchedMs, now, rooms })];
   const z = zoneLine(zone, by);
   if (z) lines.push(z);
   return { title, lines };

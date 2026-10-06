@@ -439,11 +439,12 @@ export function createZombieDirector(grid, rand = Math.random) {
     if (!zb.horde && !zb.siege && zb.state === 'horde') zb.state = 'wander';
   }
 
-  // opts : { isNight, desired, field = null, openings = [], centre = null }
+  // opts : { isNight, desired, field = null, openings = [], centre = null, steer = null }
   //   field : champ de distances (flowfield.js) ou null ; openings : DirectorOpening[] ({ id, ax, az, broken, trap },
-  //   `trap` décrémenté ici) ; centre : centre du refuge { x, z } ou null.
+  //   `trap` décrémenté ici) ; centre : centre du refuge { x, z } ou null ; steer : (zombie, joueur) -> { x, z } | null,
+  //   point de passage d'un zombie en chasse (la porte d'un intérieur ouvert, interieur.js) au lieu de la ligne droite.
   function update(dt, player, mods, opts = {}) {
-    const { isNight = false, desired = 0, field = null, openings = [], centre = null } = opts;
+    const { isNight = false, desired = 0, field = null, openings = [], centre = null, steer = null } = opts;
     const events = [];
     // Population : on retire les zombies trop loin (200 m pour la horde, 120 m pour les autres), puis les zombies
     // ordinaires visent min(cible, 60 − horde vivante) : une apparition par image en dessous, et au-dessus du
@@ -505,12 +506,15 @@ export function createZombieDirector(grid, rand = Math.random) {
           events.push({ type: 'spotted', zombie: z });
         }
         if (z.state === 'chase' && dist > Math.max(sight, hearing) * 2.2 + 10) z.state = 'wander';
-        giveUp(z, dist, player, dt);
+        // Intérieur ouvert : la poursuite passe par les portes ; tant qu'il suit un point de passage il ne renonce pas.
+        const via = steer && z.state === 'chase' ? steer(z, player) : null;
+        if (via) z.chaseT = -1;
+        else giveUp(z, dist, player, dt);
 
         let speed, heading;
         if (z.state === 'chase') {
           speed = t.chase * mods.zombieSpeed;
-          heading = Math.atan2(dx, dz);
+          heading = via ? Math.atan2(via.x - z.x, via.z - z.z) : Math.atan2(dx, dz);
           z.target = { x: player.x, z: player.z };
         } else {
           z.state = 'wander';
@@ -553,7 +557,8 @@ export function createZombieDirector(grid, rand = Math.random) {
       }
 
       z.attackTimer = Math.max(0, z.attackTimer - dt);
-      if (exposed && dist < 1.3 && z.attackTimer <= 0 && player.health > 0) {
+      // Intérieur ouvert : une cloison entre eux protège des morsures (et des coups : playerAttack).
+      if (exposed && dist < 1.3 && z.attackTimer <= 0 && player.health > 0 && (grid.interior === undefined || lineFree(grid, z.x, z.z, player.x, player.z))) {
         z.attackTimer = 1.1;
         player.health = Math.max(0, player.health - t.damage);
         player.hurt = 0.35;
@@ -676,6 +681,7 @@ export function playerAttack(player, zombies, grid, damage = ATTACK.damage) {
   const hits = [];
   for (const { z, d } of near) {
     if (d > ATTACK.range) continue;
+    if (grid.interior !== undefined && !lineFree(grid, player.x, player.z, z.x, z.z)) continue;
     const diff = Math.abs(normalizeAngle(Math.atan2(z.x - player.x, z.z - player.z) - player.yaw));
     if (diff > ATTACK.arc) continue;
     z.health -= damage;

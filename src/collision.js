@@ -41,17 +41,36 @@ function indexAt(g, x, z) {
   return j * g.size + i;
 }
 
+// Intérieur ouvert (interieur.js, overlayOf) : tant que le joueur est dans un bâtiment, grid.interior en pose les murs, portes et
+// meubles par-dessus la grille d'origine ; sans intérieur ouvert (cas général), une seule comparaison de plus.
+// at(x, z) : -1 hors du plan (la grille d'origine décide), 0 libre, 1 bloqué.
+function inInterior(it, x, z) {
+  return x >= it.minX && x <= it.maxX && z >= it.minZ && z <= it.maxZ;
+}
+
 export function getAt(grid, x, z) {
+  const it = grid.interior;
+  const near = it !== undefined && inInterior(it, x, z);
+  if (near) {
+    const v = it.at(x, z);
+    if (v >= 0) return v === 0 ? FREE : BUILDING;
+  }
   const g = grid.chunked ? patchAt(grid, x, z) : grid;
   if (!g) return OUTSIDE;
   const k = indexAt(g, x, z);
-  return k < 0 ? OUTSIDE : g.data[k];
+  if (k < 0) return OUTSIDE;
+  const v = g.data[k];
+  // Les cases du bâtiment ouvert qui dépassent son vrai contour (cases de 1 m) ne bloquent pas le seuil de la porte.
+  return near && v === BUILDING && it.owner && g.owner?.[k] === it.owner ? FREE : v;
 }
 
 // Hauteur du sol dessiné au point (x, z), en mètres relatifs à la référence : triangle du nœud du morceau (les pieds
 // sont exactement sur le sol dessiné), ou, hors des morceaux construits, le modèle d'altitude lissé (grid.terrain) moins
 // la canopée approchée ; 0 partout sans relief (le jeu est plat comme avant).
 export function groundAt(grid, x, z) {
+  // Dans le bâtiment ouvert : le plancher est plat, à la hauteur de la porte (de plain-pied avec la rue).
+  const it = grid.interior;
+  if (it !== undefined && inInterior(it, x, z) && it.at(x, z) >= 0) return it.floorY;
   const g = grid.chunked ? patchAt(grid, x, z) : grid;
   if (g?.relief) return reliefAt(g.relief, x, z);
   const t = grid.terrain;
@@ -159,10 +178,39 @@ export function buildGrid(world) {
   return grid;
 }
 
+// Pas maximal d'un déplacement dans un intérieur ouvert : moins que l'épaisseur d'une cloison (0,25 m), pour qu'un coureur ne
+// la saute pas en une image.
+export const INTERIOR_STEP = 0.12;
+
+// Le disque du joueur (rayon r) tient-il en (x, z) ? Quatre sondes en croix ; dans un intérieur ouvert, les cloisons font 0,25 m :
+// centre et mi-rayon en plus (le centre ne se glisse jamais dans un mur entre deux sondes), rayon ramené à 0,3 m pour tenir
+// dans une porte d'un mètre.
+export function fits(grid, x, z, r = 0.4) {
+  if (grid.interior === undefined) return isFree(grid, x + r, z) && isFree(grid, x - r, z) && isFree(grid, x, z + r) && isFree(grid, x, z - r);
+  const ri = Math.min(r, 0.3), rh = ri / 2;
+  return (
+    isFree(grid, x, z) &&
+    isFree(grid, x + ri, z) && isFree(grid, x - ri, z) && isFree(grid, x, z + ri) && isFree(grid, x, z - ri) &&
+    isFree(grid, x + rh, z) && isFree(grid, x - rh, z) && isFree(grid, x, z + rh) && isFree(grid, x, z - rh)
+  );
+}
+
 // Déplace un cercle de rayon `r` en glissant le long des obstacles.
 export function moveWithCollisions(grid, pos, dx, dz, r = 0.4) {
-  const ok = (x, z) => isFree(grid, x + r, z) && isFree(grid, x - r, z) && isFree(grid, x, z + r) && isFree(grid, x, z - r);
+  const ok = (x, z) => fits(grid, x, z, r);
   let x = pos.x, z = pos.z;
+  if (grid.interior !== undefined) {
+    const n = Math.ceil(Math.hypot(dx, dz) / INTERIOR_STEP);
+    if (n > 1) {
+      const sx = dx / n, sz = dz / n;
+      let hit = false;
+      for (let k = 0; k < n; k++) {
+        if (ok(x + sx, z)) x += sx; else hit = true;
+        if (ok(x, z + sz)) z += sz; else hit = true;
+      }
+      return { x, z, blocked: hit };
+    }
+  }
   if (ok(x + dx, z)) x += dx;
   if (ok(x, z + dz)) z += dz;
   return { x, z, blocked: x === pos.x + dx && z === pos.z + dz ? false : true };
@@ -171,6 +219,8 @@ export function moveWithCollisions(grid, pos, dx, dz, r = 0.4) {
 // Segment dégagé (vue, lancer) : vrai si tous les points pris tous les `step` mètres, extrémités comprises, sont libres.
 // Lecture seule : la grille n'est jamais modifiée.
 export function lineFree(grid, x0, z0, x1, z1, step = 0.25) {
+  // Intérieur ouvert : les cloisons font 0,25 m, un pas plus fin ne les saute pas en biais.
+  if (grid.interior !== undefined) step = Math.min(step, 0.2);
   const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / Math.max(1e-3, step)));
   for (let k = 0; k <= n; k++) {
     const t = k / n;

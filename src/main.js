@@ -4,7 +4,7 @@ import { CITIES } from './cities.js';
 import { createPicker, placeFromCity } from './picker.js';
 import { fetchWeather, forcedWeather, gameplayModifiers } from './weather.js';
 import { sunPosition, localTimeLabel } from './sun.js';
-import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, lineFree, groundAt, groundNormal } from './collision.js';
+import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, buildingAt, lineFree, groundAt, groundNormal } from './collision.js';
 import { buildingFloor } from './terrain.js';
 import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate } from './world.js';
 import { DEM_ATTRIBUTION } from './dem.js';
@@ -26,13 +26,16 @@ import {
   planDelivery, questText, updateQuest, currentTarget, placeWith, refugeQuest, offerMissions, questReward, missionLine,
   durationLabel as questDuration,
 } from './quest.js';
-import { createSaveStore, LIMITS, exportFileName, SAVE_MESSAGES, isBlankSave } from './save.js';
+import { createSaveStore, LIMITS, exportFileName, SAVE_MESSAGES, isBlankSave, searchedWhole, searchOldest } from './save.js';
 import { createRefuge, clockLabel, durationLabel, TAKEN_TEXT } from './refuge.js';
 import { FICHE, ficheOf } from './fiche.js';
 import { kindLabel, countsLabel, countOf, chestCap, moveItems, depositAll, prepareBag, storeItems, refugeWarmth, TIMES } from './base.js';
 import { frontVector, nextNightChange, nightKey, utcOffsetFor, clockTargets, HORDE } from './horde.js';
 import { craft, canCraft, craftTime, RECIPES, recipeRows, rollPlan, PLAN_FOUND_TEXT } from './crafting.js';
 import { ambushCount, ambushSpots, ambushText } from './embuscade.js';
+import { rollRoomLoot, roomAmbushCount, ambushSpotsIn, roomTitle } from './interieur.js';
+import { createInteriorView } from './interieur-view.js';
+import { createInteriorGame } from './interieur-jeu.js';
 import { PROP_KINDS, PROP_TEXTS, rollPropLoot, propTime, propLabel, propLootText, goneChecker } from './props.js';
 import { createPropsView } from './props-view.js';
 import { createBaseView } from './base-view.js';
@@ -75,6 +78,9 @@ const DEBUG = params.get('debug') === '1';
 // Relief réel (altitude des tuiles AWS Terrain Tiles) : pas activé par défaut, ?relief=1 dans l'adresse. Sans lui, ou
 // si l'altitude n'arrive pas, le jeu est plat exactement comme avant.
 const reliefRequested = () => params.get('relief') === '1';
+// Intérieur des bâtiments (« Plan 3D », interieur.js) : en jeu normal ; les essais (?debug=1) gardent la fouille depuis la façade
+// (leurs scénarios la supposent), sauf avec ?interieur=1 ; ?interieur=0 le coupe partout.
+const INTERIOR_ON = params.get('interieur') === '1' || (params.get('interieur') !== '0' && !DEBUG);
 // Un paramètre inconnu (?weather=foo) laisserait la liste vide : on ne garde que les valeurs proposées.
 const setOption = (select, value) => { if (value && [...select.options].some((o) => o.value === value)) select.value = value; };
 setOption($('weather-mode'), params.get('weather'));
@@ -387,6 +393,18 @@ const playerMeshes = characters.root.children.slice(0, 2);
 // Décor démontable (arbres, voitures, bancs) et refuge (ouvertures, drapeau, sac perdu, leurre) : un jeu par page.
 const propsView = createPropsView(scene, { lowPower });
 const baseView = createBaseView(scene);
+// Intérieur des bâtiments : la vue (maillages créés à « Entrer », défaits à la sortie) et ses règles dans la partie.
+const interiorView = createInteriorView(scene);
+const interior = createInteriorGame({
+  view: interiorView, enabled: INTERIOR_ON, save, maxAge: LIMITS.searchedMs, searchTime: SEARCH_TIME,
+  // Sortie : le conseil du refuge qui attendait la fin de la fouille (« Déménager ici ») se dit dehors, devant la porte.
+  onClose: (s, it) => {
+    if (s.claimAfter === it.b.id && !s.refuge.inside && session === s) {
+      s.claimAfter = null;
+      claimHint(s, it.b, it.index);
+    }
+  },
+});
 // HUD, panneau du refuge (tiroir ou feuille basse) et cartes de jeu (#card).
 const hud = createHud({ $, input });
 const card = createCard($('card'));
@@ -736,6 +754,7 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
 // Pose le joueur à un point : tuiles et morceaux de monde autour, zombies retirés (gardés au réveil au refuge,
 // pour ne pas effacer une vague en cours : le joueur y est caché).
 async function placePlayer(s, spot, { keepZombies = false } = {}) {
+  interior.close(s, { instant: true });
   s.loader.ensureAround(spot.x, spot.z, PREFETCH_RADIUS);
   await s.loader.settled(spot.x, spot.z, VIEW_RADIUS + 50, 8000);
   s.chunks.buildAll(spot.x, spot.z);
@@ -767,6 +786,10 @@ function restoreCharacter(s) {
   }
   // Fouilles de la ville de secours : ses identifiants ne sont pas géographiques, ils restent en mémoire.
   s.searchedLocal = new Set();
+  s.roomsLocal = new Map(); // intérieurs : bâtiment → rangs des pièces fouillées (ville de secours)
+  s.interior = null; // intérieur ouvert (interieur-jeu.js)
+  s.doorSeen = new Set();
+  s.claimAfter = null;
   // Conseils de fin de fouille : « Déménager ici » une fois par partie, un refus une fois par bâtiment ; le conseil
   // attend que le butin ait été lu (hintLater).
   s.moveHinted = false;
@@ -875,6 +898,7 @@ function onTile(key, info) {
 
 function disposeSession() {
   if (!session) return;
+  interior.close(session, { instant: true });
   othersView?.clear();
   panel.close();
   baseView.setLure(null);
@@ -1158,6 +1182,8 @@ function step(s, inp, dt) {
   const before = { x: p.x, z: p.z };
   const still = s.action && !s.action.inside;
   updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
+  // Intérieur ouvert : sortie détectée, toit effacé ou rendu, lueur du meuble à fouiller.
+  interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches });
   // 7. Boutons E et R.
   updateActions(s, inp, dt, before);
   updateFiche(s, dt);
@@ -1167,7 +1193,7 @@ function step(s, inp, dt) {
   const density = urbanDensity(s.grid, p.x, p.z);
   const desired = Math.max(0, Math.min(targetZombieCount(s.mods, density), 60 - r.hordeAlive()));
   const events = s.director.update(dt, p, s.mods, {
-    isNight: s.isNight, desired, field: s.field, openings: r.directorOpenings(), centre: r.anchor(),
+    isNight: s.isNight, desired, field: s.field, openings: r.directorOpenings(), centre: r.anchor(), steer: interior.steerOf(s),
   });
   if (events.some((e) => e.type === 'spotted') && !s.spottedRecently) {
     toast('Repéré !', 1, 'danger');
@@ -1231,7 +1257,7 @@ function step(s, inp, dt) {
 const FEMININE_ITEMS = new Set(['conserve', 'barre', 'eau', 'ferraille', 'planche', 'plaque', 'chaufferette', 'batte_cloutee', 'hache']);
 // Icône du bouton selon l'action (les objets du décor par leur sorte).
 const ACTION_ICONS = {
-  search: 'fouiller', enter: 'refuge', claim: 'refuge', move: 'refuge', exit: 'fleche', nail: 'marteau', repair: 'marteau',
+  search: 'fouiller', room: 'fouiller', door: 'refuge', enter: 'refuge', claim: 'refuge', move: 'refuge', exit: 'fleche', nail: 'marteau', repair: 'marteau',
   plate: 'marteau', trap: 'piege', sleep: 'lune', craft: 'marteau', orphan: 'sac', tree: 'hache', car: 'cle', bench: 'cle', nest: 'cle', flag: 'marteau',
 };
 // Libellé du bouton pendant l'action.
@@ -1244,16 +1270,17 @@ const actionIcon = (a) => (a.id === 'prop' ? ACTION_ICONS[a.arg.kind] : ACTION_I
 
 // Bâtiment déjà fouillé : moins de 24 h dans la sauvegarde (vraies rues), ou pendant la session (ville de secours,
 // dont les identifiants ne sont pas géographiques).
+// Un bâtiment à intérieur n'est fouillé qu'une fois toutes ses pièces fouillées (save.js, searchedWhole) ; une fouille d'avant
+// les intérieurs vaut tout le bâtiment.
 function isSearched(s, b) {
   if (s.store.source !== 'tiles') return s.searchedLocal.has(b.id);
-  const t = save.searched?.[b.id];
-  return Number.isFinite(t) && Date.now() - t < LIMITS.searchedMs;
+  return searchedWhole(save.searched?.[b.id], Date.now(), LIMITS.searchedMs);
 }
 
 // Heure de la fouille d'un bâtiment (ms), true si fouillé pendant cette partie (heure inconnue), null sinon.
 function searchedAtOf(s, b) {
   if (!isSearched(s, b)) return null;
-  return s.store.source === 'tiles' ? save.searched[b.id] : true;
+  return s.store.source === 'tiles' ? searchOldest(save.searched[b.id]) : true;
 }
 
 // Fiche du bâtiment tout près (sous la quête) : mise à jour quatre fois par seconde, texte réécrit seulement s'il change.
@@ -1267,7 +1294,7 @@ function updateFiche(s, dt) {
   const b = near === null ? null : s.store.buildings[near];
   const fiche = !b ? null : ficheOf({
     title: buildingTitle(b), home: s.refuge.base?.id === b.id, searchedAt: searchedAtOf(s, b), searchedMs: LIMITS.searchedMs,
-    now: Date.now(), zone: city.zoneAt(s, b.cx, b.cz),
+    now: Date.now(), zone: city.zoneAt(s, b.cx, b.cz), rooms: interior.roomsOf(s, b),
   });
   const key = fiche ? `${fiche.title}\n${fiche.lines.join('\n')}` : '';
   if (key === s.ficheKey) return;
@@ -1323,11 +1350,26 @@ function chooseActions(s) {
     s.takenSeen.add(building.id);
     toast(TAKEN_TEXT, 3);
   }
-  const menu = r.actions(p, { touch, survivor: s.survivor, building: building ? { ...building, index: near } : null, searched, taken });
+  // Intérieur ouvert : le refuge ne propose ni installation ni déménagement tant qu'on n'est pas ressorti.
+  const open = interior.isOpen(s);
+  const menu = r.actions(p, { touch, survivor: s.survivor, building: building && !open ? { ...building, index: near } : null, searched, taken });
   let primary = menu.primary;
   // Ville à sauver : ouvrir le nid d'un pâté, planter le fanion (avant la fouille du bâtiment voisin).
   if (!primary && !r.inside) primary = city.action(s, touch);
-  if (!primary && building && !searched) {
+  // Intérieur : « Entrer » à la porte (la fouille se fait pièce par pièce, dedans), puis le meuble de la pièce où l'on est.
+  if (!primary && open) primary = interior.roomAction(s, { touch });
+  let legacy = !!building;
+  if (!primary && building && !open) {
+    const plan = interior.planOf(s, building);
+    if (plan) {
+      legacy = false;
+      const d = interior.doorAction(s, building, near, plan, { touch, searched, title: buildingTitle(building) });
+      primary = d.primary;
+      if (d.hint) toast(d.hint, 3);
+    }
+  }
+  if (open) legacy = false;
+  if (!primary && legacy && !searched) {
     const title = buildingTitle(building);
     // Fouillé par un autre survivant depuis moins de 6 h : « · fouillée il y a 12 min » (butin réduit).
     const other = s.store.source === 'tiles' ? online.searchedByOther(building.id) : null;
@@ -1376,6 +1418,14 @@ function updateActions(s, inp, dt, before) {
 function startAction(s, a) {
   const r = s.refuge;
   const base = { id: a.id, arg: a.arg, t: 0, slot: a.slot ?? 'primary', inside: r.inside, noise: 0 };
+  if (a.id === 'door') {
+    interior.open(s, a.arg);
+    return;
+  }
+  if (a.id === 'room') {
+    s.action = { ...base, time: a.time, title: a.title, label: `Fouille… ${a.title}`, icon: 'fouiller', noise: 14 };
+    return;
+  }
   if (a.id === 'search') {
     s.action = { ...base, time: a.time, title: a.title, label: `Fouille… ${a.title}`, icon: 'fouiller', noise: 14 };
     return;
@@ -1415,6 +1465,7 @@ function cancelAction(s) {
 function finishAction(s, a) {
   s.action = null;
   if (a.id === 'search') finishSearch(s, a);
+  else if (a.id === 'room') finishRoom(s, a);
   else if (a.id === 'prop') finishProp(s, a);
   else if (a.id === 'nest' || a.id === 'flag') city.runAction(s, a);
   else if (a.id === 'craft') finishCraft(s, a);
@@ -1449,6 +1500,46 @@ function finishSearch(s, a) {
   if (tiles) online.mark('s', b.id);
   claimHint(s, b, a.arg);
   saveStore.markDirty();
+}
+
+// Pièce fouillée dans un intérieur ouvert : butin de la pièce (même total que la fouille entière, réparti), embuscade par la porte
+// de la pièce voisine ; le bâtiment est « fouillé » quand toutes ses pièces le sont (plan de l'établi, refuge, autres survivants).
+function finishRoom(s, a) {
+  const it = s.interior;
+  const room = it?.plan.rooms[a.arg];
+  if (!room || interior.roomDone(s, it.b, it.plan, room.slot)) return;
+  const { b, plan } = it;
+  const after = interior.mark(s, b, plan, room.slot);
+  interiorView.setDone(a.arg, true);
+  ambushRoom(s, plan, a.arg);
+  const tiles = s.store.source === 'tiles';
+  const other = tiles ? online.searchedByOther(b.id) : null;
+  const found = rollRoomLoot(plan, a.arg, lootRand, { ...(other ? REDUCED_LOOT : null), draws: city.lootDraws(s) });
+  if (tiles && after.whole && rollPlan(b.loot, save.profile)) toast(PLAN_FOUND_TEXT, 4, 'success');
+  const res = addLoot(s.survivor, found);
+  const got = { ...res.stored };
+  for (const k of res.equipped) got[k] = (got[k] ?? 0) + 1;
+  toast(`${roomTitle(plan, a.arg)} : ${countsLabel(got) || 'rien'}${other ? ' · il restait peu de choses' : ''}`, 3, 'loot');
+  lootNotes(res);
+  if (after.whole) {
+    if (tiles) online.mark('s', b.id);
+    toast('Bâtiment fouillé : toutes les pièces', 2.5, 'success');
+    s.claimAfter = b.id;
+  }
+  saveStore.markDirty();
+}
+
+// Embuscade d'une pièce : 1 ou 2 zombies sortent de la pièce voisine, par la porte (au fond de la pièce sans voisine) et chassent
+// aussitôt le joueur ; mêmes réglages que celle de la façade (rate, force des essais).
+function ambushRoom(s, plan, room) {
+  if (s.refuge.inside) return;
+  const n = roomAmbushCount(plan, room, { hearing: s.mods.hearing, night: s.isNight, rate: ambushRate, force: ambushForce }, Math.random);
+  let out = 0;
+  for (const spot of ambushSpotsIn(plan, room, s.player, n)) {
+    const zb = s.director.spawnAt(spot.x, spot.z, 'errant', { ambush: true });
+    if (zb) { zb.state = 'chase'; out++; }
+  }
+  if (out) toast(ambushText(out), 2, 'danger');
 }
 
 // Embuscade (src/embuscade.js) : la fouille terminée peut faire sortir un ou deux zombies par la façade, qui chassent
@@ -1493,7 +1584,7 @@ function claimHint(s, b, index) {
 // la fouille suivante).
 function tickHint(s, dt) {
   const h = s.hintLater;
-  if (!h || (h.wait -= dt) > 0) return;
+  if (!h || (h.wait -= dt) > 0 || s.interior) return;
   s.hintLater = null;
   if (s.refuge.inside || buildingNear(s.grid, s.player.x, s.player.z, 1.6) !== h.index) return;
   if (h.move) s.moveHinted = true;
@@ -1957,6 +2048,9 @@ function placeNear(s, p) {
 // Mort : le sac reste au sol (flèche violette), l'arme s'abîme, la mission échoue ; carte « Tu es tombé ».
 function onDeath(s) {
   const p = s.player, sv = s.survivor, r = s.refuge;
+  // Mort dans un intérieur : il se défait, et le sac reste devant la porte (pas dans les murs d'un bâtiment fermé).
+  const dropAt = s.interior ? { x: s.interior.plan.entry.ox, z: s.interior.plan.entry.oz } : null;
+  interior.close(s, { instant: true });
   s.ended = true;
   // Les autres survivants le voient à terre pendant 10 s.
   s.downUntil = performance.now() + 10000;
@@ -1968,10 +2062,10 @@ function onDeath(s) {
   const weaponKey = sv.weapon?.key;
   const pen = deathPenalty(sv);
   if (countOf(pen.bag)) {
-    const ll = playerLatLon(s);
+    const ll = dropAt ? s.store.proj.toLatLon(dropAt.x, dropAt.z) : playerLatLon(s);
     if (save.dropBag) lines.push('Ton ancien sac est perdu');
     save.dropBag = { lat: ll.lat, lon: ll.lon, at: Date.now(), bag: pen.bag };
-    const near = placeNear(s, p);
+    const near = placeNear(s, dropAt ?? p);
     lines.push(near ? `Ton sac est resté près ${near} : la flèche violette t'y mène` : "Ton sac est resté là où tu es tombé : la flèche violette t'y mène");
   }
   if (pen.lost) {
@@ -2491,11 +2585,22 @@ function onlineInput(s, inp) {
 }
 
 // Survivants, drapeaux et cercle de la zone privée dans la scène.
+// Un survivant dans un bâtiment (son intérieur est le sien) n'est vu qu'à la porte : silhouette sur le pas de la porte, jamais
+// dedans.
+function placeOther(l) {
+  const s = session;
+  if (!s?.grid) return;
+  const bi = buildingAt(s.grid, l.x, l.z);
+  if (bi === null) return;
+  const d = interior.doorOf(s.store.buildings[bi]);
+  if (d) { l.x = d.ox; l.z = d.oz; }
+}
+
 function syncOthers(s, dt) {
   const list = online.others(frameNow);
   s.othersNow = list;
   if (!othersView) return;
-  othersView.sync(list, s.store.proj, camera, dt, atmosphere.state.daylight, s.player);
+  othersView.sync(list, s.store.proj, camera, dt, atmosphere.state.daylight, s.player, placeOther);
   if (s.flagsDirty) {
     s.flagsDirty = false;
     // Son propre refuge garde son drapeau bleu (le serveur ne le renvoie pas, exclu ici aussi).
@@ -2818,6 +2923,7 @@ const debug = DEBUG ? {
       panel.close();
     }
     cancelAction(s);
+    interior.close(s, { instant: true });
     Object.assign(s.player, { x, z, vx: 0, vz: 0 });
     s.loader.ensureAround(x, z, PREFETCH_RADIUS);
     s.chunks.buildAll(x, z);
@@ -2846,6 +2952,20 @@ const debug = DEBUG ? {
     ambushRate = rate;
     ambushForce = force;
     return { rate: ambushRate, force: ambushForce };
+  },
+  // Intérieur ouvert : bâtiment, pièce du joueur, durée de construction du plan (ms) et pièces à fouiller (nom, meuble, fouillée ?).
+  interior() {
+    const s = session, it = s?.interior;
+    if (!it) return null;
+    const { plan, b } = it;
+    const rooms = plan.rooms.filter((r) => r.searchable).map((r) => {
+      const f = plan.furn[r.search];
+      return { i: r.i, slot: r.slot, name: r.name, x: f.x, z: f.z, done: interior.roomDone(s, b, plan, r.slot) };
+    });
+    return {
+      id: b.id, index: it.index, entered: it.entered, buildMs: it.buildMs, total: plan.total, room: interior.roomAtPlayer(s), rooms,
+      entry: { x: plan.entry.ox, z: plan.entry.oz, ix: plan.entry.ix, iz: plan.entry.iz, nx: plan.entry.nx, nz: plan.entry.nz }, status: interior.status(s, b, plan),
+    };
   },
   spawnLog: () => session?.refuge.spawnLog.slice() ?? [],
   // Tirage du butin fixé (scénario O5) : graine entière, ou null pour revenir au hasard.

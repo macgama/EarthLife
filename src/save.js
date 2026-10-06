@@ -32,6 +32,7 @@ export const SAVE_MESSAGES = {
 const DAY = 86400000;
 const MAX_REV = 2 ** 31;
 const MAX_COUNT = 999;
+export const MAX_ROOMS = 40;
 const MAX_STAT = 1e9;
 const BAG_CAP = 30;
 const ID_MAX = 40;
@@ -266,8 +267,9 @@ function checker(now, itemKeys, fixes) {
     return out;
   }
 
-  // Identifiant → horodatage, 1 500 entrées au plus (les plus récentes).
-  function stamps(v, path) {
+  // Identifiant → horodatage, 1 500 entrées au plus (les plus récentes). `rooms` : une fouille peut aussi être la forme étendue
+  // des intérieurs, { n: pièces à fouiller, r: { pièce: horodatage } } (voir searchRooms).
+  function stamps(v, path, rooms = false) {
     const out = {};
     if (!isObj(v)) {
       if (v !== undefined) fix(path, 'illisible, vidé');
@@ -275,12 +277,31 @@ function checker(now, itemKeys, fixes) {
     }
     for (const [id, t] of Object.entries(v)) {
       if (!ID.test(id) || id === '__proto__') { fix(path, `identifiant invalide supprimé (${JSON.stringify(id.slice(0, 12))}…)`); continue; }
+      if (rooms && isObj(t)) {
+        const e = roomsEntry(t, `${path}.${id}`);
+        if (e) out[id] = e;
+        continue;
+      }
       if (!finite(t)) { fix(`${path}.${id}`, 'horodatage illisible supprimé'); continue; }
       out[id] = time(t, `${path}.${id}`);
     }
     const removed = capEntries(out, LIMITS.maxEntries);
     if (removed) fix(path, `${removed} entrées les plus anciennes supprimées`);
     return out;
+  }
+
+  // Forme étendue : n de 1 à MAX_ROOMS, pièces de 0 à n − 1 ; sans aucune pièce lisible, l'entrée disparaît.
+  function roomsEntry(t, path) {
+    const n = finite(t.n) ? Math.round(t.n) : 0;
+    if (n < 1 || n > MAX_ROOMS || !isObj(t.r)) { fix(path, 'fouille des pièces illisible supprimée'); return null; }
+    const r = {};
+    for (const [room, at] of Object.entries(t.r)) {
+      const i = Number(room);
+      if (!/^\d{1,2}$/.test(room) || i >= n || !finite(at)) { fix(`${path}.r.${room.slice(0, 6)}`, 'pièce illisible supprimée'); continue; }
+      r[i] = time(at, `${path}.r.${i}`);
+    }
+    if (!Object.keys(r).length) { fix(path, 'aucune pièce fouillée lisible, supprimée'); return null; }
+    return { n, r };
   }
 
   return { fix, num, time, bool, text, unknown, counts, pour, position, keyList, subset, stamps };
@@ -535,7 +556,7 @@ export function validateSave(raw, now = Date.now(), { itemKeys = ITEM_KEYS } = {
     orphanChest,
     horde: checkHorde(raw.horde, c),
     dropBag,
-    searched: c.stamps(raw.searched, 'searched'),
+    searched: c.stamps(raw.searched, 'searched', true),
     dismantled: c.stamps(raw.dismantled, 'dismantled'),
   };
   return { ok: true, save, fixes };
@@ -560,9 +581,58 @@ export function parseSave(text, now = Date.now(), opts = {}) {
 export function capEntries(map, keep) {
   const ids = Object.keys(map);
   if (ids.length <= keep) return 0;
-  ids.sort((a, b) => map[b] - map[a]);
+  ids.sort((a, b) => searchStamp(map[b]) - searchStamp(map[a]));
   for (const id of ids.slice(Math.max(0, keep))) delete map[id];
   return ids.length - Math.max(0, keep);
+}
+
+// ---------- Fouille des bâtiments (searched) ----------
+// Une entrée est un nombre (heure de la fouille : bâtiment fouillé en entier, forme d'avant les intérieurs, toujours relue) ou
+// { n, r: { pièce: heure } } (n pièces à fouiller dans l'intérieur, celles de r fouillées).
+
+// Heure de la fouille la plus récente d'une entrée, 0 sans fouille.
+export function searchStamp(entry) {
+  if (finite(entry)) return entry;
+  if (!isObj(entry) || !isObj(entry.r)) return 0;
+  let t = 0;
+  for (const v of Object.values(entry.r)) if (finite(v) && v > t) t = v;
+  return t;
+}
+
+// Heure de la plus ancienne fouille d'une entrée (la pièce qui revient la première), 0 sans fouille.
+export function searchOldest(entry) {
+  if (finite(entry)) return entry;
+  if (!isObj(entry) || !isObj(entry.r)) return 0;
+  let t = Infinity;
+  for (const v of Object.values(entry.r)) if (finite(v) && v < t) t = v;
+  return t === Infinity ? 0 : t;
+}
+
+// Pièces fouillées depuis moins de `maxAge` : { done, total }. `total` : le nombre de pièces à fouiller (celui de l'entrée
+// étendue, sinon `fallback` pour une entrée d'avant les intérieurs, qui vaut une fouille entière ; null s'il est inconnu).
+export function searchRooms(entry, now = Date.now(), maxAge = LIMITS.searchedMs, fallback = null) {
+  if (finite(entry)) return now - entry < maxAge ? { done: fallback ?? 1, total: fallback ?? 1 } : { done: 0, total: fallback };
+  if (!isObj(entry) || !isObj(entry.r)) return { done: 0, total: fallback };
+  let done = 0;
+  for (const [room, at] of Object.entries(entry.r)) if (Number(room) < entry.n && finite(at) && now - at < maxAge) done++;
+  return { done, total: entry.n };
+}
+
+// Bâtiment fouillé en entier (et depuis moins de `maxAge`) ?
+export function searchedWhole(entry, now = Date.now(), maxAge = LIMITS.searchedMs) {
+  if (finite(entry)) return now - entry < maxAge;
+  const { done, total } = searchRooms(entry, now, maxAge);
+  return total !== null && done >= total;
+}
+
+// Note une pièce fouillée (`total` pièces à fouiller). Une fouille d'avant, encore valable, vaut déjà tout le bâtiment : rien à noter.
+export function markRoom(map, id, room, total, now = Date.now(), maxAge = LIMITS.searchedMs) {
+  const e = map[id];
+  if (finite(e) && now - e < maxAge) return false;
+  const entry = isObj(e) && e.n === total ? e : { n: total, r: {} };
+  entry.r[room] = now;
+  map[id] = entry;
+  return true;
 }
 
 // Fouilles de plus de 24 h et démontages de plus de 72 h retirés, puis plafond de 1 500 entrées chacun.
@@ -573,7 +643,11 @@ export function purgeOld(save, now = Date.now()) {
     const map = save?.[field];
     if (!isObj(map)) continue;
     for (const [id, t] of Object.entries(map)) {
-      if (!finite(t) || now - t >= maxAge) { delete map[id]; removed++; }
+      if (isObj(t)) {
+        // Forme étendue : les pièces fouillées depuis plus de 24 h sont à refouiller ; sans aucune pièce, l'entrée disparaît.
+        for (const [room, at] of Object.entries(t.r ?? {})) if (!finite(at) || now - at >= maxAge) delete t.r[room];
+        if (!isObj(t.r) || !Object.keys(t.r).length) { delete map[id]; removed++; }
+      } else if (!finite(t) || now - t >= maxAge) { delete map[id]; removed++; }
     }
     removed += capEntries(map, LIMITS.maxEntries);
   }
