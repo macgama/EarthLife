@@ -900,6 +900,14 @@ export function giveBack(ville, key, n = 1) {
   return k;
 }
 
+// Copie d'une ville commune (saison) : le serveur dit combien de zombies d'un pâté sont prêtés en tout, à tous les joueurs ;
+// la copie en tient compte pour ne pas prêter ce qu'un autre a déjà pris.
+export function setLent(ville, key, n) {
+  const k = nat(n);
+  if (k > 0) lentOf(ville).set(key, k);
+  else LENT.get(ville)?.delete(key);
+}
+
 // Tous les prêts rendus (changement de ville, rechargement).
 export function recallAll(ville) {
   LENT.delete(ville);

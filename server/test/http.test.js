@@ -381,6 +381,41 @@ test('GET /v1/health, GET /, 404, 405 et en-têtes de la section 6.2', async () 
   }
 });
 
+test('routes de la saison : progression publique mise en cache 30 s, POST seulement avec corps borné, origine étrangère refusée, coupées avec SEASONS=0', async () => {
+  const srv = await serve();
+  try {
+    const pr = await fetch(`${srv.url}/v1/season/progress`, { headers: { Origin: GAME } });
+    assert.equal(pr.status, 200);
+    assert.equal(pr.headers.get('cache-control'), 'public, max-age=30');
+    assert.equal(pr.headers.get('access-control-allow-origin'), GAME);
+    const body = await pr.json();
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.levels) || body.season, JSON.stringify(body));
+    const post = (route, text, headers = {}) => fetch(`${srv.url}/v1/season/${route}`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8', ...headers }, body: text });
+    // Sans session : refusé en clair, jamais d'erreur serveur.
+    for (const route of ['join', 'state', 'seed', 'tile', 'adj', 'home']) {
+      const r = await post(route, JSON.stringify({}), { Origin: GAME });
+      assert.equal(r.status, 401, route);
+      assert.equal((await r.json()).ok, false);
+    }
+    assert.equal((await post('state', JSON.stringify({}), { Origin: 'https://autre.example' })).status, 403);
+    assert.equal((await post('state', JSON.stringify({ pad: 'x'.repeat(2000) }))).status, 413);
+    assert.equal((await fetch(`${srv.url}/v1/season/state`)).status, 405);
+    assert.equal((await fetch(`${srv.url}/v1/season/progress`, { method: 'POST', body: 'x' })).status, 405);
+    assert.equal((await fetch(`${srv.url}/v1/season/inconnue`)).status, 404);
+    assert.equal((await post('inconnue', '{}')).status, 404);
+  } finally {
+    await srv.stop();
+  }
+  const off = await serve({ config: { seasons: false } });
+  try {
+    assert.equal((await fetch(`${off.url}/v1/season/progress`)).status, 404);
+    assert.equal((await fetch(`${off.url}/v1/season/state`, { method: 'POST', body: '{}' })).status, 404);
+  } finally {
+    await off.stop();
+  }
+});
+
 test('CORS présent pour l\'origine autorisée et absent pour une autre ; POST d\'une autre origine refusé', async () => {
   const srv = await serve();
   try {

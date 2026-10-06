@@ -3,7 +3,8 @@
 # de .github/workflows/server.yml et à la répétition du lot F (server/tools/rehearsal/repetition.sh), qui le lance à
 # l'identique contre un conteneur OpenSSH jetable :
 #   deploy.sh build      construit $DEPLOY_DIST/<sha> : les fichiers de server/ suivis par Git, sans test/, tools/ ni
-#                        probe/, avec les modules de production, protocol.js, prototype/package.json réduit à
+#                        probe/, avec les modules de production, protocol.js et les règles de la saison (quartier.js, horde.js,
+#                        sun.js, limits.js), prototype/package.json réduit à
 #                        {"type":"module"} et VERSION ; puis vérifie que le paquet se charge
 #   deploy.sh check      connexion SSH et garde-fous ; tar et head -c présents sur l'hébergement ; état de current
 #   deploy.sh upload     envoie le paquet dans INFOMANIAK_APP_DIR/releases/<sha> (archive tar par SSH, sans rsync,
@@ -296,9 +297,11 @@ cmd_build() {
   mkdir -p "$out"
   # Le contenu du commit HEAD, tel que commité : aucun fichier local égaré (.env, journaux, node_modules) ni
   # changement non commité ne peut partir.
-  git -C "$REPO" archive --format=tar HEAD server prototype/src/net/protocol.js prototype/src/net/account.js | tar -x -C "$out"
+  git -C "$REPO" archive --format=tar HEAD server prototype/src/net/protocol.js prototype/src/net/account.js \
+    prototype/src/quartier.js prototype/src/horde.js prototype/src/sun.js prototype/src/limits.js | tar -x -C "$out"
   rm -rf -- "$out/server/test" "$out/server/tools" "$out/server/probe"
-  # Sans ce fichier, Node 18 et 20 liraient protocol.js comme du CommonJS et refuseraient « export ».
+  # Sans ce fichier, Node 18 et 20 liraient protocol.js (et les règles de la saison, quartier.js, horde.js, sun.js, limits.js)
+  # comme du CommonJS et refuseraient « export ».
   printf '{"type":"module"}\n' > "$out/prototype/package.json"
   printf '%s\n' "$SHA" > "$out/VERSION"
   if [[ -n ${DEPLOY_MODULES_FROM:-} ]]; then
@@ -308,12 +311,12 @@ cmd_build() {
     # ws et mysql2 sont en JavaScript pur : construits ici, ils marchent tels quels chez Infomaniak (4.8).
     (cd "$out/server" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund)
   fi
-  # Le paquet doit démarrer tel quel : room.js, protocol.js (chemin relatif gardé), ws et mysql2. Importer main.js ne
+  # Le paquet doit démarrer tel quel : room.js, season.js, protocol.js (chemin relatif gardé), ws et mysql2. Importer main.js ne
   # lance rien : il ne démarre que s'il est le programme principal (process.argv[1] est ici le dossier du paquet).
   node -e '
 const { pathToFileURL } = require("node:url");
 const root = process.argv[1];
-const files = ["server/src/room.js", "server/src/main.js", "server/src/store-mysql.js"];
+const files = ["server/src/room.js", "server/src/main.js", "server/src/store-mysql.js", "server/src/season.js"];
 Promise.all(files.map((f) => import(pathToFileURL(root + "/" + f).href)))
   .then(() => console.log("Paquet chargeable"), (e) => { console.error("Paquet non chargeable : " + e.message); process.exit(1); });
 ' "$(cd "$out" && pwd)"

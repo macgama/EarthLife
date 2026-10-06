@@ -23,7 +23,7 @@ export const RULES = {
 };
 // Saisons (conception validée, lot 1) : un seul type de message, `sv`, dans les deux sens ; `o` dit l'opération.
 // Client : in (je joue dans cette commune), ev (gestes de la ville, 40 au plus), out. Serveur : in, no, full, rows, tile,
-// cnt, deny, end. Une rangée de pâté a 9 nombres (quartier.js, ROW) ; un message du serveur tient en 16 Ko.
+// cnt, ls (prêts de tous les joueurs), deny, end. Une rangée de pâté a 9 nombres (quartier.js, ROW) ; un message du serveur tient en 16 Ko.
 export const SEASON = {
   maxEvents: 40, maxRows: 400, maxUnits: 160, rowLength: 9, seats: 100, days: 60,
   levels: ['facile', 'moyen', 'difficile'],
@@ -422,6 +422,17 @@ function seasonTile(v) {
   if (q !== undefined) out.q = Array.isArray(q) && q.length <= 400 && q.every((x) => inRange(x, 0, 1e6)) ? q.slice() : bad('v');
   return out;
 }
+// Zombies prêtés en tout, par pâté : { clé: nombre } (0 : plus aucun).
+export function seasonLent(v) {
+  if (!isObj(v)) bad('l');
+  const out = {};
+  let n = 0;
+  for (const k of Object.keys(v)) {
+    if (!SEASON_KEY.test(k) || k[0] === '@' || ++n > SEASON.maxRows || !inRange(v[k], 0, 1e9)) bad('l');
+    out[k] = v[k];
+  }
+  return out;
+}
 function seasonCounts(v) {
   if (!isObj(v)) bad('c');
   const k = get(v, 'k');
@@ -495,13 +506,14 @@ const SERVER = {
   },
   count(o, out) { out.n = int(o, 'n', 0, 1e7); },
   sv(o, out) {
-    out.o = oneOf(o, 'o', ['in', 'no', 'full', 'rows', 'tile', 'cnt', 'deny', 'end']);
-    if (['in', 'rows', 'tile', 'cnt'].includes(out.o)) out.rv = int(o, 'rv', 0, 2 ** 40);
+    out.o = oneOf(o, 'o', ['in', 'no', 'full', 'rows', 'tile', 'cnt', 'ls', 'deny', 'end']);
+    if (['in', 'rows', 'tile', 'cnt', 'ls'].includes(out.o)) out.rv = int(o, 'rv', 0, 2 ** 40);
     if (out.o === 'no') out.why = oneOf(o, 'why', SEASON.noWhy);
     else if (out.o === 'full') { out.used = int(o, 'used', 0, 1e6); out.max = int(o, 'max', 0, 1e6); }
     else if (out.o === 'rows') out.r = seasonRows(get(o, 'r'));
     else if (out.o === 'tile') { out.k = seasonTileKey(get(o, 'k')); out.v = seasonTile(get(o, 'v')); }
     else if (out.o === 'cnt') out.c = seasonCounts(get(o, 'c'));
+    else if (out.o === 'ls') out.l = seasonLent(get(o, 'l'));
     else if (out.o === 'deny') {
       out.d = list(o, 'd', 60, (e) => (Array.isArray(e) && e.length === 2 && typeof e[0] === 'string' && SEASON_KEY.test(e[0])
         && inRange(e[1], 1, 60) ? [e[0], e[1]] : null));

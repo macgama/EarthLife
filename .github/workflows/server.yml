@@ -17,9 +17,13 @@ name: Serveur
 on:
   push:
     branches: [main, claude/multijoueur]
-    paths: ['server/**', 'prototype/src/net/**', 'prototype/test/online-acceptance.mjs', '.github/workflows/server.yml']
+    # Les fichiers du jeu que le paquet du serveur emporte (deploy.sh build) : leur changement est une mise en ligne.
+    paths: ['server/**', 'prototype/src/net/**', 'prototype/src/quartier.js', 'prototype/src/horde.js', 'prototype/src/sun.js', 'prototype/src/limits.js',
+      'prototype/test/online-acceptance.mjs', '.github/workflows/server.yml']
   pull_request:
-    paths: ['server/**', 'prototype/src/net/**', 'prototype/test/online-acceptance.mjs', '.github/workflows/server.yml']
+    # Plus ceux que l'essai de bout en bout à deux joueurs (server/test/season-jeu.test.js) fait tourner.
+    paths: ['server/**', 'prototype/src/net/**', 'prototype/src/quartier.js', 'prototype/src/horde.js', 'prototype/src/sun.js', 'prototype/src/limits.js',
+      'prototype/src/online.js', 'prototype/src/ville-jeu.js', 'prototype/src/saison-miroir.js', 'prototype/test/online-acceptance.mjs', '.github/workflows/server.yml']
   schedule:
     # Essai réel quotidien (section 9.6), à 7 h UTC ; les autres travaux ne tournent pas à cette occasion.
     - cron: '0 7 * * *'

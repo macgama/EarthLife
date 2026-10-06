@@ -443,3 +443,17 @@ test('comptes : hello.ses facultatif, err session, parseSync avec ses, readJson 
   assert.deepEqual(readJson('{"a":"' + 'x'.repeat(200) + '"}', 100), { why: 'size' });
   assert.deepEqual(readJson(5, 100), { why: 'type' });
 });
+
+test('saison : messages `sv` du serveur (prêts partagés, refus) et leurs refus de forme', () => {
+  const k = 'b45.90317_5.17939';
+  const ok = (o) => parseServer(JSON.stringify({ t: 'sv', ...o }));
+  const ls = ok({ o: 'ls', rv: 7, l: { [k]: 2, 'b45.90384_5.17968': 0 } });
+  assert.equal(ls.ok, true);
+  assert.deepEqual(ls.msg.l, { [k]: 2, 'b45.90384_5.17968': 0 });
+  assert.equal(ls.msg.rv, 7);
+  for (const bad of [{ o: 'ls', rv: 7, l: { [k]: -1 } }, { o: 'ls', rv: 7, l: { '../x': 1 } }, { o: 'ls', rv: 7, l: { '@q': 1 } },
+    { o: 'ls', rv: 7, l: [] }, { o: 'ls', l: {} }, { o: 'deny', d: [[k, 0]] }]) {
+    assert.equal(ok(bad).ok, false, JSON.stringify(bad));
+  }
+  assert.deepEqual(ok({ o: 'deny', d: [[k, 3]] }).msg.d, [[k, 3]]);
+});

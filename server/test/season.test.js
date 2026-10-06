@@ -291,6 +291,38 @@ test('baux : rendus à la déconnexion et après 15 s de silence ; plus d\'abatt
   assert.ok(checkVille(v).ok);
 });
 
+test('prêts partagés : `ls` à tous les abonnés, total dans l\'état, plafond par joueur', async () => {
+  const w = rig({ rules: { leaseMax: 3 } });
+  const a = await seeded(w), b = await w.player(2);
+  await a.send({ o: 'in', c: 'c01283' });
+  await b.send({ o: 'in', c: 'c01283' });
+  const [k] = redBlock(w);
+  const [k2] = redBlock(w, { not: [k] });
+  await a.ev(['l', k, 2]);
+  w.tick(1000);
+  for (const p of [a, b]) {
+    const ls = p.sv('ls').at(-1);
+    assert.equal(ls.l[k], 2, 'chaque abonné apprend le total prêté');
+  }
+  // L'état rendu au troisième joueur porte aussi ces prêts.
+  const c = await w.player(3);
+  const st = await c.call('/v1/season/state', {});
+  assert.equal(st.body.lent[k], 2);
+  // Plafond : a tient déjà 2, il n'obtient qu'un zombie de plus, quel que soit le pâté.
+  await a.ev(['l', k2, 2]);
+  const deny = a.sv('deny').at(-1);
+  assert.deepEqual(deny.d, [[k2, 1]]);
+  w.tick(1000);
+  assert.equal(b.sv('ls').at(-1).l[k2], 1);
+  // Rendu à la déconnexion : le total retombe à 0 pour ceux qui restent.
+  w.room.close(a.s, 'fermee');
+  w.tick(1000);
+  const last = Object.assign({}, ...b.sv('ls').map((m) => m.l));
+  assert.equal(last[k], 0);
+  assert.equal(last[k2], 0);
+  assert.ok(checkVille(cityOf(w).ville).ok);
+});
+
 test('nid, fanion, libération : mêmes règles que le jeu seul, validées par le serveur', async () => {
   const w = rig();
   const a = await seeded(w);

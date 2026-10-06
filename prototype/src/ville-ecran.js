@@ -13,6 +13,7 @@ import { homeQuest } from './quest.js';
 import { localDate, utcOffsetFor } from './horde.js';
 import { storeItems, chestCap, countOf, countsLabel, claimableShape } from './base.js';
 import { nearestOpen } from './collision.js';
+import { SEASON_TEXT } from './net/season.js';
 
 const LEVEL_KEY = 'earthlife.niveau';
 const DAY_MS = 86_400_000;
@@ -27,6 +28,8 @@ export function createCityGame(host) {
   let menuLevel = readLevel();
   let notice = null;         // message à montrer au premier instant de la partie (repli, ville abandonnée)
   let pendingFirst = null;   // { name, zombies, hidden } de la ville qui commence
+  const seasonUi = { enrolled: null, progress: null, at: 0, busy: false };   // menu : inscription, évolution (30 s)
+  const seasonRef = { rt: null };                                            // runtime de la saison en cours (messages du serveur)
 
   function readLevel() {
     const q = params.get('niveau');
@@ -57,6 +60,8 @@ export function createCityGame(host) {
       });
     }
     $('city-restart')?.addEventListener('click', () => restartCard());
+    for (const b of doc.querySelectorAll('#season-row [data-season]')) b.addEventListener('click', () => host.startGame(picker.getPlace() ?? null, { season: b.dataset.season }));
+    $('season-progress')?.addEventListener('click', () => progressCard());
     syncMenu();
   }
 
@@ -121,6 +126,85 @@ export function createCityGame(host) {
       restart.hidden = !frozen;
       if (frozen) restart.textContent = `Recommencer ${cur.name} en ${levelName(menuLevel)}`;
     }
+    syncSeason();
+  }
+
+  // ---------- Menu de la saison ----------
+
+  const net = () => host.seasonNet ?? null;
+  const signedIn = () => host.account?.state === 'in' && !!host.account.session;
+  const infoCard = (title, ...lines) => ({ title, lines, buttons: [{ id: 'ok', label: 'OK', primary: true }] });
+  const seasonText = (code) => SEASON_TEXT[code] ?? SEASON_TEXT.base;
+  const daysLeft = (sn) => {
+    const left = Math.ceil((sn.endMs - Date.now()) / DAY_MS);
+    return sn.phase === 'terminee' ? 'La saison est terminée.' : sn.phase === 'avenir' ? 'La saison n\'a pas commencé.'
+      : `${left} jour${left > 1 ? 's' : ''} restant${left > 1 ? 's' : ''}.`;
+  };
+
+  // Bloc « Saison 1 » : caché sans jeu à plusieurs ; inscription et évolution relues au plus toutes les 30 s.
+  function syncSeason() {
+    const block = $('season-block');
+    if (!block) return;
+    const n = net();
+    block.hidden = !n?.enabled;
+    if (block.hidden) return;
+    const stale = Date.now() - seasonUi.at > 30_000;
+    if (stale && !seasonUi.busy) refreshSeason();
+    const sn = seasonUi.progress?.season;
+    const level = seasonUi.enrolled?.level ?? null;
+    const when = sn ? daysLeft(sn) : '';
+    const line = $('season-line');
+    if (line) {
+      line.textContent = !signedIn() ? 'Saison 1 : connecte-toi à ton compte. Tous les joueurs d\'un niveau sauvent la même ville, ensemble.'
+        : level ? `Saison 1 : tu joues en ${levelName(level)}. ${when}` : `Saison 1 : choisis ton niveau, il ne change plus. ${when}`.trim();
+    }
+    for (const b of doc.querySelectorAll('#season-row [data-season]')) {
+      b.setAttribute('aria-pressed', String(b.dataset.season === level));
+      b.disabled = !!level && b.dataset.season !== level;
+    }
+  }
+  // Connexion ou déconnexion du compte : l'inscription et l'évolution sont relues tout de suite.
+  function seasonChanged() {
+    seasonUi.at = 0;
+    seasonUi.enrolled = null;
+    syncSeason();
+  }
+  async function refreshSeason() {
+    const n = net();
+    if (!n?.enabled) return;
+    seasonUi.busy = true;
+    seasonUi.at = Date.now();
+    try {
+      const [p, j] = await Promise.all([n.progress(), signedIn() ? n.join() : Promise.resolve(null)]);
+      if (p.ok) seasonUi.progress = p;
+      seasonUi.enrolled = j?.ok ? j : null;
+    } finally {
+      seasonUi.busy = false;
+    }
+    syncSeason();
+  }
+
+  // « Évolution de la saison » : début, fin, et pour chaque niveau les joueurs, la ville et ses décomptes.
+  async function progressCard() {
+    const n = net();
+    if (!n?.enabled) return;
+    host.setLoading('Évolution de la saison…');
+    const r = await n.progress();
+    host.setLoading(null);
+    if (!r.ok) { await askCard(infoCard('Évolution de la saison', seasonText(r.code)), 'ok'); return; }
+    seasonUi.progress = r;
+    const sn = r.season;
+    const date = (ms) => new Date(ms).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+    const lines = [`${sn.name} : du ${date(sn.startMs)} au ${date(sn.endMs)}. ${daysLeft(sn)}`];
+    for (const lv of LEVEL_KEYS) {
+      const L = r.levels[lv];
+      if (!L) continue;
+      const c = L.city;
+      lines.push(`${LEVEL_TEXT[lv].name} : ${groupDigits(L.players)} joueur${L.players > 1 ? 's' : ''} inscrit${L.players > 1 ? 's' : ''}, ${L.online} en ligne sur ${L.seats} places.`);
+      lines.push(c ? `${c.name} : ${groupDigits(c.zombies)} zombies restants sur ${groupDigits(c.zombies0)}, ${groupDigits(c.saved)} habitants sauvés sur ${groupDigits(c.toSave)}, ${groupDigits(c.flags)} fanion${c.flags > 1 ? 's' : ''}.`
+        : 'Pas encore de ville : le premier joueur de ce niveau la choisit sur la carte.');
+    }
+    host.showCard({ title: 'Évolution de la saison', lines, buttons: [{ id: 'ok', label: 'Fermer', primary: true }] }, null, { escape: 'ok' });
   }
 
   // « Jouer ici » et « Partir en expédition ici » deviennent « Sauver cette ville » quand un niveau est choisi (dans ta ville
@@ -144,7 +228,8 @@ export function createCityGame(host) {
 
   // Ce que le joueur veut jouer : 'free' (comme avant), 'resume' (sa ville en cours) ou 'new' (une ville à commencer :
   // commune, recensement, niveau, début). null : il annule. { confirmed } : il a déjà dit « Commencer » (voisine).
-  async function prepareLaunch(place, { spawn = 'place', confirmed = false } = {}) {
+  async function prepareLaunch(place, { spawn = 'place', confirmed = false, season = null } = {}) {
+    if (season) return prepareSeason(place, season);
     notice = null;
     const t = store.territory;
     const cur = currentVille(t);
@@ -223,7 +308,129 @@ export function createCityGame(host) {
   }
 
   // Une session déjà construite sert encore si c'est la même ville.
-  const canReuse = (old, plan) => (plan.kind === 'free' ? !old.city : plan.kind === 'resume' && old.city?.ville === plan.ville && !old.city.ended);
+  const canReuse = (old, plan) => (plan.kind === 'free' ? !old.city : plan.kind === 'resume' && old.city?.ville === plan.ville && !old.city.ended && !old.city.season);
+
+  // ---------- Lancement d'une partie de saison ----------
+
+  async function ensureOnline() {
+    const o = host.online;
+    if (!o) return false;
+    if (o.live) return true;
+    // Sans choix rangé ou « jouer seul » : la saison demande le jeu à plusieurs (le joueur l'a voulu en la choisissant).
+    if (o.status === 'off' || o.status === 'seul') o.choose?.(true);
+    for (let i = 0; i < 48 && !o.live; i++) await wait(250);
+    return !!o.live;
+  }
+
+  // Commune de la première ville du monde : recensement du lieu choisi, carte de confirmation, graine envoyée au serveur.
+  // Rend { city, prep } ou null (annulé, refusé : le joueur a lu pourquoi).
+  async function seedCity(place, level) {
+    const n = net();
+    if (!place) { await askCard(infoCard('Choisis la ville de la saison', 'Personne n\'a encore choisi la ville de ce niveau : touche la carte (ou cherche un lieu), puis lance la saison. Tous les joueurs de ce niveau sauveront cette même ville.'), 'ok'); return null; }
+    host.setLoading(CITY_TEXT.searching(place.name));
+    let template;
+    try { template = await host.template(); } catch { template = null; }
+    if (!template) { host.setLoading(null); await askCard(infoCard('Rues injoignables', 'Les rues réelles ne répondent pas : réessaie dans un instant.'), 'ok'); return null; }
+    let prep;
+    try {
+      prep = await prepareCity({ client, communes, template, store, log: (m) => console.warn('ville', m) }, place, { onProgress: (m) => host.setLoading(m.text) });
+    } catch (err) {
+      host.setLoading(null);
+      if (err?.name !== 'AbortError') console.warn('Préparation de la ville', err);
+      return null;
+    }
+    host.setLoading(null);
+    if (!prep.ok) { await askCard(infoCard('Ville impossible', prep.reason === 'too-big' ? CITY_TEXT.tooBig : prep.reason === 'empty' ? CITY_TEXT.empty : CITY_TEXT.noStreets), 'ok'); return null; }
+    if (prep.mode === 'quartiers') { await askCard(infoCard('Ville trop grande', SEASON_TEXT.mode), 'ok'); return null; }
+    if (prep.offline) { await askCard(infoCard('Pas de chiffres officiels', 'La ville de la saison est la même pour tous : elle a besoin des vrais chiffres de la commune. Réessaie avec du réseau.'), 'ok'); return null; }
+    const sum = prep.summary[level];
+    const id = await askCard({
+      title: `${prep.unit.name} : ville de la saison`, tone: 'warn',
+      lines: [
+        `Tous les joueurs de la saison en ${levelName(level)} sauveront cette même ville, ensemble : ${groupDigits(sum.zombies)} zombies, ${groupDigits(sum.hidden)} habitants à sauver.`,
+        'Ce choix est définitif pour ce niveau, toute la saison.',
+      ],
+      buttons: [{ id: 'start', label: 'Choisir cette ville', primary: true }, { id: 'cancel', label: 'Annuler' }],
+    }, 'cancel');
+    if (id !== 'start') return null;
+    host.setLoading('Création de la ville commune…');
+    const weights = Object.fromEntries(Object.entries(prep.weights).map(([k, v]) => [k, Math.max(0, Math.round(v))]));
+    const r = await n.seed({
+      key: prep.unit.key, name: prep.unit.name, place: { lat: place.lat, lon: place.lon, name: prep.unit.name }, pop: prep.unit.population,
+      src: typeof prep.unit.source === 'string' ? prep.unit.source : 'insee', approx: prep.unit.source === 'estimation' || prep.commune.approx === true,
+      zl: prep.unit.level, tiles: weights, failed: prep.census.failed, mode: 'entiere',
+    });
+    host.setLoading(null);
+    if (r.ok) return { city: r.city, prep };
+    if (r.code === 'autre-commune' && r.city) { notice = `${r.city.name} est déjà la ville de ce niveau : tu la rejoins.`; return { city: r.city, prep: null }; }
+    await askCard(infoCard('Ville impossible', seasonText(r.code)), 'ok');
+    return null;
+  }
+
+  // Saison : inscription (une seule fois), ville commune (la première est choisie par le premier joueur), abonnement, état.
+  // Plan { kind: 'season', level, city, state, rv, prep, first, place }, ou null (le joueur a lu pourquoi).
+  async function prepareSeason(place, wanted) {
+    notice = null;
+    const n = net();
+    if (!n?.enabled) { await askCard(infoCard('Saison indisponible', 'La saison demande le jeu à plusieurs, indisponible ici.'), 'ok'); return null; }
+    if (!signedIn()) {
+      const id = await askCard({
+        title: 'Un compte pour la saison',
+        lines: [SEASON_TEXT.session, 'Ta saison est liée à ton compte : elle te suit sur tous tes appareils. Ta partie solo reste possible sans compte.'],
+        buttons: [{ id: 'account', label: 'Ouvrir mon compte', primary: true }, { id: 'cancel', label: 'Plus tard' }],
+      }, 'cancel');
+      if (id === 'account') host.openAccount?.();
+      return null;
+    }
+    host.setLoading('Connexion à la saison…');
+    if (!(await ensureOnline())) { host.setLoading(null); await askCard(infoCard('Pas de connexion', 'Le jeu à plusieurs ne répond pas : la saison en a besoin. Réessaie dans un instant.'), 'ok'); return null; }
+    let join = await n.join();
+    host.setLoading(null);
+    if (!join.ok && join.status === 400 && join.code === 'niveau') {
+      // Pas encore inscrit : le niveau se choisit une fois pour la saison.
+      const id = await askCard({
+        title: `Rejoindre la saison en ${levelName(wanted)} ?`, tone: 'warn',
+        lines: [LEVEL_TEXT[wanted].rule, 'Le niveau ne change plus pendant la saison (2 mois). 100 joueurs au plus en même temps par niveau.'],
+        buttons: [{ id: 'join', label: 'Rejoindre', primary: true }, { id: 'cancel', label: 'Annuler' }],
+      }, 'cancel');
+      if (id !== 'join') return null;
+      host.setLoading('Inscription…');
+      join = await n.join(wanted);
+      host.setLoading(null);
+    }
+    if (!join.ok) { await askCard(infoCard('Saison', seasonText(join.code)), 'ok'); return null; }
+    seasonUi.enrolled = join;
+    const level = join.level;
+    if (level !== wanted) notice = `Tu joues la saison en ${levelName(level)} : ce niveau ne change pas.`;
+    let city = join.city, prep = null;
+    if (!city) {
+      const seeded = await seedCity(place, level);
+      if (!seeded) { syncSeason(); return null; }
+      ({ city, prep } = seeded);
+    }
+    host.setLoading(`Connexion à ${city.name}…`);
+    const handlers = {
+      msg: (m) => seasonRef.rt?.applyServer(m),
+      resync: (st) => seasonRef.rt?.resyncFrom(st),
+      leases: () => seasonRef.rt?.leases() ?? [],
+      lost: () => { const s = host.getSession(); if (s?.city?.season) host.toast('Connexion perdue : la ville de la saison se met en pause', 4, 'danger'); },
+      back: (r) => { const s = host.getSession(); if (s?.city?.season && r.ok) host.toast('Reconnecté à la ville de la saison', 3, 'success'); },
+    };
+    seasonRef.rt = null;
+    const opened = await n.open(city.key, handlers);
+    host.setLoading(null);
+    if (!opened.ok) {
+      n.close();
+      await askCard(infoCard('Saison', opened.why === 'complet' ? `${seasonText('complet')}` : seasonText(opened.why)), 'ok');
+      return null;
+    }
+    const first = !join.home;
+    const home = join.home ? { lat: join.home.a / 1e6, lon: join.home.o / 1e6 } : null;
+    const spawn = home ? { ...home, name: city.name, area: '' }
+      : prep ? place : { lat: city.place?.lat ?? 0, lon: city.place?.lon ?? 0, name: city.name, area: '' };
+    syncSeason();
+    return { kind: 'season', level, city, state: opened.state, rv: opened.rv, prep, first, place: spawn, join };
+  }
 
   // ---------- Dans la partie : brancher la ville au monde ----------
 
@@ -231,6 +438,7 @@ export function createCityGame(host) {
 
   // Après buildSession et restoreCharacter : le runtime, le graphe, les tuiles autour du départ, la maison.
   async function attach(s, plan) {
+    if (plan.kind === 'season') return attachSeason(s, plan);
     if (plan.kind === 'free') { if (notice) { const n = notice; notice = null; setTimeout(() => host.toast(n, 5), 400); } return; }
     host.setLoading('Lecture des pâtés de la ville…');
     let template;
@@ -268,6 +476,69 @@ export function createCityGame(host) {
     refreshHud(s, true);
     if (plan.kind === 'resume') supplyForDay(s);
     if (plan.kind === 'resume' && /^q/.test(rt.ville.key) && typeof navigator !== 'undefined' && navigator.onLine !== false) networkBack(s);
+  }
+
+  // Partie de saison : la ville est la copie de celle du serveur (déjà abonnée, état lu) ; graphe des zones et appartenance
+  // comme pour une ville reprise, ou ceux du recensement quand ce joueur vient de choisir la ville.
+  async function attachSeason(s, plan) {
+    const n = net();
+    const fail = (text) => { host.setLoading(null); notice = text; seasonRef.rt = null; n?.close(); };
+    host.setLoading('Lecture des pâtés de la ville…');
+    let template;
+    try { template = await host.template(); } catch { template = null; }
+    if (!template) return fail('Rues injoignables : partie libre');
+    const ville = plan.state.ville;
+    ville.me = null;
+    ville.meOut = false;
+    let built;
+    if (plan.prep) {
+      const { prep } = plan;
+      built = { graph: prep.graph, fn: prep.fn, member: prep.member, unit: prep.unit, commune: prep.commune, maison: prep.ref };
+    } else {
+      const maison = { lat: plan.place.lat, lon: plan.place.lon };
+      let { unit, commune } = unitOfVille(ville, communes);
+      if (!commune) {
+        const c = await withTimeout(client.commune({ lat: maison.lat, lon: maison.lon, name: ville.name }), 10_000).catch(() => null);
+        if (c) { communes?.put(c); ({ unit, commune } = unitOfVille(ville, communes)); }
+      }
+      const g = await rebuildGraph({ client, template }, ville, unit, maison).catch(() => null);
+      if (!g) return fail('Ville illisible : partie libre');
+      built = { graph: g.graph, fn: g.fn, member: g.member, unit, commune, maison };
+    }
+    const rt = createCityRuntime({ store, client, template, proj: s.store.proj, onEvent: (e) => onEvent(s, e), ville, ...built, season: { net: n } });
+    seasonRef.rt = rt;
+    s.city = rt;
+    s.cityAcc = 0;
+    s.cityNight = null;
+    s.cityObj = null;
+    s.cityTarget = null;
+    s.cityStatus = null;
+    s.cityTitle = ville.name;
+    s.director.setSupply(rt.supply);
+    rt.applyServer({ o: 'ls', l: plan.state.lent ?? {} });
+    n.ready(plan.rv);
+    host.setLoading(`Lecture des pâtés de ${ville.name}…`);
+    await withTimeout(rt.ensureAround(0, 0, { wait: true }), 20_000);
+    if (plan.first) {
+      pendingFirst = { name: ville.name, zombies: ville.zombies0, hidden: ville.hidden0 };
+      await startHome(s, plan);
+      postHome(s);
+    }
+    host.setLoading(null);
+    rt.chooseHeart();
+    rt.settleEmpty();
+    refreshHud(s, true);
+  }
+
+  // Maison de la saison : le pâté du refuge et sa position, gardés par le serveur (reprise au dernier refuge).
+  function postHome(s) {
+    const rt = s.city, n = net();
+    if (!rt?.season || !n) return;
+    const b = host.homeLatLon();
+    if (!b) return;
+    const o = s.store.proj.toLocal(b.lat, b.lon);
+    const key = rt.blockAt(o.x, o.z) ?? rt.nearestBlock(o.x, o.z, 120);
+    if (key) n.home({ key, a: Math.round(b.lat * 1e6), o: Math.round(b.lon * 1e6) });
   }
 
   // Ta maison : tirée parmi les habitants cachés, déjà fouillée et à toi (refuge). Une ancienne partie garde son refuge.
@@ -313,7 +584,7 @@ export function createCityGame(host) {
           if (!res.ok) continue;
           takeHome(rt.ville, c.key);
           const ll = s.store.proj.toLatLon(b.cx, b.cz);
-          noteFirst(store.territory, { home: ll, place: s.place });
+          if (!rt.season) noteFirst(store.territory, { home: ll, place: s.place });
           rt.setMaison(ll);
           store.markDirty();
           host.afterClaim(s, res);
@@ -334,7 +605,8 @@ export function createCityGame(host) {
     if (s.cityAcc < 0.5) return;
     s.cityAcc = 0;
     const key = save.horde?.nightKey;
-    if (s.isNight && key && key !== s.cityNight) {
+    // Saison : les nuits sont jouées par le serveur, une fois pour tous les joueurs.
+    if (!rt.season && s.isNight && key && key !== s.cityNight) {
       s.cityNight = key;
       const b = s.refuge.base ? s.refuge.anchor() : null;
       rt.nightly(key, { played: true, origin: b });
@@ -344,7 +616,7 @@ export function createCityGame(host) {
       if (status === 'coeur' && s.cityStatus) host.toast('Il ne reste que la réserve du cœur : tiens la Nuit du cœur', 6, 'danger');
       s.cityStatus = status;
     }
-    if (status === 'nettoyee' && !rt.ended && !s.cityFinishing) finishCity(s);
+    if (status === 'nettoyee' && !rt.ended && !s.cityFinishing) { if (rt.season) seasonSaved(s); else finishCity(s); }
     refreshHud(s, false);
   }
 
@@ -374,7 +646,7 @@ export function createCityGame(host) {
   function questText(s) {
     if (!s.city) return null;
     const lv = levelName(s.city.ville.level);
-    return { stage: `${s.city.ville.name} · ${lv}`, text: s.cityObj?.text ?? `${s.city.ville.name} : sauve ses habitants` };
+    return { stage: `${s.city.ville.name} · ${lv}${s.city.season ? ' · Saison 1' : ''}`, text: s.cityObj?.text ?? `${s.city.ville.name} : sauve ses habitants` };
   }
 
   // Pâté sous un point (fiche du bâtiment) : { state, zombies, saved, flagNights, place } ; null hors d'une ville à sauver.
@@ -450,6 +722,15 @@ export function createCityGame(host) {
       case 'unit-done':
         host.showCard({ title: `Quartier ${e.line[0] || ''} repris`.replace('  ', ' '), tone: 'success', lines: [`${groupDigits(e.line[10])} habitants sauvés.`, 'Ses pâtés quittent ta sauvegarde : il tient en une ligne.'], buttons: [{ id: 'ok', label: 'Continuer', primary: true }] }, null, { escape: 'ok' });
         break;
+      case 'season-end':
+        host.showCard({ title: 'La saison est terminée', tone: 'success',
+          lines: ['Merci d\'avoir joué ! La ville reste visible, mais plus aucun geste ne compte.', 'Les chiffres de la saison sont dans « Évolution de la saison », au menu.'],
+          buttons: [{ id: 'ok', label: 'Continuer', primary: true }, { id: 'menu', label: 'Menu' }] }, (id) => { if (id === 'menu' && host.getSession() === s) host.toMenu(); }, { escape: 'ok' });
+        if (s.city) s.city.state.ended = true;
+        break;
+      case 'season-no':
+        host.toast(seasonText(e.why), 4, 'danger');
+        break;
       case 'cut-failed':
         if (!s.cityWarned) { s.cityWarned = true; host.toast('Une partie de la ville n\'a pas pu être lue : nouvel essai dans un instant', 4); }
         break;
@@ -461,7 +742,7 @@ export function createCityGame(host) {
   // Ravitaillement du jour : 1 tirage pour 100 habitants sauvés (toutes les villes), 5 au plus, au coffre du refuge.
   function supplyForDay(s) {
     const b = s.refuge?.base;
-    if (!b || !s.city) return;
+    if (!b || !s.city || s.city.season) return;
     const offset = utcOffsetFor(b, s.weather, b.lon);
     const n = supplyDay(store.territory, localDate(Date.now(), offset));
     if (!n) return;
@@ -537,11 +818,46 @@ export function createCityGame(host) {
     }, { escape: 'close' });
   }
 
+  // La ville de la saison est sauvée (le décompte du serveur arrive à zéro) : une carte, la partie continue sans zombies.
+  function seasonSaved(s) {
+    const rt = s.city;
+    s.cityFinishing = true;
+    rt.state.ended = true;
+    const v = rt.ville;
+    const killed = v.killed[0] + v.killed[1] + v.killed[2];
+    host.showCard({
+      title: `${v.name} est sauvée`, tone: 'success',
+      lines: [`${groupDigits(killed)} zombies abattus, dont ${groupDigits(v.killed[0])} par les joueurs de la saison${v.killed[1] ? ` et ${groupDigits(v.killed[1])} par les volontaires` : ''}.`,
+        `${groupDigits(v.saved)} habitants sauvés. Merci à tous ceux qui ont joué avec toi.`, 'La saison continue : les communes voisines s\'ouvriront à une prochaine étape.'],
+      buttons: [{ id: 'continue', label: 'Continuer', primary: true }, { id: 'menu', label: 'Menu' }],
+    }, (id) => { if (id === 'menu' && host.getSession() === s) host.toMenu(); }, { escape: 'continue' });
+  }
+
+  // Refuge déménagé en jeu : la maison de la saison suit.
+  function onClaim(s) { postHome(s); }
+
+  // Retour au menu ou onglet caché : les zombies empruntés au serveur lui sont rendus (rien ne les abattrait plus).
+  function onMenu(s) {
+    if (!s?.city?.season) return;
+    s.city.recall(s.director);
+    seasonRef.rt = null;
+    net()?.close();
+  }
+  function onHidden(hidden) {
+    const s = host.getSession();
+    if (hidden && s?.city?.season) s.city.recall(s.director);
+  }
+
   // ---------- Fin de session ----------
 
   function detach(s) {
+    const season = !!s?.city?.season;
     s?.city?.dispose(s.director);
     if (s) s.city = null;
+    if (season) {
+      seasonRef.rt = null;
+      net()?.close();
+    }
   }
 
   // Message de la ville à montrer une fois la partie lancée (repli, ville abandonnée, maison introuvable).
@@ -558,7 +874,7 @@ export function createCityGame(host) {
 
   return {
     initMenu, syncMenu, playLabel, prepareLaunch, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws,
-    questText, homeGoal, onRefugeAction, onDeath, refreshHud, zoneAt,
+    questText, homeGoal, onRefugeAction, onDeath, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },
   };

@@ -33,10 +33,10 @@ const inRange = (v, lo, hi) => isInt(v) && v >= lo && v <= hi;
 
 export const SEASON_RULES = {
   seats: SEASON.seats, days: SEASON.days, name: 'Saison 1',
-  flushMs: 15000, cntMs: 1000, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
+  flushMs: 15000, cntMs: 1000, leaseMax: 150, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
   initRetryMs: 5000, playedMs: DAY, enrolCacheMs: 60000,
   rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000,
-  body: { join: 1024, state: 1024, home: 1024, seed: 24576, tile: 49152, adj: 32768 },
+  body: { join: 1024, state: 1024, home: 1024, seed: 24576, tile: 131072, adj: 32768 },
   // [capacité, jetons par seconde] par compte et par route.
   rate: { join: [12, 0.2], state: [6, 0.05], seed: [3, 0.02], tile: [30, 0.5], adj: [30, 0.5], home: [6, 0.05] },
 };
@@ -96,7 +96,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   function makeCity({ key, place, ville, playedAt = 0 }) {
     const city = {
       key, name: ville.name, place, ville, playedAt, adj: new Map(), pairs: 0, pateTile: new Map(), rv: 0,
-      dirty: { meta: true, tiles: new Set(), adj: false }, rows: new Map(), cnt: false, cntAt: 0, sig: new Map(), revs: new Map(),
+      dirty: { meta: true, tiles: new Set(), adj: false }, rows: new Map(), lentDirty: new Set(), cnt: false, cntAt: 0, sig: new Map(), revs: new Map(),
       nightDone: null,
     };
     reindex(city);
@@ -233,6 +233,28 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     city.rows = new Map();
     emitRows(w, pending);
   }
+  // Prêts de tous les joueurs, par pâté : chaque joueur retire ce qu'un autre a déjà emprunté de sa propre réserve.
+  function lentOf(city, keys) {
+    const l = {};
+    for (const key of keys) l[key] = blockInfo(city.ville, key)?.lent ?? 0;
+    return l;
+  }
+  function pushLent(w) {
+    const city = w.city;
+    if (!city.lentDirty.size) return;
+    const keys = [...city.lentDirty];
+    city.lentDirty = new Set();
+    for (let i = 0; i < keys.length; i += R.rowsPerMsg) broadcast(w, { t: 'sv', o: 'ls', rv: ++city.rv, l: lentOf(city, keys.slice(i, i + R.rowsPerMsg)) });
+  }
+  function lentSnapshot(city) {
+    const out = {};
+    for (const [k] of allRows(city)) {
+      const n = blockInfo(city.ville, k)?.lent ?? 0;
+      if (n > 0) out[k] = n;
+    }
+    return out;
+  }
+
   function pushTile(w, tk, except = null) {
     const city = w.city, t = city.ville.tiles[tk];
     if (!t?.b) return;
@@ -242,19 +264,25 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
 
   // ---------- Gestes ----------
 
+  // Un joueur ne tient jamais plus de `leaseMax` zombies à la fois (le jeu en sort 60 au plus) : un client qui en demande
+  // davantage ne vide pas la ville.
+  const heldBy = (sub) => { let t = 0; for (const n of sub.leases.values()) t += n; return t; };
   function lease(sub, city, kind, key, n) {
     const v = city.ville;
+    n = Math.min(n, Math.max(0, R.leaseMax - heldBy(sub)));
+    if (n <= 0) return 0;
     let got;
     if (key[0] === '@') got = drawReserve(v, key.slice(1), n).n;
     else if (kind === 'l') got = lend(v, key, n);
     else got = take(v, n, [key]).n;
-    if (got > 0) sub.leases.set(key, (sub.leases.get(key) ?? 0) + got);
+    if (got > 0) { sub.leases.set(key, (sub.leases.get(key) ?? 0) + got); if (key[0] !== '@') city.lentDirty.add(key); }
     return got;
   }
   function release(sub, city, key, n) {
     const have = sub.leases.get(key) ?? 0, k = Math.min(n, have);
     if (k <= 0) return 0;
     giveBack(city.ville, key, k);
+    if (key[0] !== '@') city.lentDirty.add(key);
     if (have - k > 0) sub.leases.set(key, have - k); else sub.leases.delete(key);
     return k;
   }
@@ -272,17 +300,21 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       switch (k) {
         case 'l': case 't': case 'd': {
           const got = lease(sub, city, k, key, n);
-          if (got < n) deny.set(key, (deny.get(key) ?? 0) + n - got);
+          if (got < n) {
+            deny.set(key, (deny.get(key) ?? 0) + n - got);
+            if (key[0] !== '@') dirtyRow(city, key);           // la rangée du serveur corrige celle du joueur
+          }
           break;
         }
         case 'r': release(sub, city, key, n); break;
         case 'k': {
           const k1 = Math.min(n, sub.leases.get(key) ?? 0);
-          if (k1 <= 0) break;
+          if (k1 <= 0) { if (key[0] !== '@') dirtyRow(city, key); break; }
           const got = kill(v, key, k1, 'toi');
           if (got > 0) {
             const have = sub.leases.get(key) ?? 0;
             if (have - got > 0) sub.leases.set(key, have - got); else sub.leases.delete(key);
+            if (key[0] !== '@') city.lentDirty.add(key);
             sub.kills += got;
             sub.dirtyKills = true;
             if (key[0] === '@') dirtyCounts(city); else dirtyRow(city, key);
@@ -482,7 +514,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
 
   function state(w) {
     const city = w.city;
-    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville: city.ville }) };
+    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville: city.ville, lent: lentSnapshot(city) }) };
   }
 
   // Pâtés d'une tuile découpée : [clé, appartenance (1 dedans, 0 dehors, -1 inconnu), plancher, logements, bâtiments,
@@ -658,14 +690,16 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       if (over && !w.ended) { w.ended = true; broadcast(w, { t: 'sv', o: 'end', why: 'fin' }); }
       if (w.subs.size) {
         pushRows(w);
+        pushLent(w);
         if (city.cnt && t - city.cntAt >= R.cntMs) {
           city.cnt = false;
           city.cntAt = t;
           broadcast(w, { t: 'sv', o: 'cnt', rv: ++city.rv, c: countsOf(city) });
         }
         for (const sub of w.subs) if (sub.leases.size && t - sub.s.lastMsgAt > R.leaseTtlMs) releaseAll(sub);
-      } else if (city.rows.size) {
-        city.rows = new Map();
+      } else {
+        if (city.rows.size) city.rows = new Map();
+        if (city.lentDirty.size) city.lentDirty = new Set();
       }
     }
     if (t - lastFlush >= R.flushMs) { lastFlush = t; flush(); }
