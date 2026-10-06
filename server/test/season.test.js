@@ -645,3 +645,20 @@ test('règles : constantes de la conception', () => {
   assert.equal(SEASON_RULES.days, 60);
   assert.equal(SEASON_RULES.leaseTtlMs, 15000);
 });
+
+test('saison : limite par adresse propre aux saisons (large, par adresse, seau commun dix fois plus large sans adresse)', async () => {
+  const w = rig();
+  const [cap] = SEASON_RULES.ipRate;
+  let refused = null;
+  for (let i = 0; i < cap + 1 && !refused; i++) refused = w.seasons.admit('203.0.113.7');
+  assert.equal(refused.status, 429);
+  assert.equal(refused.body.code, 'trop');
+  assert.ok(refused.body.retryMs > 0);
+  // Une autre adresse n'est pas touchée ; sans adresse lisible, le seau est dix fois plus large.
+  assert.equal(w.seasons.admit('203.0.113.8'), null);
+  for (let i = 0; i < cap * 10; i++) assert.equal(w.seasons.admit(''), null);
+  assert.equal(w.seasons.admit('').status, 429);
+  // Le seau se recharge avec l'horloge.
+  w.clock.t += 1000;
+  assert.equal(w.seasons.admit('203.0.113.7'), null);
+});

@@ -160,7 +160,7 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
     return answer(await accounts.handle(p, body.text, { ip, admitted: true }));
   }
 
-  // Route des saisons : limite par adresse (celle des comptes), corps borné par route, puis seasons.handle → { status, body | raw }.
+  // Route des saisons : limite par adresse (propre aux saisons, seasons.admit), corps borné par route, puis seasons.handle → { status, body | raw }.
   async function seasonPost(req, res, p) {
     const origin = req.headers.origin;
     if (origin !== undefined && !originAllowed(config.origins, origin)) return reply(req, res, 403, { ok: false });
@@ -172,7 +172,7 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
     };
     if (state.stopping) return answer({ status: 503, body: { ok: false, code: 'arret', retryMs: state.retryMs ?? 3000 } });
     const ip = state.ipOf ? state.ipOf(req) : '';
-    const early = accounts?.admit(ip);
+    const early = seasons.admit(ip);
     if (early) {
       req.resume();
       return answer(early);

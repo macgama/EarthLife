@@ -43,6 +43,8 @@ export const SEASON_RULES = {
   body: { join: 1024, state: 1024, home: 1024, seed: 24576, tile: 131072, adj: 32768 },
   // [capacité, jetons par seconde] par compte et par route.
   rate: { join: [12, 0.2], state: [6, 0.05], seed: [3, 0.02], tile: [30, 0.5], adj: [30, 0.5], home: [6, 0.05] },
+  // Par adresse, avant toute lecture du corps : [capacité, jetons par seconde] ; l'adresse illisible partage un seau dix fois plus large.
+  ipRate: [40, 8],
 };
 
 export const LEVELS = SEASON.levels;
@@ -53,6 +55,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   const worlds = new Map();            // niveau → monde
   const subs = new Map();              // session de la salle → abonné
   const limits = new Map();            // compte → { route: seau }
+  const ipLimits = new Map();          // adresse → seau
   const enrol = new Map();             // compte → { player, at }
   const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, errors: 0, integrity: 0, idleReleased: 0 };
   let lastFlush = now(), lastNight = now(), lastCheck = now(), lastProgress = { at: -Infinity, body: null }, flushing = null;
@@ -445,6 +448,18 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const sess = await store.sessionByTokenHash(sha256(ses), now());
     return sess?.accountId ?? null;
   }
+  // Limite par adresse des routes de saison, à part de celle des comptes (60 par minute) : jouer découpe et relit des voisinages
+  // sans cesse et plusieurs joueurs partagent souvent une adresse. → refus (429) ou null.
+  function admit(ip = '') {
+    const key = typeof ip === 'string' && ip ? ip : '';
+    let b = ipLimits.get(key);
+    if (!b) {
+      if (ipLimits.size > 20000) ipLimits.clear();
+      const [cap, per] = R.ipRate;
+      ipLimits.set(key, (b = key ? createBucket(cap, per, now) : createBucket(cap * 10, per * 10, now)));
+    }
+    return b.take() ? null : refuse(429, 'trop', { retryMs: Math.ceil(1000 / R.ipRate[1]) });
+  }
   function limited(acc, route) {
     const t = now();
     let e = limits.get(acc);
@@ -787,7 +802,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   }
 
   return {
-    init, handle, progress, flush, tick,
+    init, handle, admit, progress, flush, tick,
     hooks: { message: onMessage, close: detach, tick },
     stats() {
       let online = 0;

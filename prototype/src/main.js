@@ -2619,6 +2619,7 @@ function onOnlineStatus() {
   input.setWheel(live);
   document.body.classList.toggle('online-live', live);
   renderOnlineMenu();
+  city.syncSeason();
 }
 
 // Bloc en ligne du menu : interrupteur, ligne d'état, boutons (annexe A). Caché sans jeu en ligne ; « Mes zones

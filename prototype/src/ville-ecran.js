@@ -141,22 +141,28 @@ export function createCityGame(host) {
       : `${left} jour${left > 1 ? 's' : ''} restant${left > 1 ? 's' : ''}.`;
   };
 
-  // Bloc « Saison 1 » : caché sans jeu à plusieurs ; inscription et évolution relues au plus toutes les 30 s.
+  // Bloc « Saison 1 » : caché sans jeu à plusieurs, et tant que le jeu en ligne est en maintenance, périmé, sur invitation,
+  // ouvert ailleurs ou hors ligne. Sans réponse du joueur (« Jouer à plusieurs » ou « Jouer seul ») il reste affiché mais ne demande
+  // rien au serveur : inscription et évolution ne sont relues (au plus toutes les 30 s) que lien en ligne établi.
+  const SEASON_HIDDEN = new Set(['maintenance', 'perime', 'invite', 'autre-onglet', 'hors-ligne']);
+  const seasonLive = () => !!host.online?.live;
   function syncSeason() {
     const block = $('season-block');
     if (!block) return;
     const n = net();
-    block.hidden = !n?.enabled;
+    block.hidden = !n?.enabled || SEASON_HIDDEN.has(host.online?.status);
     if (block.hidden) return;
     const stale = Date.now() - seasonUi.at > 30_000;
-    if (stale && !seasonUi.busy) refreshSeason();
+    if (stale && !seasonUi.busy && seasonLive()) refreshSeason();
     const sn = seasonUi.progress?.season;
     const level = seasonUi.enrolled?.level ?? null;
     const when = sn ? daysLeft(sn) : '';
     const line = $('season-line');
     if (line) {
       line.textContent = !signedIn() ? 'Saison 1 : connecte-toi à ton compte. Tous les joueurs d\'un niveau sauvent la même ville, ensemble.'
-        : level ? `Saison 1 : tu joues en ${levelName(level)}. ${when}` : `Saison 1 : choisis ton niveau, il ne change plus. ${when}`.trim();
+        : level ? `Saison 1 : tu joues en ${levelName(level)}. ${when}`
+          : seasonLive() ? `Saison 1 : choisis ton niveau, il ne change plus. ${when}`.trim()
+            : 'Saison 1 : touche un niveau pour jouer en ligne. Tous les joueurs d\'un niveau sauvent la même ville, ensemble.';
     }
     for (const b of doc.querySelectorAll('#season-row [data-season]')) {
       b.setAttribute('aria-pressed', String(b.dataset.season === level));
@@ -171,7 +177,7 @@ export function createCityGame(host) {
   }
   async function refreshSeason() {
     const n = net();
-    if (!n?.enabled) return;
+    if (!n?.enabled || !seasonLive()) return;
     seasonUi.busy = true;
     seasonUi.at = Date.now();
     try {
@@ -874,7 +880,7 @@ export function createCityGame(host) {
 
   return {
     initMenu, syncMenu, playLabel, prepareLaunch, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws,
-    questText, homeGoal, onRefugeAction, onDeath, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged,
+    questText, homeGoal, onRefugeAction, onDeath, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },
   };
