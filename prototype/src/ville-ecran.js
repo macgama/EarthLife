@@ -147,9 +147,9 @@ export function createCityGame(host) {
   const seasonText = (code) => SEASON_TEXT[code] ?? SEASON_TEXT.base;
 
   // Salon : l'onglet « À plusieurs » (bannière de la saison, trois fronts, bouton unique) et les repères de la carte. Le serveur
-  // n'est pas interrogé quand le joueur a choisi de jouer seul, ni quand le jeu en ligne est bloqué (maintenance, mise à jour,
-  // code d'invitation, autre onglet, hors ligne) : le salon le dit, la partie libre reste possible. L'inscription n'est relue
-  // qu'avec un compte connecté.
+  // n'est interrogé qu'une fois la connexion en ligne établie : pas quand le joueur a choisi de jouer seul, ni pendant la connexion,
+  // ni quand le jeu en ligne est bloqué (maintenance, mise à jour, code d'invitation, autre onglet, hors ligne) ; le salon le dit,
+  // la partie libre reste possible. L'inscription n'est relue qu'avec un compte connecté.
   const SEASON_HIDDEN = new Set(Object.keys(BLOCKED));
   function syncSeason() {
     const n = net();
@@ -159,7 +159,7 @@ export function createCityGame(host) {
     const blocked = SEASON_HIDDEN.has(status);
     tabs?.sync({ available: true, usable: !blocked });
     if (!salon) return;
-    if (Date.now() - seasonUi.at > 30_000 && !seasonUi.busy && !blocked && status !== 'seul') refreshSeason();
+    if (Date.now() - seasonUi.at > 30_000 && !seasonUi.busy && !blocked && host.online?.live) refreshSeason();
     if (seasonUi.note && Date.now() - seasonUi.noteAt > 4000) seasonUi.note = '';
     const progress = seasonUi.progress;
     const enrolled = seasonUi.enrolled?.level ?? null;
