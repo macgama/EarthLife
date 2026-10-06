@@ -3,7 +3,7 @@
 // Module pur, partagé tel quel par le jeu et par le serveur : il n'importe rien.
 
 export const PROTOCOL = 1;
-export const CLIENT_LEVEL = 1;                    // comparé à minClient (section 4.8)
+export const CLIENT_LEVEL = 2;                    // comparé à minClient (section 4.8) ; 2 : saisons (message `sv`)
 // crown : posé par le serveur seulement, dans les lignes de `near` d'un survivant en couronne anonyme (spec 3.1 et
 // 6.6 : jamais de flèche vers lui) ; un client ne l'envoie pas (allure de 0 à 15).
 export const FLAGS = { run: 1, inside: 2, carrying: 4, down: 8, crown: 16 };
@@ -21,6 +21,21 @@ export const RULES = {
   // sur 2 s) : nouvelle origine, comptée comme un saut. Position gardée 15 s après le dernier message (3.7).
   clockLagMs: 10000, clockResetMs: 2000, positionTtlMs: 15000,
 };
+// Saisons (conception validée, lot 1) : un seul type de message, `sv`, dans les deux sens ; `o` dit l'opération.
+// Client : in (je joue dans cette commune), ev (gestes de la ville, 40 au plus), out. Serveur : in, no, full, rows, tile,
+// cnt, deny, end. Une rangée de pâté a 9 nombres (quartier.js, ROW) ; un message du serveur tient en 16 Ko.
+export const SEASON = {
+  maxEvents: 40, maxRows: 400, maxUnits: 160, rowLength: 9, seats: 100, days: 60,
+  levels: ['facile', 'moyen', 'difficile'],
+  noWhy: ['compte', 'inscription', 'commune', 'monde', 'fin', 'avenir', 'base'],
+};
+export const SEASON_KEY = /^(@[A-Za-z0-9_.-]{1,40}|b-?\d{1,2}\.\d{1,8}_-?\d{1,3}\.\d{1,8}(~\d{1,3})?)$/;
+export const SEASON_COMMUNE = /^[A-Za-z0-9_.-]{1,40}$/;
+export const SEASON_TILE = /^\d{1,2}\/\d{1,7}\/\d{1,7}$/;
+// Gestes d'un joueur : l prêt de la rue, t prise (horde, contre-attaque), d tirage de la réserve du cœur, r retour d'un
+// prêt, k zombie abattu (clé, nombre) ; n ouvrir le nid, f planter le fanion, L libérer, D fanion tombé, c cœur (clé).
+const SEASON_EVENTS = { l: 3, t: 3, d: 3, r: 3, k: 3, n: 2, f: 2, L: 2, D: 2, c: 2 };
+
 export const GESTURES = ['Salut', 'Par ici', 'Attention !', 'Merci', 'Suis-moi', "Besoin d'aide"];
 export const REPORT_REASONS = { 1: 'Me suit partout', 2: 'Abuse des gestes', 3: 'Triche (vitesse, téléportation)' };
 // 'session' : session de compte inconnue, échue ou supprimée (spécification des comptes, 4.3) ; envoyé seulement à un
@@ -305,6 +320,22 @@ const CLIENT = {
     out.n = int(o, 'n', 1, MAX_U31);
   },
   g(o, out) { out.k = int(o, 'k', 0, GESTURES.length - 1); },
+  sv(o, out) {
+    out.o = oneOf(o, 'o', ['in', 'ev', 'out']);
+    if (out.o === 'in') {
+      const c = get(o, 'c');
+      out.c = typeof c === 'string' && SEASON_COMMUNE.test(c) ? c : bad('c');
+    } else if (out.o === 'ev') {
+      const e = get(o, 'e');
+      if (!Array.isArray(e) || e.length < 1 || e.length > SEASON.maxEvents) bad('e');
+      out.e = e.map((ev) => {
+        const len = Array.isArray(ev) ? SEASON_EVENTS[ev[0]] : undefined;
+        if (!len || ev.length !== len || typeof ev[1] !== 'string' || !SEASON_KEY.test(ev[1])) bad('e');
+        if (len === 3 && !inRange(ev[2], 1, 60)) bad('e');
+        return len === 3 ? [ev[0], ev[1], ev[2]] : [ev[0], ev[1]];
+      });
+    }
+  },
   hide(o, out) { out.sid = int(o, 'sid', 1, MAX_U31 - 1); },
   rep(o, out) {
     out.sid = int(o, 'sid', 1, MAX_U31 - 1);
@@ -355,6 +386,56 @@ function list(o, k, max, each) {
   const v = get(o, k);
   if (!Array.isArray(v) || v.length > max) bad(k);
   return v.map((e) => each(e) ?? bad(k));
+}
+
+// Saisons : rangées de pâtés { 'z/x/y': { clé: [9 nombres] } }, tuile sans ses rangées, compteurs de la ville.
+function seasonTileKey(k) { return typeof k === 'string' && SEASON_TILE.test(k) ? k : bad('k'); }
+function seasonRow(r) {
+  return Array.isArray(r) && r.length === SEASON.rowLength && r.every((v) => inRange(v, 0, 1e9)) ? r.slice() : bad('r');
+}
+function seasonRows(v) {
+  if (!isObj(v)) bad('r');
+  const out = {};
+  let n = 0;
+  for (const tk of Object.keys(v)) {
+    seasonTileKey(tk);
+    const rows = v[tk];
+    if (!isObj(rows)) bad('r');
+    out[tk] = {};
+    for (const k of Object.keys(rows)) {
+      if (!SEASON_KEY.test(k) || k[0] === '@' || ++n > SEASON.maxRows) bad('r');
+      out[tk][k] = seasonRow(rows[k]);
+    }
+  }
+  return out;
+}
+function seasonTriple(v, f) {
+  return Array.isArray(v) && v.length === 3 && v.every((x) => inRange(x, 0, 1e9)) ? v.slice() : bad(f);
+}
+function seasonTile(v) {
+  if (!isObj(v)) bad('v');
+  const out = { p: seasonTriple(get(v, 'p'), 'v'), rest: seasonTriple(get(v, 'rest'), 'v') };
+  for (const f of ['k', 'o', 'e']) if (get(v, f) !== undefined) out[f] = inRange(get(v, f), 0, 1) ? get(v, f) : bad('v');
+  const n = get(v, 'n');
+  if (n !== undefined) out.n = Array.isArray(n) && n.length === 2 && n.every((x) => inRange(x, 0, 1e9)) ? n.slice() : bad('v');
+  const q = get(v, 'q');
+  if (q !== undefined) out.q = Array.isArray(q) && q.length <= 400 && q.every((x) => inRange(x, 0, 1e6)) ? q.slice() : bad('v');
+  return out;
+}
+function seasonCounts(v) {
+  if (!isObj(v)) bad('c');
+  const k = get(v, 'k');
+  const out = { k: seasonTriple(k, 'c'), sv: int(v, 'sv', 0, 1e9), fl: int(v, 'fl', 0, 1e9), z: int(v, 'z', 0, 1e9), dn: int(v, 'dn', 0, 1e6),
+    un: {} };
+  const un = get(v, 'un');
+  if (!isObj(un) || Object.keys(un).length > SEASON.maxUnits) bad('c');
+  for (const key of Object.keys(un)) {
+    const u = un[key];
+    if (!SEASON_COMMUNE.test(key) || !Array.isArray(u) || u.length !== 6 || !u.slice(0, 5).every((x) => inRange(x, 0, 1e9))
+      || !(u[5] === null || (typeof u[5] === 'string' && SEASON_KEY.test(u[5])))) bad('c');
+    out.un[key] = u.slice();
+  }
+  return out;
 }
 
 const SERVER = {
@@ -413,6 +494,19 @@ const SERVER = {
     out.left = int(o, 'left', 0, 100);
   },
   count(o, out) { out.n = int(o, 'n', 0, 1e7); },
+  sv(o, out) {
+    out.o = oneOf(o, 'o', ['in', 'no', 'full', 'rows', 'tile', 'cnt', 'deny', 'end']);
+    if (['in', 'rows', 'tile', 'cnt'].includes(out.o)) out.rv = int(o, 'rv', 0, 2 ** 40);
+    if (out.o === 'no') out.why = oneOf(o, 'why', SEASON.noWhy);
+    else if (out.o === 'full') { out.used = int(o, 'used', 0, 1e6); out.max = int(o, 'max', 0, 1e6); }
+    else if (out.o === 'rows') out.r = seasonRows(get(o, 'r'));
+    else if (out.o === 'tile') { out.k = seasonTileKey(get(o, 'k')); out.v = seasonTile(get(o, 'v')); }
+    else if (out.o === 'cnt') out.c = seasonCounts(get(o, 'c'));
+    else if (out.o === 'deny') {
+      out.d = list(o, 'd', 60, (e) => (Array.isArray(e) && e.length === 2 && typeof e[0] === 'string' && SEASON_KEY.test(e[0])
+        && inRange(e[1], 1, 60) ? [e[0], e[1]] : null));
+    } else if (out.o === 'end') out.why = oneOf(o, 'why', ['fin']);
+  },
   err(o, out) { out.code = oneOf(o, 'code', ERR_CODES); },
   bye(o, out) {
     out.why = oneOf(o, 'why', BYE_WHY);

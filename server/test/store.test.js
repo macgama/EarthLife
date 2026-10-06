@@ -24,7 +24,7 @@ const th = (n) => (n + 1000).toString(16).padStart(64, 'a');
 const ipHash = (n) => n.toString(16).padStart(64, 'c');
 const day = (ms) => dayOf(ms);
 const TEST_DB = process.env.EARTHLIFE_TEST_DB || '';
-const TABLES = ['el_codes', 'el_saves', 'el_sessions', 'el_accounts', 'el_reports', 'el_blocks', 'el_refuges', 'el_ip_bans', 'el_marks',
+const TABLES = ['el_season_players', 'el_season_docs', 'el_seasons', 'el_codes', 'el_saves', 'el_sessions', 'el_accounts', 'el_reports', 'el_blocks', 'el_refuges', 'el_ip_bans', 'el_marks',
   'el_players', 'el_meta'];
 const eh = (n) => n.toString(16).padStart(64, 'e');            // empreinte d'adresse
 const sh = (n) => n.toString(16).padStart(64, '5');            // empreinte de session
@@ -527,6 +527,39 @@ for (const B of BACKENDS) {
       assert.equal((await s.accountById(id(51))).playerId, id(1));
     });
 
+    test('saisons : saison créée une fois, inscription au premier niveau, ville par pièces (utf8mb4), effacée avec le compte', async () => {
+      const s = await make();
+      assert.equal(await s.seasonGet(1), null);
+      assert.equal(await s.seasonCreate({ id: 1, name: 'Saison 1', startMs: T0, endMs: T0 + 60 * DAY }), true);
+      assert.equal(await s.seasonCreate({ id: 1, name: 'Autre', startMs: 1, endMs: 2 }), false);
+      assert.deepEqual(await s.seasonGet(1), { id: 1, name: 'Saison 1', startMs: T0, endMs: T0 + 60 * DAY });
+      await s.createAccount({ id: id(61), emailHash: eh(61), emailBox: box(61), pwHash: 'x', today: day(T0) });
+      await s.createAccount({ id: id(62), emailHash: eh(62), emailBox: box(62), pwHash: 'x', today: day(T0) });
+      const j = await s.seasonJoin({ accountId: id(61), season: 1, level: 'facile', nowMs: T0 });
+      assert.equal(j.ok, true);
+      assert.equal(j.player.level, 'facile');
+      const again = await s.seasonJoin({ accountId: id(61), season: 1, level: 'difficile', nowMs: T0 + 5 });
+      assert.equal(again.ok, false);
+      assert.equal(again.player.level, 'facile');
+      assert.equal((await s.seasonJoin({ accountId: id(99), season: 1, level: 'facile', nowMs: T0 })).ok, false);
+      await s.seasonJoin({ accountId: id(62), season: 1, level: 'moyen', nowMs: T0 });
+      assert.deepEqual(await s.seasonCounts(1), { facile: 1, moyen: 1 });
+      await s.seasonPlayerSet(id(61), 1, { commune: 'c01283', homeKey: 'b45.90000_5.20000', homeLat: 45900000, homeLon: -5200000, seenMs: T0 + 9, kills: 7 });
+      assert.deepEqual(await s.seasonPlayer(id(61), 1), { accountId: id(61), season: 1, level: 'facile', commune: 'c01283', enrolledMs: T0,
+        homeKey: 'b45.90000_5.20000', homeLat: 45900000, homeLon: -5200000, seenMs: T0 + 9, kills: 7 });
+      assert.equal(await s.seasonPlayer(id(61), 2), null);
+      await s.seasonDocPut({ world: '1.facile', commune: 'c01283', part: 'meta', rev: 1, data: '{"nom":"Pérouges – lieu-dit « Le Bourg » ☀"}', nowMs: T0 });
+      await s.seasonDocPut({ world: '1.facile', commune: 'c01283', part: 't:14/8500/5800', rev: 1, data: '{}', nowMs: T0 });
+      await s.seasonDocPut({ world: '1.facile', commune: 'c01283', part: 'meta', rev: 2, data: '{"nom":"Pérouges – lieu-dit « Le Bourg » ☀","v":2}', nowMs: T0 + 1 });
+      const docs = (await s.seasonDocs('1.facile')).sort((x, y) => (x.part < y.part ? -1 : 1));
+      assert.deepEqual(docs.map((d) => [d.part, d.rev]), [['meta', 2], ['t:14/8500/5800', 1]]);
+      assert.equal(JSON.parse(docs[0].data).nom, 'Pérouges – lieu-dit « Le Bourg » ☀');
+      assert.deepEqual(await s.seasonDocs('1.moyen'), []);
+      await s.eraseAccount(id(61));
+      assert.equal(await s.seasonPlayer(id(61), 1), null);
+      assert.deepEqual(await s.seasonCounts(1), { moyen: 1 });
+    });
+
     test('fin de la suite', async () => {
       if (store) await store.close();
       store = null;
@@ -537,7 +570,7 @@ for (const B of BACKENDS) {
 // ---------- Hors suite (sans MariaDB) ----------
 
 test('schéma 002 : appliqué après 001, quatre tables utf8mb4 puis la version 2', () => {
-  assert.deepEqual(SCHEMA_FILES.map((f) => f.split(/[\\/]/).pop()), ['001-init.sql', '002-comptes.sql']);
+  assert.deepEqual(SCHEMA_FILES.map((f) => f.split(/[\\/]/).pop()), ['001-init.sql', '002-comptes.sql', '003-saisons.sql']);
   const st = splitSql(fs.readFileSync(SCHEMA_FILES[1], 'utf8'));
   assert.equal(st.length, 5);
   assert.deepEqual(st.slice(0, 4).map((s) => /^CREATE TABLE IF NOT EXISTS (el_\w+)/.exec(s)?.[1]), ['el_accounts', 'el_sessions', 'el_saves', 'el_codes']);
@@ -547,7 +580,17 @@ test('schéma 002 : appliqué après 001, quatre tables utf8mb4 puis la version 
   assert.match(st[0], /FOREIGN KEY \(player_id\) REFERENCES el_players\(id\) ON DELETE SET NULL/);
 });
 
-test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001 et 002 (tables, schéma 2, données gardées)',
+test('schéma 003 : saisons, inscrits (effacés avec le compte) et ville commune par pièces, puis la version 3', () => {
+  const st = splitSql(fs.readFileSync(SCHEMA_FILES[2], 'utf8'));
+  assert.equal(st.length, 4);
+  assert.deepEqual(st.slice(0, 3).map((s) => /^CREATE TABLE IF NOT EXISTS (el_\w+)/.exec(s)?.[1]), ['el_seasons', 'el_season_players', 'el_season_docs']);
+  for (const s of st) assert.ok(!s.includes('--') && !s.includes('«'), s.slice(0, 60));
+  for (const s of st.slice(0, 3)) assert.match(s, /ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$/);
+  assert.equal(st[3], "UPDATE el_meta SET v = '3' WHERE k = 'schema' AND CAST(v AS UNSIGNED) < 3");
+  assert.match(st[1], /FOREIGN KEY \(account_id\) REFERENCES el_accounts\(id\) ON DELETE CASCADE/);
+});
+
+test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001 à 003 (tables, schéma 3, données gardées)',
   { skip: TEST_DB ? false : 'EARTHLIFE_TEST_DB absente' }, async () => {
     await dropAll();
     const db = dbFromUrl(TEST_DB);
@@ -567,7 +610,7 @@ test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001
         assert.ok(await s.playerByTokenHash(th(1)), 'identité gardée');
         await s.close();
       }
-      assert.equal(await meta(), '2');
+      assert.equal(await meta(), '3');
       assert.deepEqual(await tables(), [...TABLES].sort());
     } finally {
       await admin.end();

@@ -19,6 +19,8 @@ export const KNOWN_KEYS = [
   // Comptes (spécification des comptes, 4.7).
   'ACCOUNTS', 'ACCOUNT_SECRET', 'MAIL', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'MAIL_FROM', 'MAIL_REPLY_TO',
   'MAIL_PER_HOUR', 'MAIL_PER_DAY', 'GAME_URL',
+  // Saisons (season.js).
+  'SEASONS', 'SEASON_DAYS', 'SEASON_SEATS',
 ];
 const KNOWN = new Set(KNOWN_KEYS);
 
@@ -212,6 +214,9 @@ export function buildConfig(raw, { root = RELEASE_ROOT } = {}) {
     playerDays: num('PLAYER_DAYS', 180, 1, 3650),
     createPerHour: num('CREATE_PER_HOUR', 300, 0, 100000),
     accounts: accountsWanted && !off.length, accountSecret, mail, gameUrl,
+    // Saisons (season.js) : vraies seulement avec les comptes ; SEASONS=0 les coupe, SEASON_DAYS et SEASON_SEATS les règlent.
+    seasons: bool('SEASONS', true) && accountsWanted && !off.length,
+    seasonDays: num('SEASON_DAYS', 60, 1, 400), seasonSeats: num('SEASON_SEATS', 100, 1, 5000),
     appDir, logDir,
     version: readVersion(root),
     warnings, errors,

@@ -45,7 +45,7 @@ function seeded(seed) {
 
 test('constantes de la spécification 7.2', () => {
   assert.equal(PROTOCOL, 1);
-  assert.equal(CLIENT_LEVEL, 1);
+  assert.equal(CLIENT_LEVEL, 2);
   assert.deepEqual(FLAGS, { run: 1, inside: 2, carrying: 4, down: 8, crown: 16 });
   assert.equal(CELL_DEG, 0.0036);
   const expected = { maxPayload: 2048, hz: 4, beatMs: 5000, tickMs: 250, nearM: 150, farM: 400, nameM: 30,
