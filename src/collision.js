@@ -49,12 +49,13 @@ export function getAt(grid, x, z) {
 }
 
 // Hauteur du sol dessiné au point (x, z), en mètres relatifs à la référence : triangle du nœud du morceau (les pieds
-// sont exactement sur le sol dessiné), ou, hors des morceaux construits, le modèle d'altitude lissé (grid.terrain) ;
-// 0 partout sans relief (le jeu est plat comme avant).
+// sont exactement sur le sol dessiné), ou, hors des morceaux construits, le modèle d'altitude lissé (grid.terrain) moins
+// la canopée approchée ; 0 partout sans relief (le jeu est plat comme avant).
 export function groundAt(grid, x, z) {
   const g = grid.chunked ? patchAt(grid, x, z) : grid;
   if (g?.relief) return reliefAt(g.relief, x, z);
-  return grid.terrain?.enabled ? grid.terrain.heightAt(x, z) : 0;
+  const t = grid.terrain;
+  return t?.enabled ? t.heightAt(x, z) - (t.canopy ? t.canopy.approx(x, z) : 0) : 0;
 }
 
 // Normale unitaire du sol au point (différences centrées sur ± 0,75 m), dans `out` ; (0, 1, 0) sur sol plat.
