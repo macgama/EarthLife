@@ -5,7 +5,7 @@ import { chunkKey, createGridPatch, fillRings, strokeLine, FREE, WATER, BUILDING
 import { TILE_ZOOM, tilesForRect, tileKey, tileUrl, fetchTemplate, pruneTileCache, POI_PRIORITY } from './tiles.js';
 import { proceduralWorld } from './osm.js';
 import { lootKind } from './survival.js';
-import { createTerrain, chunkHeights, DECK_REACH } from './terrain.js';
+import { createTerrain, chunkHeights, createCanopy, canopyRegion, DECK_REACH, BANK_REACH, QUAY_REACH, CANOPY_REACH, CANOPY_STEP, NODE, SHORE_MAX } from './terrain.js';
 import { DEM_URL, demUrl, loadDemTile } from './dem.js';
 
 export const CHUNK = 64;
@@ -13,15 +13,26 @@ const EMPTY = Object.freeze({ buildings: [], roads: [], water: [], waterLines: [
 const ZONE_LOOT = { commercial: 'commercial', retail: 'retail', industrial: 'industrial', residential: 'house' };
 
 // relief : lire aussi les tuiles d'altitude (terrain.js) ; sans lui, ou si l'altitude n'arrive pas, le sol est plat.
+// Hors des régions au terrain nu, le relief porte aussi la canopée des villes (terrain.canopy), lue dans les seaux.
 export function createWorldStore(origin, { chunkSize = CHUNK, relief = false } = {}) {
   const proj = makeProjection(origin.lat, origin.lon);
-  return {
+  const store = {
     origin, chunkSize, proj,
     source: 'tiles', // 'tiles' ou 'procedural' (ville de secours)
     buildings: [], buildingIds: new Map(), pois: [], poiIds: new Set(),
     buckets: new Map(), tiles: new Map(),
     terrain: relief && chunkSize === CHUNK ? createTerrain({ proj }) : null,
   };
+  if (store.terrain && canopyRegion(origin.lat, origin.lon)) {
+    store.terrain.canopy = createCanopy({
+      cell: chunkSize,
+      cellBuildings: (cx, cz, fn) => {
+        const key = chunkKey(cx, cz), b = store.buckets.get(key);
+        if (b) for (const it of b.buildings) if (it.chunk === key) fn(it);
+      },
+    });
+  }
+  return store;
 }
 
 function bucket(store, cx, cz, create) {
@@ -100,6 +111,7 @@ export function addFeatures(store, f) {
     store.buildingIds.set(b.id, b.index);
     store.buildings.push(b);
     insert(store, 'buildings', b, b.bounds);
+    store.terrain?.canopy?.invalidate(Math.floor(b.cx / store.chunkSize), Math.floor(b.cz / store.chunkSize));
     fresh.push(b);
   }
   for (const r of f.roads) insert(store, 'roads', r, r.bounds);
@@ -149,8 +161,11 @@ export function bridgesNear(store, cx, cz) {
 }
 
 // Un morceau peut être construit quand toutes les tuiles qui le recouvrent sont arrivées (ou ont échoué), celles de
-// l'altitude comprises : le sol ne change jamais après coup. Avec le relief, un morceau qui touche un pont attend aussi
-// les tuiles des 180 m alentour, où le tablier cherche ses culées dans l'eau des tuiles voisines.
+// l'altitude comprises : le sol ne change jamais après coup. Avec le relief, il attend aussi les tuiles de l'eau à portée
+// de ses berges (BANK_REACH m), ou avec la canopée celles des bâtiments à sa portée (CANOPY_REACH m autour du réseau),
+// autour des nœuds et des points de terre ferme des quais (QUAY_REACH m plus loin). Un morceau qui touche un pont attend
+// aussi les tuiles des 180 m alentour, où le tablier cherche ses culées dans l'eau des tuiles voisines (et, en ville, la
+// terre ferme et la canopée au-delà).
 export function chunkReady(store, cx, cz) {
   if (store.source === 'procedural') return true;
   const cs = store.chunkSize;
@@ -168,11 +183,13 @@ export function chunkReady(store, cx, cz) {
     const done = (store.deckReady ??= new Set());
     const key = chunkKey(cx, cz);
     if (!done.has(key)) {
-      if (bridgesNear(store, cx, cz).length) {
-        const pad = DECK_REACH + BRIDGE_PAD;
-        if (!rectReady(cx * cs - pad, cz * cs - pad, (cx + 1) * cs + pad, (cz + 1) * cs + pad)) return false;
-        if (!store.terrain.ready(cx * cs - pad, cz * cs - pad, (cx + 1) * cs + pad, (cz + 1) * cs + pad)) return false;
-      }
+      const around = (pad, tiles = true) => (!tiles || rectReady(cx * cs - pad, cz * cs - pad, (cx + 1) * cs + pad, (cz + 1) * cs + pad))
+        && store.terrain.ready(cx * cs - pad, cz * cs - pad, (cx + 1) * cs + pad, (cz + 1) * cs + pad);
+      const canopy = !!store.terrain.canopy;
+      // Canopée : celle des nœuds et des points de terre ferme lus pour les quais (jusqu'à QUAY_REACH m plus loin).
+      const shade = CANOPY_REACH + CANOPY_STEP + NODE + QUAY_REACH;
+      if (!around(canopy ? Math.max(shade, BANK_REACH) : BANK_REACH)) return false;
+      if (bridgesNear(store, cx, cz).length && !around(DECK_REACH + BRIDGE_PAD + (canopy ? shade : 0))) return false;
       done.add(key);
     }
   }
@@ -181,11 +198,12 @@ export function chunkReady(store, cx, cz) {
 
 // Le point est dans l'eau (polygone d'eau, ou rivière bloquante) : fonction de la position seule, lue dans le seau du
 // morceau qui contient le point. Deux morceaux voisins donnent donc la même réponse pour un nœud de leur bord commun.
-export function waterAt(store, x, z) {
+// banks : seulement l'eau qui a des berges (fleuves, bassins, lacs) ; ni les piscines, ni les mares et fontaines.
+export function waterAt(store, x, z, banks = false) {
   const cs = store.chunkSize;
   const f = bucket(store, Math.floor(x / cs), Math.floor(z / cs), false);
   if (!f) return false;
-  for (const w of f.water) if (within(w.bounds, x, z) && insideRings(x, z, w.rings)) return true;
+  for (const w of f.water) if ((!banks || hasBanks(w)) && within(w.bounds, x, z) && insideRings(x, z, w.rings)) return true;
   for (const w of f.waterLines) {
     if (!w.blocking || !within(w.bounds, x, z)) continue;
     const half = w.width / 2, pts = w.points;
@@ -198,13 +216,61 @@ export function waterAt(store, x, z) {
   return false;
 }
 
+// Distance du point (x, z) au bord de l'eau à berges le plus proche (contours des polygones et rivières bloquantes du
+// seau du point), au plus max : fonction de la position seule, comme waterAt.
+export function shoreDistance(store, x, z, max) {
+  const cs = store.chunkSize;
+  const f = bucket(store, Math.floor(x / cs), Math.floor(z / cs), false);
+  if (!f) return max;
+  let best = max;
+  const seg = (a, b, pad) => {
+    if ((a.x < x - best - pad && b.x < x - best - pad) || (a.x > x + best + pad && b.x > x + best + pad)
+      || (a.z < z - best - pad && b.z < z - best - pad) || (a.z > z + best + pad && b.z > z + best + pad)) return;
+    const dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
+    const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / l2)) : 0;
+    const d = Math.hypot(a.x + t * dx - x, a.z + t * dz - z) - pad;
+    if (d < best) best = Math.max(0, d);
+  };
+  for (const w of f.water) {
+    const b = w.bounds;
+    if (!hasBanks(w) || x < b.minX - best || x > b.maxX + best || z < b.minZ - best || z > b.maxZ + best) continue;
+    for (const r of w.rings) for (let i = 0, j = r.length - 1; i < r.length; j = i++) seg(r[j], r[i], 0);
+  }
+  for (const w of f.waterLines) {
+    if (!w.blocking) continue;
+    const pts = w.points;
+    for (let i = 0; i + 1 < pts.length; i++) seg(pts[i], pts[i + 1], w.width / 2);
+  }
+  return best;
+}
+
+// Eau avec des berges : un fleuve, un bassin de port, la mer, ou une autre eau de 5 000 m² au moins, sauf une piscine ou
+// une mare (leur « niveau », lu dans la donnée au milieu des toits, relevait tout le quartier autour d'elles).
+const BANK_AREA = 5000;
+function hasBanks(w) {
+  if (w.banks === undefined) {
+    const cls = w.cls;
+    w.banks = cls === 'river' || cls === 'dock' || cls === 'ocean'
+      || (cls !== 'swimming_pool' && cls !== 'pond' && Math.abs(ringArea(w.rings[0])) >= BANK_AREA);
+  }
+  return w.banks;
+}
+function ringArea(r) {
+  let a = 0;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += (r[j].x + r[i].x) * (r[j].z - r[i].z);
+  return a / 2;
+}
+
 // Grille de collision d'un morceau : eau, rivières, ponts (routes au-dessus de l'eau) puis bâtiments ; avec le relief,
 // aussi la grille d'altitude du morceau (g.relief : terrain.js), eau à niveau.
 export function buildPatch(store, cx, cz) {
   const cs = store.chunkSize;
   const g = createGridPatch(cx * cs, cz * cs, cs, 1);
   const f = chunkFeatures(store, cx, cz);
-  if (store.terrain?.enabled) g.relief = chunkHeights(store.terrain, cx * cs, cz * cs, (x, z) => waterAt(store, x, z), bridgesNear(store, cx, cz));
+  if (store.terrain?.enabled) {
+    g.relief = chunkHeights(store.terrain, cx * cs, cz * cs, (x, z) => waterAt(store, x, z), bridgesNear(store, cx, cz),
+      (x, z) => waterAt(store, x, z, true), (x, z) => shoreDistance(store, x, z, SHORE_MAX));
+  }
   for (const w of f.water) fillRings(g, w.rings, WATER);
   for (const w of f.waterLines) if (w.blocking) strokeLine(g, w.points, w.width, WATER);
   for (const r of f.roads) if (!r.rail) strokeLine(g, r.points, r.width, FREE, WATER);

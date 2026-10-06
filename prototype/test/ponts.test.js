@@ -61,8 +61,8 @@ test('culées sur une berge trop haute (donnée de ville avec les toits) : le ta
   const { wet, terrain, bridge } = river({ bankA: 25, bankB: 25 });
   const build = deckBuilder(terrain, wet, [bridge]);
   const mid = build(32, 100);
-  // Eau à 10 m : quai à 10 + 4 m + 15 % d'un pas de 6 m = 14,9 m, jamais les 25 m de la berge brute.
-  assert.ok(mid > 13.5 && mid < 15.5, `tablier : ${mid}`);
+  // Eau à 10 m : quai à 10 + 10 m + 15 % d'un pas de 6 m = 20,9 m, jamais les 25 m de la berge brute.
+  assert.ok(Math.abs(mid - 20.9) < 1e-6, `tablier : ${mid}`);
 });
 
 test('une voie à terre (non sur l\'eau) ne change pas le sol', () => {
@@ -111,10 +111,10 @@ test('le sol dessiné suit le tablier (reliefAt sur l\'axe)', () => {
 
 // ---------- Berges ----------
 
-test('berges : près de l\'eau, la rive monte en pente douce au lieu de la falaise de la donnée (quais de 4 m + 15 %)', () => {
+test('berges : près de l\'eau, la rive monte en pente douce au lieu de la falaise de la donnée (10 m + 15 %)', () => {
   const { wet, terrain } = river({ bankA: 25, bankB: 25 });
   const r = chunkHeights(terrain, 0, 0, wet); // le nœud j = 16 est à z = 64, à 8 m du premier point d'eau du réseau (z = 72)
-  assert.ok(Math.abs(node(r, 8, 16) - (10 + 4 + 0.15 * 8)) < 1e-4, `à 8 m de l'eau : ${node(r, 8, 16)}`);
+  assert.ok(Math.abs(node(r, 8, 16) - (10 + 10 + 0.15 * 8)) < 1e-4, `à 8 m de l'eau : ${node(r, 8, 16)}`);
   // La pente ne dépasse jamais 15 % entre nœuds voisins dans la zone de rive (0,6 m de dénivelé par pas de 4 m).
   let worst = 0;
   for (let j = 4; j < 16; j++) worst = Math.max(worst, Math.abs(node(r, 8, j + 1) - node(r, 8, j)));
@@ -156,11 +156,12 @@ function lyon() {
     const [z, x, y] = name.split('-').map(Number);
     addFeatures(store, featuresFromBytes(tile(name), x, y, z, LYON));
   }
-  // Fleuves à 160 m dans l'eau, berges brutes à 168 m (la ville) : un tablier posé à hauteur de quai est à 164,9 m, un tablier drapé à 160 m.
+  // Fleuves à 160 m dans l'eau, berges brutes à 175 m (la ville avec ses toits) : un tablier posé à hauteur de quai est à
+  // 170,9 m, un tablier drapé à 160 m.
   const terrain = {
     enabled: true,
     ready: () => true,
-    heightAt: (x, z) => (waterAt(store, x, z) ? 160 : 168),
+    heightAt: (x, z) => (waterAt(store, x, z) ? 160 : 175),
     waterLevelAt: () => 160,
   };
   store.terrain = terrain;
@@ -185,7 +186,7 @@ test('Lyon : les ponts sur le Rhône et la Saône montent à la hauteur des quai
       for (let i = 0; i < NODES; i++) {
         const v = p.relief.h[(j + 1) * RELIEF_N + i + 1];
         if (v > 160.6 && waterAt(store, cx * 64 + i * NODE, cz * 64 + j * NODE)) { raised++; top = Math.max(top, v); }
-        if (v > 168.0001) deepest = Math.max(deepest, v - 168);
+        if (v > 175.0001) deepest = Math.max(deepest, v - 175);
       }
     }
   }
@@ -193,7 +194,7 @@ test('Lyon : les ponts sur le Rhône et la Saône montent à la hauteur des quai
   console.log(`# ${chunks.length} morceaux avec un pont, ${raised} nœuds d'eau relevés par un tablier, ${ms.toFixed(1)} ms par morceau`);
   assert.ok(raised > 20, `nœuds d'eau relevés : ${raised}`);
   assert.ok(deepest < 0.5, `aucun tablier ne dépasse les berges de plus de 0,5 m : ${deepest}`);
-  assert.ok(top > 162 && top < 165.5, `tablier à hauteur de quai (164,9 m), pas à 168 m : ${top}`);
+  assert.ok(top > 167 && top < 171, `tablier à hauteur de quai (170,9 m), pas à 175 m : ${top}`);
   // Raccords : les nœuds de bord de deux morceaux voisins construits sont identiques au bit près.
   let seams = 0;
   for (const [key, a] of built) {
