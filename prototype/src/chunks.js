@@ -1121,8 +1121,8 @@ export function seatProp(p, ground) {
   p.roll = Math.atan2(right - left, 2 * half[1]);
 }
 
-// Fond lointain en relief (à la place du plan de base de 1 200 m) : grille de 41 × 41 nœuds de 30 m du modèle d'altitude,
-// abaissée de 2 m sous le sol fin, recalée sur la grille de 30 m et refaite quand le joueur s'est éloigné de plus de 60 m de
+// Fond lointain en relief (à la place du plan de base de 1 200 m) : grille de 41 × 41 nœuds de 30 m du modèle d'altitude
+// (moins la canopée approchée des villes), abaissée de 2 m sous le sol fin, recalée sur la grille de 30 m et refaite quand le joueur s'est éloigné de plus de 60 m de
 // son centre. Son shader rejette les fragments du disque où le sol fin est construit.
 function makeFarGround(terrain) {
   const N = 41, STEP = 30, DROP = 2;
@@ -1160,7 +1160,7 @@ function makeFarGround(terrain) {
     for (let j = 0; j < N; j++) {
       for (let i = 0; i < N; i++) {
         const px = cx + (i - (N - 1) / 2) * STEP, pz = cz + (j - (N - 1) / 2) * STEP, o = (j * N + i) * 3;
-        pos[o] = px; pos[o + 1] = terrain.heightAt(px, pz) - DROP; pos[o + 2] = pz;
+        pos[o] = px; pos[o + 1] = terrain.heightAt(px, pz) - (terrain.canopy ? terrain.canopy.approx(px, pz) : 0) - DROP; pos[o + 2] = pz;
       }
     }
     geo.attributes.position.needsUpdate = true;

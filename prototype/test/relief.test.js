@@ -278,7 +278,10 @@ test('monde : un morceau attend la tuile d\'altitude, puis reçoit sa grille ; l
   terrain.settle(-160, -160, 160, 160);
   const patch = buildPatch(store, 0, 0);
   assert.ok(patch.relief?.h?.length === RELIEF_N * RELIEF_N);
-  // Le fleuve de la tuile (Saône, à l'ouest) : tous les nœuds d'eau sont au niveau de l'eau, aucune rive en dessous.
+  // Le fleuve de la tuile (Saône, à l'ouest) : tous les nœuds d'eau sont au niveau de l'eau, aucune rive en dessous. Une eau
+  // sans berges (piscine, fontaine), loin d'un fleuve, a le niveau de la donnée moins la canopée.
+  const kind = (x, z) => (waterAt(store, x, z) ? (waterAt(store, x, z, true) ? 2 : 1) : 0);
+  const nearRiver = (x, z) => { for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) if (kind(x + a * NODE, z + b * NODE) === 2) return true; return false; };
   let wetNodes = 0;
   for (let cx = -3; cx <= 1; cx++) {
     for (let cz = -3; cz <= 2; cz++) {
@@ -287,7 +290,7 @@ test('monde : un morceau attend la tuile d\'altitude, puis reçoit sa grille ; l
         for (let i = 0; i < NODES; i++) {
           const x = cx * 64 + i * NODE, z = cz * 64 + j * NODE;
           const h = p.relief.h[(j + 1) * RELIEF_N + i + 1];
-          if (waterAt(store, x, z)) { wetNodes++; assert.equal(h, Math.fround(terrain.waterLevelAt(x, z)), `eau en ${x}, ${z}`); }
+          if (waterAt(store, x, z)) { wetNodes++; assert.equal(h, Math.fround(terrain.waterLevelAt(x, z, !nearRiver(x, z))), `eau en ${x}, ${z}`); }
         }
       }
     }
