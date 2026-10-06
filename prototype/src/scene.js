@@ -26,6 +26,33 @@ export const cutaway = {
   radius: { value: 5.5 },
   night: { value: 0 },
 };
+// Bâtiment dont le joueur est dans l'intérieur ouvert (interieur-view.js) : son toit et ses façades disparaissent, dans son
+// contour (≤ 64 sommets) élargi de 0,16 m (0,6 m pour le toit, qui déborde) ; `fade` (0 à 1) les efface en trame serrée. Hors intérieur, n = 0 : le shader des
+// bâtiments ne fait qu'une comparaison de plus.
+export const OPEN_MAX = 64;
+export const openBuilding = {
+  n: { value: 0 },
+  box: { value: new THREE.Vector4() }, // xmin, zmin, xmax, zmax (élargie)
+  poly: { value: Array.from({ length: OPEN_MAX }, () => new THREE.Vector2()) },
+  fade: { value: 0 },
+};
+
+// Efface le bâtiment ouvert : `ring` = contour { x, z }[] (≤ OPEN_MAX sommets), ou null pour le rendre.
+export function setOpenBuilding(ring) {
+  if (!ring || ring.length < 3 || ring.length > OPEN_MAX) {
+    openBuilding.n.value = 0;
+    openBuilding.fade.value = 0;
+    return;
+  }
+  let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+  ring.forEach((p, i) => {
+    openBuilding.poly.value[i].set(p.x, p.z);
+    x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); z0 = Math.min(z0, p.z); z1 = Math.max(z1, p.z);
+  });
+  openBuilding.box.value.set(x0 - 0.9, z0 - 0.9, x1 + 0.9, z1 + 0.9);
+  openBuilding.n.value = ring.length;
+}
+
 // Bout non découpé, du côté du joueur, sur la ligne caméra → joueur : une longueur fixe (m), pas une part de la ligne,
 // pour que la découpe protège le joueur collé à une façade à toute distance de la caméra. 1,13 m = 4 % de la ligne au
 // zoom de défaut (28,3 m), comme avant le zoom.
@@ -364,6 +391,10 @@ function addCutaway(material, { facades = false, lite = false } = {}) {
     shader.uniforms.uNight = cutaway.night;
     shader.uniforms.uSnow = weatherLook.snow;
     shader.uniforms.uWet = weatherLook.wet;
+    shader.uniforms.uOpenN = openBuilding.n;
+    shader.uniforms.uOpenBox = openBuilding.box;
+    shader.uniforms.uOpenPoly = openBuilding.poly;
+    shader.uniforms.uOpenFade = openBuilding.fade;
     if (facades) {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>\nattribute vec4 aFacade;\nattribute vec4 aStyle;\nattribute float aFloor;${FACADE_VARYINGS}`)
@@ -379,7 +410,7 @@ function addCutaway(material, { facades = false, lite = false } = {}) {
       .replace('#include <project_vertex>', '#include <project_vertex>\nvCutWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     if (!facades) shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\n#define CUT_EXTRA 0.0');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vCutWorld;\nuniform vec3 uCutPlayer;\nuniform vec3 uCutCamera;\nuniform float uCutRadius;\nuniform float uNight;\nuniform float uSnow;\nuniform float uWet;')
+      .replace('#include <common>', `#include <common>\nvarying vec3 vCutWorld;\nuniform vec3 uCutPlayer;\nuniform vec3 uCutCamera;\nuniform float uCutRadius;\nuniform float uNight;\nuniform float uSnow;\nuniform float uWet;\nuniform float uOpenN;\nuniform vec4 uOpenBox;\nuniform vec2 uOpenPoly[${OPEN_MAX}];\nuniform float uOpenFade;`)
       .replace('void main() {', `void main() {
   vec3 cutDir = uCutPlayer - uCutCamera;
   float cutLen = length(cutDir);
@@ -391,7 +422,27 @@ function addCutaway(material, { facades = false, lite = false } = {}) {
     float cutOver = distance(vCutWorld, cutClosest) - uCutRadius * (0.35 + 0.65 * cutT) - CUT_EXTRA;
     if (cutOver < 0.0) discard;
     cutEdge = 1.0 - step(0.16, cutOver);
-  }`);
+  }
+  // Bâtiment ouvert (intérieur) : tout ce qui est dans son contour, élargi de 0,16 m (les façades sont sur le contour) et de 0,6 m
+  // pour le toit (face tournée vers le haut, qui déborde), s'efface.
+  if (uOpenN > 0.5) {
+    vec3 openFace = cross(dFdx(vCutWorld), dFdy(vCutWorld));
+    float openMargin = abs(openFace.y) > 0.5 * length(openFace) ? 0.6 : 0.16;
+    if (vCutWorld.x > uOpenBox.x && vCutWorld.x < uOpenBox.z && vCutWorld.z > uOpenBox.y && vCutWorld.z < uOpenBox.w) {
+      bool openIn = false;
+      float openD = 1e6;
+      for (int i = 0; i < ${OPEN_MAX}; i++) {
+        if (float(i) >= uOpenN) break;
+        vec2 a = uOpenPoly[i];
+        vec2 b = uOpenPoly[(float(i) + 1.5 >= uOpenN) ? 0 : i + 1];
+        if ((a.y > vCutWorld.z) != (b.y > vCutWorld.z) && vCutWorld.x < (b.x - a.x) * (vCutWorld.z - a.y) / (b.y - a.y) + a.x) openIn = !openIn;
+        vec2 e = b - a;
+        float t = clamp(dot(vCutWorld.xz - a, e) / max(dot(e, e), 1e-6), 0.0, 1.0);
+        openD = min(openD, distance(vCutWorld.xz, a + e * t));
+      }
+      if ((openIn || openD < openMargin) && (uOpenFade > 0.999 || uOpenFade > fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))))) discard;
+    }
+  }  }`);
   };
 }
 

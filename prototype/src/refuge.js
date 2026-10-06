@@ -312,7 +312,9 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
     if (typeof s === 'boolean') return s;
     if (s instanceof Set || s instanceof Map) return s.has(building.id);
     if (s && typeof s === 'object') return !!s[building.id];
-    return !!save.searched?.[building.id];
+    // Entrée étendue d'un bâtiment à intérieur (interieur.js) : fouillé quand toutes ses pièces le sont.
+    const e = save.searched?.[building.id];
+    return e && typeof e === 'object' ? e.n > 0 && Object.keys(e.r ?? {}).length >= e.n : !!e;
   }
 
   // Poursuivants : en chasse à moins de 20 m, en vue du joueur ou tout près de lui. Un zombie bloqué derrière un mur

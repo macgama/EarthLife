@@ -37,3 +37,17 @@ test('fiche : titre et lignes, la zone en second quand il y en a une', () => {
   assert.equal(f.lines[1], 'Zone Croix-Rousse : sécurisée par toi · 4 habitants sauvés');
   assert.ok(FICHE.reach >= 1.6, 'la fiche apparaît au moins aussi loin que la fouille');
 });
+
+test('bâtiment avec intérieur : « n pièces sur m fouillées », « fouillé » seulement quand toutes le sont', () => {
+  const now = 1_000_000_000_000, H = 3600_000;
+  const at = now - 2 * H;
+  assert.equal(searchLine({ rooms: { done: 0, total: 5 }, now }), 'Pas encore fouillé · 5 pièces');
+  assert.equal(searchLine({ rooms: { done: 0, total: 1 }, now }), 'Pas encore fouillé');
+  assert.equal(searchLine({ rooms: { done: 1, total: 5 }, searchedAt: at, searchedMs: 24 * H, now }), '1 pièce sur 5 fouillée');
+  assert.equal(searchLine({ rooms: { done: 3, total: 5 }, searchedAt: at, searchedMs: 24 * H, now }), '3 pièces sur 5 fouillées');
+  assert.match(searchLine({ rooms: { done: 5, total: 5 }, searchedAt: at, searchedMs: 24 * H, now }), /^Fouillé il y a 2 h/);
+  assert.equal(searchLine({ home: true, rooms: { done: 1, total: 5 } }), 'Ton refuge');
+  // Sans `rooms` : comme avant.
+  assert.equal(searchLine({ searchedAt: null }), 'Pas encore fouillé');
+  assert.deepEqual(ficheOf({ title: 'Maison', rooms: { done: 2, total: 4 }, now }).lines, ['2 pièces sur 4 fouillées']);
+});

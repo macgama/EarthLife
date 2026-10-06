@@ -71,11 +71,21 @@ jobs:
       - run: node test/base-acceptance.mjs browser-shots/acceptance
         env:
           ROUTES: test/fixtures/offline-routes.mjs
+      # Intérieur des bâtiments (« Plan 3D ») : entrer, fouiller deux pièces, embuscade, sortir, recharger, temps de construction.
+      - run: node test/interieur-acceptance.mjs browser-shots/interieur
+        env:
+          ROUTES: test/fixtures/offline-routes.mjs
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: captures-acceptation
           path: prototype/browser-shots/acceptance
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: captures-interieur
+          path: prototype/browser-shots/interieur
           retention-days: 14
 
   acceptance-online:
