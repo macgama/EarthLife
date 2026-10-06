@@ -1007,7 +1007,11 @@ await scenario('O5', 'A fouille la pharmacie, puis B la fouille', async () => {
   const n0 = (await toastsOf(B)).length;
   await press(B, 'KeyE', 'search');
   check(await searchSafely(B, X.id), 'B : fouille terminée');
-  const loot = await until(B, (n) => window.__seen.toasts.slice(n).map((x) => x.t).find((x) => / · il restait peu de choses$/.test(x)) ?? null, n0, 8000);
+  // Un plan trouvé (rollPlan, au hasard) passe avant le butin, qui attend alors 1,2 s de jeu dans la file (TOAST_MIN) :
+  // à une ou deux images par seconde (0,05 s de jeu par image au plus), jusqu'à 24 s.
+  const loot = await until(B, (n) => window.__seen.toasts.slice(n).map((x) => x.t).find((x) => / · il restait peu de choses$/.test(x)) ?? null, n0, 40000);
+  const others = (await toastsOf(B)).slice(n0).filter((x) => !/ · il restait peu de choses$/.test(x));
+  if (others.length) note(`B : autres notifications après la fouille ${JSON.stringify(others)}`);
   check(loot === `${X.title} : ${exp.reducedLabel} · il restait peu de choses`, `B : toast « ${loot} » (table réduite : « ${exp.reducedLabel} »)`);
   check(Object.values(exp.reduced).every((v) => v <= 1), `table réduite : 1 objet au plus par ligne ${JSON.stringify(exp.reduced)}`);
   await ev(B, () => window.__earthlife.debug.lootSeed(null));
