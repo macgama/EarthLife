@@ -37,6 +37,10 @@ const MARKER_SVG = '<svg viewBox="0 0 34 46" width="34" height="46" aria-hidden=
 // Repères du refuge (bleu #5fb7ff, maison) et du sac perdu (violet #c58bff, sac), sur le modèle du repère de départ,
 // un peu plus petits : celui-ci reste devant eux quand on choisit de partir du refuge.
 const pinSvg = (fill, glyph) => `<svg viewBox="0 0 34 46" width="30" height="41" aria-hidden="true"><ellipse cx="17" cy="43.5" rx="7" ry="2.5" fill="#000" fill-opacity=".35"/><path d="M17 1.5C8.4 1.5 1.5 8.3 1.5 16.8 1.5 28.4 17 44.5 17 44.5s15.5-16.1 15.5-27.7C32.5 8.3 25.6 1.5 17 1.5z" fill="${fill}" stroke="#0a0d10" stroke-width="2.5"/>${glyph}</svg>`;
+// Repères des villes de la saison (salon), aux couleurs des badges : jaune en cours, rouge nuit du cœur, vert désinfectée ;
+// la lettre du niveau est au centre.
+const SEASON_TONES = { ok: '#3fd08f', warn: '#ffc23d', danger: '#ff5d5d', idle: '#86929c' };
+const seasonSvg = (tone, letter) => pinSvg(SEASON_TONES[tone] ?? SEASON_TONES.warn, `<text x="17" y="22.2" text-anchor="middle" font-family="Chakra Petch, system-ui, sans-serif" font-size="13" font-weight="700" fill="#0a0d10">${letter}</text>`);
 const HOME_SVG = pinSvg('#5fb7ff', '<path d="M17 9.8 10.2 16h2.3v7.2h9V16h2.3z" fill="#0a0d10"/><rect x="15.5" y="18.4" width="3" height="4.8" fill="#5fb7ff"/>');
 const BAG_SVG = pinSvg('#c58bff', '<path d="M14.4 9.6 17 11.6l2.6-2-.7 3.1h-3.8z" fill="#0a0d10"/><path d="M15.1 13.3c-2.4 1.3-3.8 3.6-3.8 6 0 2.6 2.4 4.1 5.7 4.1s5.7-1.5 5.7-4.1c0-2.4-1.4-4.7-3.8-6z" fill="#0a0d10"/>');
 // Étiquette « Ton refuge » à droite du repère (jetons du guide de style seulement) ; injectée au premier repère posé.
@@ -1000,6 +1004,25 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
     },
     setBag(bag) {
       setPin('bag', bag, 'Ton sac');
+    },
+    // Villes de la saison (salon) : [{ level, lat, lon, tone, label, tag }], un repère par niveau ; [] les retire toutes.
+    setSeasonCities(list) {
+      const keep = new Set();
+      for (const c of Array.isArray(list) ? list : []) {
+        const p = normalizePlace(c);
+        if (!p || !['facile', 'moyen', 'difficile'].includes(c.level)) continue;
+        const kind = `saison-${c.level}`;
+        keep.add(kind);
+        let pin = pinOf(kind);
+        const svg = seasonSvg(c.tone, c.level[0].toUpperCase());
+        const tag = clean(c.tag).slice(0, 60);
+        if (!pin) { pin = { kind, svg, tag, spot: null, text: '', marker: null }; pins.push(pin); }
+        else if (pin.svg !== svg || pin.tag !== tag) { pin.marker?.remove(); pin.marker = null; pin.svg = svg; pin.tag = tag; }
+        pin.spot = { lat: p.lat, lon: p.lon };
+        pin.text = clean(c.label).slice(0, 120) || kind;
+      }
+      for (const pin of pins) if (pin.kind.startsWith('saison-') && !keep.has(pin.kind)) pin.spot = null;
+      syncPins();
     },
     // Zones privées (privacy.js) : copie de la liste ; setZones après un retrait fait ailleurs (menu), qui la range aussi.
     getZones: () => zones.map((z) => ({ ...z })),

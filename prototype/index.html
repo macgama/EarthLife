@@ -391,6 +391,89 @@ select, button { font: inherit; }
   .level-rule { display: none; }
 }
 
+/* Salon (src/salon.js) : deux volets, « À plusieurs » (saison, état des lieux, bouton unique) et « Partie libre » (la carte du monde). */
+#menu[data-tab="saison"] .pane-libre, #menu[data-tab="libre"] .pane-saison, #menu.no-salon .pane-saison { display: none !important; }
+/* À plusieurs : le compte (nécessaire pour rejoindre) avant les réglages en ligne, le bouton unique en dernier. */
+#menu[data-tab="saison"] #account-block { order: 2; }
+#menu[data-tab="saison"] #online-block { order: 3; }
+#menu[data-tab="saison"] #salon-cta { order: 4; }
+.menu-tabs { display: flex; gap: 2px; margin: var(--sp-2) 0 0; border-bottom: 1px solid var(--c-line); }
+#menu.no-salon .menu-tabs { display: none; }
+.menu-tab { position: relative; flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--touch); padding: 0 var(--sp-2); border: 0; border-radius: 0; background: none; color: var(--c-text-2); font: var(--fw-bold) var(--fs-sm) / 1 var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
+.menu-tab .icon { width: var(--icon-md); height: var(--icon-md); }
+.menu-tab[aria-pressed="true"] { color: var(--c-text); background: linear-gradient(0deg, var(--c-accent-soft), transparent 85%); box-shadow: inset 0 -3px 0 var(--c-accent); }
+.menu-tab[aria-pressed="true"] .icon { color: var(--c-accent); }
+@media (hover: hover) { .menu-tab:hover { color: var(--c-text); background-color: rgba(255, 255, 255, .04); } }
+.tab-count { min-width: 20px; padding: 2px 6px; border-radius: var(--r-pill); background: var(--c-success-soft); color: var(--c-success); font: var(--fw-bold) var(--fs-2xs) / 1.2 var(--font-text); letter-spacing: 0; text-align: center; }
+.salon { display: flex; flex-direction: column; gap: var(--sp-3); }
+.salon-banner { padding: var(--sp-3); background: repeating-linear-gradient(-45deg, rgba(255, 127, 31, .07) 0 8px, transparent 8px 16px), var(--c-bg-2); border: 1px solid var(--c-line); border-left: 3px solid var(--c-accent); border-radius: var(--r-sm); }
+.salon-line { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.salon-season { margin: 0; color: var(--c-accent); font-size: var(--fs-sm); }
+.salon-link { display: inline-flex; align-items: center; gap: 6px; margin: 0; color: var(--c-text-2); font: var(--fw-semibold) var(--fs-2xs) / 1 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
+.salon-link-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c-text-3); }
+.salon-link[data-tone="ok"] { color: var(--c-success); }
+.salon-link[data-tone="ok"] .salon-link-dot { background: var(--c-success); animation: salon-pulse 2s ease-out infinite; }
+.salon-link[data-tone="warn"] { color: var(--c-warn); }
+.salon-link[data-tone="warn"] .salon-link-dot { background: var(--c-warn); }
+@keyframes salon-pulse { 0% { box-shadow: 0 0 0 0 rgba(63, 208, 143, .55); } 70%, 100% { box-shadow: 0 0 0 7px rgba(63, 208, 143, 0); } }
+.salon-days { margin: var(--sp-1) 0 var(--sp-2); color: var(--c-text); font: var(--fw-bold) var(--fs-xl) / var(--lh-tight) var(--font-display); letter-spacing: var(--ls-title); text-transform: uppercase; }
+.salon-days:empty { display: none; }
+.salon-time { height: 4px; background: var(--c-gauge-track); }
+.salon-time i { display: block; width: var(--p, 0%); height: 100%; background: var(--c-accent); }
+.salon-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-2); margin: var(--sp-3) 0 0; }
+.salon-stats div { min-width: 0; }
+.salon-stats dt { color: var(--c-text-3); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
+.salon-stats dd { margin: 3px 0 0; color: var(--c-text); font: var(--fw-bold) var(--fs-lg) / 1 var(--font-text); font-variant-numeric: tabular-nums; }
+.salon-label { display: flex; align-items: center; gap: var(--sp-2); margin: var(--sp-1) 0 calc(-1 * var(--sp-1)); }
+.salon-label::after { content: ''; flex: 1; height: 1px; background: var(--c-line); }
+.fronts { display: grid; gap: var(--sp-2); }
+.front { --lv: var(--c-success); display: grid; gap: 7px; width: 100%; padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4); border: 1px solid var(--c-line); border-radius: var(--r-sm); background: var(--c-panel-raised); box-shadow: inset 4px 0 0 var(--lv); color: var(--c-text); font: inherit; text-align: left; cursor: pointer; transition: transform var(--t-fast) var(--ease-std), border-color var(--t-fast) var(--ease-std); }
+.front[data-level="moyen"] { --lv: var(--c-warn); }
+.front[data-level="difficile"] { --lv: var(--c-danger); }
+@media (hover: hover) { .front:hover:not([aria-disabled="true"]) { border-color: var(--c-line-strong); } }
+.front:active:not([aria-disabled="true"]) { transform: scale(.985); }
+.front[aria-checked="true"] { border-color: var(--c-accent); background: linear-gradient(90deg, var(--c-accent-soft), var(--c-panel-raised) 75%); box-shadow: inset 4px 0 0 var(--lv), var(--glow-accent); }
+.front[aria-disabled="true"] { opacity: var(--o-dim); cursor: not-allowed; }
+.front-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--sp-2); }
+.front-name { color: var(--lv); font: var(--fw-bold) var(--fs-lg) / 1 var(--font-display); letter-spacing: var(--ls-title); text-transform: uppercase; }
+.front-pct { color: var(--c-text-2); font-size: var(--fs-xs); font-weight: var(--fw-medium); }
+.front-tag { flex: none; padding: 2px 6px; border: 1px solid var(--c-accent-line); border-radius: var(--r-xs); color: var(--c-accent); font: var(--fw-bold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
+.front-tag:empty { display: none; }
+.front-badge { margin-left: auto; padding: 3px 8px; border-radius: var(--r-xs); background: rgba(255, 255, 255, .08); color: var(--c-text-2); font: var(--fw-bold) var(--fs-2xs) / 1 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
+.front[data-tone="ok"] .front-badge { background: var(--c-success-soft); color: var(--c-success); }
+.front[data-tone="warn"] .front-badge { background: rgba(255, 194, 61, .16); color: var(--c-warn); }
+.front[data-tone="danger"] .front-badge { background: var(--c-danger-soft); color: var(--c-danger); }
+.front-where { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); min-width: 0; }
+.front-city { min-width: 0; color: var(--c-text); font: var(--fw-semibold) var(--fs-md) / var(--lh-snug) var(--font-display); letter-spacing: var(--ls-title); }
+.front-city.empty { color: var(--c-text-2); }
+.front-bar { height: var(--gauge-h); background: var(--c-gauge-track); -webkit-mask: var(--gauge-mask); mask: var(--gauge-mask); }
+.front-bar i { display: block; width: var(--p, 0%); height: 100%; background: var(--c-accent); transition: width var(--t-slow) var(--ease-out); }
+.front[data-tone="ok"] .front-bar i { background: var(--c-success); }
+.front-nums { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px var(--sp-3); color: var(--c-text-2); font-size: var(--fs-sm); }
+.front-nums:not(:has(:not(:empty))) { display: none; }
+.front-foot { display: flex; align-items: center; gap: 6px; color: var(--c-text-2); font-size: var(--fs-sm); }
+.front-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--c-text-3); }
+.front-dot[data-live="1"] { background: var(--c-success); }
+/* Bouton unique : collé au bas du panneau comme « Jouer ici », deux lignes (ce qu'il fait, où il mène). */
+#menu .salon-cta { position: sticky; bottom: 0; z-index: 2; width: 100%; min-height: 64px; margin-top: 2px; padding: 0 var(--sp-4); background-color: var(--c-panel-solid); box-shadow: 0 0 0 var(--sp-2) var(--c-panel-solid); }
+#menu .salon-cta .btn-icon .icon { width: var(--icon-lg); height: var(--icon-lg); }
+#menu .salon-cta:not(:disabled) { animation: salon-glow 2.8s ease-in-out infinite; }
+@keyframes salon-glow { 0%, 100% { filter: drop-shadow(0 0 0 rgba(255, 127, 31, 0)); } 50% { filter: drop-shadow(0 0 9px rgba(255, 127, 31, .5)); } }
+.salon-cta-text { display: grid; gap: 4px; min-width: 0; text-align: left; }
+.salon-cta-label { font-size: var(--fs-lg); line-height: 1; }
+.salon-cta-sub { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font: var(--fw-semibold) var(--fs-xs) / 1.25 var(--font-text); letter-spacing: 0; text-transform: none; opacity: .85; }
+.salon-cta-sub:empty { display: none; }
+@media (max-width: 759px) {
+  /* Le salon est surtout une liste : le panneau du bas monte plus haut, la carte reste visible au-dessus. */
+  #menu[data-tab="saison"] .sheet { max-height: 78%; }
+  #menu[data-tab="saison"] .menu-top .brand-tag { display: none; }
+}
+@media (max-width: 759px) and (max-height: 700px) {
+  .front-nums { display: none; }
+  .salon-banner { padding: var(--sp-2) var(--sp-3); }
+  .salon-stats { margin-top: var(--sp-2); }
+}
+
 /* Chargement : logo, journal des étapes, jauge animée, conseil de survie.
    .fatal : message bloquant (aussi posé sans JavaScript par le script en fin de page) ; .notice : message bref sur le menu. */
 #loading { position: fixed; inset: 0; z-index: var(--z-loading); display: grid; overflow-y: auto; padding: max(var(--sp-4), env(safe-area-inset-top)) max(var(--sp-4), env(safe-area-inset-right)) max(var(--sp-4), env(safe-area-inset-bottom)) max(var(--sp-4), env(safe-area-inset-left)); text-align: center; background: radial-gradient(ellipse at 50% 45%, transparent 40%, var(--c-scrim)), var(--grid), var(--c-bg); }
@@ -1121,7 +1204,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
 <body>
 <canvas id="view"></canvas>
 
-<div id="menu">
+<div id="menu" class="no-salon" data-tab="libre">
   <!-- Carte du monde : le joueur choisit son départ n'importe où sur Terre (src/picker.js). -->
   <div id="picker-map" role="region" aria-label="Carte du monde : touche un endroit pour y commencer"></div>
   <div class="map-fallback" aria-hidden="true"><svg viewBox="0 0 100 100"><g fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="50" cy="50" r="46"/><ellipse cx="50" cy="50" rx="18" ry="46"/><ellipse cx="50" cy="50" rx="34" ry="46"/><path d="M50 4v92M4 50h92M8.6 30h82.8M8.6 70h82.8"/></g></svg></div>
@@ -1132,8 +1215,12 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <button type="button" class="text-button label" id="help-toggle" aria-expanded="false" aria-controls="help"><span class="btn-icon" data-icon="aide"></span><span>Comment jouer&nbsp;?</span></button>
       </div>
       <p class="label brand-tag">Survie zombie sur la vraie Terre</p>
-      <p class="lead">Choisis ton point de départ n'importe où sur Terre&nbsp;: une ville, un village, ou touche simplement la carte. Les rues viennent d'OpenStreetMap, la météo et l'heure sont celles du lieu en ce moment même.</p>
-      <form id="place-form" role="search" autocomplete="off">
+      <div class="menu-tabs" id="menu-tabs" role="group" aria-label="Mode de jeu">
+        <button type="button" class="menu-tab" id="menu-tab-saison" data-tab="saison" aria-pressed="false"><span class="btn-icon" data-icon="antenne"></span><span>À plusieurs</span><span class="tab-count" id="tab-count" hidden></span></button>
+        <button type="button" class="menu-tab" id="menu-tab-libre" data-tab="libre" aria-pressed="true"><span class="btn-icon" data-icon="carte"></span><span>Partie libre</span></button>
+      </div>
+      <p class="lead pane-libre">Choisis ton point de départ n'importe où sur Terre&nbsp;: une ville, un village, ou touche simplement la carte. Les rues viennent d'OpenStreetMap, la météo et l'heure sont celles du lieu en ce moment même.</p>
+      <form id="place-form" class="pane-libre" role="search" autocomplete="off">
         <label class="sr-only" for="place-search">Chercher un lieu de départ</label>
         <div class="search-box">
           <span class="search-icon" data-icon="recherche"></span>
@@ -1145,43 +1232,51 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
       </form>
     </div>
     <section class="sheet" aria-label="Lieu de départ et réglages">
-      <p class="label sheet-label" aria-hidden="true">Raccourcis</p>
-      <div class="quick" id="quick" role="group" aria-label="Raccourcis">
+      <!-- Salon (src/salon.js, src/ville-ecran.js) : état des lieux de la saison et bouton unique pour rejoindre les autres. -->
+      <section class="salon pane-saison" id="salon" aria-label="Saison : état des lieux">
+        <div class="salon-banner">
+          <div class="salon-line">
+            <p class="label salon-season" id="salon-season">Saison 1</p>
+            <p class="salon-link" id="salon-link" data-tone="off"><span class="salon-link-dot" aria-hidden="true"></span><span id="salon-link-text">Pas encore en ligne</span></p>
+          </div>
+          <p class="salon-days" id="salon-days"></p>
+          <div class="salon-time" id="salon-time" aria-hidden="true"><i></i></div>
+          <dl class="salon-stats">
+            <div><dt>En ligne</dt><dd id="stat-online">–</dd></div>
+            <div><dt>Désinfectées</dt><dd id="stat-cleaned">–</dd></div>
+            <div><dt>Zombies</dt><dd id="stat-zombies">–</dd></div>
+          </dl>
+        </div>
+        <p class="label salon-label" id="fronts-label">Choisis ton niveau</p>
+        <div class="fronts" id="fronts" role="radiogroup" aria-labelledby="fronts-label"></div>
+        <p class="picker-note" id="salon-note" role="status" aria-live="polite" hidden></p>
+      </section>
+      <p class="label sheet-label pane-libre" aria-hidden="true">Raccourcis</p>
+      <div class="quick pane-libre" id="quick" role="group" aria-label="Raccourcis">
         <button type="button" class="pick-chip locate" id="locate"><span class="btn-icon" data-icon="position"></span>Autour de moi</button>
       </div>
-      <div class="place-card">
+      <div class="place-card pane-libre">
         <span class="place-ico" data-icon="cible"></span>
         <div class="place-body">
           <span class="label place-title" aria-hidden="true">Point de départ</span>
           <p class="place-line empty" id="place-line" aria-live="polite"><span class="place-empty">Touche la carte ou cherche un lieu pour choisir ton départ.</span><span class="place-label sr-only">Départ&nbsp;:</span> <strong id="place-name"></strong> <span id="place-area"></span></p>
         </div>
       </div>
-      <p class="picker-note" id="picker-note" role="status" aria-live="polite"></p>
+      <p class="picker-note pane-libre" id="picker-note" role="status" aria-live="polite"></p>
       <!-- Sauver sa ville (src/ville-ecran.js) : le niveau dit la part des habitants devenus zombies ; sans niveau, la partie reste libre. -->
-      <p class="label sheet-label" aria-hidden="true">Niveau</p>
-      <div class="level-row" id="level-row" role="group" aria-label="Niveau de jeu : part des habitants devenus zombies" aria-describedby="level-rule">
+      <p class="label sheet-label pane-libre" aria-hidden="true">Sauver ta ville (solo)</p>
+      <div class="level-row pane-libre" id="level-row" role="group" aria-label="Niveau de jeu : part des habitants devenus zombies" aria-describedby="level-rule">
         <button type="button" class="pick-chip level-chip" data-level="facile" aria-pressed="false">Facile<span class="level-pct">20 %</span></button>
         <button type="button" class="pick-chip level-chip" data-level="moyen" aria-pressed="false">Moyen<span class="level-pct">35 %</span></button>
         <button type="button" class="pick-chip level-chip" data-level="difficile" aria-pressed="false">Difficile<span class="level-pct">50 %</span></button>
       </div>
-      <p class="picker-note level-rule" id="level-rule" role="status" aria-live="polite"></p>
-      <p class="picker-note" id="city-line" hidden></p>
-      <div class="quick city-next" id="city-next" role="group" aria-label="Communes voisines à sauver" hidden></div>
-      <p class="picker-note" id="city-note" role="status" hidden></p>
-      <button type="button" class="pick-chip city-restart" id="city-restart" hidden></button>
-      <!-- Saison 1 (src/ville-ecran.js) : le même niveau et la même ville pour tous les joueurs ; caché sans jeu à plusieurs. -->
-      <div class="season-block" id="season-block" hidden>
-        <p class="label sheet-label" aria-hidden="true">Saison 1</p>
-        <div class="level-row" id="season-row" role="group" aria-label="Saison 1 : choisis ton niveau, il ne change plus pendant la saison">
-          <button type="button" class="pick-chip level-chip" data-season="facile" aria-pressed="false">Saison Facile</button>
-          <button type="button" class="pick-chip level-chip" data-season="moyen" aria-pressed="false">Saison Moyen</button>
-          <button type="button" class="pick-chip level-chip" data-season="difficile" aria-pressed="false">Saison Difficile</button>
-        </div>
-        <p class="picker-note" id="season-line" role="status" aria-live="polite"></p>
-        <button type="button" class="pick-chip city-restart" id="season-progress">Évolution de la saison</button>
-      </div>
-      <p class="label sheet-label" aria-hidden="true">Conditions</p>
-      <div class="options">
+      <p class="picker-note level-rule pane-libre" id="level-rule" role="status" aria-live="polite"></p>
+      <p class="picker-note pane-libre" id="city-line" hidden></p>
+      <div class="quick city-next pane-libre" id="city-next" role="group" aria-label="Communes voisines à sauver" hidden></div>
+      <p class="picker-note pane-libre" id="city-note" role="status" hidden></p>
+      <button type="button" class="pick-chip city-restart pane-libre" id="city-restart" hidden></button>
+      <p class="label sheet-label pane-libre" aria-hidden="true">Conditions</p>
+      <div class="options pane-libre">
         <label class="opt"><span class="label opt-name"><span class="btn-icon" data-icon="nuages"></span>Météo</span>
           <select id="weather-mode">
             <option value="live">Météo réelle en direct</option>
@@ -1251,13 +1346,14 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <p class="picker-note" id="account-note" role="status" aria-live="polite" hidden></p>
       </div>
       <!-- « Voir mon refuge » recentre la carte sur le refuge ; on change de refuge en jeu (« Déménager ici »), #save-move le dit. -->
-      <div class="save-line" id="save-line" hidden><span class="btn-icon" data-icon="refuge"></span><span id="save-text"></span><button type="button" class="secondary" id="save-home">Voir mon refuge</button></div>
-      <p class="picker-note" id="save-move" role="status" hidden></p>
-      <p class="picker-note" id="save-crate" hidden></p>
+      <div class="save-line pane-libre" id="save-line" hidden><span class="btn-icon" data-icon="refuge"></span><span id="save-text"></span><button type="button" class="secondary" id="save-home">Voir mon refuge</button></div>
+      <p class="picker-note pane-libre" id="save-move" role="status" hidden></p>
+      <p class="picker-note pane-libre" id="save-crate" hidden></p>
       <p class="picker-note warn" id="save-note" role="status" hidden></p>
       <!-- Onglet en lecture seule (partie ouverte ailleurs) : reprendre la main, même après avoir fermé la carte. -->
       <button type="button" class="secondary" id="save-take" hidden><span class="btn-icon" data-icon="importer"></span><span>Reprendre ici</span></button>
-      <button class="primary" id="play" disabled><span class="btn-icon" id="play-icon" data-icon="jouer"></span><span id="play-label">Jouer ici</span></button>
+      <button type="button" class="primary salon-cta pane-saison" id="salon-cta" data-kind="join" disabled><span class="btn-icon" data-icon="jouer"></span><span class="salon-cta-text"><span class="salon-cta-label" id="salon-cta-label">Rejoindre</span><span class="salon-cta-sub" id="salon-cta-sub"></span></span></button>
+      <button class="primary pane-libre" id="play" disabled><span class="btn-icon" id="play-icon" data-icon="jouer"></span><span id="play-label">Jouer ici</span></button>
     </section>
   </div>
   <div id="help" class="help" role="dialog" aria-labelledby="help-title" hidden>
@@ -1315,6 +1411,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     </section>
     <section class="help-sec" id="help-online" hidden>
       <h3 class="label"><span class="btn-icon" data-icon="antenne"></span>Jouer à plusieurs</h3>
+      <p>Au menu, l'onglet «&nbsp;À plusieurs&nbsp;» montre l'état des lieux de la saison&nbsp;: les trois niveaux, la ville de chacun, les survivants en ligne et la part de zombies éliminés. Choisis un niveau, puis touche le gros bouton pour rejoindre les autres. «&nbsp;Partie libre&nbsp;» te laisse jouer où tu veux.</p>
       <p>Les autres survivants portent une veste <b>sarcelle</b>&nbsp;; leur surnom s'affiche à 30&nbsp;m. Pas de discussion&nbsp;: 6 gestes seulement.</p>
       <dl class="keys online-keys">
         <dt><kbd>T</kbd></dt><dd>Ouvrir ou fermer la roue des gestes</dd>
