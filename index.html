@@ -257,6 +257,9 @@ select, button { font: inherit; }
 .level-chip[aria-pressed="true"] .level-pct { color: var(--c-text); }
 .level-rule { margin-top: 0; }
 .city-restart { justify-content: center; white-space: normal; padding-top: 6px; padding-bottom: 6px; text-align: center; }
+/* Saison 1 : mêmes trois niveaux, une ville commune par niveau pour tous les joueurs (src/ville-ecran.js). */
+.season-block { display: flex; flex-direction: column; gap: var(--sp-2); }
+.season-block .picker-note { margin: 0; }
 /* Lieu choisi : carte à icône, étiquette au-dessus, nom et région sur deux lignes au plus. */
 .place-card { display: grid; grid-template-columns: var(--icon-md) 1fr; align-items: center; column-gap: var(--sp-3); padding: var(--sp-2) var(--sp-3); background: var(--c-bg-2); border: 1px solid var(--c-line); border-radius: var(--r-sm); }
 .place-ico { display: inline-flex; color: var(--c-accent); }
@@ -1166,6 +1169,17 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
       <div class="quick city-next" id="city-next" role="group" aria-label="Communes voisines à sauver" hidden></div>
       <p class="picker-note" id="city-note" role="status" hidden></p>
       <button type="button" class="pick-chip city-restart" id="city-restart" hidden></button>
+      <!-- Saison 1 (src/ville-ecran.js) : le même niveau et la même ville pour tous les joueurs ; caché sans jeu à plusieurs. -->
+      <div class="season-block" id="season-block" hidden>
+        <p class="label sheet-label" aria-hidden="true">Saison 1</p>
+        <div class="level-row" id="season-row" role="group" aria-label="Saison 1 : choisis ton niveau, il ne change plus pendant la saison">
+          <button type="button" class="pick-chip level-chip" data-season="facile" aria-pressed="false">Saison Facile</button>
+          <button type="button" class="pick-chip level-chip" data-season="moyen" aria-pressed="false">Saison Moyen</button>
+          <button type="button" class="pick-chip level-chip" data-season="difficile" aria-pressed="false">Saison Difficile</button>
+        </div>
+        <p class="picker-note" id="season-line" role="status" aria-live="polite"></p>
+        <button type="button" class="pick-chip city-restart" id="season-progress">Évolution de la saison</button>
+      </div>
       <p class="label sheet-label" aria-hidden="true">Conditions</p>
       <div class="options">
         <label class="opt"><span class="label opt-name"><span class="btn-icon" data-icon="nuages"></span>Météo</span>

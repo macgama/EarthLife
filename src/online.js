@@ -87,7 +87,7 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 const INVITE_RE = /^[A-Za-z0-9-]{1,16}$/;
 const BUILD_RE = /^([0-9a-f]{7}|dev)$/;
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost']);
-const URGENT = new Set(['mk', 'mks', 'rf', 'g', 'hide', 'rep', 'name', 'leave']);
+const URGENT = new Set(['mk', 'mks', 'rf', 'g', 'hide', 'rep', 'name', 'leave', 'sv']);
 const ZONES = new Set(['public', 'crown', 'private']);
 
 // ?server= : seulement la machine locale (127.0.0.1 ou localhost), en http, https, ws ou wss ; sinon `fallback`.
@@ -138,7 +138,7 @@ export const NULL_ONLINE = Object.freeze({
   showMe: () => Promise.resolve(null), eraseMe: () => Promise.resolve(false), searchedByOther: () => null,
   isGone: () => false, foreignRefuge: () => false, refuges: () => [], others: () => [], far: () => [],
   around: () => 0, serverNow: () => Date.now(), retryIn: () => null, muted: () => false, setMuted: noop,
-  on: () => noop, debug: () => null,
+  on: () => noop, debug: () => null, live: false, season: () => false,
 });
 
 export function createOnline({
@@ -472,6 +472,7 @@ export function createOnline({
     const l = link;
     if (!l) return;
     link = null;
+    if (l.state === 'live') emit('link', false);
     if (l.kind === 'ws') {
       const ws = l.ws;
       ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
@@ -566,6 +567,9 @@ export function createOnline({
         worldCount = msg.n;
         refresh();
         return;
+      case 'sv':
+        emit('sv', msg);
+        return;
       case 'err': return onErr(msg.code);
       case 'bye': return onBye(l, msg);
       default:
@@ -607,6 +611,7 @@ export function createOnline({
     flushQueue();
     if (l.kind === 'ws') later('beat', ONLINE.beatMs, beat);
     refresh();
+    emit('link', true);
   }
 
   function onErr(code) {
@@ -1065,6 +1070,10 @@ export function createOnline({
     get inviteRequired() { return !!health?.invite; },
     // Comptes ouverts sur ce serveur (acct de /v1/health) ; null tant que la santé n'est pas lue.
     get accountsOpen() { return health ? health.acct : null; },
+    // Connexion au serveur établie (welcome reçu) : le jeu de saison s'y abonne (net/season.js).
+    get live() { return !!link && link.state === 'live'; },
+    // Message `sv` de la saison (abonnement, gestes) ; faux si la connexion n'est pas prête.
+    season(msg) { return send({ t: 'sv', ...msg }); },
 
     // Au chargement de la page : /v1/health, puis connexion si le choix est « on ». Rappelé par « Reprendre ici »
     // après « Partie en ligne ouverte dans un autre onglet ».

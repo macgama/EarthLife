@@ -51,6 +51,7 @@ import { createTerritoryStore } from './territory-store.js';
 import { createCommuneCache } from './commune.js';
 import { createResilientBlocks } from './ville-jeu.js';
 import { createCityGame } from './ville-ecran.js';
+import { createSeasonNet } from './net/season.js';
 // Icônes (HUD, chargement, fin) sous un espace de noms : pas de conflit avec d'autres imports nommés.
 import * as icons from './icons.js';
 // Jeu à plusieurs : une couche posée à côté du jeu solo (spécification 7).
@@ -118,6 +119,8 @@ const save = saveStore.save;
 const communes = createCommuneCache(localStore);
 const blocksClient = createResilientBlocks({ makeWorker: () => new Worker(new URL('./blocks-worker.js', import.meta.url), { type: 'module' }) });
 let city = null;
+// Saisons (net/season.js) : créé avec le jeu à plusieurs ; null sans lui.
+let seasonNet = null;
 // Ses propres démontages (72 h, sauvegarde) ; ceux des autres viennent du jeu en ligne.
 const localGone = goneChecker(() => save.dismantled);
 // ?fresh=1 ne sert qu'une fois : un rechargement à la main ne doit pas effacer la partie.
@@ -136,6 +139,9 @@ city = createCityGame({
   setLoading, showCard, toast, getSession: () => session, placePlayer, renderConditions, refugeCtx, markSearched, afterClaim,
   startGame, toMenu, saveDirty: () => saveStore.markDirty(), saveFlush: (why) => saveStore.flush(why),
   onLevelChange: (place) => updatePlayLabel(place),
+  // Saison : lus au moment du besoin (ils n'existent pas encore ici).
+  get seasonNet() { return seasonNet; }, get account() { return account; }, get online() { return online; },
+  openAccount: () => accountUi?.open('login'),
 });
 city.initMenu();
 
@@ -158,6 +164,8 @@ const online = params.get('online') === '0' ? NULL_ONLINE : createOnline({
 });
 // Jeu en ligne actif sur cette page (le transport n'existe que si un serveur est utilisable).
 const onlineOn = online.transport !== null;
+// Saison : même serveur, la session du compte en tête de chaque requête (ni compte ni jeu en ligne : indisponible).
+if (onlineOn) seasonNet = createSeasonNet({ server: serverFromParams(params, ONLINE.server), session: () => account.session, online });
 // ?server= refusé (seule la machine locale est acceptée) : dit par un toast avec ?debug=1 (section 6.2).
 let serverNotice = DEBUG && !!serverParam && !onlineOn && params.get('online') !== '0';
 const LIVE = new Set(['en-ligne', 'lent', 'couronne']);
@@ -192,6 +200,8 @@ if (onlineOn) {
     onReload: (o) => reloadPage(o),
   });
   online.on('session', () => account.sessionRefused());
+  // Connexion ou déconnexion : le bloc « Saison 1 » du menu relit l'inscription.
+  account.on('state', () => city.seasonChanged());
 }
 // Écouteurs posés après ceux de save.js (créé plus haut) : la partie est écrite d'abord, puis envoyée. Une erreur du
 // jeu en ligne n'empêche pas l'envoi de la partie.
@@ -203,6 +213,7 @@ window.addEventListener('pagehide', () => {
 window.addEventListener('pageshow', (e) => { if (e.persisted) online.start(); });
 document.addEventListener('visibilitychange', () => {
   try { online.hidden(document.hidden); } catch (e) { console.warn('online.hidden', e); }
+  city.onHidden(document.hidden);
   account.hidden(document.hidden);
 });
 // Le refuge actuel (ou aucun, après ?fresh=1) est renvoyé à chaque welcome ; hors zone privée seulement.
@@ -491,6 +502,8 @@ function toMenu() {
     if (session.action) cancelAction(session);
     saveStore.flush('menu');
   }
+  // Saison : les zombies empruntés à la ville commune lui sont rendus, l'abonnement se ferme.
+  city.onMenu(session);
   // Au menu, le personnage n'est plus visible des autres ; la connexion reste (surnom, compte du monde).
   online.leave();
   othersView?.clear();
@@ -606,8 +619,8 @@ const samePlace = (a, b) => a && b && Math.abs(a.lat - b.lat) < 1e-6 && Math.abs
 // à 1 500 m ou moins, sinon le lieu choisi (expédition). Le monde est gardé si l'origine ne change pas et si la météo
 // a moins de 15 min ; le personnage n'est jamais remis à neuf. spawn : 'place' (départ ou reprise) ou 'refuge'
 // (réveil au refuge après une mort en expédition).
-async function startGame(place, { spawn = 'place', confirmed = false } = {}) {
-  if (!place || starting) return;
+async function startGame(place, { spawn = 'place', confirmed = false, season = null } = {}) {
+  if ((!place && !season) || starting) return;
   starting = true;
   try {
     // Page restée au menu pendant qu'une autre écrivait : on relit la partie avant de jouer (sinon cette page jouerait en
@@ -615,8 +628,10 @@ async function startGame(place, { spawn = 'place', confirmed = false } = {}) {
     if (saveStore.refresh()) syncMenu();
     // Quelle partie ? Libre (comme avant), ta ville en cours, ou une ville à commencer (commune, recensement, niveau) ;
     // null : le joueur annule, on reste où l'on est (menu ou partie).
-    const plan = await city.prepareLaunch(place, { spawn, confirmed });
+    const plan = await city.prepareLaunch(place, { spawn, confirmed, season });
     if (!plan) { setLoading(null); return; }
+    // Saison : le départ est celui de la saison (dernier refuge, ou ville commune), pas le lieu choisi au menu.
+    if (plan.kind === 'season') place = plan.place;
     // Premier passage en ligne : la carte « Jouer à plusieurs » avant le départ, jamais pendant une partie.
     if (spawn === 'place' && onlineOn) await onlineChoice();
     await launch(place, spawn, plan);
@@ -631,7 +646,7 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
   $('menu').classList.add('hidden');
   const home = homeLatLon();
   // Une ville neuve ailleurs que chez soi : on y joue d'abord comme en expédition, la maison tirée y déménage le refuge.
-  const atHome = !(plan.kind === 'new' && !plan.adopt) && !!home && geoDistance(home, place) <= HOME_RADIUS;
+  const atHome = !((plan.kind === 'new' && !plan.adopt) || (plan.kind === 'season' && plan.first)) && !!home && geoDistance(home, place) <= HOME_RADIUS;
   const origin = atHome ? home : { lat: place.lat, lon: place.lon };
   // À 1 500 m ou moins, on repart de la porte du refuge : le HUD (et le nom d'un refuge installé ensuite) donne le lieu
   // du refuge, pas celui du point choisi à côté.
@@ -1735,6 +1750,7 @@ function runRefuge(s, a) {
     if (a.id === 'claim') saveStore.persist();
     // Refuge partagé (drapeau sarcelle chez les autres), hors zone privée ; le serveur décide (premier arrivé).
     online.refuge(save.base?.id ?? null);
+    city.onClaim(s);
     s.flagsDirty = true;
     // Le refuge est dans ce monde-ci : il devient la maison de la session.
     s.home = true;
@@ -2708,6 +2724,7 @@ function onOnlineStatus() {
   input.setWheel(live);
   document.body.classList.toggle('online-live', live);
   renderOnlineMenu();
+  city.syncSeason();
 }
 
 // Bloc en ligne du menu : interrupteur, ligne d'état, boutons (annexe A). Caché sans jeu en ligne ; « Mes zones
