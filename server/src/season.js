@@ -671,6 +671,10 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return r.obj && typeof r.obj.ses === 'string' ? r.obj.ses : null;
   }
 
+  // Épingle de la ville sur la carte du menu : position à 3 décimales (environ 100 m), absente si la ville n'en garde pas.
+  const coords = (place) => (Number.isFinite(place?.lat) && Number.isFinite(place?.lon)
+    ? { lat: Math.round(place.lat * 1000) / 1000, lon: Math.round(place.lon * 1000) / 1000 } : {});
+
   // Évolution de la saison (écran du menu) : publique, gardée 30 s.
   async function progress() {
     if (!(await init())) return refuse(503, 'base');
@@ -685,7 +689,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
         const city = w.city, v = city?.ville;
         levels[level] = {
           players: counts[level] ?? 0, online: w.subs.size, seats: R.seats,
-          city: city ? { key: city.key, name: city.name, population: v.population, zombies: zombiesLeft(v), zombies0: v.zombies0, saved: v.saved,
+          city: city ? { key: city.key, name: city.name, ...coords(city.place), population: v.population, zombies: zombiesLeft(v), zombies0: v.zombies0, saved: v.saved,
             toSave: v.hidden0, flags: v.flags, killed: v.killed[0] + v.killed[1] + v.killed[2], status: cityStatus(v), startMs: v.start } : null,
         };
       }

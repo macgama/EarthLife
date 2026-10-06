@@ -591,6 +591,9 @@ test('évolution de la saison : publique, gardée 30 s', async () => {
   assert.equal(p.body.levels.difficile.players, 1);
   assert.equal(p.body.levels.facile.city.zombies, 120);
   assert.equal(p.body.levels.facile.city.toSave, 480);
+  // Épingle pour la carte du menu : position de la ville à 3 décimales.
+  assert.equal(p.body.levels.facile.city.lat, 45.9);
+  assert.equal(p.body.levels.facile.city.lon, 5.2);
   assert.equal(p.body.levels.moyen.city, null);
   assert.equal(JSON.stringify(p.body).includes('joueur'), false);
   const [k] = redBlock(w);
@@ -661,4 +664,15 @@ test('saison : limite par adresse propre aux saisons (large, par adresse, seau c
   // Le seau se recharge avec l'horloge.
   w.clock.t += 1000;
   assert.equal(w.seasons.admit('203.0.113.7'), null);
+});
+
+test('évolution de la saison : l\'épingle de la ville est arrondie à 3 décimales', async () => {
+  const w = rig();
+  const a = await w.player(1);
+  const r = await a.call('/v1/season/seed', { ...SEED, place: { lat: 45.90324, lon: 5.17961, name: 'Pérouges' } });
+  assert.equal(r.body.created, true);
+  const c = (await w.seasons.progress()).body.levels.facile.city;
+  assert.equal(c.lat, 45.903);
+  assert.equal(c.lon, 5.18);
+  assert.deepEqual(Object.keys((await w.seasons.progress()).body.levels.moyen), ['players', 'online', 'seats', 'city']);
 });
