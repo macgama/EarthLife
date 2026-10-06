@@ -442,7 +442,7 @@ function addCutaway(material, { facades = false, lite = false } = {}) {
       }
       if ((openIn || openD < openMargin) && (uOpenFade > 0.999 || uOpenFade > fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))))) discard;
     }
-  }  }`);
+  }`);
   };
 }
 
