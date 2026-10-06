@@ -180,6 +180,15 @@ function segHit(a, b, c, d) {
 // parcours) jusqu'au bord extérieur du trottoir cartographié (walkSide) ; dalles jusqu'aux façades (front, 10 m au
 // plus), peintes sous les aires.
 const FRONT_MAX = 10, WALK_HALF = 1.25;
+// Demi-largeur du tablier peint d'une voie en pont (étape 7 de groundPlan) : celle du tablier en relief
+// (markings.js, deckBuffers), dont les flancs prennent la couleur du bord peint.
+export function deckHalf(r) {
+  if (r.rail) return r.width / 2 + 0.8;
+  if (r.walkOnly) return r.width / 2 + 0.6;
+  const s = roadStyle(r);
+  return s.cw / 2 + s.side + 0.8;
+}
+
 export function roadStyle(r) {
   const setting = r.setting in SETTING_INDEX ? r.setting : 'city';
   const i = SETTING_INDEX[setting];
@@ -1030,6 +1039,9 @@ const groundKeys = {
   uPaveKey: { value: new THREE.Color(PAL.pave) },
   uWalkKey: { value: new THREE.Color(PAL.sidewalk) },
   uLineColor: { value: new THREE.Color(PAL.line) },
+  uWaterKey: { value: new THREE.Color(PAL.water) },
+  uWaterShade: { value: new THREE.Color(PAL.water).multiplyScalar(0.62) },
+  uBridgeColor: { value: new THREE.Color(PAL.bridge) },
 };
 
 function groundShader(shader) {
@@ -1042,6 +1054,9 @@ function groundShader(shader) {
 uniform vec3 uPaveKey;
 uniform vec3 uWalkKey;
 uniform vec3 uLineColor;
+uniform vec3 uWaterKey;
+uniform vec3 uWaterShade;
+uniform vec3 uBridgeColor;
 varying vec2 vGroundXZ;
 varying vec4 vMark;
 varying vec2 vMarkInfo;
@@ -1074,8 +1089,24 @@ float markCover(float x, float h, float w) {
       float cover = markCover(vMark.x, vMark.z, mw.x) * markCover(vMark.y - 0.5 * vMark.w, 0.5 * vMark.w, mw.y);
       float open = vMarkInfo.y > 0.5 ? 1.0 : smoothstep(0.93, 0.97, sampledDiffuseColor.a);
       diffuseColor = vec4(diffuse * uLineColor, cover * vMarkInfo.x * open);
+    } else if (vMarkInfo.y > 3.5 && vMarkInfo.y < 4.5) {
+      // Dalle du contour d'un pont (markings.js, deckBuffers) : couleur unie du tablier (la texture y a l'eau dessous).
+      diffuseColor = vec4(diffuse * uBridgeColor, 1.0);
+    } else if (vMarkInfo.y > 2.5 && vMarkInfo.y < 3.5) {
+      // Ombre d'un tablier de pont sur l'eau (markings.js, deckBuffers) : l'eau et le tablier peint dessous (alpha 0,9)
+      // deviennent l'eau assombrie ; ailleurs (la terre), le sol dessous se voit tel quel.
+      vec3 dq = abs(sampledDiffuseColor.rgb - uWaterKey);
+      float under = max(1.0 - smoothstep(0.022, 0.035, max(dq.x, max(dq.y, dq.z))), 1.0 - smoothstep(0.93, 0.97, sampledDiffuseColor.a));
+      if (under < 0.01) discard;
+      diffuseColor = vec4(mix(diffuseColor.rgb, diffuse * uWaterShade, under), 1.0);
     } else {
       diffuseColor.a = 1.0;
+      if (vMarkInfo.y > 4.5) {
+        // Tablier d'un pont : l'eau de la texture (au-delà du bout peint d'une voie) prend la couleur du tablier, ses
+        // bords flous compris (bleu nettement au-dessus du rouge : aucune peinture des voies ne l'est).
+        float wet = smoothstep(0.06, 0.22, sampledDiffuseColor.b - sampledDiffuseColor.r);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuse * uBridgeColor, wet);
+      }
       // Couleur lue avant la teinte de la météo, comparée aux deux clés (espace linéaire).
       vec3 dp = abs(sampledDiffuseColor.rgb - uPaveKey);
       vec3 dw = abs(sampledDiffuseColor.rgb - uWalkKey);
@@ -1281,7 +1312,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     mat.onBeforeCompile = groundShader;
     mat.customProgramCacheKey = groundProgram;
     applyTint(mat);
-    const geo = groundGeometry(plan, cx * size, cz * size, size, relief ? grid.chunks.get(key)?.relief ?? null : null);
+    const geo = groundGeometry(plan, cx * size, cz * size, size, relief ? grid.chunks.get(key)?.relief ?? null : null, deckHalf);
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(cx * size + size / 2, 0, cz * size + size / 2);
     mesh.receiveShadow = true;

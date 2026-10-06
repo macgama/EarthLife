@@ -12,9 +12,8 @@
 //   normales), eau à niveau. Les nœuds viennent de fonctions de la position seule : les nœuds de bord de deux morceaux
 //   voisins sont identiques au bit près.
 // - reliefAt : hauteur du sol dessiné en un point, sur le triangle du nœud avec la même diagonale que le maillage.
-// - ponts sur l'eau (deckBuilder) : le tablier reste à niveau entre les deux culées au lieu de plonger dans la vallée ;
-//   les nœuds de sa largeur montent à sa hauteur (un ruban surélevé aux flancs en pente) : le pas du maillage, 4 m, ne
-//   permet pas mieux sans maillage de pont à part.
+// - ponts sur l'eau (deckSpans) : le tablier reste à niveau entre les deux culées au lieu de plonger dans la vallée ;
+//   le sol reste à l'eau dessous, le tablier est dessiné à part (markings.js, deckBuffers) avec des bords droits.
 // - canopée des villes (createCanopy) : hors des régions au terrain nu, la donnée compte une partie des toits ; le sol
 //   en est abaissé (terrain.canopy, posé par world.js).
 import { DEM_ZOOM, DEM_SIZE } from './dem.js';
@@ -43,8 +42,12 @@ const SHORE_SLOPE = 2.5; // le mur d'un quai monte de 2,5 m par mètre depuis le
 export const SHORE_MAX = 6; //  … lu jusqu'à 6 m du bord (les nœuds de rive sont à 4√2 m de l'eau au plus)
 const QUAY_URBAN = 3; // m de canopée à partir desquels la rive est un quai (en dessous, raccord ; à la campagne, rien)
 export const DECK_REACH = 180; // un pont sur l'eau cherche ses culées jusqu'à 180 m de part et d'autre
-const DECK_STEP = 6; // pas de la recherche (m)
+const DECK_STEP = 6; // m : le tablier monte au plus à la berge à 6 m de l'eau (bankCap)
 const DECK_PAD = 3; // le tablier (trottoirs, bordures) déborde de 3 m de la demi-largeur de la voie
+const DECK_SAMPLE = 2; // m : pas de la lecture de l'eau le long de l'axe (bords de l'eau ensuite au dixième de mm)
+const DECK_EXT = 4; // m : le tablier déborde sur la terre ferme…
+export const DECK_DROP = 0.35; //  … en descendant de 35 cm par mètre : il rejoint le sol du quai sans marche
+export const DECK_THICK = 1.2; // m : épaisseur du tablier (ses flancs au-dessus de l'eau)
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -239,7 +242,8 @@ function weights(t) {
 export function chunkHeights(terrain, x0, z0, wet, bridges = null, bankWet = wet, shore = null) {
   if (!terrain?.enabled) return null;
   const n = RELIEF_N, m = n + 2;
-  const deck = bridges?.length ? deckBuilder(terrain, wet, bridges) : null;
+  // Travées des ponts qui touchent le morceau (avec la marge des tabliers peints, plus larges que la voie).
+  const decks = bridges?.length ? deckSpans(terrain, wet, bridges).filter((p) => pieceNear(p, x0, z0)) : [];
   const canopy = terrain.canopy ?? null;
   const ground = canopy ? (x, z) => terrain.heightAt(x, z) - canopy.at(x, z) : (x, z) => terrain.heightAt(x, z);
   // Eau sur 21 × 21 nœuds (deux de marge) : les nœuds de la marge connaissent leurs voisins, donc les normales de bord
@@ -291,15 +295,12 @@ export function chunkHeights(terrain, x0, z0, wet, bridges = null, bankWet = wet
           }
         }
       }
-      if (deck) {
-        const d = deck(x, z);
-        if (d > v) v = d;
-      }
       h[j * n + i] = v;
       if (i > 0 && j > 0 && i <= NODES && j <= NODES) { if (v < min) min = v; if (v > max) max = v; }
     }
   }
-  return { x0, z0, h, min, max, flat: max - min < 1e-4 };
+  // Un morceau qui porte un tablier n'est jamais plat : ses marquages se posent nœud par nœud (markings.js).
+  return { x0, z0, h, min, max, flat: !decks.length && max - min < 1e-4, decks: decks.length ? decks : null };
 }
 
 // ---------- Berges ----------
@@ -406,74 +407,138 @@ function bankField(terrain, wet, x0, z0, n, normals = false) {
 
 // ---------- Ponts sur l'eau ----------
 
-// Hauteur du tablier au point (x, z), ou −Infinity hors d'un pont sur l'eau. bridges : voies en pont { points, width }
-// (celles des morceaux voisins comprises) ; wet(x, z) : le point est dans l'eau. Une fonction de la position et de la
-// géométrie des voies seules (jamais du morceau ni de la tuile), pour que les nœuds de bord de deux morceaux voisins
-// aient la même hauteur.
-// - le point de l'axe le plus proche, q, doit être dans l'eau (sinon : rampe d'accès ou pont au-dessus de la terre, le
-//   sol reste celui du modèle) ;
-// - on marche le long de la tangente de q, dans les deux sens, jusqu'à la première terre : les culées A et B (un îlot
-//   ou une pile en eau ferme une travée) ; sans culée à 180 m, rien ne change ;
-// - le tablier est la droite entre les hauteurs des culées (au moins niveau de l'eau + 0,5 m, au plus un quai), plate sur
-//   la largeur.
-export function deckBuilder(terrain, wet, bridges) {
+// Travées des ponts sur l'eau. bridges : voies en pont { points, width } (celles des morceaux voisins comprises) ;
+// wet(x, z) : le point est dans l'eau. On suit l'axe de chaque voie (prolongé tout droit à ses bouts tant qu'il est
+// dans l'eau, jusqu'à DECK_REACH m) : chaque passage dans l'eau bordé de terre des deux côtés est une travée entre ses
+// culées A et B, les bords de l'eau sur l'axe (un îlot ou une pile en eau ferme une travée). Le tablier est la droite
+// entre les hauteurs des culées (au moins niveau de l'eau + 0,5 m, au plus un quai), plat en travers ; il déborde de
+// DECK_EXT m sur la terre ferme en descendant de DECK_DROP m par mètre. Renvoie des morceaux plans
+// { ax, az, tx, tz, len, h0, h1, pad, way, over } : de (ax, az) le long de (tx, tz) sur len m, hauteur de h0 à h1, demi-
+// largeur pad (voie + DECK_PAD) ; way : la voie ; over : au-dessus de l'eau (faux pour les débords). Une fonction de la
+// géométrie des voies et de la position seules (jamais du morceau ni de la tuile) : deux morceaux voisins ont les
+// mêmes travées au bit près.
+export function deckSpans(terrain, wet, bridges) {
   const canopy = terrain.canopy ?? null;
   const ground = canopy ? (x, z) => terrain.heightAt(x, z) - canopy.at(x, z) : (x, z) => terrain.heightAt(x, z);
-  const list = bridges.map((b) => {
+  const out = [];
+  for (const b of bridges) {
+    // Axe en segments non nuls, abscisse s depuis le premier point, prolongé tout droit aux deux bouts.
+    const segs = [];
+    let L = 0;
+    for (let i = 0; i + 1 < b.points.length; i++) {
+      const p = b.points[i], q = b.points[i + 1], l = Math.hypot(q.x - p.x, q.z - p.z);
+      if (!(l > 1e-6)) continue;
+      segs.push({ x: p.x, z: p.z, tx: (q.x - p.x) / l, tz: (q.z - p.z) / l, s0: L, s1: L + l });
+      L += l;
+    }
+    if (!segs.length) continue;
+    const f = segs[0], e = segs[segs.length - 1];
+    segs.unshift({ x: f.x - f.tx * DECK_REACH, z: f.z - f.tz * DECK_REACH, tx: f.tx, tz: f.tz, s0: -DECK_REACH, s1: 0 });
+    segs.push({ x: e.x + e.tx * (e.s1 - e.s0), z: e.z + e.tz * (e.s1 - e.s0), tx: e.tx, tz: e.tz, s0: L, s1: L + DECK_REACH });
+    const segAt = (sv) => {
+      let k = 0;
+      while (k + 1 < segs.length && sv > segs[k].s1) k++;
+      return segs[k];
+    };
+    const wetAt = (sv) => {
+      const g = segAt(sv), u = sv - g.s0;
+      return wet(g.x + g.tx * u, g.z + g.tz * u);
+    };
+    // Lecture de l'eau le long de l'axe, puis au-delà des bouts tant qu'ils sont dans l'eau.
+    const n = Math.max(1, Math.ceil(L / DECK_SAMPLE));
+    const marks = [];
+    for (let k = 0; k <= n; k++) { const sv = (L * k) / n; marks.push({ s: sv, wet: wetAt(sv) }); }
+    for (let sv = 0; marks[0].wet && sv > -DECK_REACH;) { sv = Math.max(-DECK_REACH, sv - DECK_SAMPLE); marks.unshift({ s: sv, wet: wetAt(sv) }); }
+    for (let sv = L; marks[marks.length - 1].wet && sv < L + DECK_REACH;) { sv = Math.min(L + DECK_REACH, sv + DECK_SAMPLE); marks.push({ s: sv, wet: wetAt(sv) }); }
+    // Bord de l'eau entre une lecture à terre (dry) et une dans l'eau : le dernier point à terre.
+    const edge = (dry, inWater) => {
+      for (let k = 0; k < 14; k++) { const m = (dry + inWater) / 2; if (wetAt(m)) inWater = m; else dry = m; }
+      return dry;
+    };
     const pad = b.width / 2 + DECK_PAD;
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    for (const p of b.points) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z); }
-    return { pts: b.points, pad, minX: minX - pad, maxX: maxX + pad, minZ: minZ - pad, maxZ: maxZ + pad };
-  });
-  const steps = Math.floor(DECK_REACH / DECK_STEP);
-  return (x, z) => {
-    let best = null, bestD = Infinity;
-    for (const b of list) {
-      if (x < b.minX || x > b.maxX || z < b.minZ || z > b.maxZ) continue;
-      const pts = b.pts;
-      for (let i = 0; i + 1 < pts.length; i++) {
-        const a = pts[i], c = pts[i + 1], dx = c.x - a.x, dz = c.z - a.z, l2 = dx * dx + dz * dz;
-        if (l2 === 0) continue;
-        const u = clamp(((x - a.x) * dx + (z - a.z) * dz) / l2, 0, 1);
-        const qx = a.x + u * dx, qz = a.z + u * dz, d = Math.hypot(qx - x, qz - z);
-        if (d <= b.pad && d < bestD) { bestD = d; best = { qx, qz, tx: dx / Math.sqrt(l2), tz: dz / Math.sqrt(l2) }; }
+    for (let i = 1; i < marks.length - 1; i++) {
+      if (!marks[i].wet || marks[i - 1].wet) continue;
+      let j = i;
+      while (j + 1 < marks.length && marks[j + 1].wet) j++;
+      if (j + 1 >= marks.length) break; // pas de culée à DECK_REACH m : aucun tablier
+      const sA = edge(marks[i - 1].s, marks[i].s), sB = edge(marks[j + 1].s, marks[j].s);
+      i = j;
+      const mid = segAt((sA + sB) / 2), um = (sA + sB) / 2 - mid.s0;
+      const lv = terrain.waterLevelAt(mid.x + mid.tx * um, mid.z + mid.tz * um), level = lv + RIM;
+      // Culées : au plus à la hauteur d'un quai (la berge de bankField à un pas du bord de l'eau), la donnée de la ville y
+      // est trop haute ; en ville, au moins au niveau du quai remonté (quayHeight, terre ferme lue dans l'axe du pont) :
+      // le tablier part du quai, pas du pied du mur.
+      const top = lv + bankCap(DECK_STEP);
+      const end = (sv, sign) => {
+        const g = segAt(sv), u = sv - g.s0, x = g.x + g.tx * u, z = g.z + g.tz * u;
+        let h = ground(x, z);
+        if (canopy) h = Math.max(h, quayHeight(lv, inlandHeight(ground, x, z, 0, g.tx * sign, g.tz * sign), canopy.at(x, z)));
+        return clamp(h, level, top);
+      };
+      const ha = end(sA, -1), hb = end(sB, 1);
+      const prof = (sv) => (sv < sA ? ha - DECK_DROP * (sA - sv) : sv > sB ? hb - DECK_DROP * (sv - sB) : ha + ((hb - ha) * (sv - sA)) / (sB - sA));
+      // Morceaux plans : coupés aux culées et aux sommets de l'axe, dans l'emprise de la voie (débords compris). Au-delà
+      // de ses bouts (voie coupée au milieu du fleuve), la suite du tablier vient de la voie suivante : un morceau voisin
+      // qui ne voit pas cette voie (seaux à 12 m près, bridgesNear) aurait sinon un autre tablier au même endroit.
+      const lo = Math.max(sA - DECK_EXT, -DECK_EXT), hi = Math.min(sB + DECK_EXT, L + DECK_EXT);
+      const cuts = [lo, hi];
+      for (const c of [sA, sB]) if (c > lo && c < hi) cuts.push(c);
+      for (const g of segs) if (g.s0 > lo && g.s0 < hi) cuts.push(g.s0);
+      cuts.sort((p, q) => p - q);
+      for (let k = 0; k + 1 < cuts.length; k++) {
+        const u0 = cuts[k], u1 = cuts[k + 1];
+        if (u1 - u0 < 1e-6) continue;
+        const g = segAt((u0 + u1) / 2), u = u0 - g.s0;
+        out.push({ ax: g.x + g.tx * u, az: g.z + g.tz * u, tx: g.tx, tz: g.tz, len: u1 - u0, h0: prof(u0), h1: prof(u1), pad, way: b, over: u0 >= sA && u1 <= sB });
       }
     }
-    if (!best || !wet(best.qx, best.qz)) return -Infinity;
-    const abutment = (sign) => {
-      for (let k = 1; k <= steps; k++) {
-        const px = best.qx + best.tx * sign * k * DECK_STEP, pz = best.qz + best.tz * sign * k * DECK_STEP;
-        if (!wet(px, pz)) return { x: px, z: pz, s: k * DECK_STEP };
-      }
-      return null;
-    };
-    const a = abutment(-1), b = abutment(1);
-    if (!a || !b) return -Infinity;
-    const lv = terrain.waterLevelAt(best.qx, best.qz), level = lv + RIM;
-    // Les culées sont au plus à la hauteur d'un quai (la berge de bankField à un pas du bord de l'eau) : le sol de la rive
-    // y est ramené, la donnée de la ville y est trop haute. En ville, elles sont au moins au niveau du quai remonté
-    // (quayHeight, terre ferme lue dans l'axe du pont) : le tablier part du quai, pas du pied du mur.
-    const top = lv + bankCap(DECK_STEP);
-    const end = (p, sign) => {
-      let h = ground(p.x, p.z);
-      if (canopy) h = Math.max(h, quayHeight(lv, inlandHeight(ground, p.x, p.z, 0, best.tx * sign, best.tz * sign), canopy.at(p.x, p.z)));
-      return clamp(h, level, top);
-    };
-    const ha = end(a, -1), hb = end(b, 1);
-    return ha + ((hb - ha) * a.s) / (a.s + b.s);
-  };
+  }
+  return out;
+}
+
+// Le morceau plan p d'un tablier touche le morceau de 64 m en (x0, z0), marges comprises (le tablier peint déborde de
+// la voie de quelques mètres de plus que pad).
+const DECK_MARGIN = 6;
+function pieceNear(p, x0, z0) {
+  const r = p.pad + DECK_MARGIN, bx = p.ax + p.tx * p.len, bz = p.az + p.tz * p.len;
+  return Math.max(p.ax, bx) + r >= x0 - NODE && Math.min(p.ax, bx) - r <= x0 + (NODES - 1) * NODE + NODE
+    && Math.max(p.az, bz) + r >= z0 - NODE && Math.min(p.az, bz) - r <= z0 + (NODES - 1) * NODE + NODE;
+}
+
+// Hauteur du tablier au point (x, z) (morceaux de deckSpans), ou −Infinity hors des tabliers ; hit.piece : le morceau.
+export function deckAt(pieces, x, z, hit = null) {
+  let best = -Infinity;
+  for (const p of pieces) {
+    const dx = x - p.ax, dz = z - p.az, u = dx * p.tx + dz * p.tz;
+    if (u < 0 || u > p.len || Math.abs(dz * p.tx - dx * p.tz) > p.pad) continue;
+    const h = p.h0 + ((p.h1 - p.h0) * u) / p.len;
+    if (h > best) { best = h; if (hit) hit.piece = p; }
+  }
+  return best;
+}
+
+// Hauteur du tablier au point (x, z), ou −Infinity hors d'un pont sur l'eau (pour les essais et le diagnostic).
+export function deckBuilder(terrain, wet, bridges) {
+  const pieces = deckSpans(terrain, wet, bridges);
+  return (x, z) => deckAt(pieces, x, z);
 }
 
 // Hauteur du sol dessiné au point (x, z) d'un morceau (r : sortie de chunkHeights) : interpolation sur le triangle du
 // nœud, avec la diagonale du maillage (sud-ouest vers nord-est : triangles nord-ouest, sud-ouest, nord-est et sud-ouest,
-// sud-est, nord-est). Les pieds sont ainsi exactement sur le sol dessiné.
+// sud-est, nord-est). Les pieds sont ainsi exactement sur le sol dessiné. Sur un pont, le tablier (r.decks) quand il
+// est plus haut.
 export function reliefAt(r, x, z) {
   const u = clamp((x - r.x0) / NODE, 0, NODES - 1 - 1e-9), w = clamp((z - r.z0) / NODE, 0, NODES - 1 - 1e-9);
   const i = Math.floor(u), j = Math.floor(w), fu = u - i, fw = w - j;
   const k = (j + 1) * RELIEF_N + i + 1;
   const h = r.h;
   const h00 = h[k], h10 = h[k + 1], h01 = h[k + RELIEF_N], h11 = h[k + RELIEF_N + 1];
-  return fu + fw <= 1 ? h00 + fu * (h10 - h00) + fw * (h01 - h00) : h11 + (1 - fu) * (h01 - h11) + (1 - fw) * (h10 - h11);
+  const g = fu + fw <= 1 ? h00 + fu * (h10 - h00) + fw * (h01 - h00) : h11 + (1 - fu) * (h01 - h11) + (1 - fw) * (h10 - h11);
+  if (r.decks) {
+    const d = deckAt(r.decks, x, z);
+    if (d > g) return d;
+  }
+  return g;
 }
 
 // Normale unitaire du nœud (i, j) par différences centrées (les voisins de la marge viennent de la même fonction de la

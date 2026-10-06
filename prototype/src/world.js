@@ -270,6 +270,8 @@ export function buildPatch(store, cx, cz) {
   if (store.terrain?.enabled) {
     g.relief = chunkHeights(store.terrain, cx * cs, cz * cs, (x, z) => waterAt(store, x, z), bridgesNear(store, cx, cz),
       (x, z) => waterAt(store, x, z, true), (x, z) => shoreDistance(store, x, z, SHORE_MAX));
+    // Contours des ponts (aires de la carte) : dalle sous les tabliers (markings.js, deckBuffers).
+    if (g.relief.decks) g.relief.outlines = f.areas.filter((a) => a.cls === 'bridge');
   }
   for (const w of f.water) fillRings(g, w.rings, WATER);
   for (const w of f.waterLines) if (w.blocking) strokeLine(g, w.points, w.width, WATER);
