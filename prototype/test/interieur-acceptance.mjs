@@ -98,6 +98,10 @@ async function press(page, device, key, id) {
   else await page.keyboard.press(key);
 }
 const toastSeen = (page, start, timeout = 10000) => until(page, (t) => window.__seen.toasts.find((x) => x.startsWith(t)) ?? null, start, timeout);
+// Une notification attend son tour derrière celle qui vient de s'afficher (« Manteau équipé » après le butin d'une pièce) :
+// jusqu'à 1,2 s de temps de jeu (TOAST_MIN, hud.js), plus de 20 s sous swiftshader sur GitHub, où le jeu va 15 à 20 fois
+// moins vite que l'horloge.
+const TOAST_WAIT = 45000;
 
 // Bâtiment le plus proche qui a un intérieur (au moins 3 pièces, pas trop grand, jamais fouillé), avec le pas de sa porte libre.
 const pickBuilding = (page) => ev(page, async () => {
@@ -204,7 +208,7 @@ async function scenario(device) {
   const bagBefore = await ev(page, () => ({ ...window.__earthlife.session.survivor.inventory }));
   const f1 = await searchRoom(page, device, r1.slot, `${tag} : ${r1.name}`);
   check(f1.done && f1.time > 0.3 && f1.time < 6, `${tag} : « ${r1.name} » fouillée (${round(f1.time ?? 0)} s de temps de jeu)`);
-  const t1 = await toastSeen(page, r1.name, 5000);
+  const t1 = await toastSeen(page, r1.name, TOAST_WAIT);
   check(!!t1, `${tag} : notification « ${t1} »`);
   const s1 = await ev(page, (id) => JSON.parse(JSON.stringify(window.__earthlife.save.searched[id] ?? null)), spot.id);
   check(s1 && s1.n === spot.total && Object.keys(s1.r).length === 1 && s1.r[r1.slot] > 0, `${tag} : une seule pièce enregistrée ${JSON.stringify(s1)}`);
@@ -235,7 +239,7 @@ async function scenario(device) {
   });
   check(amb.n >= 1 && amb.chase && amb.near < 10, `${tag} : ${amb.n} zombie(s) d'embuscade à la chasse, à ${round(amb.near)} m au plus`);
   check(amb.rooms.every((r) => r >= 0 && r !== amb.mine), `${tag} : ils sortent d'une autre pièce (pièces ${JSON.stringify(amb.rooms)}, joueur dans ${amb.mine})`);
-  check(!!(await toastSeen(page, 'Embuscade', 5000)), `${tag} : notification d'embuscade`);
+  check(!!(await toastSeen(page, 'Embuscade', TOAST_WAIT)), `${tag} : notification d'embuscade`);
   await shot(page, `${device}-04-embuscade`);
   await debug(page, 'ambush', { rate: 0 });
   await clearZombies(page);
