@@ -784,8 +784,8 @@ test('voir et effacer mes données ; ensuite, plus de jeton ni de connexion', as
   assert.equal(b.fetch.of('/v1/me').length, 0);
 });
 
-test('aucun appel réseau avec le choix « off », ni avec le serveur par défaut tant qu\'il n\'est pas en service', async () => {
-  for (const opts of [{ choice: 'off' }, { choice: 'on', server: ONLINE.server }]) {
+test('aucun appel réseau avec le choix « off », ni avec le jeu à plusieurs coupé (ONLINE.enabledByDefault faux)', async () => {
+  for (const opts of [{ choice: 'off' }, { choice: 'on', server: ONLINE.server, enabled: false }]) {
     const h = harness(opts);
     h.online.start();
     h.online.enter({ ...at(0), source: 'tiles' });
@@ -818,6 +818,15 @@ test('aucun appel réseau avec le choix « off », ni avec le serveur par défau
   await h.clock.advance(600000);
   assert.equal(h.fetch.calls.length, n);
   assert.equal(h.WS.list.length, 1);
+});
+
+test('lot G : le jeu publié parle au vrai serveur sans ?server= (ONLINE.enabledByDefault)', async () => {
+  assert.equal(ONLINE.enabledByDefault, true);
+  const h = harness({ server: ONLINE.server });
+  h.online.start();
+  await h.clock.advance(100);
+  assert.ok(h.fetch.calls.some((c) => c.url === `${ONLINE.server}/v1/health`), 'santé demandée au vrai serveur');
+  assert.notEqual(h.online.status, 'off');
 });
 
 test('?server= accepté seulement pour 127.0.0.1 et localhost', () => {

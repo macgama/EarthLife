@@ -284,6 +284,9 @@ select, button { font: inherit; }
 @media (hover: hover) { #menu select:hover { border-color: var(--c-line-strong); } }
 #menu select:focus-visible { border-color: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-soft); }
 #menu #play { width: 100%; min-height: 52px; margin-top: 2px; }
+/* Bouton principal toujours à l'écran : collé au bas du panneau quand celui-ci défile (blocs du jeu en ligne et du
+   compte, refuge, caisse) ; le fond et le liseré couleur du panneau cachent ce qui passe dessous. */
+#menu #play { position: sticky; bottom: 0; z-index: 2; background-color: var(--c-panel-solid); box-shadow: 0 0 0 var(--sp-2) var(--c-panel-solid); }
 /* Partie sauvegardée : « Ton refuge : … » avec « Voir mon refuge », ce que le départ choisi veut dire pour le refuge
    et comment en changer (#save-move), la caisse laissée par un déménagement (#save-crate), puis le message de la
    sauvegarde. */
@@ -1085,9 +1088,10 @@ body.touch #gesture-toggle { left: auto; right: calc(var(--hud-r) + 114px); bott
   body.panel-open #online-pill { visibility: hidden; }
   body.panel-open #hud.has-online #toast, body.panel-open #hud.has-online.two-actions #toast { top: calc(var(--hud-t) + 115px); }
 }
-/* Téléphone en portrait : sous le bandeau de horde (même rangée), la pastille descend ; feuille ouverte, elle s'efface. */
+/* Téléphone en portrait : le bandeau de horde prend la rangée de la pastille, sur une ou deux lignes ; la pastille
+   s'efface le temps du bandeau, et quand la feuille du refuge est ouverte (le bandeau loge alors dans la rangée 2). */
 @media (max-width: 759px) {
-  #hud.has-banner #online-pill { margin-top: 48px; }
+  body:not(.panel-open) #hud.has-banner #online-pill, body.panel-folded #hud.has-banner #online-pill { display: none; }
   body.panel-open:not(.panel-folded) #online-pill { visibility: hidden; }
 }
 

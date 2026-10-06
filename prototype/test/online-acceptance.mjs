@@ -295,6 +295,23 @@ async function jumpGuard(t) {
   const w = t.lastJump + 21000 - Date.now();
   if (w > 0) { note(`${t.tag} : attente de ${Math.ceil(w / 1000)} s (budget de sauts du serveur)`); await wait(w); }
 }
+// Dernier saut envoyé (p avec j: 1) d'après les trames : après une reconnexion, il est plus tardif que l'instant
+// noté par waitLive.
+const lastJumpSent = (t) => t.frames.reduce((m, e) => (e.dir === 'up' && e.m?.t === 'p' && e.m.j === 1 ? Math.max(m, e.at) : m), 0);
+// A voit B et B voit A (alpha ≥ 0.99), sids relus à chaque essai : sous swiftshader, la page du téléphone peut rester
+// bloquée plus de 15 s juste après son départ ; le serveur oublie alors la session muette, et B revient sous un autre
+// sid, après le saut de sa reconnexion (budget de 20 s entre deux sauts, puis 3 s d'invisibilité).
+async function seeEachOther(a, b, timeout) {
+  const end = Date.now() + timeout;
+  const got = [null, null];
+  while (!(got[0] && got[1]) && Date.now() < end) {
+    const sa = await sidOf(a), sb = await sidOf(b);
+    if (!got[0] && sb) got[0] = await ev(a, SEES, [sb, 0.99]);
+    if (!got[1] && sa) got[1] = await ev(b, SEES, [sa, 0.99]);
+    if (!(got[0] && got[1])) await wait(200);
+  }
+  return got;
+}
 async function teleport(t, x, z) {
   await jumpGuard(t);
   await ev(t, ([x, z]) => window.__earthlife.debug.teleport(x, z), [x, z]);
@@ -661,9 +678,38 @@ try {
   note(`A est « ${await nameOf(A)} » (sid ${await sidOf(A)}), B est « ${await nameOf(B)} » (sid ${await sidOf(B)})`);
   const frame = await Promise.all([A, B].map((t) => ev(t, () => { const l = window.__earthlife.session.store.proj.toLocal(45.76, 4.83); return `${l.x.toFixed(3)},${l.z.toFixed(3)}`; })));
   check(frame[0] === frame[1], `A et B : même repère local (${frame[0]})`);
-  const sidA = await sidOf(A), sidB = await sidOf(B);
-  const seen = await Promise.all([until(A, SEES, [sidB, 0.99], 20000), until(B, SEES, [sidA, 0.99], 20000)]);
+  const seen = await seeEachOther(A, B, 45000);
   check(seen.every(Boolean), 'A et B se voient au départ (après les 3 s du premier saut)');
+  if (!seen.every(Boolean)) {
+    const sidA = await sidOf(A), sidB = await sidOf(B);
+    // Qui ne voit pas qui, et pourquoi : sids, positions envoyées, instantanés reçus (trames du relais ou de la page).
+    const view = (t) => ev(t, () => {
+      const el = window.__earthlife, o = el.online;
+      return { status: o?.status, sid: o?.me?.sid ?? null, others: (o?.others?.() ?? []).map((x) => `${x.sid}:${Number(x.alpha).toFixed(2)}`).join(' '),
+        drawn: (el.othersView?.stats().survivors ?? []).map((x) => `${x.sid}:${x.alpha.toFixed(2)}@${Math.round(x.d)}m`).join(' ') };
+    });
+    const trace = (t, other) => {
+      const f = t.frames.filter((e) => e.at >= t.lastJump - 2000 && e.m);
+      const kinds = (dir) => Object.entries(f.filter((e) => e.dir === dir).reduce((o, e) => ((o[e.m.t] = (o[e.m.t] ?? 0) + 1), o), {})).map(([k, n]) => `${k}×${n}`).join(' ');
+      const at = (e) => (e ? `${((e.at - t.lastJump) / 1000).toFixed(1)} s` : 'jamais');
+      const pos = f.filter((e) => e.dir === 'up' && e.m.t === 'p');
+      const near = f.filter((e) => e.dir === 'down' && e.m.t === 'near' && e.m.p?.length);
+      const withOther = near.find((e) => JSON.stringify(e.m.p).includes(String(other)));
+      // Fil des trames, positions regroupées : hello, welcome, sauts (p j), leave, bye… depuis 30 s avant « en-ligne ».
+      const line = [];
+      for (const e of t.frames.filter((x) => x.m && x.at >= t.lastJump - 30000)) {
+        const k = e.m.t === 'p' ? (e.m.j === 1 ? 'p(saut)' : 'p') : e.m.t;
+        if (k === 'near' || k === 'count') continue;
+        const tag = `${e.dir === 'up' ? '↑' : '↓'}${k}${e.m.why ? `(${e.m.why})` : ''}`;
+        const last = line[line.length - 1];
+        if (last && last.tag === tag && k === 'p') { last.n++; continue; }
+        line.push({ tag, n: 1, at: ((e.at - t.lastJump) / 1000).toFixed(1) });
+      }
+      return `${t.wsUrls.length} WebSocket, sids ${[...t.sids].join('/')}, montant ${kinds('up')}, descendant ${kinds('down')} ; 1re position ${at(pos[0])} (sauts ${pos.filter((e) => e.m.j === 1).length}), 1er instantané non vide ${at(near[0])}, avec l'autre ${at(withOther)} ; fil ${line.slice(0, 40).map((x) => `${x.tag}${x.n > 1 ? `×${x.n}` : ''}@${x.at}`).join(' ')}`;
+    };
+    note(`diagnostic : A voit B ${seen[0] ? 'oui' : 'non'}, B voit A ${seen[1] ? 'oui' : 'non'} ; A ${JSON.stringify(await view(A))}, ${trace(A, sidB)} ; B ${JSON.stringify(await view(B))}, ${trace(B, sidA)} ; serveur ${JSON.stringify(srv.room.stats())}`);
+  }
+  for (const t of [A, B]) t.lastJump = Math.max(t.lastJump, lastJumpSent(t));
   const fps = await Promise.all([A, B].map(fpsOf));
   note(`images par seconde : A ${fps[0]}, B ${fps[1]} (swiftshader ; le temps du jeu suit dt plafonné à 0,05 s par image)`);
 } catch (e) {

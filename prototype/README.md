@@ -39,7 +39,7 @@ Paramètres d'adresse utiles pour tester :
 
 ## Jouer à plusieurs
 
-Les autres survivants passent par un petit serveur Node.js (dossier `server/` à la racine du dépôt). Tant que le vrai serveur n'est pas en service, le jeu publié reste en solo (`ONLINE.enabledByDefault = false` dans `src/online.js`). Pour essayer sur sa machine, le faux serveur local fait tourner le vrai cœur avec un magasin en mémoire (rien n'est écrit sur disque) et 3 survivants simulés qui marchent et font des gestes autour de Bellecour :
+Les autres survivants passent par un petit serveur Node.js (dossier `server/` à la racine du dépôt). Le vrai serveur (https://earthlife.needhelpapp.com) est en service depuis le 5 octobre 2026 : le jeu publié propose « Jouer à plusieurs » et le compte facultatif (`ONLINE.enabledByDefault = true` dans `src/online.js` ; `false` le remet en solo). Pour essayer sur sa machine, le faux serveur local fait tourner le vrai cœur avec un magasin en mémoire (rien n'est écrit sur disque) et 3 survivants simulés qui marchent et font des gestes autour de Bellecour :
 
 ```sh
 (cd ../server && npm ci --ignore-scripts)                          # une fois
