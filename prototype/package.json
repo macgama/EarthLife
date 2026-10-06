@@ -19,7 +19,7 @@
     "@fontsource/barlow-semi-condensed": "5.3.0",
     "@fontsource/chakra-petch": "5.3.0",
     "@mapbox/vector-tile": "^3.0.0",
-    "geojson-vt": "^4.0.3",
+    "geojson-vt": "^5.0.4",
     "maplibre-gl": "^6.11.2",
     "pbf": "^5.1.2",
     "three": "0.170.0",
