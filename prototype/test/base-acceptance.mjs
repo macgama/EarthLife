@@ -800,17 +800,19 @@ async function desktop() {
   if (ok2) await debug(page2, 'give', { bois: 1 });
   const other = await until(page, () => {
     const c = document.getElementById('card');
-    return !c.classList.contains('hidden') && /Partie ouverte dans un autre onglet/.test(c.textContent) ? c.textContent.replace(/\s+/g, ' ').trim() : null;
+    return !c.classList.contains('hidden') && /Partie ouverte ailleurs/.test(c.textContent) ? c.textContent.replace(/\s+/g, ' ').trim() : null;
   }, null, 30000);
   check(!!other, `${tag} 7 : la 1re page affiche « ${other ?? '?'} »`);
   check(await ev(page, () => window.__earthlife.saveStore.readOnly) && !(await ev(page2, () => window.__earthlife.saveStore.readOnly)), `${tag} 7 : 1re page en lecture seule, 2e page propriétaire`);
   await shot(page, `${tag}-11-deux-onglets`);
-  // « Fermer » ne fait pas perdre « Reprendre ici » : rappel « Non sauvegardé » dans le HUD, qui rouvre la carte,
+  // « Jouer sans sauvegarder » ne fait pas perdre « Reprendre ici » : rappel « Non sauvegardé » dans le HUD, qui rouvre la carte,
   // et bouton « Reprendre ici » dans le menu, qui rend la main à cette page.
+  const closeLabel = await ev(page, () => document.querySelector('#card [data-card-btn="close"]')?.textContent.trim() ?? null);
+  check(closeLabel === 'Jouer sans sauvegarder', `${tag} 7 : la carte propose « ${closeLabel} » au lieu de « Fermer »`);
   await page.click('#card [data-card-btn="close"]');
   const visibleText = (id) => ev(page, (i) => { const b = document.getElementById(i); const r = b?.getBoundingClientRect(); return b && !b.hidden && !b.classList.contains('hidden') && r.width > 0 ? b.textContent.trim() : null; }, id);
   const warn = await until(page, () => { const b = document.getElementById('save-warn'); return b && !b.classList.contains('hidden') && b.getBoundingClientRect().width > 0 ? b.textContent.trim() : null; }, null, 5000);
-  check(warn === 'Non sauvegardé', `${tag} 7 : après « Fermer », rappel « ${warn} » dans le HUD`);
+  check(warn === 'Non sauvegardé', `${tag} 7 : après « Jouer sans sauvegarder », rappel « ${warn} » dans le HUD`);
   await shot(page, `${tag}-12-non-sauvegarde`);
   await page.click('#save-warn');
   const again = await until(page, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') ? c.querySelector('[data-card-btn="take"]')?.textContent.trim() ?? null : null; }, null, 5000);
@@ -824,6 +826,15 @@ async function desktop() {
   const owner = await until(page, () => (window.__earthlife?.saveStore ? !window.__earthlife.saveStore.readOnly : null), null, 20000);
   const handed = await until(page2, () => window.__earthlife.saveStore.readOnly, null, 20000);
   check(owner && !!handed, `${tag} 7 : « Reprendre ici » du menu : la 1re page reprend la main, la 2e passe en lecture seule`);
+  // « Reprendre ici » sur la carte en partie : la page recharge et relance la partie aussitôt (pas de retour au menu).
+  const card2 = await until(page2, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') ? c.querySelector('[data-card-btn="take"]')?.textContent.trim() ?? null : null; }, null, 20000);
+  check(card2 === 'Reprendre ici', `${tag} 7 : la 2e page, en partie, affiche la carte (bouton « ${card2} »)`);
+  // L'adresse de test porte autostart=1 : on la retire (sans recharger) pour que seul le drapeau de reprise relance la partie.
+  await ev(page2, () => history.replaceState(null, '', location.href.replace('&autostart=1', '')));
+  await Promise.all([page2.waitForEvent('load', { timeout: 20000 }).catch(() => null), page2.click('#card [data-card-btn="take"]')]);
+  const back = await started(page2);
+  const back2 = await ev(page2, () => ({ menuHidden: document.getElementById('menu').classList.contains('hidden'), readOnly: window.__earthlife.saveStore.readOnly }));
+  check(back && back2.menuHidden && !back2.readOnly, `${tag} 7 : après « Reprendre ici » en partie, la partie repart sans menu et sauvegarde (menu caché : ${back2.menuHidden}, lecture seule : ${back2.readOnly})`);
   await page2.close();
   await ctx.close();
 }
