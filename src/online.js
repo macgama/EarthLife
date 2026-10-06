@@ -13,7 +13,7 @@ import { createOthers, OTHERS, headingOfYaw, shortArc } from './others.js';
 import { createSharedWorld } from './shared-world.js';
 
 export const ONLINE = {
-  server: 'https://earthlife.needhelpapp.com', enabledByDefault: false, wsFailsToPoll: 3,
+  server: 'https://earthlife.needhelpapp.com', enabledByDefault: true, wsFailsToPoll: 3,
   backoffMs: [1000, 2000, 4000, 8000, 16000, 30000], jitter: 0.2, healthTimeoutMs: 5000, pollMs: 1000,
   pollIdleMs: 3000, queueMax: 100, queueMaxAgeMs: 86400000,
   // Ajouts (sections 3.4, 5.6 et 5.7) : délais de connexion, battement montant, seuils d'envoi des positions.
@@ -145,7 +145,8 @@ export function createOnline({
   server = ONLINE.server, storage = null, now = Date.now, perfNow = () => performance.now(),
   WebSocketImpl = globalThis.WebSocket, fetchImpl = globalThis.fetch,
   timers = { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h) }, rand = Math.random,
-  // Tant que le vrai serveur n'est pas en service (lot G), seul un serveur local passé par ?server= est utilisé.
+  // Le vrai serveur est en service depuis le 5 octobre 2026 (lot G, ONLINE.enabledByDefault) ; le remettre à false
+  // ramène le jeu publié en solo, seul un serveur local passé par ?server= étant alors utilisé.
   enabled = ONLINE.enabledByDefault || server !== ONLINE.server,
   build = 'dev',                 // empreinte du jeu publié (net/build.js), pour les mesures du serveur
   isPrivate = () => false,       // (lat, lon) → le point est-il dans une zone privée ? (refuges, traces)
