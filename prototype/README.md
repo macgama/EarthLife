@@ -68,7 +68,7 @@ Le script lance le faux serveur dans le même processus, puis joue les scénario
 | Caméra | Glisser la souris, J et L | Glisser à droite de l'écran |
 | Zoomer, dézoomer | Molette, + et −, boutons + et − | Pincer à deux doigts, boutons + et − |
 | Carte des environs : agrandir, réduire | C, ou clic sur la carte | Toucher la carte |
-| Action principale : fouiller, entrer au refuge, sortir, clouer, démonter, abattre | E, contre un mur ou près de l'objet | Bouton centré en bas |
+| Action principale : entrer dans un bâtiment, fouiller, entrer au refuge, sortir, clouer, démonter, abattre | E, contre un mur ou près de l'objet | Bouton centré en bas |
 | Action secondaire : en faire mon refuge, déménager, poser un piège, dormir | R | Bouton juste au-dessus |
 | Onglet suivant du panneau du refuge | Tab (panneau ouvert) | Toucher l'onglet |
 | Replier ou déplier le panneau | B | Poignée du panneau |
@@ -103,6 +103,14 @@ Pendant l'alerte et la vague, la caméra ne recule pas assez pour voir la horde 
 **Sauvegarde.** La partie est gardée dans le navigateur à chaque action importante ; le menu propose alors « Rentrer au refuge ». « Exporter ma partie » et « Importer une partie » passent d'un appareil à l'autre. Si le jeu est ouvert dans deux onglets, l'ancien onglet cesse de sauvegarder (« Reprendre ici » pour y revenir ; la carte dit depuis combien de temps l'autre page a sauvegardé). Une page restée au menu n'est pas bloquée : elle relit la partie de l'autre page au moment de lancer une partie, et un retour au premier plan ou un retour arrière du navigateur rattrape l'écriture manquée. `?fresh=1` dans l'adresse commence une partie neuve (l'ancienne est gardée une fois de côté).
 
 **Fiche du bâtiment.** Tout près d'un bâtiment (3 m), un encadré sous la quête donne son nom, s'il est fouillé (« fouillé il y a 3 h · de nouveau fouillable dans 21 h », ou « pas encore fouillé », ou « ton refuge ») et, dans une ville à sauver, l'état de la zone : zombies restants, nettoyée, fanion, sécurisée par toi et habitants sauvés. Les noms des autres joueurs viendront avec le serveur de jeu. Règles pures dans `src/fiche.js`, données lues par `main.js` (`updateFiche`).
+
+## L'intérieur des bâtiments
+
+**Entrer.** Devant la porte d'un bâtiment (à 3,2 m au plus), le bouton principal propose « Entrer : Pharmacie ». Le toit et les façades s'effacent alors en fondu et l'on voit le plan : murs bas, portes, pièces au sol coloré selon leur usage (séjour, cuisine, salle de classe, salle de vente, réserve…) et meubles. Le plan se calcule à ce moment, depuis le vrai contour du bâtiment, et se défait quand on ressort de plus de 0,8 m : rien n'est construit tant qu'on n'approche pas. Il est le même pour tous les joueurs (la graine est l'identifiant du bâtiment) : la sauvegarde ne garde que les pièces fouillées. Un bâtiment sans porte, de moins de 12 m², plus étroit que 3 m, couvert, ou au contour trop complexe n'a pas d'intérieur : on le fouille depuis la façade comme avant. Le refuge du joueur garde ses règles.
+
+**Fouiller pièce par pièce.** Dans une pièce, le bouton principal propose « Fouiller : Armoire » devant son meuble (1,3 m au plus, ambre dans le décor tant qu'il n'est pas fouillé). Chaque pièce a sa durée (la durée de base, de 0,6 à 1,6 fois selon sa surface, puis un quart de moins) et son butin ; le total attendu du bâtiment est celui d'avant, réparti entre les pièces selon leur surface, leur usage et ce qu'on y cherche (plus de nourriture à la cuisine, de soins à la salle de bains). L'embuscade se joue par pièce : un ou deux zombies sortent de la pièce voisine, par sa porte, et chassent aussitôt le joueur ; fouiller toutes les pièces donne la même probabilité qu'une fouille entière. Les cloisons protègent des morsures et des coups ; les zombies contournent les meubles et passent les portes pour rejoindre le joueur. La fiche du bâtiment dit « 2 pièces sur 5 fouillées » ; il est « fouillé » (plan de l'établi, refuge, autres joueurs) quand toutes le sont, et une fouille d'avant les intérieurs compte pour le bâtiment entier. Les autres survivants ne sont vus qu'à la porte, en silhouette.
+
+**Essais.** Les parties `?debug=1` gardent la fouille de façade, sauf avec `?interieur=1` ; `?interieur=0` éteint les intérieurs en jeu normal. `debug.interior()` donne le bâtiment ouvert, ses pièces et leur état, et le temps de construction. Règles pures du plan (pièces, portes, meubles, butin, embuscade, poursuite) dans `src/interieur.js` ; état de la partie (ouverture, sortie, pièces fouillées) dans `src/interieur-jeu.js` ; dessin dans `src/interieur-view.js` ; collisions dans la grille d'occupation (`grid.interior`, `src/collision.js`) pendant qu'un intérieur est ouvert.
 
 ## Données réelles et effets
 
@@ -149,6 +157,14 @@ npm run acceptance            # ou : ONLY=desktop (ou mobile) node test/base-acc
 
 Le script joue deux parties près de la place Bellecour, l'une sur ordinateur (1280×800) et l'autre sur téléphone (390×844), avec les crochets de `?debug=1` : installation du refuge, fabrication et clouage, rechargement et retour par le menu, alerte et vague de nuit forcée (joueur dehors face au front : chaque apparition est projetée avec la vraie caméra), mort et sac, démontage d'une voiture, deux onglets (« Reprendre ici » encore offert après « Fermer »), panneau en bas d'écran, réparation pendant une vague, leurre, zoom de la caméra et carte des environs (entrées, bord du monde caché, aussi au refuge tiroir ouvert à l'horizontale, coin et aucun chevauchement à dix tailles d'écran dont les hauteurs visibles réelles des téléphones, garde-fou forcé, coin bas-gauche, repères, carte agrandie, découpe des murs au zoom le plus large), déménagement (ligne du panneau vue dès l'ouverture, pas de refus non demandé avec un refuge, conseil une fois par partie et après le butin, même quartier avec un coffre trop plein pour le nouveau refuge et rechargement avec la caisse, puis expédition à Pérouges, avec les textes qui l'expliquent, entiers sur téléphone, aussi à l'horizontale), et absence d'erreur dans la console. Il mesure aussi le temps de logique par image pendant une vague (95e centile sous 6 ms sur ordinateur, 8 ms sur téléphone) et les appels de dessin ajoutés par le décor et le refuge. Sans carte graphique, le jeu tourne plus lentement que la montre : les durées (fouille, clouage, leurre) sont vérifiées en temps de jeu. Les captures vont dans `browser-shots/acceptance`. La CI lance ce script à chaque modification ; il bloque la publication.
 
+**Tests d'acceptation de l'intérieur** (`test/interieur-acceptance.mjs`), même installation et mêmes réponses enregistrées :
+
+```sh
+node test/interieur-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobile) ; captures dans browser-shots/interieur
+```
+
+Le script entre dans un bâtiment de Lyon à la porte, sur ordinateur puis sur téléphone : « Entrer », ouverture du plan et des murs dans la grille d'occupation, fouille de deux pièces (durée et butin propres à chacune, une seule pièce enregistrée après la première), embuscade qui sort d'une autre pièce, sortie qui défait l'intérieur, rechargement (les deux pièces restent fouillées), puis mesure du temps de construction d'un plan sur 80 bâtiments voisins (médiane sous 12 ms et 90e centile sous 30 ms dans le navigateur de la CI, sans carte graphique). La CI le lance après l'acceptation de la base ; il bloque la publication.
+
 Les réponses du réseau viennent de `test/fixtures/offline-routes.mjs` : de vraies tuiles OpenFreeMap de Lyon (place Bellecour) et de Pérouges réduites à un carré de 800 m (`test/fixtures/tiles/`, 207 Ko), leur `tilejson.json`, une météo enregistrée (pluie de nuit), Three.js et MapLibre pris dans `node_modules`. Toute autre adresse est refusée. `npm run tiles:crop -- <dossier des tuiles brutes>` refait les tuiles réduites à partir de tuiles téléchargées (`z-x-y.mvt`). Le même fichier sert au test de fumée : `npm run smoke:offline` (ou `npm run smoke` avec les vrais services).
 
 ## Organisation
@@ -167,6 +183,7 @@ Les réponses du réseau viennent de `test/fixtures/offline-routes.mjs` : de vra
 - `src/dem.js`, `src/terrain.js`, `src/slope.js` : relief réel (avec `?relief=1`) : tuiles d'altitude AWS (décodeur PNG, cache), hauteur du sol, eau à niveau, plancher des bâtiments, puis pentes qui comptent
 - `src/quest.js` : choix des lieux A et B, déroulé de la quête
 - `src/game.js` : joueur, zombies, combat
+- `src/interieur.js`, `src/interieur-jeu.js`, `src/interieur-view.js` : intérieur des bâtiments (plan par pièces, fouille pièce par pièce, poursuite par les portes, dessin à la demande)
 - `src/survival.js` : faim, soif, température du corps, butin selon le type de lieu, inventaire
 - `src/scene.js`, `src/atmosphere.js` : rendu Three.js, façades et fenêtres, balise de quête, ciel, pluie, neige, éclairs
 - `src/minimap.js` : carte des environs (canvas 2D tourné avec la caméra, fond dessiné par tranches dans un cache, repères, garde-fou qui l'écarte des autres panneaux, carte agrandie)

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   SAVE_KEY, PREV_KEY, CORRUPT_KEY, SAVE_VERSION, LIMITS, ITEM_KEYS, SAVE_MESSAGES,
   emptySave, validateSave, parseSave, purgeOld, createSaveStore, memoryStorage, exportFileName, isBlankSave,
+  searchStamp, searchRooms, searchedWhole, markRoom,
 } from '../src/save.js';
 import { stampOf } from '../src/net/account.js';
 import { stampOfText } from '../src/account.js';
@@ -1090,4 +1091,61 @@ test('isBlankSave : partie neuve et partie jouée sans rien de marquant vides ; 
   }
   assert.equal(isBlankSave(null), true);
   assert.equal(isBlankSave({}), true);
+});
+
+test('fouille des pièces : forme étendue { n, r } relue, bornée, purgée par pièce ; les anciennes heures restent lisibles', () => {
+  const id = 'b45.75718_4.83049', id2 = 'b45.75719_4.83049';
+  const ok = check((s) => { s.searched = { [id]: { n: 5, r: { 0: NOW - H, 3: NOW - 2 * H } }, [id2]: NOW - 3 * H }; });
+  assert.deepEqual(ok.save.searched[id], { n: 5, r: { 0: NOW - H, 3: NOW - 2 * H } });
+  assert.equal(ok.save.searched[id2], NOW - 3 * H);
+  assert.deepEqual(ok.fixes, []);
+  // Illisibles : pièce hors du plan, heure absente, n absent ou trop grand, aucune pièce.
+  const bad = check((s) => { s.searched = { [id]: { n: 3, r: { 0: NOW, 3: NOW, x: NOW, 1: 'z' } }, [id2]: { n: 99, r: { 0: NOW } }, a: { n: 2, r: {} }, b: { r: { 0: NOW } } }; });
+  assert.deepEqual(bad.save.searched, { [id]: { n: 3, r: { 0: NOW } } });
+  assert.ok(hasFix(bad, 'searched'));
+  // Heures futures ramenées à maintenant.
+  assert.equal(check((s) => { s.searched[id] = { n: 2, r: { 1: NOW + 99 * H } }; }).save.searched[id].r[1], NOW);
+  // Les démontages restent des nombres.
+  assert.deepEqual(check((s) => { s.dismantled = { a: { n: 2, r: { 0: NOW } } }; }).save.dismantled, {});
+  // Purge : les pièces de plus de 24 h partent, l'entrée sans pièce aussi.
+  const s = emptySave(NOW);
+  s.searched = { [id]: { n: 4, r: { 0: NOW - 25 * H, 1: NOW - H } }, [id2]: { n: 2, r: { 0: NOW - 30 * H } } };
+  assert.equal(purgeOld(s, NOW), 1);
+  assert.deepEqual(s.searched, { [id]: { n: 4, r: { 1: NOW - H } } });
+  // Plafond : les entrées les plus anciennes (heure de leur dernière pièce) partent.
+  const big = {};
+  for (let i = 0; i < 1600; i++) big[`b${i}`] = i % 2 ? NOW - i : { n: 2, r: { 0: NOW - i } };
+  const r = check((raw) => { raw.searched = big; });
+  assert.equal(Object.keys(r.save.searched).length, 1500);
+  assert.ok(r.save.searched.b0 && !r.save.searched.b1599);
+});
+
+test('fouille des pièces : aides de lecture et d’écriture', () => {
+  const D = 24 * H;
+  assert.equal(searchStamp(NOW), NOW);
+  assert.equal(searchStamp({ n: 2, r: { 0: NOW - 5, 1: NOW - 2 } }), NOW - 2);
+  assert.equal(searchStamp(undefined), 0);
+  assert.deepEqual(searchRooms(NOW - H, NOW, D), { done: 1, total: 1 });
+  assert.deepEqual(searchRooms(NOW - H, NOW, D, 6), { done: 6, total: 6 });
+  assert.deepEqual(searchRooms(NOW - 2 * D, NOW, D, 6), { done: 0, total: 6 });
+  assert.deepEqual(searchRooms({ n: 4, r: { 0: NOW - H, 2: NOW - 2 * D } }, NOW, D), { done: 1, total: 4 });
+  assert.deepEqual(searchRooms(undefined, NOW, D), { done: 0, total: null });
+  assert.ok(searchedWhole(NOW - H, NOW, D));
+  assert.ok(!searchedWhole(NOW - 2 * D, NOW, D));
+  assert.ok(searchedWhole({ n: 2, r: { 0: NOW, 1: NOW } }, NOW, D));
+  assert.ok(!searchedWhole({ n: 3, r: { 0: NOW, 1: NOW } }, NOW, D));
+  assert.ok(!searchedWhole(undefined, NOW, D));
+  const map = {};
+  assert.ok(markRoom(map, 'x', 1, 3, NOW));
+  assert.ok(markRoom(map, 'x', 0, 3, NOW + 5));
+  assert.deepEqual(map.x, { n: 3, r: { 1: NOW, 0: NOW + 5 } });
+  // Une fouille entière d'avant, encore valable, n'est pas touchée ; périmée, elle est remplacée.
+  const old = { y: NOW - H, z: NOW - 2 * D };
+  assert.ok(!markRoom(old, 'y', 0, 3, NOW));
+  assert.equal(old.y, NOW - H);
+  assert.ok(markRoom(old, 'z', 0, 3, NOW));
+  assert.deepEqual(old.z, { n: 3, r: { 0: NOW } });
+  // Le nombre de pièces change (plan différent) : on repart de zéro.
+  assert.ok(markRoom(map, 'x', 0, 5, NOW));
+  assert.deepEqual(map.x, { n: 5, r: { 0: NOW } });
 });

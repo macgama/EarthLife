@@ -228,7 +228,8 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
 
   // list : online.others(now), Survivor = { sid, lat, lon, yaw, flags, name, alpha } ; me : { x, z } du joueur
   // (facultatif). Appelée à chaque image, après la caméra.
-  function sync(list, proj, camera, dt = 0, daylight = 1, mePos = null) {
+  // place(l) : facultatif, déplace le point local { x, z } d'un survivant (dans un bâtiment : sur le pas de la porte).
+  function sync(list, proj, camera, dt = 0, daylight = 1, mePos = null, place = null) {
     // Avant toute écriture de cette image (voir measurePending).
     if (toMeasure.size) measurePending();
     rect = vp();
@@ -245,6 +246,7 @@ export function createOthersView({ scene, characters = null, labelsRoot = null, 
         const alpha = Number.isFinite(s.alpha) ? Math.max(0, Math.min(1, s.alpha)) : 1;
         if (alpha <= 0) continue;
         const l = proj.toLocal(s.lat, s.lon);
+        if (place) place(l);
         const d = me.known ? Math.hypot(l.x - me.x, l.z - me.z) : 0;
         if (d > OTHERS_VIEW.drawM) continue;
         // Les plus proches d'abord, 24 au plus (insertion dans la réserve).
