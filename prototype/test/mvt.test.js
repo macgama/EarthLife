@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import geojsonvt from 'geojson-vt';
+import GeoJSONVT from 'geojson-vt';
 import { VectorTile, classifyRings as refClassifyRings } from '@mapbox/vector-tile';
 import { PbfReader } from 'pbf';
 import { decodeTile, classifyRings, signedArea } from '../src/mvt.js';
@@ -29,7 +29,7 @@ const rect = (x, y, w, h) => ring([[x, y], [x + w, y], [x + w, y + h], [x, y + h
 function buildTile(layers, options = {}) {
   const tiles = {};
   for (const [name, features] of Object.entries(layers)) {
-    const index = geojsonvt({ type: 'FeatureCollection', features }, { ...VT_OPTIONS, ...options });
+    const index = new GeoJSONVT({ type: 'FeatureCollection', features }, { ...VT_OPTIONS, ...options });
     tiles[name] = index.getTile(Z, TX, TY) ?? { features: [] };
   }
   return vtpbf.fromGeojsonVt(tiles, { version: 2, extent: 4096 });

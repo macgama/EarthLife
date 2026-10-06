@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import geojsonvt from 'geojson-vt';
+import GeoJSONVT from 'geojson-vt';
 import { featuresFromBytes, regionOf, shapeUse } from '../src/tiles.js';
 import { makeProjection, pointInPolygon, polygonArea } from '../src/geo.js';
 import { createWorldStore, useProceduralWorld } from '../src/world.js';
@@ -319,7 +319,7 @@ const line = (pts, properties) => ({ type: 'Feature', geometry: { type: 'LineStr
 function synthTile(layers) {
   const tiles = {};
   for (const [name, features] of Object.entries(layers)) {
-    const index = geojsonvt({ type: 'FeatureCollection', features }, { maxZoom: 14, extent: 4096, buffer: 64, indexMaxZoom: 0, tolerance: 0 });
+    const index = new GeoJSONVT({ type: 'FeatureCollection', features }, { maxZoom: 14, extent: 4096, buffer: 64, indexMaxZoom: 0, tolerance: 0 });
     tiles[name] = index.getTile(14, TX, TY) ?? { features: [] };
   }
   return featuresFromBytes(vtpbf.fromGeojsonVt(tiles, { version: 2, extent: 4096 }), TX, TY, 14, tileCenter);
