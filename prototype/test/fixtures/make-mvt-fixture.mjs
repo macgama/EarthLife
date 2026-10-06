@@ -6,7 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import geojsonvt from 'geojson-vt';
+import GeoJSONVT from 'geojson-vt';
 import { makeProjection } from '../../src/geo.js';
 
 const require = createRequire(import.meta.url);
@@ -300,7 +300,7 @@ pois.forEach((p, i) => layers.poi.push(feature({ type: 'Point', coordinates: p.c
 // --- Découpage en tuiles et encodage ---
 
 const indexes = Object.fromEntries(LAYER_ORDER.map((name) =>
-  [name, geojsonvt({ type: 'FeatureCollection', features: layers[name] }, VT_OPTIONS)]));
+  [name, new GeoJSONVT({ type: 'FeatureCollection', features: layers[name] }, VT_OPTIONS)]));
 
 for (const [x, y] of TILES) {
   const tileLayers = {};

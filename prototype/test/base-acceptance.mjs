@@ -1906,10 +1906,12 @@ function watchToasts(page) {
     let last = performance.now();
     const loop = (t) => { window.__gt += Math.max(0, Math.min((t - last) / 1000, 0.05)); last = t; requestAnimationFrame(loop); };
     requestAnimationFrame(loop);
+    // Seul showToast (hud.js) écrit ce texte : chaque changement est une notification de plus, même quand elle répète
+    // la précédente (deux fouilles qui donnent « Habitation : 2 bois » de suite).
     const el = document.getElementById('toast-text');
     new MutationObserver(() => requestAnimationFrame(() => {
       const text = el.textContent.replace(/\s+/g, ' ').trim();
-      if (!text || window.__toastBoxes.at(-1)?.text === text) return;
+      if (!text) return;
       const r = el.getBoundingClientRect();
       const hits = list.filter((o) => {
         const e = document.querySelector(o);
@@ -1953,7 +1955,7 @@ async function afterLoot(page, tag, hint, from) {
   const boxes = await ev(page, (i) => (window.__toastBoxes ?? []).slice(i), from);
   const h = boxes.findIndex((b) => b.text === hint.text);
   const loot = boxes.slice(0, h).reverse().find((b) => b.loot);
-  check(!!loot && hint.gt - loot.gt >= 2.7, `${tag} : conseil ${round(hint.gt - (loot?.gt ?? NaN), 1)} s de jeu après le butin « ${loot?.text} »`);
+  check(!!loot && hint.gt - loot.gt >= 2.7, `${tag} : conseil ${round(hint.gt - (loot?.gt ?? NaN), 1)} s de jeu après le butin « ${loot?.text} »${loot ? '' : ` ; vues : ${JSON.stringify(boxes.map((b) => b.text))}`}`);
 }
 
 // Textes du déménagement posés dans le toast et la pastille de quête avec le CSS du jeu, à l'horizontale, dans l'état
