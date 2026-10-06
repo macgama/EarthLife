@@ -6,6 +6,7 @@
 import net from 'node:net';
 import { RULES } from '../../prototype/src/net/protocol.js';
 import { ACCOUNT_RULES } from '../../prototype/src/net/account.js';
+import { SEASON_RULES } from './season.js';
 
 const MAX_BODY = RULES.maxBody;
 // Routes des comptes → compteur (counts.account ou counts.save).
@@ -13,6 +14,8 @@ const ACCOUNT_ROUTES = new Map([
   ...['code', 'verify', 'login', 'me', 'password', 'logout', 'delete', 'export'].map((r) => [`/v1/account/${r}`, 'account']),
   ['/v1/save/get', 'save'], ['/v1/save/put', 'save'],
 ]);
+// Routes des saisons (season.js) : POST avec la session du compte ; GET /v1/season/progress est public (cache de 30 s).
+const SEASON_POST = new Map(['join', 'state', 'seed', 'tile', 'adj', 'home'].map((r) => [`/v1/season/${r}`, r]));
 const BASE_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-store',
@@ -103,8 +106,8 @@ function readBody(req, max = MAX_BODY) {
 }
 
 export function createHttpHandler({ room, config, log = () => {}, isBanned = () => false, state = {}, extra = null,
-  tap = null, accounts = null }) {
-  const counts = { requests: 0, health: 0, sync: 0, me: 0, account: 0, save: 0, s403: 0, s404: 0, s413: 0, s429: 0, s5xx: 0 };
+  tap = null, accounts = null, seasons = null }) {
+  const counts = { requests: 0, health: 0, sync: 0, me: 0, account: 0, save: 0, season: 0, s403: 0, s404: 0, s413: 0, s429: 0, s5xx: 0 };
 
   function headersFor(req, type = 'application/json; charset=utf-8') {
     const h = { ...BASE_HEADERS, 'Content-Type': type, Vary: 'Origin' };
@@ -157,6 +160,36 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
     return answer(await accounts.handle(p, body.text, { ip, admitted: true }));
   }
 
+  // Route des saisons : limite par adresse (propre aux saisons, seasons.admit), corps borné par route, puis seasons.handle → { status, body | raw }.
+  async function seasonPost(req, res, p) {
+    const origin = req.headers.origin;
+    if (origin !== undefined && !originAllowed(config.origins, origin)) return reply(req, res, 403, { ok: false });
+    counts.season++;
+    const answer = (r) => {
+      const wait = r.status === 429 || r.status === 503 ? r.body?.retryMs : undefined;
+      return reply(req, res, r.status, r.raw !== undefined ? { json: r.raw } : r.body,
+        Number.isFinite(wait) ? { 'Retry-After': String(Math.max(1, Math.ceil(wait / 1000))) } : {});
+    };
+    if (state.stopping) return answer({ status: 503, body: { ok: false, code: 'arret', retryMs: state.retryMs ?? 3000 } });
+    const ip = state.ipOf ? state.ipOf(req) : '';
+    const early = seasons.admit(ip);
+    if (early) {
+      req.resume();
+      return answer(early);
+    }
+    if (isBanned(ip)) {
+      req.resume();
+      return reply(req, res, 403, { ok: false, code: 'banni' });
+    }
+    const body = await readBody(req, SEASON_RULES.body[SEASON_POST.get(p)]);
+    if (body.tooBig) {
+      log('refus', { why: 'corps-trop-grand', route: 'season' });
+      return reply(req, res, 413, { ok: false, code: 'taille' }, { Connection: 'close' });
+    }
+    if (body.error) return;
+    return answer(await seasons.handle(p, body.text, { ip }));
+  }
+
   async function post(req, res, kind) {
     const origin = req.headers.origin;
     // Origine étrangère : refus net (le jeton n'est de toute façon pas lisible depuis un autre site).
@@ -189,9 +222,10 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
     try {
       if (extra && (await extra(req, res, p))) return;
       const route = p === '/' ? 'root' : p === '/v1/health' ? 'health' : p === '/v1/sync' ? 'sync' : p === '/v1/me' ? 'me'
-        : accounts && ACCOUNT_ROUTES.has(p) ? 'account' : null;
+        : accounts && ACCOUNT_ROUTES.has(p) ? 'account' : seasons && accounts && SEASON_POST.has(p) ? 'season'
+          : seasons && p === '/v1/season/progress' ? 'progress' : null;
       if (!route) return reply(req, res, 404, { ok: false });
-      const get = route === 'root' || route === 'health';
+      const get = route === 'root' || route === 'health' || route === 'progress';
       if (req.method === 'OPTIONS') {
         // Les requêtes du jeu sont « simples » (text/plain) : aucune requête préalable n'est attendue.
         return reply(req, res, 204, '', originAllowed(config.origins, req.headers.origin)
@@ -207,6 +241,11 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
         return reply(req, res, 200, room.health());
       }
       if (route === 'account') return await accountPost(req, res, p);
+      if (route === 'season') return await seasonPost(req, res, p);
+      if (route === 'progress') {
+        const r = await seasons.progress();
+        return reply(req, res, r.status, r.body, r.status === 200 ? { 'Cache-Control': 'public, max-age=30' } : {});
+      }
       return await post(req, res, route);
     } catch (err) {
       log('erreur', { type: 'http', err: err?.code ?? err?.name });

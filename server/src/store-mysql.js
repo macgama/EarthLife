@@ -68,6 +68,11 @@ const accountOf = (r) => ({
 });
 const metaOf = (r) => ({ rev: Number(r.rev), savedMs: Number(r.saved_ms), bytes: Number(r.bytes),
   stamp: [r.stamp_w ?? null, Number(r.stamp_r), Number(r.stamp_t)] });
+const SEASON_COLS = 'account_id, season, level, commune, enrolled_ms, home_key, home_lat, home_lon, seen_ms, kills';
+const seasonPlayerOf = (r) => ({
+  accountId: hex(r.account_id), season: Number(r.season), level: r.level, commune: r.commune ?? null, enrolledMs: Number(r.enrolled_ms),
+  homeKey: r.home_key ?? null, homeLat: r.home_lat ?? null, homeLon: r.home_lon ?? null, seenMs: Number(r.seen_ms), kills: Number(r.kills),
+});
 // LIMIT écrit dans la requête (entier borné, jamais une valeur reçue) : mysql2 lie mal un LIMIT préparé.
 const limitOf = (n, max) => Math.max(1, Math.min(max, Math.floor(Number(n)) || 1));
 
@@ -606,6 +611,54 @@ export function createMysqlStore({
           [...values, bin(accountId)]);
         return { ok: true, rev };
       });
+    },
+
+    // ---------- Saisons (003-saisons.sql) ----------
+
+    async seasonGet(id) {
+      const r = await one('SELECT id, name, start_ms, end_ms FROM el_seasons WHERE id = ?', [id], fast);
+      return r.length ? { id: Number(r[0].id), name: r[0].name, startMs: Number(r[0].start_ms), endMs: Number(r[0].end_ms) } : null;
+    },
+    async seasonCreate({ id, name, startMs, endMs }) {
+      const [r] = await run((c) => c.execute('INSERT IGNORE INTO el_seasons (id, name, start_ms, end_ms) VALUES (?, ?, ?, ?)',
+        [id, name, startMs, endMs]), { retry: false, ms: fastOpMs });
+      return r.affectedRows > 0;
+    },
+    async seasonPlayer(accountId, season) {
+      const r = await one(`SELECT ${SEASON_COLS} FROM el_season_players WHERE account_id = ? AND season = ?`, [bin(accountId), season], fast);
+      return r.length ? seasonPlayerOf(r[0]) : null;
+    },
+    async seasonJoin({ accountId, season, level, nowMs }) {
+      return tx(async (c) => {
+        const acc = await rows(c, 'SELECT id FROM el_accounts WHERE id = ? FOR UPDATE', [bin(accountId)]);
+        if (!acc.length) return { ok: false, player: null };
+        const cur = await rows(c, `SELECT ${SEASON_COLS} FROM el_season_players WHERE account_id = ? AND season = ?`, [bin(accountId), season]);
+        if (cur.length) return { ok: false, player: seasonPlayerOf(cur[0]) };
+        await c.execute('INSERT INTO el_season_players (account_id, season, level, enrolled_ms, seen_ms) VALUES (?, ?, ?, ?, ?)',
+          [bin(accountId), season, level, nowMs, nowMs]);
+        return { ok: true, player: { accountId, season, level, commune: null, enrolledMs: nowMs, homeKey: null, homeLat: null, homeLon: null,
+          seenMs: nowMs, kills: 0 } };
+      });
+    },
+    async seasonPlayerSet(accountId, season, patch) {
+      const cols = { commune: 'commune', homeKey: 'home_key', homeLat: 'home_lat', homeLon: 'home_lon', seenMs: 'seen_ms', kills: 'kills' };
+      const sets = [], values = [];
+      for (const [k, col] of Object.entries(cols)) if (patch[k] !== undefined) { sets.push(`${col} = ?`); values.push(patch[k]); }
+      if (!sets.length) return;
+      await one(`UPDATE el_season_players SET ${sets.join(', ')} WHERE account_id = ? AND season = ?`, [...values, bin(accountId), season], fast);
+    },
+    async seasonCounts(season) {
+      const r = await one('SELECT level, COUNT(*) AS n FROM el_season_players WHERE season = ? GROUP BY level', [season], fast);
+      return Object.fromEntries(r.map((x) => [x.level, Number(x.n)]));
+    },
+    async seasonDocs(world) {
+      const r = await one('SELECT commune, part, rev, data FROM el_season_docs WHERE world = ?', [world]);
+      return r.map((x) => ({ commune: x.commune, part: x.part, rev: Number(x.rev), data: String(x.data) }));
+    },
+    async seasonDocPut({ world, commune, part, rev, data, nowMs = Date.now() }) {
+      await one('INSERT INTO el_season_docs (world, commune, part, rev, data, updated_ms) VALUES (?, ?, ?, ?, ?, ?) '
+        + 'ON DUPLICATE KEY UPDATE rev = VALUES(rev), data = VALUES(data), updated_ms = VALUES(updated_ms)',
+      [world, commune, part, rev, data, nowMs]);
     },
 
     // Pour admin.mjs (reports) : signalements reçus depuis sinceMs, par identité signalée.

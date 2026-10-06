@@ -46,6 +46,8 @@ export function createRoom({
     const key = randomBytes(32);
     hmac = (ip) => createHmac('sha256', key).update(String(ip)).digest('hex');
   }
+  // Saisons (season.js) : message `sv`, fermeture d'une session et tic, par les crochets que main.js pose.
+  let seasonHooks = {};
   const welcomeCfg = {
     hz: cfg.hz, nearM: cfg.nearM, farM: cfg.farM, nameM: cfg.nameM, gestureM: cfg.gestureM,
     searchH: Math.round(cfg.searchSharedMs / HOUR), goneH: Math.round(cfg.goneSharedMs / HOUR), beatMs: cfg.beatMs,
@@ -565,6 +567,7 @@ export function createRoom({
     let sess = await store.sessionByTokenHash(tokenHash, t);
     if (s.state === 'closed') return null;
     if (!sess) { refuse(s, 'session'); return null; }
+    s.accountId = sess.accountId;                 // saisons : l'inscription est celle du compte
     if (sess.seenOn !== today()) {
       const exp = Math.min(sess.createdMs + ACCOUNT_RULES.sessionMaxDays * DAY, t + ACCOUNT_RULES.sessionIdleDays * DAY);
       await store.touchSession(tokenHash, today(), exp);
@@ -866,6 +869,7 @@ export function createRoom({
         case 'mks': return replay(s, msg.m);
         case 'rf': return onRefuge(s, msg);
         case 'g': return onGesture(s, msg);
+        case 'sv': return seasonHooks.message ? guarded(Promise.resolve().then(() => seasonHooks.message(s, msg)), 'sv') : undefined;
         case 'hide': return guarded(onHide(s, msg), 'hide');
         case 'rep': return guarded(onReport(s, msg), 'rep');
         case 'name': return guarded(onName(s), 'name');
@@ -910,6 +914,7 @@ export function createRoom({
     }
     if (s.playerId && byPlayer.get(s.playerId) === s) byPlayer.delete(s.playerId);
     if (s.tokenHash && pollByToken.get(s.tokenHash) === s) pollByToken.delete(s.tokenHash);
+    try { seasonHooks.close?.(s); } catch (err) { log('erreur', { type: 'saison-fermeture', err: err?.name }); }
     leaveCell(s);
     releaseCells(s);
     forgetPosition(s);
@@ -1071,6 +1076,7 @@ export function createRoom({
       if (t - lastEvict >= 1000) { lastEvict = t; evict(); }
       if (t - lastFlush >= cfg.flushEveryMs && !flushing) { lastFlush = t; flush(); }
       if (t - lastSweep >= 60000) { lastSweep = t; sweep(t); }
+      try { seasonHooks.tick?.(t); } catch (err) { log('erreur', { type: 'saison-tic', err: err?.name }); }
       tickTimes[tickIdx] = perfNow() - start;
       tickIdx = (tickIdx + 1) % tickTimes.length;
       tickN = Math.min(tickN + 1, tickTimes.length);
@@ -1163,6 +1169,10 @@ export function createRoom({
       }
       return r;
     },
+
+    // Envoi d'un message à une session (WebSocket ou repli HTTP) : pour season.js.
+    send,
+    setSeason(hooks) { seasonHooks = hooks ?? {}; },
 
     health() {
       return { ok: true, v: PROTOCOL, minClient: cfg.minClient, version: cfg.version, ws: !!cfg.ws, db: dbReady(),

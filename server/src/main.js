@@ -15,6 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { createRoom } from './room.js';
 import { createAccounts } from './accounts.js';
+import { createSeasons } from './season.js';
 import { createMailer } from './mail.js';
 import { createMemoryStore } from './store-memory.js';
 import { createLog, errFields } from './log.js';
@@ -72,7 +73,8 @@ const STORE_OPS = ['init', 'playerByTokenHash', 'createPlayer', 'touch', 'rename
   'erase', 'purge',
   'createAccount', 'accountByEmailHash', 'accountById', 'setPassword', 'touchAccount', 'linkPlayer', 'playerById',
   'eraseAccount', 'inactiveAccounts', 'markWarned', 'countAccounts', 'createSession', 'sessionByTokenHash', 'touchSession',
-  'dropSession', 'dropSessions', 'sessionsOf', 'putCode', 'takeCode', 'saveMeta', 'getSave', 'putSave'];
+  'dropSession', 'dropSessions', 'sessionsOf', 'putCode', 'takeCode', 'saveMeta', 'getSave', 'putSave',
+  'seasonGet', 'seasonCreate', 'seasonPlayer', 'seasonJoin', 'seasonPlayerSet', 'seasonCounts', 'seasonDocs', 'seasonDocPut'];
 
 async function makeStore(config, log) {
   if (config.store === 'memory') return createMemoryStore({ refugeDays: config.refugeDays, playerDays: config.playerDays });
@@ -172,6 +174,14 @@ export async function startServer({
     mailer = null;
   }
 
+  // Saisons de « Sauver sa ville » (season.js) : ville commune par monde ; seulement avec les comptes (SEASONS=0 les coupe).
+  let seasons = null;
+  if (config.seasons) {
+    seasons = createSeasons({ store: roomStore, send: (s, m) => room.send(s, m), log, rules: { seats: config.seasonSeats, days: config.seasonDays } });
+    room.setSeason(seasons.hooks);
+    seasons.init().catch(() => {});
+  }
+
   function retryInit() {
     if (initing) return initing;
     initing = (async () => {
@@ -214,7 +224,7 @@ export async function startServer({
     const until = runtimeBans.get(hmac(ip));
     return !!until && until > Date.now();
   };
-  const web = createHttpHandler({ room, config, log, isBanned, state, extra, tap, accounts });
+  const web = createHttpHandler({ room, config, log, isBanned, state, extra, tap, accounts, seasons });
   // Délais de 10 s (6.2) contrôlés toutes les 2 s (30 s par défaut dans node:http : une connexion aux en-têtes jamais
   // finis vivait 30 s) ; nombre de sockets borné (WebSocket et HTTP), large devant MAX_CONN.
   const server = http.createServer({ headersTimeout: T.httpTimeoutMs, requestTimeout: T.httpTimeoutMs,
@@ -431,6 +441,7 @@ export async function startServer({
       rssMo: Math.round(mem.rss / MB), tasMo: Math.round(mem.heapUsed / MB), dbMs,
     };
     if (accounts) out.comptes = accounts.stats();
+    if (seasons) out.saisons = seasons.stats();
     Object.assign(io, { ticks: 0, ms: 0, maxMs: 0, writes: 0 });
     for (const k of Object.keys(web.counts)) web.counts[k] = 0;
     for (const k of Object.keys(wsCounts)) wsCounts[k] = 0;
@@ -523,6 +534,7 @@ export async function startServer({
         for (const h of intervals) { clearInterval(h); clearTimeout(h); }
         // bye { restart, retryMs } à tous, fermeture 1012, puis écritures en attente (2 s au plus).
         await room.shutdown(state.retryMs);
+        if (seasons) await Promise.race([seasons.flush(), new Promise((r) => setTimeout(r, 4000))]).catch(() => {});
         await new Promise((resolve) => {
           if (!sockets.size) return resolve();
           const t = setTimeout(resolve, T.stopWaitMs);
@@ -555,7 +567,7 @@ export async function startServer({
   }
 
   const url = port !== null ? `http://${config.host && config.host !== '0.0.0.0' ? config.host : '127.0.0.1'}:${port}` : null;
-  return { server, room, store, log, config, port, url, stop, measure, state, sockets, runtimeBans, accounts, mailer };
+  return { server, room, store, log, config, port, url, stop, measure, state, sockets, runtimeBans, accounts, mailer, seasons };
 }
 
 // ---------- Lancement direct ----------

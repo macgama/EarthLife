@@ -8,10 +8,11 @@
 // magasin du territoire, la projection du monde ; il lit les zombies du directeur (game.js) sans les créer.
 import {
   NIVEAUX, LEVEL_KEYS, NIVEAU_DEFAUT, ETAT, QUARTIER, ROW, startVille, memberOf, censusWeights, censusBlocks, levelSummary, placeTile,
-  blockInfo, counters, cityStatus, lend, giveBack, kill, take, drawReserve, openNest, plantFlag, dropFlag, liberate, fallFlag,
+  blockInfo, counters, cityStatus, giveBack, fallFlag,
   regrow, volunteersNight, homeWeights, hiddenByBuilding, takeHome, heartWaves, nestSize, keyPoint, startUnit, finishUnit,
-  unitTilesMissing, setCoeur, unitKeyOf, recallAll, zombiesLeft, supplyFor, villeLine, flagNights,
+  unitTilesMissing, unitKeyOf, zombiesLeft, supplyFor, villeLine, flagNights,
 } from './quartier.js';
+import { soloOps, seasonOps, applyRows, applyTile, applyCounts, applyLent, adoptTiles, resync as resyncVille } from './saison-miroir.js';
 import { beginVille, rekeyTerritory, finishVille, currentVille, supplyDay, noteFirst } from './territory-store.js';
 import {
   censusUnit, contourTiles, hasContour, chapterMode, communeMembership, neighboursFromZones, offlinePlace, offlineCommune,
@@ -371,9 +372,14 @@ export function homeCandidates(runtime, buildings, { window = [CITY.homeMin, CIT
 }
 
 // Contexte d'une partie de ville. deps : { ville, store, client, template, graph, fn, member, unit, commune, proj, rand?,
-// now?, onEvent?, log? } ; `proj` : { toLocal(lat, lon) -> { x, z }, toLatLon(x, z) -> { lat, lon } } du monde chargé.
+// now?, onEvent?, log?, season? } ; `proj` : { toLocal(lat, lon) -> { x, z }, toLatLon(x, z) -> { lat, lon } } du monde chargé.
+// `season` : { net } (net/season.js) pour la ville commune d'une saison : `ville` est alors la copie du serveur, les gestes
+// sont envoyés (saison-miroir.js), les tuiles sont placées par le serveur, les nuits, la fin de ville et le territoire de
+// l'appareil ne servent pas.
 export function createCityRuntime(deps) {
   const { ville, store, client, template, graph, proj, unit, commune } = deps;
+  const S = deps.season ?? null;
+  const ops = S ? seasonOps(ville, S.net) : soloOps(ville);
   const rand = deps.rand ?? Math.random;
   const now = deps.now ?? Date.now;
   const onEvent = deps.onEvent ?? (() => {});
@@ -396,6 +402,7 @@ export function createCityRuntime(deps) {
   let disposed = false;
 
   const markDirty = (force = false) => {
+    if (S) return;
     const t = now();
     if (force || t - state.lastDirty >= CITY.dirtyMs) { state.lastDirty = t; state.dirtyPending = false; store.markDirty(); } else state.dirtyPending = true;
   };
@@ -404,8 +411,10 @@ export function createCityRuntime(deps) {
 
   function link(a, b) {
     if (a === b) return;
+    const fresh = S && !adj.get(a)?.has(b);
     (adj.get(a) ?? adj.set(a, new Set()).get(a)).add(b);
     (adj.get(b) ?? adj.set(b, new Set()).get(b)).add(a);
+    if (fresh) S.net.adj([[a, b]]);              // le serveur garde les voisinages de tous les joueurs
   }
   function index(res) {
     const keys = res.pates.map((p) => (blockInfo(ville, p.key) ? p.key : null));
@@ -427,6 +436,7 @@ export function createCityRuntime(deps) {
   // ----- Placement des tuiles découpées (3.1) -----
 
   function place(res) {
+    if (S) return placeSeason(res);
     const key = res.tile;
     graph.addTile(res.x, res.y, res.zones);
     cuts.set(key, res);
@@ -452,7 +462,84 @@ export function createCityRuntime(deps) {
     return [...out.values()];
   }
 
+  // ----- Placement des tuiles d'une saison : le serveur place, le premier découpage qui arrive fait foi -----
+
+  const uploads = new Map();   // 'z/x/y' -> promesse d'envoi (une seule à la fois par tuile)
+  const upFailed = new Map();  // 'z/x/y' -> heure du dernier envoi refusé (nouvel essai après 8 s)
+  const nat0 = (v) => (Number.isFinite(v) && v > 0 ? Math.min(1e9, Math.round(v)) : 0);
+  const safeQ = (q) => String(q ?? '').replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 40);
+
+  // Les rangées de la tuile sont là (envoyées par un autre joueur ou par nous) : positions et voisins de CE découpage.
+  function readyTile(key, res) {
+    waiting.delete(key);
+    placed.add(key);
+    index(res);
+  }
+  // Tuiles dont les rangées sont arrivées d'ailleurs depuis le dernier passage.
+  function adoptKnown() {
+    for (const [key, res] of cuts) if (!placed.has(key) && !uploads.has(key) && ville.tiles[key]?.b) readyTile(key, res);
+    for (const [key, res] of waiting) if (ville.tiles[key]?.b) readyTile(key, res);
+  }
+
+  function placeSeason(res, { force = false } = {}) {
+    const key = res.tile;
+    graph.addTile(res.x, res.y, res.zones);
+    cuts.set(key, res);
+    const t = ville.tiles[key];
+    if (!t) { cuts.delete(key); placed.add(key); return { ok: true, outside: true }; }
+    if (t.b) { readyTile(key, res); return { ok: true, known: true }; }
+    if (uploads.has(key)) return uploads.get(key);
+    if (now() - (upFailed.get(key) ?? -Infinity) < 8000) { waiting.set(key, res); return { ok: false, waiting: 0 }; }
+    // Pâtés : [clé, appartenance (1 dedans, 0 dehors, -1 inconnu), plancher, logements, bâtiments, quartier, lat, lon].
+    const list = res.pates ?? [];
+    const rows = list.map((p) => {
+      const m = member(p, res);
+      return [p.key, m === true ? 1 : m === false ? 0 : -1, nat0(p.floor), nat0(p.homes), nat0(p.n), safeQ(p.qkey), p.lat, p.lon];
+    });
+    const unknown = rows.filter((r) => r[1] === -1).length;
+    if (unknown && !force) { waiting.set(key, res); return { ok: false, waiting: unknown }; }
+    const nb = [];
+    list.forEach((p, i) => { for (const j of p.nb ?? []) if (j > i && j < list.length) nb.push([i, j]); });
+    const body = { t: key, pates: rows, nb };
+    if (typeof member.leak === 'boolean') body.l = member.leak;
+    if (force) body.f = true;
+    const job = S.net.tile(body).then((r) => {
+      uploads.delete(key);
+      if (disposed) return { ok: false };
+      if (!r.ok) {
+        log(`tuile ${key} : ${r.code ?? 'refus'}`);
+        waiting.set(key, res);
+        upFailed.set(key, now());
+        return { ok: false };
+      }
+      adoptTiles(ville, r.tiles);
+      if (ville.tiles[key]?.b) { readyTile(key, res); return { ok: true }; }
+      if (r.waiting) { waiting.set(key, res); return { ok: false, waiting: 1 }; }
+      return { ok: true };
+    });
+    uploads.set(key, job);
+    return job;
+  }
+
+  async function settleWaitingSeason() {
+    if (!waiting.size || disposed) return;
+    adoptKnown();
+    let more = frontierTiles().slice(0, CITY.maxFlight * 2);
+    if (placed.size + flight.size + more.length > QUARTIER.maxTiles) more = [];
+    if (more.length) await Promise.all(more.map((t) => cutTile(t.x, t.y, { silent: true })));
+    for (const [key, res] of [...waiting]) await placeSeason(res, { force: forced.has(key) });
+    if (waiting.size && !more.length && !flight.size) {
+      // Pâtés toujours inconnus faute de voisines à lire : placés de force, sauf les tuiles dont l'envoi vient d'échouer.
+      for (const [key, res] of [...waiting]) {
+        if (now() - (upFailed.get(key) ?? -Infinity) < 8000) continue;
+        forced.add(key);
+        await placeSeason(res, { force: true });
+      }
+    } else if (waiting.size && more.length) return settleWaitingSeason();
+  }
+
   async function settleWaiting() {
+    if (S) return settleWaitingSeason();
     if (!waiting.size || disposed) return;
     let more = frontierTiles().slice(0, CITY.maxFlight * 2);
     if (placed.size + flight.size + more.length > QUARTIER.maxTiles) more = [];
@@ -476,7 +563,11 @@ export function createCityRuntime(deps) {
     const f = failed.get(key);
     if (f && (f.tries >= CITY.cutRetries) && now() - f.at < CITY.retryMs) return Promise.resolve(null);
     const p = client.cut(tileUrl(template, x, y, 14), x, y, 14, { level: ville.zl })
-      .then((r) => { failed.delete(key); if (!disposed) place(r.result); return r.result; })
+      .then((r) => {
+        failed.delete(key);
+        const done = disposed ? null : place(r.result);
+        return S && done?.then ? done.then(() => r.result) : r.result;
+      })
       .catch((err) => {
         const e = failed.get(key) ?? { tries: 0, at: 0 };
         failed.set(key, { tries: e.tries + 1, at: now() });
@@ -586,16 +677,16 @@ export function createCityRuntime(deps) {
         const a = rand() * Math.PI * 2, d = rand() * p.r;
         spot = { x: p.x + Math.cos(a) * d, z: p.z + Math.sin(a) * d };
       }
-      if (lend(ville, key, 1) < 1) return null;
+      if (ops.lend(key, 1) < 1) return null;
       return { key, x: spot.x, z: spot.z, r: 6 };
     },
     attach(zb, key) { lent.set(zb, key); zb.pate = key; },
-    cancel(pick) { if (pick?.key) giveBack(ville, pick.key, 1); },
+    cancel(pick) { if (pick?.key) ops.giveBack(pick.key, 1); },
     // Horde, rôdeurs : le pâté le plus proche qui a des zombies à donner (jamais le nid) ; Nuit du cœur : la réserve.
     claim(x, z, tags = {}) {
       const heart = tags.horde ? heartUnit() : null;
       if (heart) {
-        const d = drawReserve(ville, heart, 1);
+        const d = ops.drawReserve(heart, 1);
         return d.n ? d.from[0][0] : null;
       }
       let best = null, bd = Infinity;
@@ -606,7 +697,7 @@ export function createCityRuntime(deps) {
         best = key; bd = d;
       }
       if (!best) return null;
-      const got = take(ville, 1, [best]);
+      const got = ops.take(1, [best]);
       return got.n ? best : null;
     },
   };
@@ -619,13 +710,13 @@ export function createCityRuntime(deps) {
     let killed = 0, back = 0;
     for (const [zb, key] of lent) {
       if (zb.dead) {
-        const k = kill(ville, key, 1, by);
+        const k = ops.kill(key, 1, by);
         killed += k;
         const c = state.counter;
         if (k && c && zb.tags?.counter === c.id) c.killed++;
         lent.delete(zb);
       } else if (!present.has(zb)) {
-        back += giveBack(ville, key, 1);
+        back += ops.giveBack(key, 1);
         lent.delete(zb);
       }
     }
@@ -637,7 +728,7 @@ export function createCityRuntime(deps) {
   function recall(director = null) {
     if (director) director.removeWhere?.((z) => lent.has(z));
     lent.clear();
-    recallAll(ville);
+    ops.recallAll();
   }
 
   // ----- Ce que le joueur peut faire (E) -----
@@ -689,7 +780,7 @@ export function createCityRuntime(deps) {
         if (!info || info.state !== 'nettoye' || info.zombies > 0 || info.flagNights > 0) continue;
         if (!(info.start === 0 || info.small)) continue;
         if (!touchesZone(key, zone)) continue;
-        const n = liberate(ville, key);
+        const n = ops.liberate(key);
         freed += n;
         any = true;
         if (n) onEvent({ type: 'liberated', key, n, immediate: true });
@@ -703,14 +794,14 @@ export function createCityRuntime(deps) {
   // Ouvre le nid : ses derniers zombies sortent de son bâtiment, prêtés (ils se rendent s'ils ne sortent pas).
   function openNestAt(key, director, player) {
     const info = blockInfo(ville, key), p = pos.get(key);
-    if (!info || !p || !openNest(ville, key)) return { ok: false, n: 0 };
-    const n = lend(ville, key, info.zombies - info.lent, { nest: true });
+    if (!info || !p || !ops.openNest(key)) return { ok: false, n: 0 };
+    const n = ops.lend(key, info.zombies - info.lent, { nest: true });
     let out = 0;
     for (let i = 0; i < n; i++) {
       const a = rand() * Math.PI * 2, d = 2 + rand() * 7;
       const type = rand() < 0.25 ? 'costaud' : 'errant';
       const zb = director.spawnAt(p.ax + Math.cos(a) * d, p.az + Math.sin(a) * d, type, { lent: key, nest: true });
-      if (zb) { zb.state = 'chase'; out++; } else giveBack(ville, key, 1);
+      if (zb) { zb.state = 'chase'; out++; } else ops.giveBack(key, 1);
     }
     markDirty(true);
     onEvent({ type: 'nest', key, n: out });
@@ -733,9 +824,9 @@ export function createCityRuntime(deps) {
     if (!info || !p || info.state !== 'nettoye' || info.zombies > 0) return { ok: false };
     const first = ville.flags === 0;
     const neighbours = [...(adj.get(key) ?? [])].filter((k) => hordeStock(blockInfo(ville, k)) > 0);
-    if (!plantFlag(ville, key)) return { ok: false };
+    if (!ops.plantFlag(key)) return { ok: false };
     if (!neighbours.length) {
-      const n = liberate(ville, key);
+      const n = ops.liberate(key);
       markDirty(true);
       settleEmpty();
       onEvent({ type: 'liberated', key, n, immediate: true });
@@ -755,7 +846,7 @@ export function createCityRuntime(deps) {
   function startCounter(director, player) {
     const c = state.counter;
     c.started = true;
-    const got = take(ville, c.N, c.neighbours);
+    const got = ops.take(c.N, c.neighbours);
     let spawned = 0;
     for (const [nk, n] of got.from) {
       const q = pos.get(nk);
@@ -764,7 +855,7 @@ export function createCityRuntime(deps) {
         const a = ang + (rand() - 0.5) * 0.9, d = 40 + rand() * 18;
         const type = rand() < 0.25 ? 'coureur' : 'errant';
         const zb = director.spawnAt(c.x + Math.cos(a) * d, c.z + Math.sin(a) * d, type, { lent: nk, counter: c.id });
-        if (zb) { zb.state = 'chase'; spawned++; } else giveBack(ville, nk, 1);
+        if (zb) { zb.state = 'chase'; spawned++; } else ops.giveBack(nk, 1);
       }
     }
     c.spawned = spawned;
@@ -779,13 +870,13 @@ export function createCityRuntime(deps) {
     state.counter = null;
     director?.removeWhere?.((z) => z.tags?.counter === c.id && !z.dead);
     if (won) {
-      const n = liberate(ville, c.key);
+      const n = ops.liberate(c.key);
       markDirty(true);
       settleEmpty();
       onEvent({ type: 'liberated', key: c.key, n, immediate: false });
       return { won: true, freed: n };
     }
-    dropFlag(ville, c.key);
+    ops.dropFlag(c.key);
     markDirty(true);
     onEvent({ type: 'counter-lost', key: c.key, why });
     return { won: false };
@@ -835,7 +926,7 @@ export function createCityRuntime(deps) {
   // Une vraie nuit commence (une fois par clé de nuit) : les volontaires abattent, la nuit repousse, les fanions s'usent.
   // `played` : tu as joué ce jour-là (sinon ils gardent leurs rues sans rien abattre). `origin` : { x, z } du refuge.
   function nightly(night, { played = true, origin = null } = {}) {
-    if (!night || state.nightDone === night || state.ended) return null;
+    if (S || !night || state.nightDone === night || state.ended) return null;       // saison : les nuits sont jouées par le serveur
     state.nightDone = night;
     if (ville.vn === night) return null; // déjà jouée avant un rechargement
     const rep = { volunteers: 0, street: '', regrown: 0, fallen: [], worn: 0 };
@@ -896,7 +987,7 @@ export function createCityRuntime(deps) {
     if (!c) return;
     const o = proj.toLocal(c.lat, c.lon);
     const key = nearestBlock(o.x, o.z, 400);
-    if (key) setCoeur(ville, ville.key, key);
+    if (key) ops.setCoeur(ville.key, key);
   }
 
   // Contexte des vagues du refuge : taille du niveau ; Nuit du cœur : les vagues de la réserve.
@@ -958,8 +1049,12 @@ export function createCityRuntime(deps) {
 
   function stats() {
     const c = counters(ville);
+    if (S && state.srv) c.zombies = state.srv.z;        // le décompte du serveur, le même pour tous les joueurs
     let known = 0, free = 0;
-    for (const key of pos.keys()) { known++; if (blockInfo(ville, key)?.state === 'libere') free++; }
+    if (S) {
+      // Saison : les pâtés sont ceux de la ville commune (mêmes rangées chez tous les joueurs), pas ceux que cet appareil a découpés.
+      for (const t of Object.values(ville.tiles)) for (const row of Object.values(t.b ?? {})) { known++; if (row[ROW.E] === ETAT.libere) free++; }
+    } else for (const key of pos.keys()) { known++; if (blockInfo(ville, key)?.state === 'libere') free++; }
     return { ...c, known, free, line: lineOf(c) };
   }
 
@@ -984,7 +1079,7 @@ export function createCityRuntime(deps) {
   // La commune est sauvée : finishVille avec ses voisines (France : service ; ailleurs : zones des tuiles). Rend
   // { line, neighbours, stats } ; la ligne est null s'il reste des zombies.
   async function finish({ at = now(), signal = null } = {}) {
-    if (state.ended) return null;
+    if (S || state.ended) return null;       // saison : la ville est sauvée pour tous, pas dans le territoire de l'appareil
     const summary = { killed: [...ville.killed], saved: ville.saved, level: ville.level, name: ville.name, population: ville.population, start: ville.start, at, approx: ville.approx };
     let neighbours = [];
     if (commune?.country === 'FR' && commune.code && hasContour(commune.contour)) {
@@ -1002,7 +1097,7 @@ export function createCityRuntime(deps) {
   // Retour du réseau (5) : la ville commencée hors ligne reçoit sa vraie clé, son vrai nom et son contour. Rend la
   // nouvelle clé, ou null (toujours hors ligne, déjà fait, refusé).
   async function networkBack({ communes, place, signal = null } = {}) {
-    if (!/^q/.test(ville.key) || state.ended) return null;
+    if (S || !/^q/.test(ville.key) || state.ended) return null;
     let c = null;
     try { c = await client.commune({ lat: place.lat, lon: place.lon, name: ville.name }, { signal }); } catch (err) { if (isAbort(err)) throw err; return null; }
     if (!c) return null;
@@ -1021,7 +1116,7 @@ export function createCityRuntime(deps) {
   // Le joueur entre dans un quartier : il commence quand ses tuiles sont placées (startUnit) ; un quartier sans zombie
   // ni réserve est repris (finishUnit : une ligne, ses pâtés quittent la sauvegarde).
   function unitsTick(player) {
-    if (ville.mode !== 'quartiers') return;
+    if (S || ville.mode !== 'quartiers') return;
     const here = blockAt(player.x, player.z), p = here ? pos.get(here) : null;
     const uk = p?.qkey || '';
     if (uk && !ville.units[uk] && !ville.done[uk]) {
@@ -1047,11 +1142,13 @@ export function createCityRuntime(deps) {
   // Une image : prêts, contre-attaque, tuiles autour du joueur, pâtés vides, quartiers.
   function tick(dt, director, player) {
     if (disposed || state.ended) return null;
+    state.director = director;
     reconcile(director, 'toi');
     tickCounter(dt, director, player);
     state.acc += dt;
     if (state.acc >= 0.5) {
       state.acc = 0;
+      if (S) adoptKnown();
       ensureAround(player.x, player.z);
       settleEmpty();
       chooseHeart();
@@ -1060,6 +1157,52 @@ export function createCityRuntime(deps) {
       if (state.dirtyPending) markDirty();
     }
     return null;
+  }
+
+  // ----- Saison : ce que le serveur envoie (net/season.js rend les messages dans l'ordre) -----
+
+  // Refus de prêt : ces zombies n'ont jamais été prêtés par le serveur (un autre joueur les avait pris) ; ils disparaissent du
+  // jeu et reviennent à leur pâté dans la copie, sans compter comme abattus.
+  function applyDeny(list) {
+    const director = state.director;
+    for (const [key, n] of list) {
+      const gone = [];
+      for (const [zb, k] of lent) { if (gone.length >= n) break; if (k === key && !zb.dead) gone.push(zb); }
+      if (gone.length) {
+        const set = new Set(gone);
+        director?.removeWhere?.((z) => set.has(z));
+        for (const zb of gone) lent.delete(zb);
+      }
+      giveBack(ville, key, n);
+      ops.unlease(key, n);
+    }
+    state.capAt = -Infinity;
+  }
+
+  function applyServer(msg) {
+    if (disposed) return;
+    switch (msg.o) {
+      case 'rows': applyRows(ville, msg.r); break;
+      case 'tile': applyTile(ville, msg.k, msg.v); break;
+      case 'cnt': applyCounts(ville, msg.c); state.srv = { z: msg.c.z }; break;
+      case 'ls': applyLent(ville, msg.l); break;
+      case 'deny': applyDeny(msg.d); break;
+      case 'end': state.seasonOver = true; onEvent({ type: 'season-end' }); break;
+      case 'no': onEvent({ type: 'season-no', why: msg.why }); break;
+      default: return;
+    }
+    if (msg.o === 'rows' || msg.o === 'tile' || msg.o === 'ls') { state.capAt = -Infinity; state.heartAt = -Infinity; }
+    if (msg.o === 'rows' || msg.o === 'tile') adoptKnown();
+  }
+
+  // Après une coupure : la copie reprend l'état du serveur ; les tuiles déjà découpées sont relues dans l'état.
+  function resyncFrom(fresh) {
+    resyncVille(ville, fresh.ville);
+    applyLent(ville, fresh.lent);
+    state.srv = null;
+    state.capAt = -Infinity;
+    state.heartAt = -Infinity;
+    adoptKnown();
   }
 
   function dispose(director = null) {
@@ -1077,6 +1220,8 @@ export function createCityRuntime(deps) {
     get waiting() { return waiting.size; },
     get placedTiles() { return placed.size; },
     setMaison(m) { maison = m; },
+    get season() { return !!S; },
+    applyServer, resyncFrom, leases: () => ops.leases(),
     setMembership(next) { fn = next.fn ?? fn; member = next.member ?? member; },
     ensureAround, place, blockAt, nearestBlock, reconcile, recall, tick, actions, openNestAt, plantFlagAt, endCounter, onDeath,
     settleEmpty, nightly, refugeCtx, objective, stats, blockLine, finish, networkBack, chooseHeart, frontier, markDirty, dispose,

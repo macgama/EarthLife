@@ -74,6 +74,13 @@
 //   saveMeta(accountId) → SaveMeta | null                       SaveMeta = { rev, savedMs, bytes, stamp: [w, r, t] }
 //   getSave(accountId) → { ...SaveMeta, blob: Buffer } | null
 //   putSave({ accountId, base, force, blob, bytes, stamp, nowMs }) → { ok: true, rev } | { ok: false, meta: SaveMeta | null }
+// Saisons (lot 1, 003-saisons.sql) :
+//   seasonGet(id) → { id, name, startMs, endMs } | null, seasonCreate({ id, name, startMs, endMs }) → boolean (faux s'il existe)
+//   seasonPlayer(accountId, season) → { accountId, season, level, commune, enrolledMs, homeKey, homeLat, homeLon, seenMs, kills } | null
+//   seasonJoin({ accountId, season, level, nowMs }) → { ok: true, player } | { ok: false, player }   (le premier niveau gagne)
+//   seasonPlayerSet(accountId, season, patch)                    patch : commune, homeKey, homeLat, homeLon, seenMs, kills
+//   seasonCounts(season) → { [niveau]: inscrits }
+//   seasonDocs(world) → [{ commune, part, rev, data }], seasonDocPut({ world, commune, part, rev, data, nowMs })
 //                                                               compare-et-écrit : écrit si rev = base (toujours si
 //                                                               force) ; crée (rev 1) si base = 0 et aucune ligne
 // Player = { id, tokenHash, name: [a, p, n], nameDay, nameChanges, createdOn, seenOn, hiddenUntil, bannedUntil }
@@ -85,6 +92,7 @@ import { dayOf } from './rules.js';
 
 const DAY = 86400000, HOUR = 3600000;
 const copy = (o) => (o ? { ...o, name: o.name ? o.name.slice() : o.name } : null);
+const copyPlayer = (o) => (o ? { ...o } : null);
 const copyAccount = (a) => (a ? { ...a, emailBox: a.emailBox ? Buffer.from(a.emailBox) : null } : null);
 const metaOf = (v) => ({ rev: v.rev, savedMs: v.savedMs, bytes: v.bytes, stamp: v.stamp.slice() });
 const dup = (what) => Object.assign(new Error(`${what} en double`), { code: 'DUP' });
@@ -106,6 +114,10 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
   const sessions = new Map();     // empreinte du jeton → { tokenHash, accountId, createdMs, seenOn, expiresMs, seq }
   const codes = new Map();        // empreinte de l'adresse → { codeHash, expiresMs, attempts, hourMs, hourN, day, dayN }
   const saves = new Map();        // id du compte → { rev, savedMs, bytes, stamp, blob }
+  // Saisons.
+  const seasons = new Map();      // id → { id, name, startMs, endMs }
+  const seasonPlayers = new Map(); // 'compte:saison' → joueur de saison
+  const seasonDocs = new Map();   // 'monde|commune|pièce' → { world, commune, part, rev, data }
   let sessionSeq = 0;
   let failing = false;
 
@@ -369,6 +381,7 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       if (playerId) erasePlayer(playerId);
       for (const [h, x] of sessions) if (x.accountId === id) sessions.delete(h);
       saves.delete(id);
+      for (const k of [...seasonPlayers.keys()]) if (k.startsWith(`${id}:`)) seasonPlayers.delete(k);
       byEmail.delete(a.emailHash);
       accounts.delete(id);
       return { playerId };
@@ -488,6 +501,54 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       const rev = cur ? cur.rev + 1 : 1;
       saves.set(accountId, { rev, savedMs: nowMs, bytes, stamp: stamp.slice(), blob: Buffer.from(blob) });
       return { ok: true, rev };
+    },
+
+    // ---------- Saisons ----------
+
+    async seasonGet(id) {
+      guard();
+      return copy(seasons.get(id));
+    },
+    async seasonCreate({ id, name, startMs, endMs }) {
+      guard();
+      if (seasons.has(id)) return false;
+      seasons.set(id, { id, name, startMs, endMs });
+      return true;
+    },
+    async seasonPlayer(accountId, season) {
+      guard();
+      return copyPlayer(seasonPlayers.get(`${accountId}:${season}`));
+    },
+    async seasonJoin({ accountId, season, level, nowMs }) {
+      guard();
+      const k = `${accountId}:${season}`;
+      const cur = seasonPlayers.get(k);
+      if (cur) return { ok: false, player: copyPlayer(cur) };
+      if (!accounts.has(accountId)) return { ok: false, player: null };
+      const player = { accountId, season, level, commune: null, enrolledMs: nowMs, homeKey: null, homeLat: null, homeLon: null,
+        seenMs: nowMs, kills: 0 };
+      seasonPlayers.set(k, player);
+      return { ok: true, player: copyPlayer(player) };
+    },
+    async seasonPlayerSet(accountId, season, patch) {
+      guard();
+      const p = seasonPlayers.get(`${accountId}:${season}`);
+      if (!p) return;
+      for (const k of ['commune', 'homeKey', 'homeLat', 'homeLon', 'seenMs', 'kills']) if (patch[k] !== undefined) p[k] = patch[k];
+    },
+    async seasonCounts(season) {
+      guard();
+      const out = {};
+      for (const p of seasonPlayers.values()) if (p.season === season) out[p.level] = (out[p.level] ?? 0) + 1;
+      return out;
+    },
+    async seasonDocs(world) {
+      guard();
+      return [...seasonDocs.values()].filter((d) => d.world === world).map((d) => ({ commune: d.commune, part: d.part, rev: d.rev, data: d.data }));
+    },
+    async seasonDocPut({ world, commune, part, rev, data }) {
+      guard();
+      seasonDocs.set(`${world}|${commune}|${part}`, { world, commune, part, rev, data });
     },
   };
 }
