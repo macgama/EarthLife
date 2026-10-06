@@ -823,8 +823,13 @@ async function desktop() {
   const take = await visibleText('save-take');
   check(take === 'Reprendre ici', `${tag} 7 : bouton « ${take} » dans le menu`);
   await Promise.all([page.waitForEvent('load', { timeout: 20000 }).catch(() => null), page.click('#save-take')]);
-  const owner = await until(page, () => (window.__earthlife?.saveStore ? !window.__earthlife.saveStore.readOnly : null), null, 20000);
-  const handed = await until(page2, () => window.__earthlife.saveStore.readOnly, null, 20000);
+  // La 1re page recharge et relance sa partie (autostart=1) pendant que la 2e tourne : sous swiftshader en CI, les deux se
+  // disputent le processeur et aucune ne dessine d'image (donc aucun sondage « raf ») pendant 20 s ou plus. Les deux
+  // attentes courent ensemble, avec la marge du lancement d'une partie.
+  const [owner, handed] = await Promise.all([
+    until(page, () => (window.__earthlife?.saveStore ? !window.__earthlife.saveStore.readOnly : null), null, 90000),
+    until(page2, () => window.__earthlife.saveStore.readOnly, null, 90000),
+  ]);
   check(owner && !!handed, `${tag} 7 : « Reprendre ici » du menu : la 1re page reprend la main, la 2e passe en lecture seule`);
   // « Reprendre ici » sur la carte en partie : la page recharge et relance la partie aussitôt (pas de retour au menu).
   const card2 = await until(page2, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') ? c.querySelector('[data-card-btn="take"]')?.textContent.trim() ?? null : null; }, null, 20000);
