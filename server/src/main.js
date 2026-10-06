@@ -534,7 +534,7 @@ export async function startServer({
         for (const h of intervals) { clearInterval(h); clearTimeout(h); }
         // bye { restart, retryMs } à tous, fermeture 1012, puis écritures en attente (2 s au plus).
         await room.shutdown(state.retryMs);
-        if (seasons) await Promise.race([seasons.flush(), new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
+        if (seasons) await Promise.race([seasons.flush(), new Promise((r) => setTimeout(r, 4000))]).catch(() => {});
         await new Promise((resolve) => {
           if (!sockets.size) return resolve();
           const t = setTimeout(resolve, T.stopWaitMs);

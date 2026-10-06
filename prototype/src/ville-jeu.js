@@ -1051,7 +1051,10 @@ export function createCityRuntime(deps) {
     const c = counters(ville);
     if (S && state.srv) c.zombies = state.srv.z;        // le décompte du serveur, le même pour tous les joueurs
     let known = 0, free = 0;
-    for (const key of pos.keys()) { known++; if (blockInfo(ville, key)?.state === 'libere') free++; }
+    if (S) {
+      // Saison : les pâtés sont ceux de la ville commune (mêmes rangées chez tous les joueurs), pas ceux que cet appareil a découpés.
+      for (const t of Object.values(ville.tiles)) for (const row of Object.values(t.b ?? {})) { known++; if (row[ROW.E] === ETAT.libere) free++; }
+    } else for (const key of pos.keys()) { known++; if (blockInfo(ville, key)?.state === 'libere') free++; }
     return { ...c, known, free, line: lineOf(c) };
   }
 

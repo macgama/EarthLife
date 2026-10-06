@@ -29,8 +29,10 @@ export const SEASON = {
   levels: ['facile', 'moyen', 'difficile'],
   noWhy: ['compte', 'inscription', 'commune', 'monde', 'fin', 'avenir', 'base'],
 };
-export const SEASON_KEY = /^(@[A-Za-z0-9_.-]{1,40}|b-?\d{1,2}\.\d{1,8}_-?\d{1,3}\.\d{1,8}(~\d{1,3})?)$/;
-export const SEASON_COMMUNE = /^[A-Za-z0-9_.-]{1,40}$/;
+// Clés de commune : lettre puis lettres, chiffres, _ . - ; jamais un nom propre aux objets (constructor, __proto__…), la clé sert d'index.
+const SEASON_NAME = '(?!(?:constructor|prototype|toString|valueOf|hasOwnProperty|isPrototypeOf|toLocaleString|propertyIsEnumerable)$)[A-Za-z][A-Za-z0-9_.-]{0,39}';
+export const SEASON_KEY = new RegExp(`^(@${SEASON_NAME}|b-?\\d{1,2}\\.\\d{1,8}_-?\\d{1,3}\\.\\d{1,8}(~\\d{1,3})?)$`);
+export const SEASON_COMMUNE = new RegExp(`^${SEASON_NAME}$`);
 export const SEASON_TILE = /^\d{1,2}\/\d{1,7}\/\d{1,7}$/;
 // Gestes d'un joueur : l prêt de la rue, t prise (horde, contre-attaque), d tirage de la réserve du cœur, r retour d'un
 // prêt, k zombie abattu (clé, nombre) ; n ouvrir le nid, f planter le fanion, L libérer, D fanion tombé, c cœur (clé).
@@ -329,7 +331,7 @@ const CLIENT = {
       const e = get(o, 'e');
       if (!Array.isArray(e) || e.length < 1 || e.length > SEASON.maxEvents) bad('e');
       out.e = e.map((ev) => {
-        const len = Array.isArray(ev) ? SEASON_EVENTS[ev[0]] : undefined;
+        const len = Array.isArray(ev) && typeof ev[0] === 'string' && Object.hasOwn(SEASON_EVENTS, ev[0]) ? SEASON_EVENTS[ev[0]] : undefined;
         if (!len || ev.length !== len || typeof ev[1] !== 'string' || !SEASON_KEY.test(ev[1])) bad('e');
         if (len === 3 && !inRange(ev[2], 1, 60)) bad('e');
         return len === 3 ? [ev[0], ev[1], ev[2]] : [ev[0], ev[1]];

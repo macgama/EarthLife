@@ -30,7 +30,7 @@ export async function startDevServer({
   port = 0, host = '127.0.0.1', store = 'memory', origins = DEV_ORIGINS, bots = 0, at = '45.7578,4.8320', dev = false,
   ws = true, maintenance = false, trustProxy = true, maxConn = 100, createPerHour = 300, minClient = 1, inviteCode = '',
   cfg = {}, quiet = true, log = null, timers = {}, onTick = null, appDir = null, portRange: range = null,
-  accounts = true, mail = 'boite', hashParams = null, accountOpts = {}, mailer = null,
+  accounts = true, mail = 'boite', hashParams = null, accountOpts = {}, mailer = null, seasons = accounts, seasonSeats = 100, seasonDays = 60,
 } = {}) {
   const memory = store === 'memory';
   const theStore = memory ? createMemoryStore() : store;
@@ -41,6 +41,8 @@ export async function startDevServer({
     playerDays: 180, createPerHour, appDir, logDir: null, version: 'dev', warnings: [], errors: [],
     // Comptes : secret tiré à chaque démarrage (comptes perdus à l'arrêt, comme le reste du magasin en mémoire),
     // budget d'envoi large (la boîte ne part nulle part).
+    // Saisons (season.js) : une ville commune par niveau, seulement avec les comptes.
+    seasons: !!seasons && !!accounts, seasonSeats, seasonDays,
     accounts: !!accounts, accountSecret: randomBytes(32), gameUrl: 'https://macgama.github.io/EarthLife/',
     mail: { transport: 'boite', host: null, port: 465, user: null, password: null, from: 'earthlife@exemple.test', replyTo: null,
       perHour: 1000, perDay: 10000 },
@@ -111,7 +113,7 @@ export async function startDevServer({
   }
   return {
     url: srv.url, port: srv.port, room: srv.room, server: srv.server, store: theStore, bots: list, testLog, log,
-    measure: srv.measure, accounts: srv.accounts, mailbox: srv.mailer?.box ?? null,
+    measure: srv.measure, accounts: srv.accounts, seasons: srv.seasons, mailbox: srv.mailer?.box ?? null,
     async stop() {
       for (const b of list) b.stop();
       await srv.stop('arret');

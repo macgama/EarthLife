@@ -15,10 +15,11 @@
 // Limites connues de la première version (écrites dans la conception) : mode « ville entière » seulement, pas de
 // partition par monde de la présence, des traces et des refuges, une seule commune par monde, pas de file d'attente.
 import { createHash } from 'node:crypto';
+import { cleanText } from '../../prototype/src/limits.js';
 import { isNightAt, nightKey } from '../../prototype/src/horde.js';
 import {
   startVille, placeTile, kill, lend, giveBack, take, drawReserve, openNest, plantFlag, dropFlag, liberate, setCoeur,
-  volunteersNight, regrow, fallFlag, checkVille, zombiesLeft, cityStatus, blockInfo, nestSize, ETAT, ROW, QUARTIER,
+  volunteersNight, regrow, fallFlag, checkVille, zombiesLeft, cityStatus, blockInfo, nestSize, keyPoint, ETAT, ROW, QUARTIER,
 } from '../../prototype/src/quartier.js';
 import { SEASON, SEASON_KEY, SEASON_COMMUNE, SEASON_TILE, TOKEN_RE, readJson } from '../../prototype/src/net/protocol.js';
 import { createBucket } from './rules.js';
@@ -30,10 +31,13 @@ const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isInt = Number.isInteger;
 const inRange = (v, lo, hi) => isInt(v) && v >= lo && v <= hi;
+const finite = (v, max) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= max;
+const M_PER_DEG = 111195;
+const distM = (a, b) => Math.hypot((a.lon - b.lon) * Math.cos((((a.lat + b.lat) / 2) * Math.PI) / 180) * M_PER_DEG, (a.lat - b.lat) * M_PER_DEG);
 
 export const SEASON_RULES = {
   seats: SEASON.seats, days: SEASON.days, name: 'Saison 1',
-  flushMs: 15000, cntMs: 1000, leaseMax: 150, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
+  flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
   initRetryMs: 5000, playedMs: DAY, enrolCacheMs: 60000,
   rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000,
   body: { join: 1024, state: 1024, home: 1024, seed: 24576, tile: 131072, adj: 32768 },
@@ -50,7 +54,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   const subs = new Map();              // session de la salle → abonné
   const limits = new Map();            // compte → { route: seau }
   const enrol = new Map();             // compte → { player, at }
-  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, errors: 0, integrity: 0 };
+  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, errors: 0, integrity: 0, idleReleased: 0 };
   let lastFlush = now(), lastNight = now(), lastCheck = now(), lastProgress = { at: -Infinity, body: null }, flushing = null;
 
   // ---------- Saison ----------
@@ -137,6 +141,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
 
   function addEdge(city, a, b) {
     if (a === b || !city.pateTile.has(a) || !city.pateTile.has(b)) return false;
+    const pa = keyPoint(a), pb = keyPoint(b);
+    if (!pa || !pb || distM(pa, pb) > R.adjMaxM) return false;           // deux pâtés voisins ne sont jamais loin l'un de l'autre
     let sa = city.adj.get(a);
     if (sa?.has(b)) return false;
     if (city.pairs >= R.pairsMax) return false;
@@ -211,7 +217,23 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     city.cnt = true;
   }
   const dirtyCounts = (city) => { city.cnt = true; city.dirty.meta = true; };
-
+  // Rangées corrigées pour un seul joueur (geste sans effet : rien à écrire ni à diffuser aux autres).
+  function sendFix(sub, keys) {
+    const city = sub.w.city, r = {};
+    let n = 0;
+    for (const key of keys) {
+      const tk = city.pateTile.get(key), row = tk ? city.ville.tiles[tk]?.b?.[key] : null;
+      if (!row || ++n > R.rowsPerMsg) continue;
+      (r[tk] ??= {})[key] = row;
+    }
+    if (n) send(sub.s, { t: 'sv', o: 'rows', rv: city.rv, r });
+  }
+  // Refus de prêt : par pâté, 60 zombies au plus par entrée et 60 entrées par message (protocole).
+  function sendDeny(sub, entries) {
+    const list = [];
+    for (const [key, n] of entries) for (let left = n; left > 0; left -= 60) list.push([key, Math.min(60, left)]);
+    for (let i = 0; i < list.length; i += 60) send(sub.s, { t: 'sv', o: 'deny', d: list.slice(i, i + 60) });
+  }
   function emitRows(w, rowsByTile, except = null) {
     const city = w.city;
     let r = {}, n = 0;
@@ -271,11 +293,16 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const v = city.ville;
     n = Math.min(n, Math.max(0, R.leaseMax - heldBy(sub)));
     if (n <= 0) return 0;
+    if (key[0] === '@' && cityStatus(v) !== 'coeur') return 0;          // la réserve du cœur ne se tire que la Nuit du cœur
     let got;
     if (key[0] === '@') got = drawReserve(v, key.slice(1), n).n;
     else if (kind === 'l') got = lend(v, key, n);
     else got = take(v, n, [key]).n;
-    if (got > 0) { sub.leases.set(key, (sub.leases.get(key) ?? 0) + got); if (key[0] !== '@') city.lentDirty.add(key); }
+    if (got > 0) {
+      if (!sub.leases.size) sub.holdAt = now();
+      sub.leases.set(key, (sub.leases.get(key) ?? 0) + got);
+      if (key[0] !== '@') city.lentDirty.add(key);
+    }
     return got;
   }
   function release(sub, city, key, n) {
@@ -290,44 +317,55 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!sub.w.city) return;
     for (const [key, n] of [...sub.leases]) release(sub, sub.w.city, key, n);
   }
+  // Rend vrai si un geste a changé quelque chose (les gestes sans effet ne comptent pas comme du jeu).
   function applyEvents(sub, events) {
     const city = sub.w.city, v = city.ville;
-    const deny = new Map();
+    const deny = new Map(), fix = new Set();
+    let changed = false;
     for (const e of events) {
       const [k, key, n] = e;
-      if (key[0] === '@' ? !v.units[key.slice(1)] : !city.pateTile.has(key)) continue;
+      if (key[0] === '@' ? !Object.hasOwn(v.units, key.slice(1)) : !city.pateTile.has(key)) continue;
       stats.events++;
       switch (k) {
         case 'l': case 't': case 'd': {
           const got = lease(sub, city, k, key, n);
+          if (got > 0) changed = true;
           if (got < n) {
             deny.set(key, (deny.get(key) ?? 0) + n - got);
-            if (key[0] !== '@') dirtyRow(city, key);           // la rangée du serveur corrige celle du joueur
+            if (key[0] !== '@') fix.add(key);                  // la rangée du serveur corrige celle du joueur
           }
           break;
         }
-        case 'r': release(sub, city, key, n); break;
+        case 'r': if (release(sub, city, key, n) > 0) changed = true; break;
         case 'k': {
-          const k1 = Math.min(n, sub.leases.get(key) ?? 0);
-          if (k1 <= 0) { if (key[0] !== '@') dirtyRow(city, key); break; }
+          let k1 = Math.min(n, sub.leases.get(key) ?? 0);
+          if (k1 > 0 && !sub.killBucket.take(k1)) k1 = 0;      // abattages plus vite que le jeu ne le permet : ignorés
+          if (k1 <= 0) { if (key[0] !== '@') fix.add(key); break; }
           const got = kill(v, key, k1, 'toi');
           if (got > 0) {
+            changed = true;
             const have = sub.leases.get(key) ?? 0;
             if (have - got > 0) sub.leases.set(key, have - got); else sub.leases.delete(key);
             if (key[0] !== '@') city.lentDirty.add(key);
             sub.kills += got;
             sub.dirtyKills = true;
+            sub.holdAt = now();
             if (key[0] === '@') dirtyCounts(city); else dirtyRow(city, key);
           }
           break;
         }
-        case 'n': if (openNest(v, key)) dirtyRow(city, key); break;
-        case 'f': if (plantFlag(v, key)) dirtyRow(city, key); break;
-        case 'L': liberate(v, key); dirtyRow(city, key); break;
-        case 'D': if (dropFlag(v, key)) dirtyRow(city, key); break;
+        case 'n': if (openNest(v, key)) { dirtyRow(city, key); changed = true; } break;
+        case 'f': if (plantFlag(v, key)) { dirtyRow(city, key); changed = true; } break;
+        case 'L': {
+          const was = blockInfo(v, key)?.state;
+          liberate(v, key);
+          if (blockInfo(v, key)?.state !== was) { dirtyRow(city, key); changed = true; }
+          break;
+        }
+        case 'D': if (dropFlag(v, key)) { dirtyRow(city, key); changed = true; } break;
         case 'c': {
           const u = v.units[v.key];
-          if (u && !u.coeur && setCoeur(v, v.key, key)) dirtyCounts(city);
+          if (u && !u.coeur && setCoeur(v, v.key, key)) { dirtyCounts(city); changed = true; }
           break;
         }
         default:
@@ -335,8 +373,10 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     }
     if (deny.size) {
       stats.denied += deny.size;
-      send(sub.s, { t: 'sv', o: 'deny', d: [...deny].slice(0, 60) });
+      sendDeny(sub, deny);
     }
+    if (fix.size) sendFix(sub, fix);
+    return changed;
   }
 
   // ---------- Nuits ----------
@@ -444,6 +484,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!w.city) return refuse(409, 'vide');
     if (name === 'state') return state(w);
     if (phase !== 'en-cours') return refuse(409, phase === 'terminee' ? 'fin' : 'avenir');
+    // Découpes et voisinages : seulement de la part d'un joueur assis dans le monde (un siège par compte, bannis exclus).
+    if ((name === 'tile' || name === 'adj') && ![...w.subs].some((x) => x.accountId === acc)) return refuse(409, 'abonnement');
     if (name === 'tile') return tile(w, body);
     if (name === 'adj') return adjRoute(w, body);
     if (name === 'home') return home(acc, p, w, body);
@@ -455,6 +497,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!p) {
       if (phase === 'terminee') return refuse(409, 'fin');
       const level = body.level;
+      // Sans niveau : « suis-je inscrit ? » (le menu du jeu le demande à chaque ouverture) ; la réponse n'est pas une erreur.
+      if (level === undefined) return { status: 200, body: { ok: true, enrolled: false, now: now(), season: seasonView() } };
       if (!LEVELS.includes(level)) return refuse(400, 'niveau');
       const r = await store.seasonJoin({ accountId: acc, season: season.id, level, nowMs: now() });
       if (!r.player) return refuse(403, 'compte');
@@ -478,7 +522,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   async function seed(acc, p, w, b, phase) {
     if (phase !== 'en-cours') return refuse(409, phase === 'terminee' ? 'fin' : 'avenir');
     const place = b.place;
-    if (!isObj(place) || !(Math.abs(place.lat) <= 90) || !(Math.abs(place.lon) <= 180) || typeof b.key !== 'string' || !SEASON_COMMUNE.test(b.key)) {
+    if (!isObj(place) || !finite(place.lat, 90) || !finite(place.lon, 180) || typeof b.key !== 'string' || !SEASON_COMMUNE.test(b.key)) {
       return refuse(400, 'requete');
     }
     if (w.city) {
@@ -494,15 +538,16 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     }
     const failed = Array.isArray(b.failed) ? b.failed.filter((k) => typeof k === 'string' && SEASON_TILE.test(k)).slice(0, QUARTIER.maxTiles) : [];
     if (!inRange(b.pop, 5, 5e7) || !inRange(b.zl ?? 8, 0, 20)) return refuse(400, 'requete');
-    const name = typeof b.name === 'string' ? b.name.slice(0, 80) : '';
+    if (b.pop < R.popMin) return refuse(409, 'petite');                // une ville de quelques habitants ne se joue pas en une saison
+    const name = cleanText(b.name, 80);
     const ville = startVille({
-      key: b.key, name, population: b.pop, source: typeof b.src === 'string' ? b.src.slice(0, 20) : null, approx: b.approx === true,
+      key: b.key, name, population: b.pop, source: typeof b.src === 'string' && /^[a-z-]{1,20}$/.test(b.src) ? b.src : null, approx: b.approx === true,
       level: p.level, mode: 'entiere', tiles, failed, zoneLevel: b.zl ?? 8, at: now(),
     });
     if (!ville) return refuse(409, 'ville');
     // Pas d'habitant « moi » dans une ville commune : tous les habitants non zombies sont à sauver.
     ville.hidden0 = Math.max(0, ville.population - ville.zombies0);
-    w.city = makeCity({ key: b.key, place: { lat: place.lat, lon: place.lon, name: typeof place.name === 'string' ? place.name.slice(0, 80) : name },
+    w.city = makeCity({ key: b.key, place: { lat: place.lat, lon: place.lon, name: cleanText(place.name, 80) || name },
       ville, playedAt: now() });
     for (const tk of Object.keys(ville.tiles)) w.city.dirty.tiles.add(tk);
     p.commune = b.key;
@@ -525,8 +570,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     for (const e of list) {
       if (!Array.isArray(e) || e.length !== 8 || !BLOCK(e[0]) || seen.has(e[0])) return null;
       const [key, m, floor, homes, n, qkey, lat, lon] = e;
-      if (![1, 0, -1].includes(m) || !inRange(floor, 0, 1e9) || !inRange(homes, 0, 1e9) || !inRange(n, 0, 1e9)
-        || typeof qkey !== 'string' || !QKEY.test(qkey) || !(Math.abs(lat) <= 90) || !(Math.abs(lon) <= 180)) return null;
+      if (![1, 0, -1].includes(m) || !inRange(floor, 0, 1e6) || !inRange(homes, 0, 1e6) || !inRange(n, 0, 1e6)
+        || typeof qkey !== 'string' || !QKEY.test(qkey) || !finite(lat, 90) || !finite(lon, 180)) return null;
       seen.add(key);
       out.push({ key, m, floor, homes, n, qkey, lat, lon });
     }
@@ -536,10 +581,16 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const city = w.city, v = city.ville;
     const tk = b.t;
     if (typeof tk !== 'string' || !SEASON_TILE.test(tk) || !v.tiles[tk]) return { status: 200, body: { ok: true, ignored: true, tiles: {} } };
-    const pates = readPates(b.pates);
-    if (!pates) return refuse(400, 'requete');
-    const nb = Array.isArray(b.nb) && b.nb.length <= R.nbPairs ? b.nb : [];
-    for (const e of nb) if (!Array.isArray(e) || e.length !== 2 || !inRange(e[0], 0, pates.length - 1) || !inRange(e[1], 0, pates.length - 1)) return refuse(400, 'requete');
+    const all = readPates(b.pates);
+    if (!all) return refuse(400, 'requete');
+    const nb0 = Array.isArray(b.nb) && b.nb.length <= R.nbPairs ? b.nb : [];
+    for (const e of nb0) if (!Array.isArray(e) || e.length !== 2 || !inRange(e[0], 0, all.length - 1) || !inRange(e[1], 0, all.length - 1)) return refuse(400, 'requete');
+    // Le premier découpage fait foi : une tuile déjà placée (ou rendue orpheline) n'est plus jamais redécoupée.
+    if (v.tiles[tk].b || v.tiles[tk].o) return { status: 200, body: { ok: true, same: true, rv: city.rv, tiles: { [tk]: v.tiles[tk] } } };
+    // Une clé déjà tenue par une autre tuile n'est pas reprise (sinon sa rangée resterait sans accès).
+    const pates = [], remap = new Map();
+    all.forEach((p, i) => { const owner = city.pateTile.get(p.key); if (!owner || owner === tk) { remap.set(i, pates.length); pates.push(p); } });
+    const nb = nb0.filter(([i, j]) => remap.has(i) && remap.has(j)).map(([i, j]) => [remap.get(i), remap.get(j)]);
     const force = b.f === true;
     const sig = sha256(JSON.stringify([pates, force, b.l]));
     const cur = { [tk]: v.tiles[tk] };
@@ -654,8 +705,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       const sub = subs.get(s);
       if (!sub || !sub.w.city || phaseOf() !== 'en-cours') return undefined;
       if (!sub.bucket.take()) return undefined;
-      sub.w.city.playedAt = now();
-      applyEvents(sub, msg.e);
+      if (applyEvents(sub, msg.e)) sub.w.city.playedAt = now();
       return undefined;
     }
     if (!(await init())) return no(s, 'base');
@@ -673,7 +723,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (old && old.w === w) return send(s, { t: 'sv', o: 'in', rv: w.city.rv });
     detach(s);
     if (w.subs.size >= R.seats) return send(s, { t: 'sv', o: 'full', used: w.subs.size, max: R.seats });
-    const sub = { s, w, accountId: s.accountId, leases: new Map(), kills: 0, kills0: p.kills ?? 0, dirtyKills: false, bucket: createBucket(20, 6, now) };
+    const sub = { s, w, accountId: s.accountId, leases: new Map(), holdAt: 0, kills: 0, kills0: p.kills ?? 0, dirtyKills: false, bucket: createBucket(20, 6, now),
+      killBucket: createBucket(R.killBurst, R.killPerSec, now) };
     subs.set(s, sub);
     w.subs.add(sub);
     w.city.playedAt = now();
@@ -681,29 +732,50 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return send(s, { t: 'sv', o: 'in', rv: w.city.rv });
   }
 
+  // Un joueur qui tient des zombies sans en abattre aucun depuis 10 minutes les rend (refus annoncé : le jeu les retire) ; sans
+  // cela, un seul compte pourrait garder la rue d'une petite ville pour lui en n'envoyant que des signes de vie.
+  function releaseIdle(sub, t) {
+    if (!sub.leases.size || t - sub.holdAt <= R.leaseIdleMs) return;
+    const held = [...sub.leases];
+    releaseAll(sub);
+    sendDeny(sub, held);
+    stats.idleReleased++;
+  }
+  function tickWorld(w, t, over) {
+    const city = w.city;
+    if (!city) return;
+    if (over && !w.ended) { w.ended = true; broadcast(w, { t: 'sv', o: 'end', why: 'fin' }); }
+    if (w.subs.size) {
+      pushRows(w);
+      pushLent(w);
+      if (city.cnt && t - city.cntAt >= R.cntMs) {
+        city.cnt = false;
+        city.cntAt = t;
+        broadcast(w, { t: 'sv', o: 'cnt', rv: ++city.rv, c: countsOf(city) });
+      }
+      for (const sub of w.subs) {
+        if (sub.leases.size && t - sub.s.lastMsgAt > R.leaseTtlMs) releaseAll(sub);
+        else releaseIdle(sub, t);
+      }
+    } else {
+      if (city.rows.size) city.rows = new Map();
+      if (city.lentDirty.size) city.lentDirty = new Set();
+    }
+  }
+
   function tick(t) {
     if (!ready) { if (t - lastInit >= R.initRetryMs) init(); return; }
     const over = phaseOf(t) === 'terminee';
+    // Un monde en panne (ville abîmée) ne prive pas les autres de leur tic.
     for (const w of worlds.values()) {
-      const city = w.city;
-      if (!city) continue;
-      if (over && !w.ended) { w.ended = true; broadcast(w, { t: 'sv', o: 'end', why: 'fin' }); }
-      if (w.subs.size) {
-        pushRows(w);
-        pushLent(w);
-        if (city.cnt && t - city.cntAt >= R.cntMs) {
-          city.cnt = false;
-          city.cntAt = t;
-          broadcast(w, { t: 'sv', o: 'cnt', rv: ++city.rv, c: countsOf(city) });
-        }
-        for (const sub of w.subs) if (sub.leases.size && t - sub.s.lastMsgAt > R.leaseTtlMs) releaseAll(sub);
-      } else {
-        if (city.rows.size) city.rows = new Map();
-        if (city.lentDirty.size) city.lentDirty = new Set();
-      }
+      try { tickWorld(w, t, over); } catch (err) { stats.errors++; log('erreur', { type: 'saison-tic', monde: w.id, err: err?.code ?? err?.name }); }
     }
     if (t - lastFlush >= R.flushMs) { lastFlush = t; flush(); }
-    if (t - lastNight >= R.nightEveryMs) { lastNight = t; nights(t); }
+    if (t - lastNight >= R.nightEveryMs) {
+      lastNight = t;
+      try { nights(t); } catch (err) { stats.errors++; log('erreur', { type: 'saison-nuit', err: err?.code ?? err?.name }); }
+      flush();                                            // une nuit jouée est rangée tout de suite (pas rejouée après un arrêt brutal)
+    }
     if (t - lastCheck >= R.checkEveryMs) {
       lastCheck = t;
       for (const w of worlds.values()) {

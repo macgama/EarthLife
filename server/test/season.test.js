@@ -7,7 +7,7 @@ import { createAccounts } from '../src/accounts.js';
 import { createMailer } from '../src/mail.js';
 import { createMemoryStore } from '../src/store-memory.js';
 import { createRoom } from '../src/room.js';
-import { checkVille, zombiesLeft, ROW, ETAT } from '../../prototype/src/quartier.js';
+import { checkVille, zombiesLeft, blockInfo, ROW, ETAT } from '../../prototype/src/quartier.js';
 import { parseServer, validateClient } from '../../prototype/src/net/protocol.js';
 
 // 6 octobre 2026, 12 h UTC : plein jour à Pérouges (45,9 N ; 5,2 E).
@@ -72,13 +72,19 @@ const key = (i, tile = 0) => `b45.9${tile}${String(i).padStart(3, '0')}_5.20000`
 const pates = (count, tile = 0, m = 1) => Array.from({ length: count }, (_, i) => [key(i, tile), m, 400 + 100 * i, 4 + i, 5 + i, '', 45.9 + i * 0.0005, 5.2 + tile * 0.01]);
 const chain = (count) => Array.from({ length: count - 1 }, (_, i) => [i, i + 1]);
 
+// Ville semée et ses tuiles placées par le premier joueur, assis le temps des envois (les découpes ne se reçoivent que d'un
+// joueur abonné) puis levé : les essais s'abonnent eux-mêmes.
 async function seeded(w, { tiles = [TA, TB], n = 6 } = {}) {
   const a = await w.player(1);
   assert.equal((await a.call('/v1/season/seed', SEED)).body.created, true);
+  await a.send({ o: 'in', c: SEED.key });
+  assert.equal(a.sv('in').length, 1);
   for (const [i, tk] of tiles.entries()) {
     const r = await a.call('/v1/season/tile', { t: tk, pates: pates(n, i), nb: chain(n), l: false });
     assert.equal(r.body.ok, true, JSON.stringify(r.body));
   }
+  await a.send({ o: 'out' });
+  a.inbox.length = 0;
   return a;
 }
 const cityOf = (w) => w.seasons.debug().worlds.get('facile').city;
@@ -98,7 +104,10 @@ test('inscription : compte obligatoire, un niveau par compte et par saison', asy
   assert.equal((await w.call('/v1/season/join', { level: 'facile' })).status, 401);
   assert.equal((await w.call('/v1/season/join', { ses: 'x'.repeat(43), level: 'facile' })).status, 401);
   const a = await w.player(1, { join: false });
-  assert.equal((await a.call('/v1/season/join', {})).body.code, 'niveau');
+  const ask = await a.call('/v1/season/join', {});
+  assert.equal(ask.status, 200);
+  assert.equal(ask.body.enrolled, false, 'sans niveau : simple question, pas une erreur');
+  assert.equal(ask.body.season.name, 'Saison 1');
   assert.equal((await a.call('/v1/season/join', { level: 'enfer' })).body.code, 'niveau');
   const j = await a.call('/v1/season/join', { level: 'moyen' });
   assert.equal(j.status, 200);
@@ -161,13 +170,20 @@ test('tuile : placeTile côté serveur, conservation, premier découpage fait fo
   assert.equal(Object.keys(v.tiles[TA].b).length, 6);
   assert.equal(city.pateTile.size, 12);
   assert.equal(city.adj.get(key(1)).size, 2);
-  // Même découpage renvoyé : rien ne change.
+  // Même découpage renvoyé, ou un autre : le premier fait foi, la tuile n'est jamais redécoupée.
+  await a.send({ o: 'in', c: SEED.key });
   const same = await a.call('/v1/season/tile', { t: TA, pates: pates(6, 0), nb: chain(6), l: false });
   assert.equal(same.body.same, true);
+  const other = await a.call('/v1/season/tile', { t: TA, pates: pates(3, 0).map((p, i) => [`b45.9000${i}_5.30000`, ...p.slice(1)]), nb: [] });
+  assert.equal(other.body.same, true);
+  assert.equal(Object.keys(v.tiles[TA].b).length, 6);
+  assert.ok(Object.keys(v.tiles[TA].b).every((k) => k.endsWith('_5.20000')), 'les rangées du premier découpage sont intactes');
+  assert.equal(city.pateTile.get(key(2)), TA);
   // Pâté dont l'appartenance est inconnue : en attente, rien n'est placé.
   const w2 = rig();
   const b = await w2.player(1);
   await b.call('/v1/season/seed', SEED);
+  await b.send({ o: 'in', c: SEED.key });
   const wait = await b.call('/v1/season/tile', { t: TA, pates: pates(4, 0, -1), nb: [] });
   assert.equal(wait.body.waiting, true);
   assert.equal(cityOf(w2).ville.tiles[TA].b, null);
@@ -181,15 +197,23 @@ test('tuile : placeTile côté serveur, conservation, premier découpage fait fo
   assert.equal((await a.call('/v1/season/tile', { t: TA, pates: pates(2).map((p) => [p[0], 2, ...p.slice(2)]) })).status, 400);
 });
 
-test('voisinages : arêtes entre pâtés connus seulement', async () => {
+test('voisinages : arêtes entre pâtés connus et proches, d\'un joueur assis seulement', async () => {
   const w = rig();
   const a = await seeded(w);
   const city = cityOf(w);
+  assert.equal((await a.call('/v1/season/adj', { e: [[key(5), key(0, 1)]] })).body.code, 'abonnement', 'sans siège : refusé');
+  await a.send({ o: 'in', c: SEED.key });
   const r = await a.call('/v1/season/adj', { e: [[key(5), key(0, 1)], [key(5), 'b45.99999_5.99999'], [key(0), key(0)]] });
   assert.equal(r.body.added, 1);
   assert.ok(city.adj.get(key(0, 1)).has(key(5)));
   assert.equal((await a.call('/v1/season/adj', { e: [['@c01283', key(1)]] })).status, 400);
   assert.equal((await a.call('/v1/season/adj', { e: Array(601).fill([key(0), key(1)]) })).status, 400);
+  // Deux pâtés trop éloignés ne sont pas voisins (distance des clés au-delà de la règle).
+  const far = rig({ rules: { adjMaxM: 500 } });
+  const f = await seeded(far);
+  await f.send({ o: 'in', c: SEED.key });
+  assert.equal((await f.call('/v1/season/adj', { e: [[key(5), key(0, 1)]] })).body.added, 0);
+  assert.equal((await f.call('/v1/season/adj', { e: [[key(0), key(1)]] })).body.added, 0, 'déjà reliés par la découpe de la tuile');
 });
 
 test('abonnement : in, in répété, place en monde plein, anonyme et non inscrit refusés', async () => {
@@ -321,6 +345,113 @@ test('prêts partagés : `ls` à tous les abonnés, total dans l\'état, plafond
   assert.equal(last[k], 0);
   assert.equal(last[k2], 0);
   assert.ok(checkVille(cityOf(w).ville).ok);
+});
+
+test('graine : population minimale, nombres vrais, clé de commune qui n\'est pas un nom propre aux objets', async () => {
+  const w = rig({ rules: { rate: { seed: [50, 1] } } });
+  const a = await w.player(1);
+  const seed = (over) => a.call('/v1/season/seed', { ...SEED, ...over });
+  assert.equal((await seed({ pop: 99 })).body.code, 'petite');
+  assert.equal((await seed({ pop: 99 })).status, 409);
+  for (const bad of [{ place: { ...SEED.place, lat: '45.9' } }, { place: { ...SEED.place, lon: null } }, { place: { ...SEED.place, lat: [5] } },
+    { key: '__proto__' }, { key: 'constructor' }, { key: 'toString' }, { key: '1abc' }, { key: 'a'.repeat(41) }]) {
+    assert.equal((await seed(bad)).status, 400, JSON.stringify(bad));
+  }
+  assert.equal(cityOf(w), null);
+  // Textes nettoyés : espaces et caractères de commande retirés, source limitée aux minuscules.
+  const ok = await seed({ name: '  Pé\u0000rouges\n ', src: 'INSEE<script>', place: { ...SEED.place, name: 'Lieu\u202e' } });
+  assert.equal(ok.body.created, true, JSON.stringify(ok.body));
+  const v = cityOf(w).ville;
+  assert.equal(v.name, 'Pé rouges');
+  assert.equal(v.source, null);
+  assert.ok(!/[\u0000\u202e]/.test(cityOf(w).place.name));
+  // Protocole : la clé de commune des messages suit la même règle.
+  assert.equal(validateClient({ t: 'sv', o: 'in', c: '__proto__' }).ok, false);
+  assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['l', '@constructor', 1]] }).ok, false);
+  assert.equal(validateClient({ t: 'sv', o: 'ev', e: [[['l'], key(1), 1]] }).ok, false);
+  assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['l', '@c01283', 1]] }).ok, true);
+});
+
+test('tuile : une clé tenue par une autre tuile n\'est pas reprise, découpes et voisinages réservés aux joueurs assis', async () => {
+  const w = rig();
+  const a = await w.player(1), b = await w.player(2);
+  await a.call('/v1/season/seed', SEED);
+  assert.equal((await a.call('/v1/season/tile', { t: TA, pates: pates(2, 0) })).body.code, 'abonnement');
+  await a.send({ o: 'in', c: SEED.key });
+  assert.equal((await a.call('/v1/season/tile', { t: TA, pates: pates(3, 0), nb: chain(3), l: false })).body.ok, true);
+  // b (assis lui aussi) envoie pour TB un découpage qui reprend la clé 0 de TA : cette clé n'est pas reprise.
+  await b.send({ o: 'in', c: SEED.key });
+  const dup = [pates(3, 0)[0], ...pates(2, 1)];
+  const r = await b.call('/v1/season/tile', { t: TB, pates: dup, nb: [[0, 1], [1, 2]], l: false });
+  assert.equal(r.body.ok, true, JSON.stringify(r.body));
+  const city = cityOf(w);
+  assert.equal(city.pateTile.get(key(0)), TA);
+  assert.deepEqual(Object.keys(city.ville.tiles[TB].b).sort(), [key(0, 1), key(1, 1)].sort());
+  assert.ok(checkVille(city.ville).ok, checkVille(city.ville).errors.join());
+  // Plus de siège : plus de découpe ni de voisinage.
+  await b.send({ o: 'out' });
+  assert.equal((await b.call('/v1/season/adj', { e: [[key(0), key(1)]] })).body.code, 'abonnement');
+});
+
+test('abus : prêts rendus après 10 min sans abattu, abattus au débit du jeu, réserve du cœur fermée, deny en morceaux valides', async () => {
+  const w = rig({ rules: { killBurst: 4, killPerSec: 0.001 } });
+  const a = await seeded(w), b = await w.player(2);
+  await a.send({ o: 'in', c: SEED.key });
+  await b.send({ o: 'in', c: SEED.key });
+  const [k] = redBlock(w);
+  const v = cityOf(w).ville;
+  const lentOf = (key) => blockInfo(v, key).lent;
+  // Réserve du cœur : pas de tirage tant que la ville n'est pas à sa dernière nuit.
+  await a.ev(['d', '@c01283', 5]);
+  assert.deepEqual(a.sv('deny').at(-1).d, [['@c01283', 5]]);
+  // Débit d'abattus : 4 d'un coup au plus, puis presque plus rien (6 par seconde dans le jeu, 0,001 ici).
+  await a.ev(['l', k, 8]);
+  const have = lentOf(k);
+  assert.ok(have >= 6, `prêtés ${have}`);
+  const left0 = zombiesLeft(v);
+  await a.ev(['k', k, 5]);
+  assert.equal(zombiesLeft(v), left0, '5 abattus d\'un coup : au-delà du débit, ignorés');
+  await a.ev(['k', k, 4]);
+  assert.equal(zombiesLeft(v), left0 - 4);
+  await a.ev(['k', k, 1]);
+  assert.equal(zombiesLeft(v), left0 - 4, 'le seau est vide');
+  // Refus en morceaux : jamais plus de 60 par entrée (le rig refuse tout message invalide), tous annoncés.
+  const before = lentOf(k);
+  await b.ev(['l', k, 60], ['l', k, 60], ['l', k, 60]);
+  const denied = b.sv('deny').flatMap((m) => m.d).filter(([key]) => key === k).reduce((n, [, c]) => n + c, 0);
+  assert.equal(denied, 180 - (lentOf(k) - before));
+  assert.ok(b.sv('deny').every((m) => m.d.length <= 60 && m.d.every(([, n]) => n >= 1 && n <= 60)));
+  // 10 minutes sans abattu : a rend tout ce qu'il tient et le jeu en est averti ; b, sans prêt, n'est pas touché.
+  w.jump(w.clock.t + 9 * 60000);
+  assert.equal(lentOf(k) > 0, true, 'avant 10 min, rien n\'est rendu');
+  w.jump(w.clock.t + 2 * 60000);
+  assert.equal(lentOf(k), 0, 'après 10 min sans abattu, tout est rendu');
+  const idle = a.sv('deny').at(-1);
+  assert.ok(idle.d.some(([key, n]) => key === k && n >= 1), 'et annoncé au joueur');
+  assert.ok(checkVille(v).ok);
+});
+
+test('gestes sans effet : ni jeu enregistré, ni rangée diffusée ou écrite', async () => {
+  const w = rig();
+  const a = await seeded(w), b = await w.player(2);
+  await a.send({ o: 'in', c: SEED.key });
+  await b.send({ o: 'in', c: SEED.key });
+  const [k] = redBlock(w);
+  const city = cityOf(w);
+  await w.seasons.flush();
+  w.tick(1000);
+  const rowsBefore = b.sv('rows').length;
+  const t0 = city.playedAt;
+  w.clock.t += 5000;
+  await a.ev(['L', k], ['k', k, 3], ['r', k, 2], ['f', k]);
+  assert.equal(city.playedAt, t0, 'aucun geste n\'a changé la ville : elle n\'a pas été « jouée »');
+  w.tick(1000);
+  assert.equal(b.sv('rows').length, rowsBefore, 'rien n\'est rediffusé aux autres joueurs');
+  assert.ok(a.sv('rows').length > 0, 'la rangée corrigée n\'est envoyée qu\'à celui qui l\'a demandée');
+  assert.equal(city.dirty.tiles.size, 0, 'rien à écrire en base');
+  // Un geste utile compte.
+  await a.ev(['l', k, 1]);
+  assert.ok(city.playedAt > t0);
 });
 
 test('nid, fanion, libération : mêmes règles que le jeu seul, validées par le serveur', async () => {

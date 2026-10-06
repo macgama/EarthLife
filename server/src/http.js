@@ -177,6 +177,10 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
       req.resume();
       return answer(early);
     }
+    if (isBanned(ip)) {
+      req.resume();
+      return reply(req, res, 403, { ok: false, code: 'banni' });
+    }
     const body = await readBody(req, SEASON_RULES.body[SEASON_POST.get(p)]);
     if (body.tooBig) {
       log('refus', { why: 'corps-trop-grand', route: 'season' });

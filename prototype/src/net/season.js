@@ -31,6 +31,9 @@ export const SEASON_TEXT = {
   monde: 'Ce monde n\'est pas joignable pour l\'instant.',
   commune: 'La ville de la saison a changé : relance la partie.',
   complet: 'Ce niveau est complet : 100 joueurs en même temps. Réessaie plus tard.',
+  petite: 'Cette ville est trop petite pour une saison : choisis une commune d\'au moins 100 habitants.',
+  abonnement: 'Tu n\'es plus connecté à la ville de la saison : réessaie dans un instant.',
+  banni: 'Ton accès est suspendu.',
 };
 
 const MERGE = new Set(['l', 't', 'd', 'r', 'k']);

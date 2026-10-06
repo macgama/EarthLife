@@ -177,7 +177,7 @@ export function createCityGame(host) {
     try {
       const [p, j] = await Promise.all([n.progress(), signedIn() ? n.join() : Promise.resolve(null)]);
       if (p.ok) seasonUi.progress = p;
-      seasonUi.enrolled = j?.ok ? j : null;
+      seasonUi.enrolled = j?.ok && j.enrolled !== false ? j : null;
     } finally {
       seasonUi.busy = false;
     }
@@ -386,7 +386,7 @@ export function createCityGame(host) {
     if (!(await ensureOnline())) { host.setLoading(null); await askCard(infoCard('Pas de connexion', 'Le jeu à plusieurs ne répond pas : la saison en a besoin. Réessaie dans un instant.'), 'ok'); return null; }
     let join = await n.join();
     host.setLoading(null);
-    if (!join.ok && join.status === 400 && join.code === 'niveau') {
+    if (join.ok && join.enrolled === false) {
       // Pas encore inscrit : le niveau se choisit une fois pour la saison.
       const id = await askCard({
         title: `Rejoindre la saison en ${levelName(wanted)} ?`, tone: 'warn',
