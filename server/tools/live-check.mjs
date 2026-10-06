@@ -1,5 +1,6 @@
 // Essai réel (section 9.6), après chaque déploiement puis chaque jour (travail live-check, qui informe sans bloquer) :
 //   node tools/live-check.mjs [--url https://earthlife.needhelpapp.com] [--version a1b2c3d] [--origin https://macgama.github.io]
+//     [--settle-ms 3000]
 // 1. GET /v1/health : ok, bonne version, pas de maintenance, base joignable.
 // 2. Deux clients WebSocket (Origin du jeu publié) créent deux identités de test, envoient des positions à 10 m
 //    l'une de l'autre au point (0,0005° ; 0,0005°), en pleine mer, et doivent se voir ; médiane d'aller-retour
@@ -8,6 +9,10 @@
 // 4. Les identités de test sont effacées par POST /v1/me (op « erase »).
 // 5. Comptes (si /v1/health dit acct) : POST /v1/account/me avec une session inventée rend 401 session, avec l'en-tête
 //    CORS du jeu publié (aucun compte n'est créé sur le vrai serveur).
+// Page « Website under maintenance » d'Infomaniak (Express, en HTML, sans CORS) : l'hébergement la sert pendant environ
+// une seconde à une partie des connexions neuves juste après la fin d'une WebSocket (constaté le 5 octobre 2026) ; notre
+// serveur ne répond jamais en HTML. Une telle réponse est redemandée (2 fois au plus, à 1,5 s) et comptée, et le repli
+// HTTP attend 3 s après la fermeture des WebSocket de l'essai (--settle-ms).
 // Résumé sur la sortie et dans $GITHUB_STEP_SUMMARY ; code 1 si un point échoue. Ne jamais lancer en boucle : chaque
 // essai crée 4 identités (20 par heure et par adresse au plus).
 import fs from 'node:fs';
@@ -22,7 +27,12 @@ const TEN_M = 90;                          // 90 microdegrés de longitude ≈ 1
 // cette invisibilité.
 const SEE_MS = RULES.jumpHideMs + 2000;
 
+// Page de maintenance de l'hébergement (voir l'en-tête) : redemandée `retries` fois au plus, à `waitMs`.
+const HOST_PAGE = { retries: 2, waitMs: 1500 };
+const AFTER_WS_MS = 3000;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export const isHostPage = (res) => res.headers.get('x-powered-by') === 'Express' || /^text\/html/i.test(res.headers.get('content-type') ?? '');
 const median = (l) => (l.length ? [...l].sort((x, y) => x - y)[Math.floor(l.length / 2)] : null);
 
 function args(argv) {
@@ -79,24 +89,36 @@ function wsPlayer(url, origin) {
   return p;
 }
 
-async function postJson(url, path, body, origin) {
-  const res = await fetch(url + path, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8', Origin: origin },
+async function postJson(send, path, body, origin) {
+  const res = await send(path, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8', Origin: origin },
     body: JSON.stringify(body) });
   let json = null;
   try { json = await res.json(); } catch { json = null; }
   return { status: res.status, json };
 }
 
-export async function liveCheck({ url, version = null, origin = 'https://macgama.github.io', out = (s) => console.log(s) } = {}) {
+export async function liveCheck({ url, version = null, origin = 'https://macgama.github.io', out = (s) => console.log(s),
+  settleMs = AFTER_WS_MS, hostWaitMs = HOST_PAGE.waitMs, fetchImpl = globalThis.fetch } = {}) {
   const results = [];
   const tokens = [];
+  let hostPages = 0;
+  // fetch vers le serveur, redemandé quand la page de maintenance de l'hébergement répond à sa place.
+  const send = async (path, init) => {
+    for (let i = 0; ; i++) {
+      const res = await fetchImpl(url + path, init);
+      if (i >= HOST_PAGE.retries || !isHostPage(res)) return res;
+      hostPages++;
+      try { await res.arrayBuffer(); } catch { /* corps ignoré */ }
+      await sleep(hostWaitMs);
+    }
+  };
   const step = (name, ok, detail = '') => { results.push({ name, ok, detail }); out(`${ok ? 'OK    ' : 'ÉCHEC '} ${name}${detail ? ` : ${detail}` : ''}`); };
 
   // 1. Santé
   let wsOn = true, acct = false;
   try {
     const t0 = performance.now();
-    const res = await fetch(`${url}/v1/health`, { headers: { Origin: origin } });
+    const res = await send('/v1/health', { headers: { Origin: origin } });
     const h = await res.json();
     const ms = Math.round(performance.now() - t0);
     step('santé', res.status === 200 && h.ok === true, `HTTP ${res.status}, ${ms} ms`);
@@ -146,12 +168,14 @@ export async function liveCheck({ url, version = null, origin = 'https://macgama
     } finally {
       for (const p of [a, b]) { p.send({ t: 'bye' }); try { p.ws.close(); } catch { p.ws.terminate(); } }
     }
+    // La fin de ces WebSocket ouvre la fenêtre de la page de maintenance de l'hébergement (voir l'en-tête).
+    await sleep(settleMs);
   }
 
   // 3. Repli HTTP
   const polls = [{ tok: null, sid: null, seq: 0, helloAt: 0, inbox: [] }, { tok: null, sid: null, seq: 0, helloAt: 0, inbox: [] }];
   const sync = async (p, msgs) => {
-    const r = await postJson(url, '/v1/sync', { v: PROTOCOL, tok: p.tok, sid: p.sid, msgs }, origin);
+    const r = await postJson(send, '/v1/sync', { v: PROTOCOL, tok: p.tok, sid: p.sid, msgs }, origin);
     for (const m of r.json?.msgs ?? []) {
       p.inbox.push(m);
       if (m.t === 'welcome') { p.sid = m.sid; if (m.tok) p.tok = m.tok; }
@@ -196,7 +220,7 @@ export async function liveCheck({ url, version = null, origin = 'https://macgama
     // 5. Comptes : une session inventée est refusée, avec l'en-tête CORS du jeu (rien n'est créé).
     if (acct) {
       try {
-        const res = await fetch(`${url}/v1/account/me`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8', Origin: origin },
+        const res = await send('/v1/account/me', { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8', Origin: origin },
           body: JSON.stringify({ v: PROTOCOL, ses: randomBytes(32).toString('base64url') }) });
         let j = null;
         try { j = await res.json(); } catch { j = null; }
@@ -210,16 +234,18 @@ export async function liveCheck({ url, version = null, origin = 'https://macgama
     let erased = 0;
     for (const tok of tokens) {
       try {
-        const r = await postJson(url, '/v1/me', { v: PROTOCOL, tok, op: 'erase' }, origin);
+        const r = await postJson(send, '/v1/me', { v: PROTOCOL, tok, op: 'erase' }, origin);
         if (r.status === 200 && r.json?.ok) erased++;
       } catch { /* compté comme non effacée */ }
     }
     if (tokens.length) step('identités de test effacées', erased === tokens.length, `${erased}/${tokens.length}`);
+    const hostNote = hostPages ? `Page de maintenance de l'hébergement reçue ${hostPages} fois à la place du serveur, redemandée.` : '';
+    if (hostNote) out(`       ${hostNote}`);
     const ok = results.every((r) => r.ok);
     const summary = process.env.GITHUB_STEP_SUMMARY;
     if (summary) {
       const lines = ['### Essai réel du serveur', '', `Serveur : ${url}`, '', '| Point | Résultat | Détail |', '|---|---|---|',
-        ...results.map((r) => `| ${r.name} | ${r.ok ? 'OK' : 'ÉCHEC'} | ${r.detail} |`), ''];
+        ...results.map((r) => `| ${r.name} | ${r.ok ? 'OK' : 'ÉCHEC'} | ${r.detail} |`), '', ...(hostNote ? [hostNote, ''] : [])];
       try { fs.appendFileSync(summary, lines.join('\n')); } catch { /* résumé facultatif */ }
     }
     return { ok, results };
@@ -230,7 +256,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === fs.realpathSync(proces
   const a = args(process.argv.slice(2));
   const url = (a.url ?? process.env.EARTHLIFE_SERVER_URL ?? 'https://earthlife.needhelpapp.com').replace(/\/+$/, '');
   const version = a.version ?? process.env.EXPECTED_VERSION ?? null;
-  liveCheck({ url, version, origin: a.origin ?? 'https://macgama.github.io' })
+  const settle = Number(a['settle-ms'] ?? AFTER_WS_MS);
+  liveCheck({ url, version, origin: a.origin ?? 'https://macgama.github.io', settleMs: Number.isFinite(settle) && settle >= 0 ? settle : AFTER_WS_MS })
     .then((r) => process.exit(r.ok ? 0 : 1))
     .catch((e) => { console.log(`ÉCHEC : ${e?.code ?? e?.name}`); process.exit(1); });
 }
