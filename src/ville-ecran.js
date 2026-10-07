@@ -14,6 +14,7 @@ import { localDate, utcOffsetFor } from './horde.js';
 import { storeItems, chestCap, countOf, countsLabel, claimableShape } from './base.js';
 import { nearestOpen } from './collision.js';
 import { SEASON_TEXT } from './net/season.js';
+import { createSalon, createTabs, frontModel, summaryOf, ctaModel, clockOf, pinsOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
 const LEVEL_KEY = 'earthlife.niveau';
 const DAY_MS = 86_400_000;
@@ -28,7 +29,10 @@ export function createCityGame(host) {
   let menuLevel = readLevel();
   let notice = null;         // message à montrer au premier instant de la partie (repli, ville abandonnée)
   let pendingFirst = null;   // { name, zombies, hidden } de la ville qui commence
-  const seasonUi = { enrolled: null, progress: null, at: 0, busy: false };   // menu : inscription, évolution (30 s)
+  // Menu : inscription, état des lieux (relu au plus toutes les 30 s), niveau voulu avant de se connecter, message passager.
+  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, busy: false, after: null, note: '', noteAt: 0 };
+  const ls = (() => { try { return window.localStorage; } catch { return null; } })();
+  let salon = null, tabs = null;
   const seasonRef = { rt: null };                                            // runtime de la saison en cours (messages du serveur)
 
   function readLevel() {
@@ -60,8 +64,14 @@ export function createCityGame(host) {
       });
     }
     $('city-restart')?.addEventListener('click', () => restartCard());
-    for (const b of doc.querySelectorAll('#season-row [data-season]')) b.addEventListener('click', () => host.startGame(picker.getPlace() ?? null, { season: b.dataset.season }));
-    $('season-progress')?.addEventListener('click', () => progressCard());
+    salon = createSalon({ doc, storage: ls, host: {
+      onPick: () => syncSeason(),
+      onLocked: () => { seasonUi.note = 'Ton niveau est choisi pour la saison : il ne change plus.'; seasonUi.noteAt = Date.now(); syncSeason(); },
+      onLaunch: (level) => host.startGame(picker.getPlace() ?? null, { season: level }),
+    } });
+    tabs = createTabs({ doc, root: $('menu'), storage: ls, params, onChange: () => requestAnimationFrame(() => picker.resize?.()) });
+    // L'état des lieux se relit tant que le menu est ouvert (au plus toutes les 30 s), les jours restants se remettent à l'heure.
+    setInterval(() => { if (!$('menu')?.classList.contains('hidden')) syncSeason(); }, 5000);
     syncMenu();
   }
 
@@ -135,82 +145,61 @@ export function createCityGame(host) {
   const signedIn = () => host.account?.state === 'in' && !!host.account.session;
   const infoCard = (title, ...lines) => ({ title, lines, buttons: [{ id: 'ok', label: 'OK', primary: true }] });
   const seasonText = (code) => SEASON_TEXT[code] ?? SEASON_TEXT.base;
-  const daysLeft = (sn) => {
-    const left = Math.ceil((sn.endMs - Date.now()) / DAY_MS);
-    return sn.phase === 'terminee' ? 'La saison est terminée.' : sn.phase === 'avenir' ? 'La saison n\'a pas commencé.'
-      : `${left} jour${left > 1 ? 's' : ''} restant${left > 1 ? 's' : ''}.`;
-  };
 
-  // Bloc « Saison 1 » : caché sans jeu à plusieurs, et tant que le jeu en ligne est en maintenance, périmé, sur invitation,
-  // ouvert ailleurs ou hors ligne. Sans réponse du joueur (« Jouer à plusieurs » ou « Jouer seul ») il reste affiché mais ne demande
-  // rien au serveur : inscription et évolution ne sont relues (au plus toutes les 30 s) que lien en ligne établi.
-  const SEASON_HIDDEN = new Set(['maintenance', 'perime', 'invite', 'autre-onglet', 'hors-ligne']);
-  const seasonLive = () => !!host.online?.live;
+  // Salon : l'onglet « À plusieurs » (bannière de la saison, trois fronts, bouton unique) et les repères de la carte. Le serveur
+  // n'est interrogé qu'une fois la connexion en ligne établie : pas quand le joueur a choisi de jouer seul, ni pendant la connexion,
+  // ni quand le jeu en ligne est bloqué (maintenance, mise à jour, code d'invitation, autre onglet, hors ligne) ; le salon le dit,
+  // la partie libre reste possible. L'inscription n'est relue qu'avec un compte connecté.
+  const SEASON_HIDDEN = new Set(Object.keys(BLOCKED));
   function syncSeason() {
-    const block = $('season-block');
-    if (!block) return;
     const n = net();
-    block.hidden = !n?.enabled || SEASON_HIDDEN.has(host.online?.status);
-    if (block.hidden) return;
-    const stale = Date.now() - seasonUi.at > 30_000;
-    if (stale && !seasonUi.busy && seasonLive()) refreshSeason();
-    const sn = seasonUi.progress?.season;
-    const level = seasonUi.enrolled?.level ?? null;
-    const when = sn ? daysLeft(sn) : '';
-    const line = $('season-line');
-    if (line) {
-      line.textContent = !signedIn() ? 'Saison 1 : connecte-toi à ton compte. Tous les joueurs d\'un niveau sauvent la même ville, ensemble.'
-        : level ? `Saison 1 : tu joues en ${levelName(level)}. ${when}`
-          : seasonLive() ? `Saison 1 : choisis ton niveau, il ne change plus. ${when}`.trim()
-            : 'Saison 1 : touche un niveau pour jouer en ligne. Tous les joueurs d\'un niveau sauvent la même ville, ensemble.';
-    }
-    for (const b of doc.querySelectorAll('#season-row [data-season]')) {
-      b.setAttribute('aria-pressed', String(b.dataset.season === level));
-      b.disabled = !!level && b.dataset.season !== level;
-    }
+    // Le jeu en ligne n'existe pas encore au premier appel (initMenu) : sans saison, on ne lit pas `host.online`.
+    if (!n?.enabled) { tabs?.sync({ available: false, usable: false }); return; }
+    const status = host.online?.status ?? 'off';
+    const blocked = SEASON_HIDDEN.has(status);
+    tabs?.sync({ available: true, usable: !blocked });
+    if (!salon) return;
+    if (Date.now() - seasonUi.at > 30_000 && !seasonUi.busy && !blocked && host.online?.live) refreshSeason();
+    if (seasonUi.note && Date.now() - seasonUi.noteAt > 4000) seasonUi.note = '';
+    const progress = seasonUi.progress;
+    const enrolled = seasonUi.enrolled?.level ?? null;
+    const ctx = { enrolled, pick: salon.pick() ?? DEFAULT_FRONT };
+    const fronts = FRONT_LEVELS.map((lv) => frontModel(lv, progress?.levels?.[lv], ctx));
+    const link = { ...LINK.off, ...(LINK[status] ?? {}) };
+    const note = blocked ? BLOCKED[status] : seasonUi.note || (status === 'seul' ? 'Tu joues seul. Touche le bouton pour passer en ligne et rejoindre les autres.'
+      : seasonUi.failed && !progress ? 'L\'état des lieux est indisponible pour l\'instant : le bouton reste possible.' : '');
+    salon.render({
+      loaded: !!progress, failed: seasonUi.failed, fronts, clock: clockOf(progress?.season, Date.now()), summary: summaryOf(fronts), link, note,
+      cta: ctaModel({ fronts, enrolled, pick: ctx.pick, signedIn: signedIn(), status, place: picker.getPlace(), loaded: !!progress }),
+    });
+    picker.setSeasonCities?.(progress ? pinsOf(fronts) : []);
   }
-  // Connexion ou déconnexion du compte : l'inscription et l'évolution sont relues tout de suite.
+  // Connexion ou déconnexion du compte : l'inscription et l'état des lieux sont relus tout de suite. Un joueur venu pour
+  // rejoindre la saison (carte « Un compte pour la saison ») y est mis dès qu'il est connecté.
   function seasonChanged() {
     seasonUi.at = 0;
     seasonUi.enrolled = null;
     syncSeason();
+    const after = seasonUi.after;
+    if (after && signedIn() && Date.now() - after.at < 10 * 60_000 && !$('menu')?.classList.contains('hidden')) {
+      seasonUi.after = null;
+      host.startGame(picker.getPlace() ?? null, { season: after.level });
+    }
   }
   async function refreshSeason() {
     const n = net();
-    if (!n?.enabled || !seasonLive()) return;
+    if (!n?.enabled) return;
     seasonUi.busy = true;
     seasonUi.at = Date.now();
     try {
       const [p, j] = await Promise.all([n.progress(), signedIn() ? n.join() : Promise.resolve(null)]);
+      seasonUi.failed = !p.ok;
       if (p.ok) seasonUi.progress = p;
       seasonUi.enrolled = j?.ok && j.enrolled !== false ? j : null;
     } finally {
       seasonUi.busy = false;
     }
     syncSeason();
-  }
-
-  // « Évolution de la saison » : début, fin, et pour chaque niveau les joueurs, la ville et ses décomptes.
-  async function progressCard() {
-    const n = net();
-    if (!n?.enabled) return;
-    host.setLoading('Évolution de la saison…');
-    const r = await n.progress();
-    host.setLoading(null);
-    if (!r.ok) { await askCard(infoCard('Évolution de la saison', seasonText(r.code)), 'ok'); return; }
-    seasonUi.progress = r;
-    const sn = r.season;
-    const date = (ms) => new Date(ms).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
-    const lines = [`${sn.name} : du ${date(sn.startMs)} au ${date(sn.endMs)}. ${daysLeft(sn)}`];
-    for (const lv of LEVEL_KEYS) {
-      const L = r.levels[lv];
-      if (!L) continue;
-      const c = L.city;
-      lines.push(`${LEVEL_TEXT[lv].name} : ${groupDigits(L.players)} joueur${L.players > 1 ? 's' : ''} inscrit${L.players > 1 ? 's' : ''}, ${L.online} en ligne sur ${L.seats} places.`);
-      lines.push(c ? `${c.name} : ${groupDigits(c.zombies)} zombies restants sur ${groupDigits(c.zombies0)}, ${groupDigits(c.saved)} habitants sauvés sur ${groupDigits(c.toSave)}, ${groupDigits(c.flags)} fanion${c.flags > 1 ? 's' : ''}.`
-        : 'Pas encore de ville : le premier joueur de ce niveau la choisit sur la carte.');
-    }
-    host.showCard({ title: 'Évolution de la saison', lines, buttons: [{ id: 'ok', label: 'Fermer', primary: true }] }, null, { escape: 'ok' });
   }
 
   // « Jouer ici » et « Partir en expédition ici » deviennent « Sauver cette ville » quand un niveau est choisi (dans ta ville
@@ -385,7 +374,7 @@ export function createCityGame(host) {
         lines: [SEASON_TEXT.session, 'Ta saison est liée à ton compte : elle te suit sur tous tes appareils. Ta partie solo reste possible sans compte.'],
         buttons: [{ id: 'account', label: 'Ouvrir mon compte', primary: true }, { id: 'cancel', label: 'Plus tard' }],
       }, 'cancel');
-      if (id === 'account') host.openAccount?.();
+      if (id === 'account') { seasonUi.after = { level: wanted, at: Date.now() }; host.openAccount?.(); }
       return null;
     }
     host.setLoading('Connexion à la saison…');
@@ -730,7 +719,7 @@ export function createCityGame(host) {
         break;
       case 'season-end':
         host.showCard({ title: 'La saison est terminée', tone: 'success',
-          lines: ['Merci d\'avoir joué ! La ville reste visible, mais plus aucun geste ne compte.', 'Les chiffres de la saison sont dans « Évolution de la saison », au menu.'],
+          lines: ['Merci d\'avoir joué ! La ville reste visible, mais plus aucun geste ne compte.', 'Les chiffres de la saison sont dans le salon, au menu (onglet « À plusieurs »).'],
           buttons: [{ id: 'ok', label: 'Continuer', primary: true }, { id: 'menu', label: 'Menu' }] }, (id) => { if (id === 'menu' && host.getSession() === s) host.toMenu(); }, { escape: 'ok' });
         if (s.city) s.city.state.ended = true;
         break;
