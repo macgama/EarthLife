@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  FRONT_LEVELS, DEFAULT_FRONT, BLOCKED, clockOf, frontModel, summaryOf, ctaModel, pinsOf, createTabs,
+  FRONT_LEVELS, DEFAULT_FRONT, BLOCKED, clockOf, frontModel, summaryOf, ctaModel, pinsOf, framingOf, createTabs,
 } from '../src/salon.js';
 
 const DAY = 86_400_000;
@@ -119,6 +119,19 @@ test('repères de la carte : seulement les villes dont on connaît la position',
   assert.equal(pins.length, 1, 'Pérouges n\'a pas de coordonnées, le niveau difficile pas de ville');
   assert.deepEqual(pins[0], { level: 'facile', lat: 46.6, lon: 6.8, tone: 'warn', label: 'Facile · Vulliens', tag: 'Facile · 12 en ligne' });
   assert.deepEqual(pinsOf([]), []);
+});
+
+test('cadrage de la carte : la ville du niveau touché, sinon toutes les villes, sinon rien', () => {
+  const pins = [
+    { level: 'facile', lat: 46.6, lon: 6.8, tone: 'warn', label: 'a', tag: 'a' },
+    { level: 'moyen', lat: 45.92, lon: 5.18, tone: 'ok', label: 'b', tag: 'b' },
+  ];
+  assert.deepEqual(framingOf(pins, 'moyen'), { kind: 'city', level: 'moyen', lat: 45.92, lon: 5.18 });
+  assert.equal(framingOf(pins, 'difficile'), null, 'un niveau sans ville ne déplace pas la carte');
+  assert.deepEqual(framingOf(pins), { kind: 'all', points: [{ level: 'facile', lat: 46.6, lon: 6.8 }, { level: 'moyen', lat: 45.92, lon: 5.18 }] });
+  assert.deepEqual(framingOf(pins.slice(0, 1)), { kind: 'city', level: 'facile', lat: 46.6, lon: 6.8 }, 'une seule ville : on y va');
+  assert.equal(framingOf([]), null);
+  assert.equal(framingOf(undefined, 'facile'), null);
 });
 
 // ---------- Onglets ----------

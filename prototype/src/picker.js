@@ -15,6 +15,8 @@ const STORAGE_KEY = 'earthlife.place';
 const LEGACY_CITY_KEY = 'earthlife.city';
 const PLACE_ZOOM = 14; // après une recherche ou un raccourci
 const APPROACH_ZOOM = 11; // quand on touche la carte de loin
+const SEASON_ZOOM = 9; // une ville de la saison : la ville et ses environs
+const FRAME_MIN_W = 240, FRAME_MIN_H = 200; // partie libre de la carte qui peut ranger plusieurs repères de villes
 const MAP_TIMEOUT_MS = 20000;
 const SUGGEST_DELAY_MS = 350;
 const SUGGEST_MIN_CHARS = 3;
@@ -46,6 +48,8 @@ const BAG_SVG = pinSvg('#c58bff', '<path d="M14.4 9.6 17 11.6l2.6-2-.7 3.1h-3.8z
 // Étiquette « Ton refuge » à droite du repère (jetons du guide de style seulement) ; injectée au premier repère posé.
 const PIN_CSS = `
 #picker-map .map-pin-tag { position: absolute; top: 5px; left: calc(100% + 2px); padding: 3px 6px 2px; border: 1px solid var(--c-line-strong); border-radius: var(--r-xs); background: var(--c-panel-solid); box-shadow: var(--sh-1); color: var(--c-text); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; white-space: nowrap; pointer-events: none; }
+#picker-map .map-pin-hit { cursor: pointer; }
+#picker-map .map-pin-hit:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; border-radius: var(--r-xs); }
 `;
 // Bouton « Protéger ce lieu » : 3e colonne de la fiche du lieu, sur deux lignes au plus, pour ne pas grandir le panneau.
 const PROTECT_CSS = `
@@ -355,6 +359,9 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
   let mapState = 'idle'; // idle | loading | ready | failed
   let mapTimer = 0, mapErrors = 0, mapAttempt = 0;
   let spinning = false, ignoreClick = false;
+  // Cadrage des villes de la saison (salon) : demandé avant que la carte soit prête ; le joueur a-t-il déjà bougé la carte ; la carte a-t-elle
+  // quitté son lieu pour les villes ; qui prévenir quand on touche un repère de ville.
+  let frameWanted = null, userMoved = false, framedAway = false, seasonPinHandler = null;
   let items = [], active = -1, debounce = 0;
   let suggestCtrl = null, searchCtrl = null, reverseCtrl = null;
   let mapNote = '', lastSheetH = 0, layoutFrame = 0;
@@ -817,6 +824,16 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
     el.className = `map-pin map-pin-${pin.kind}`;
     el.setAttribute('role', 'img');
     el.innerHTML = pin.svg;
+    // Un repère de ville de la saison se touche comme la carte du niveau : le salon choisit ce niveau.
+    if (pin.kind.startsWith('saison-')) {
+      const level = pin.kind.slice('saison-'.length);
+      el.setAttribute('role', 'button');
+      el.tabIndex = 0;
+      el.classList.add('map-pin-hit');
+      const pick = (e) => { e.stopPropagation(); e.preventDefault(); seasonPinHandler?.(level); };
+      el.addEventListener('click', pick);
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') pick(e); });
+    }
     if (pin.tag) {
       const tag = document.createElement('span');
       tag.className = 'map-pin-tag';
@@ -872,6 +889,35 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
     map.flyTo({ center: [place.lon, place.lat], zoom, speed: 1.6, curve: 1.42, maxDuration: 4500 });
   }
 
+
+  // Cadre la carte sur les villes de la saison : { kind: 'city', lat, lon } ou { kind: 'all', points: [{ level, lat, lon }] } (salon.js,
+  // framingOf). Quand la partie libre est trop petite pour y ranger plusieurs repères (téléphone, panneau déployé), on va seulement
+  // à la ville du niveau `prefer` (ou la première).
+  function applyFrame(frame, prefer = null) {
+    stopSpin();
+    framedAway = true;
+    // Les marges de la carte suivent le panneau tel qu'il est maintenant (il grandit quand l'état des lieux arrive) ; setPadding arrête
+    // tout mouvement en cours : il passe avant le vol.
+    const m = measure();
+    if (m) map.setPadding(m.pad);
+    const free = m ? { w: m.box.width - m.pad.left - m.pad.right, h: m.box.height - m.pad.top - m.pad.bottom } : { w: 300, h: 300 };
+    let f = frame;
+    if (f.kind === 'all' && (free.w < FRAME_MIN_W || free.h < FRAME_MIN_H)) {
+      const one = f.points.find((p) => p.level === prefer) ?? f.points[0];
+      f = { kind: 'city', lat: one.lat, lon: one.lon };
+    }
+    if (f.kind === 'city') {
+      // Un peu sous le centre : la pointe du repère est en bas, c'est le repère entier qu'on centre.
+      map.flyTo({ center: [f.lon, f.lat], zoom: SEASON_ZOOM, offset: [0, Math.min(20, Math.floor(free.h / 4))], speed: 1.6, curve: 1.42, maxDuration: 3500 });
+      return;
+    }
+    // Marges qui s'ajoutent à celles du panneau : de la place en haut pour le repère et à droite pour son étiquette.
+    const e = Math.max(6, Math.min(40, Math.floor(Math.min(free.w, free.h) / 6)));
+    const bounds = new gl.LngLatBounds();
+    for (const p of f.points) bounds.extend([p.lon, p.lat]);
+    map.fitBounds(bounds, { maxZoom: SEASON_ZOOM - 1, padding: { top: e + 42, bottom: e, left: e, right: e + 110 }, duration: 1800 });
+  }
+
   // Le globe tourne doucement tant que rien n'est choisi, jusqu'au premier geste.
   function startSpin() {
     if (!map || current || reducedMotion.matches || !visible || spinning) return;
@@ -917,6 +963,7 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
     marker = null;
     markerOnMap = false;
     dropPins();
+    framedAway = false;
     mapState = 'idle';
     root.classList.remove('map-loading');
   }
@@ -930,7 +977,10 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
     try { map.setProjection({ type: 'globe' }); } catch (err) { console.warn('Globe indisponible', err); }
     syncMarker();
     syncPins();
-    startSpin();
+    const wanted = frameWanted;
+    frameWanted = null;
+    if (wanted && !(wanted.auto && userMoved)) applyFrame(wanted.frame, wanted.prefer);
+    else startSpin();
   }
 
   async function startMap() {
@@ -979,7 +1029,7 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
       if (mapState === 'loading' && (!url || url.startsWith(STYLE_URL))) { failMap(e.error ?? e); return; }
       if (mapErrors++ < 3) console.warn('Carte :', e?.error?.message ?? e);
     });
-    for (const ev of ['mousedown', 'touchstart', 'wheel', 'dragstart']) map.on(ev, stopSpin);
+    for (const ev of ['mousedown', 'touchstart', 'wheel', 'dragstart']) map.on(ev, () => { userMoved = true; stopSpin(); });
     map.on('moveend', () => { if (spinning) spinStep(); });
     map.on('click', (e) => {
       if (ignoreClick) { ignoreClick = false; return; }
@@ -1024,6 +1074,26 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
       for (const pin of pins) if (pin.kind.startsWith('saison-') && !keep.has(pin.kind)) pin.spot = null;
       syncPins();
     },
+    // Cadre la carte sur une ville de la saison ou sur toutes (framingOf du salon). `auto` : cadrage d'office, laissé de côté si le joueur a
+    // déjà bougé la carte. Demandé avant que la carte soit prête, il est joué à son arrivée.
+    frameCities(frame, { auto = false, prefer = null } = {}) {
+      if (!frame || mapState === 'failed') return false;
+      if (auto && userMoved) return false;
+      if (!map || mapState !== 'ready') { frameWanted = { frame, auto, prefer }; return true; }
+      applyFrame(frame, prefer);
+      return true;
+    },
+    // Retour au lieu choisi (ou rien à faire) quand la carte s'était rendue sur les villes de la saison.
+    recenter() {
+      frameWanted = null;
+      if (!framedAway || !map || mapState !== 'ready' || !current) return;
+      framedAway = false;
+      flyTo(current, Math.max(map.getZoom(), APPROACH_ZOOM));
+    },
+    // Appelé avec le niveau (« facile », « moyen », « difficile ») quand on touche un repère de ville.
+    setSeasonPinHandler(fn) {
+      seasonPinHandler = typeof fn === 'function' ? fn : null;
+    },
     // Zones privées (privacy.js) : copie de la liste ; setZones après un retrait fait ailleurs (menu), qui la range aussi.
     getZones: () => zones.map((z) => ({ ...z })),
     setZones(list) {
@@ -1033,6 +1103,7 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
     },
     show() {
       visible = true;
+      userMoved = false;
       reloadZones();
       render();
       updateLayout({ padding: false });
