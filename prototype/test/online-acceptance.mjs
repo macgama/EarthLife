@@ -1,5 +1,5 @@
 // Scénarios Playwright du jeu à plusieurs (spec 9.3, O1 à O21) et du compte facultatif (spécification des comptes 7.3,
-// O22 à O27) et du salon du menu (O28), soit O1 à O28, hors ligne : A sur ordinateur (1280 × 800) et B sur téléphone (390 × 844), près de la
+// O22 à O27), du salon du menu (O28) et des villes de la saison sur sa carte (O29), soit O1 à O29, hors ligne : A sur ordinateur (1280 × 800) et B sur téléphone (390 × 844), près de la
 // place Bellecour, contre le faux serveur lancé dans ce processus (server/dev.mjs : vrai cœur, magasin en mémoire,
 // /__test/log, comptes avec la fausse boîte aux lettres), avec le choix « on » déjà rangé ; puis d'autres contextes
 // pour le repli HTTP (C), les deux onglets (D), la maintenance (E, F), le jeu seul (G, H) et le compte (K, L, M).
@@ -2147,6 +2147,84 @@ await scenario('O28', 'salon du menu', async () => {
   await shot(N, 'o28-ordi-compte');
   check(ask.v && ask.v.scrollW <= ask.v.innerW, `N : pas de défilement horizontal (${ask.v?.scrollW} / ${ask.v?.innerW})`);
   await closeCtx(N);
+});
+
+// =====================================================================================================
+// O29 : villes de la saison sur la carte du menu : les repères sont à l'écran (cadrés d'office), toucher un repère ou un niveau choisit
+// ce niveau et centre sa ville sans changer le lieu choisi, « Partie libre » ramène la carte au lieu choisi, « À plusieurs » recadre ;
+// sur téléphone (panneau déployé, bande de carte étroite), la ville du niveau seule, entière sous l'en-tête et au-dessus du panneau
+// =====================================================================================================
+await scenario('O29', 'villes de la saison sur la carte du menu', async () => {
+  const NOW = Date.now(), DAY = 86400000;
+  const progress = {
+    ok: true, now: NOW, season: { id: 1, name: 'Saison 1', startMs: NOW - 6 * DAY, endMs: NOW + 54 * DAY, phase: 'en-cours' },
+    levels: {
+      facile: { players: 37, online: 12, seats: 100, city: { key: 'c1', name: 'Vulliens', lat: 46.6, lon: 6.8, population: 1109, zombies: 277, zombies0: 380, saved: 310, toSave: 729, flags: 4, killed: 103, status: 'en-cours' } },
+      moyen: { players: 9, online: 3, seats: 100, city: { key: 'c2', name: 'Pérouges', lat: 45.92, lon: 5.18, population: 90, zombies: 0, zombies0: 31, saved: 59, toSave: 59, flags: 2, killed: 31, status: 'nettoyee' } },
+      difficile: { players: 0, online: 0, seats: 100, city: null },
+    },
+  };
+  const withCities = (ctx) => ctx.route('**/v1/season/progress', (r) => r.fulfill({
+    status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': ORIGIN, 'cache-control': 'no-store' }, body: JSON.stringify(progress),
+  }));
+  const url = `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&server=http://127.0.0.1:${srv.port}`;
+  // Position (centre du pied du repère) de chaque repère de ville, du repère du lieu choisi, et mise en page.
+  const read = (t) => ev(t, () => {
+    const at = (el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height) }; };
+    const pins = {};
+    for (const m of document.querySelectorAll('.maplibregl-marker.map-pin-hit')) pins[m.className.match(/map-pin-saison-(\w+)/)?.[1]] = at(m);
+    const mine = [...document.querySelectorAll('.maplibregl-marker:not(.map-pin)')].map(at)[0] ?? null;
+    const place = window.__earthlife?.picker?.getPlace?.();
+    const bottom = (sel) => Math.round(document.querySelector(sel)?.getBoundingClientRect().bottom ?? 0);
+    return {
+      tab: document.getElementById('menu')?.dataset.tab, pins, mine, place: place ? [place.lat, place.lon] : null,
+      checked: [...document.querySelectorAll('#fronts .front')].filter((f) => f.getAttribute('aria-checked') === 'true').map((f) => f.dataset.level).join(),
+      win: [innerWidth, innerHeight], cardRight: Math.round(document.querySelector('.menu-ui')?.getBoundingClientRect().right ?? 0),
+      top: bottom('.menu-top'), sheetTop: Math.round(document.querySelector('.sheet')?.getBoundingClientRect().top ?? 0),
+    };
+  });
+  const until = async (t, pred, timeout = 40000) => {
+    const t0 = Date.now();
+    let v = null;
+    while (Date.now() - t0 < timeout) {
+      v = await read(t).catch(() => null);
+      if (v && pred(v)) return { ok: true, v };
+      await wait(300);
+    }
+    return { ok: false, v };
+  };
+  const inFree = (p, v) => !!p && p.x > v.cardRight && p.x < v.win[0] && p.y > 0 && p.y < v.win[1];
+  const near = (p, x, y, tol) => !!p && Math.abs(p.x - x) <= tol && Math.abs(p.y - y) <= tol;
+
+  const N = await open('N2 (ordinateur, villes sur la carte)', desktop, url, { waitGame: false, before: withCities });
+  const free = (v) => [Math.round((v.cardRight + v.win[0]) / 2), Math.round(v.win[1] / 2)];
+  const framed = await until(N, (v) => v.tab === 'saison' && inFree(v.pins.facile, v) && inFree(v.pins.moyen, v));
+  check(framed.ok, `N2 : les deux villes sont à l'écran, hors du panneau (${JSON.stringify(framed.v?.pins)}, panneau jusqu'à ${framed.v?.cardRight})`);
+  await shot(N, 'o29-ordi-villes');
+  const place0 = framed.v?.place;
+  // Un repère touché : son niveau est choisi, sa ville au centre de la carte libre, le lieu choisi ne bouge pas.
+  await N.page.click('.maplibregl-marker.map-pin-saison-moyen');
+  const moyen = await until(N, (v) => v.checked === 'moyen' && near(v.pins.moyen, ...free(v), 70));
+  check(moyen.ok && JSON.stringify(moyen.v.place) === JSON.stringify(place0), `N2 : repère « Moyen » touché : niveau choisi, Pérouges au centre (${JSON.stringify(moyen.v?.pins?.moyen)}), lieu inchangé (${JSON.stringify(moyen.v?.place)})`);
+  // Un niveau touché : sa ville vient au centre.
+  await click(N, '#fronts .front[data-level="facile"]');
+  const facile = await until(N, (v) => v.checked === 'facile' && near(v.pins.facile, ...free(v), 70));
+  check(facile.ok, `N2 : niveau « Facile » touché : Vulliens au centre (${JSON.stringify(facile.v?.pins?.facile)})`);
+  // Partie libre : la carte revient au lieu choisi ; À plusieurs : elle recadre les villes.
+  await click(N, '#menu-tabs [data-tab="libre"]');
+  const libre = await until(N, (v) => v.tab === 'libre' && near(v.mine, ...free(v), 90));
+  check(libre.ok, `N2 : « Partie libre » ramène la carte au lieu choisi (${JSON.stringify(libre.v?.mine)})`);
+  await click(N, '#menu-tabs [data-tab="saison"]');
+  const again = await until(N, (v) => v.tab === 'saison' && inFree(v.pins.facile, v) && inFree(v.pins.moyen, v));
+  check(again.ok, `N2 : « À plusieurs » recadre les deux villes (${JSON.stringify(again.v?.pins)})`);
+  await closeCtx(N);
+
+  // Téléphone : la bande de carte entre l'en-tête et le panneau est trop étroite pour plusieurs repères.
+  const P = await open('P2 (téléphone, villes sur la carte)', mobile, url, { waitGame: false, before: withCities });
+  const strip = await until(P, (v) => v.tab === 'saison' && !!v.pins.facile && v.pins.facile.y > v.top + 30 && v.pins.facile.y < v.sheetTop && v.pins.facile.x > 20 && v.pins.facile.x < v.win[0] - 20);
+  check(strip.ok, `P2 : Vulliens entière dans la bande de carte (pointe en ${JSON.stringify(strip.v?.pins?.facile)}, entre ${strip.v?.top} et ${strip.v?.sheetTop})`);
+  await shot(P, 'o29-tel-villes');
+  await closeCtx(P);
 });
 
 // =====================================================================================================

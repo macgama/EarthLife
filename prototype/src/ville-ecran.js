@@ -14,7 +14,7 @@ import { localDate, utcOffsetFor } from './horde.js';
 import { storeItems, chestCap, countOf, countsLabel, claimableShape } from './base.js';
 import { nearestOpen } from './collision.js';
 import { SEASON_TEXT } from './net/season.js';
-import { createSalon, createTabs, frontModel, summaryOf, ctaModel, clockOf, pinsOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
+import { createSalon, createTabs, frontModel, summaryOf, ctaModel, clockOf, pinsOf, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
 const LEVEL_KEY = 'earthlife.niveau';
 const DAY_MS = 86_400_000;
@@ -30,7 +30,7 @@ export function createCityGame(host) {
   let notice = null;         // message à montrer au premier instant de la partie (repli, ville abandonnée)
   let pendingFirst = null;   // { name, zombies, hidden } de la ville qui commence
   // Menu : inscription, état des lieux (relu au plus toutes les 30 s), niveau voulu avant de se connecter, message passager.
-  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, busy: false, after: null, note: '', noteAt: 0 };
+  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, busy: false, after: null, note: '', noteAt: 0, pins: [], framed: false };
   const ls = (() => { try { return window.localStorage; } catch { return null; } })();
   let salon = null, tabs = null;
   const seasonRef = { rt: null };                                            // runtime de la saison en cours (messages du serveur)
@@ -65,13 +65,21 @@ export function createCityGame(host) {
     }
     $('city-restart')?.addEventListener('click', () => restartCard());
     salon = createSalon({ doc, storage: ls, host: {
-      onPick: () => syncSeason(),
+      onPick: (level) => { syncSeason(); picker.frameCities?.(framingOf(seasonUi.pins, level)); },
       onLocked: () => { seasonUi.note = 'Ton niveau est choisi pour la saison : il ne change plus.'; seasonUi.noteAt = Date.now(); syncSeason(); },
       onLaunch: (level) => host.startGame(picker.getPlace() ?? null, { season: level }),
     } });
-    tabs = createTabs({ doc, root: $('menu'), storage: ls, params, onChange: () => requestAnimationFrame(() => picker.resize?.()) });
+    // Un repère de ville se touche comme sa carte de niveau (même chemin : niveau choisi, ou « ton niveau est déjà choisi »).
+    picker.setSeasonPinHandler?.((level) => doc.querySelector(`#fronts .front[data-level="${level}"]`)?.click());
+    // « À plusieurs » cadre les villes de la saison ; « Partie libre » ramène la carte au lieu choisi. Une fois la carte remise à la taille du
+    // nouveau panneau (resize recale ses marges, ce qui arrêterait un vol commencé avant).
+    tabs = createTabs({ doc, root: $('menu'), storage: ls, params, onChange: (name) => requestAnimationFrame(() => {
+      picker.resize?.();
+      if (name === 'libre') picker.recenter?.();
+      else picker.frameCities?.(framingOf(seasonUi.pins), { prefer: salon?.pick() ?? DEFAULT_FRONT });
+    }) });
     // L'état des lieux se relit tant que le menu est ouvert (au plus toutes les 30 s), les jours restants se remettent à l'heure.
-    setInterval(() => { if (!$('menu')?.classList.contains('hidden')) syncSeason(); }, 5000);
+    setInterval(() => { if ($('menu')?.classList.contains('hidden')) seasonUi.framed = false; else syncSeason(); }, 5000);
     syncMenu();
   }
 
@@ -172,7 +180,14 @@ export function createCityGame(host) {
       loaded: !!progress, failed: seasonUi.failed, fronts, clock: clockOf(progress?.season, Date.now()), summary: summaryOf(fronts), link, note,
       cta: ctaModel({ fronts, enrolled, pick: ctx.pick, signedIn: signedIn(), status, place: picker.getPlace(), loaded: !!progress }),
     });
-    picker.setSeasonCities?.(progress ? pinsOf(fronts) : []);
+    seasonUi.pins = progress ? pinsOf(fronts) : [];
+    picker.setSeasonCities?.(seasonUi.pins);
+    // Le menu s'ouvre sur « À plusieurs » : la carte montre d'office où sont les villes (une fois par ouverture du menu, et pas si le
+    // joueur a déjà bougé la carte).
+    if (seasonUi.pins.length && !seasonUi.framed && $('menu')?.dataset.tab === 'saison' && !$('menu').classList.contains('hidden')) {
+      seasonUi.framed = true;
+      picker.frameCities?.(framingOf(seasonUi.pins), { auto: true, prefer: salon?.pick() ?? DEFAULT_FRONT });
+    }
   }
   // Connexion ou déconnexion du compte : l'inscription et l'état des lieux sont relus tout de suite. Un joueur venu pour
   // rejoindre la saison (carte « Un compte pour la saison ») y est mis dès qu'il est connecté.
