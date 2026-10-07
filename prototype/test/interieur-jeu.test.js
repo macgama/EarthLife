@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { featuresFromBytes } from '../src/tiles.js';
 import {
-  createGrid, fillRings, BUILDING, FREE, fits, getAt, groundAt, isFree, lineFree, moveWithCollisions, ownerAt, INTERIOR_STEP,
+  createGrid, fillRings, BUILDING, FREE, canLeave, fits, getAt, groundAt, isFree, lineFree, moveWithCollisions, nearestFit, ownerAt, INTERIOR_STEP,
 } from '../src/collision.js';
 import { createPlayer, createZombieDirector, playerAttack } from '../src/game.js';
 import { gameplayModifiers, forcedWeather } from '../src/weather.js';
@@ -362,6 +362,104 @@ test("ouverture : la surcouche est posée, le plan et la vue sont ouverts, 'Entr
   assert.deepEqual(calls[0].slice(0, 2), ['open', plan.id]);
   assert.equal(game.isOpen(s), true);
   assert.equal(game.steerOf(s), s.interior.steer);
+});
+
+// « Entrer » est proposé jusqu'à 3,2 m de la porte : le joueur peut se tenir contre la façade, là où la grille d'origine (cases de 1 m,
+// rayon 0,4 m) le laisse aller, mais où le mur extérieur du plan (0,5 m) et la surcouche (rayon 0,3 m) le prennent dans le mur.
+// Chaque pas devant tenir en entier, il n'en sortirait plus : l'ouverture le pose au point le plus proche où il tient.
+const standingNearDoor = (world) => {
+  const { grid, plan, b } = world;
+  const door = plan.entry;
+  const closed = [], embedded = [];
+  const ov = overlayOf(plan, 0);
+  ov.owner = 1;
+  for (let dx = -3.2; dx <= 3.2; dx += 0.1) {
+    for (let dz = -3.2; dz <= 3.2; dz += 0.1) {
+      if (Math.hypot(dx, dz) > 3.2) continue;
+      const x = door.ox + dx, z = door.oz + dz;
+      grid.interior = undefined;
+      if (!fits(grid, x, z, 0.4)) continue;
+      // Seuls comptent les points où le joueur a pu marcher : une poche fermée de la grille d'origine l'enferme déjà, porte fermée.
+      if (!canLeave(grid, x, z, 0.4)) continue;
+      closed.push({ x, z });
+      grid.interior = ov;
+      if (!fits(grid, x, z, 0.4)) embedded.push({ x, z });
+    }
+  }
+  grid.interior = undefined;
+  return { closed, embedded, b };
+};
+
+test("ouverture : un joueur qui se tenait contre la façade n'est jamais pris dans le mur (il peut repartir)", () => {
+  let embeddedTotal = 0, checked = 0;
+  for (const world of worlds) {
+    const { embedded } = standingNearDoor(world);
+    embeddedTotal += embedded.length;
+    // Jusqu'à 40 points par bâtiment, répartis.
+    const stride = Math.max(1, Math.floor(embedded.length / 40));
+    const picks = embedded.filter((_, i) => i % stride === 0);
+    for (const at of picks) {
+      const { grid, plan, b } = world;
+      const director = createZombieDirector(grid, () => 0.5);
+      const s = {
+        store: { source: 'tiles', buildings: [b] }, grid, director, refuge: { base: null }, searchedLocal: new Set(), roomsLocal: new Map(),
+        player: createPlayer({ x: at.x, z: at.z }), actionMul: 1, interior: null, doorSeen: new Set(),
+      };
+      const view = { open: () => {}, close: () => {}, update: () => {}, dispose: () => {}, setDone: () => {} };
+      const game = createInteriorGame({ view, enabled: true, save: { searched: {} }, maxAge: 24 * 3600 * 1000, searchTime: 2.2 });
+      grid.interior = undefined;
+      assert.equal(game.open(s, 0), true);
+      const p = s.player;
+      const where = `${b.id} en (${at.x.toFixed(2)}, ${at.z.toFixed(2)})`;
+      assert.ok(fits(grid, p.x, p.z, 0.4), `${where} : le joueur tient après l'ouverture`);
+      assert.ok(Math.hypot(p.x - at.x, p.z - at.z) < 1, `${where} : déplacé de moins d'un mètre`);
+      assert.equal(labAt(plan, p.x, p.z), LAB.OUT, `${where} : reste dehors`);
+      // Et il repart : un pas franc de 12 cm passe dans un sens au moins, et un chemin le mène à 80 cm.
+      const moved = [[1, 0], [-1, 0], [0, 1], [0, -1], [0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]].some(([ux, uz]) => {
+        const r = moveWithCollisions(grid, { x: p.x, z: p.z }, ux * INTERIOR_STEP, uz * INTERIOR_STEP, 0.4);
+        return r.x !== p.x || r.z !== p.z;
+      });
+      assert.ok(moved, `${where} : il peut marcher`);
+      assert.ok(canLeave(grid, p.x, p.z, 0.4), `${where} : un chemin le mène à 80 cm`);
+      game.close(s, { instant: true });
+      checked++;
+    }
+  }
+  assert.ok(embeddedTotal >= 5 && checked >= 5, `${embeddedTotal} points pris dans le mur sans le correctif, ${checked} contrôlés`);
+});
+
+test("canLeave : une poche où l'on tient sans pouvoir bouger n'est pas une sortie", () => {
+  const grid = createGrid(20, 1);
+  // Libre : oui. Dans un mur : non.
+  assert.equal(canLeave(grid, 0, 0), true);
+  fillRings(grid, [[{ x: -5, z: -5 }, { x: 5, z: -5 }, { x: 5, z: 5 }, { x: -5, z: 5 }]], BUILDING);
+  assert.equal(canLeave(grid, 0, 0), false);
+  // Intérieur ouvert : une case libre de 0,7 m dans un mur plein (le disque de 0,3 m y tient, sans y avancer d'un pas) n'est pas une
+  // sortie ; une case de 3 m, si.
+  const pocket = (half) => {
+    const g = createGrid(20, 1);
+    g.interior = { minX: -3, maxX: 3, minZ: -3, maxZ: 3, floorY: 0, owner: 0, at: (x, z) => (Math.abs(x) < half && Math.abs(z) < half ? 0 : 1) };
+    return g;
+  };
+  assert.equal(fits(pocket(0.35), 0, 0, 0.4), true);
+  assert.equal(canLeave(pocket(0.35), 0, 0), false);
+  assert.equal(canLeave(pocket(1.5), 0, 0), true);
+});
+
+test("nearestFit : le point le plus proche où le disque tient, avec un filtre", () => {
+  const grid = createGrid(20, 1);
+  fillRings(grid, [[{ x: -5, z: -5 }, { x: 5, z: -5 }, { x: 5, z: 5 }, { x: -5, z: 5 }]], BUILDING);
+  // Libre : le point lui-même.
+  assert.deepEqual(nearestFit(grid, 12, 0), { x: 12, z: 0 });
+  // Dans le bâtiment, près du bord est : sort par l'est.
+  const out = nearestFit(grid, 4, 0);
+  assert.ok(out.x > 5 && fits(grid, out.x, out.z, 0.4) && Math.hypot(out.x - 4, out.z) < 2);
+  // Filtre : seulement à l'ouest, de l'autre côté du bâtiment (9,4 m plus loin), ou rien à portée de 8 m.
+  const far = nearestFit(grid, 4, 0, 0.4, { maxD: 12, accept: (x) => x < -5.4 });
+  assert.ok(far && far.x < -5.4);
+  assert.equal(nearestFit(grid, 4, 0, 0.4, { maxD: 8, accept: (x) => x < -5.4 }), null);
+  // Rien à portée : null.
+  assert.equal(nearestFit(grid, 0, 0, 0.4, { maxD: 1 }), null);
 });
 
 test("refuge du joueur : aucun intérieur (il garde ses règles)", () => {

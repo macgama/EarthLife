@@ -7,15 +7,31 @@ import {
 } from './interieur.js';
 import { markRoom, searchRooms, searchedWhole } from './save.js';
 import { buildingFloor } from './terrain.js';
-import { groundAt, lineFree, isFree } from './collision.js';
+import { groundAt, lineFree, isFree, canLeave, nearestFit } from './collision.js';
 
 // Ouvert sans y être entré : l'intérieur se referme au bout de 5 s, ou à 8 m de la porte.
 const IDLE_CLOSE = 5;
 const FAR_CLOSE = 8;
 
-// host : { view (interieur-view.js), enabled, save, maxAge (ms), searchTime (s), onClose(s, it) }
-export function createInteriorGame({ view, enabled, save, maxAge, searchTime, onClose = null }) {
+// host : { view (interieur-view.js), enabled, save, maxAge (ms), searchTime (s), onClose(s, it), radius (m, rayon du joueur) }
+export function createInteriorGame({ view, enabled, save, maxAge, searchTime, onClose = null, radius = 0.4 }) {
   const now = () => Date.now();
+
+  // L'ouverture et la fermeture changent les règles de collision sous les pieds du joueur : la grille d'origine (cases de 1 m, rayon
+  // 0,4 m) le laisse se tenir contre la façade, là où le mur extérieur du plan (0,5 m, rayon 0,3 m) le prend. Chaque pas devant tenir
+  // en entier, un joueur pris dans un mur (ou dans une poche d'où aucun pas ne passe) n'en sortirait plus : il est posé au point le
+  // plus proche où il tient et peut repartir (dehors de préférence), sans vitesse. `plan` : le plan dont la règle vient de changer.
+  function unstick(s, plan) {
+    const p = s.player;
+    if (!p || canLeave(s.grid, p.x, p.z, radius)) return;
+    const outside = (x, z) => labAt(plan, x, z) === LAB.OUT;
+    const q = nearestFit(s.grid, p.x, p.z, radius, { accept: outside }) ?? nearestFit(s.grid, p.x, p.z, radius);
+    if (!q) return;
+    p.x = q.x;
+    p.z = q.z;
+    p.vx = 0;
+    p.vz = 0;
+  }
 
   // Plan du bâtiment, ou null : désactivé, refuge du joueur (inchangé), sans porte ou trop petit.
   function planOf(s, b) {
@@ -89,6 +105,7 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
       steer: (zb, player) => steerZombie(plan, zb, player, (x0, z0, x1, z1) => lineFree(s.grid, x0, z0, x1, z1, 0.5)),
     };
     s.interior = it;
+    unstick(s, plan);
     return true;
   }
 
@@ -118,6 +135,7 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
     if (!it) { if (instant) view.dispose(); return; }
     s.interior = null;
     s.grid.interior = undefined;
+    unstick(s, it.plan);
     evict(s, it);
     view.close({ instant });
     onClose?.(s, it);
@@ -136,6 +154,7 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
           if (it.idle > IDLE_CLOSE || (door && Math.hypot(p.x - door.x, p.z - door.z) > FAR_CLOSE)) close(s);
         }
       } else if (outsideBuilding(it.plan, p.x, p.z)) close(s);
+      if (s.interior === it) unstick(s, it.plan);
     }
     view.update(dt, { time, reduceMotion });
   }
