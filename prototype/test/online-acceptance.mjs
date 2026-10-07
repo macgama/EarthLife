@@ -403,7 +403,23 @@ async function face(t, ll, pitch = 0.6) {
   await ev(t, ([p, pitch]) => { const s = window.__earthlife.session; s.cameraYaw = Math.atan2(p.x - s.player.x, p.z - s.player.z); s.cameraPitch = pitch; }, [p, pitch]);
 }
 const press = (t, key, id) => (t.device === mobile ? t.page.tap(`#${id}`) : t.page.keyboard.press(key));
-const click = (t, sel) => (t.device === mobile ? t.page.tap(sel) : t.page.click(sel));
+// Téléphone : la feuille du menu est repliée sur l'essentiel (compte, options et aide sont cachés) ; une cible cachée par ce
+// repli déplie d'abord la feuille, comme le ferait le joueur avec « Plus de détails ».
+async function openSheetFor(t, sel) {
+  const need = await ev(t, (q) => {
+    const e = document.querySelector(q), m = document.getElementById('menu');
+    const hidden = !e || e.getClientRects().length === 0 || getComputedStyle(e).visibility === 'hidden';
+    return hidden && !!m && !m.classList.contains('hidden') && m.dataset.sheet === 'peek';
+  }, sel);
+  if (!need) return;
+  await t.page.tap('#sheet-handle');
+  await t.page.waitForFunction(() => document.getElementById('menu')?.dataset.sheet === 'open', null, { timeout: 5000 });
+}
+const click = async (t, sel) => {
+  if (t.device !== mobile) return t.page.click(sel);
+  await openSheetFor(t, sel);
+  return t.page.tap(sel);
+};
 // Images par seconde de la page pendant 3 s (requestAnimationFrame).
 const fpsOf = (t) => ev(t, () => new Promise((resolve) => {
   let n = 0;
