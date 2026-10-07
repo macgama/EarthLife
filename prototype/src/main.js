@@ -426,6 +426,8 @@ let cardInfo = null; // { blocking, escape, onButton } de la carte affichée
 const panel = createRefugePanel(document.body, { onAction: (action, arg) => onPanelAction(action, arg) });
 // Téléphone, en portrait ou à l'horizontale : panneau ouvert, « Sortir » et « Dormir » sont en pied de panneau.
 const phoneLayout = window.matchMedia('(max-width: 759px), (max-height: 500px) and (orientation: landscape)');
+// Feuille basse du refuge (téléphone, tablette en portrait) : elle porte déjà Dormir, Sortir et Missions.
+const sheetLayout = window.matchMedia('(max-width: 759px), (max-height: 500px) and (orientation: landscape), (min-width: 760px) and (max-width: 1023px) and (orientation: portrait)');
 // Carte des environs (src/minimap.js) : dans le coin du HUD, avec les boutons de zoom ; temps par image (debug.perf).
 const minimap = createMinimap({
   hud: $('hud'), box: $('mapbox'), button: $('minimap'), canvas: $('minimap-canvas'), zoomBtns: document.querySelector('#mapbox .zoom-btns'),
@@ -2177,7 +2179,7 @@ function hudInfo(s) {
     const busy = { label: a.label, icon: a.icon, busy: true, progress: a.t / a.time };
     if (a.slot === 'secondary') secondary = busy;
     else primary = busy;
-  } else if (!(phoneLayout.matches && panel.isOpen() && !panel.isFolded())) {
+  } else if (!(sheetLayout.matches && panel.isOpen() && !panel.isFolded())) {
     const m = s.menu;
     if (m?.primary) primary = { label: m.primary.label, icon: actionIcon(m.primary) };
     if (m?.secondary) secondary = { label: m.secondary.label, icon: actionIcon(m.secondary), off: !!m.secondary.off };
