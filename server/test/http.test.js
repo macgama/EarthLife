@@ -365,10 +365,15 @@ test('GET /v1/health, GET /, 404, 405 et en-têtes de la section 6.2', async () 
     assert.equal(h.invite, false);
     assert.equal(h.online, 0);
     assert.ok(Math.abs(h.now - Date.now()) < 5000);
-    const root = await fetch(`${srv.url}/`);
-    assert.equal(root.status, 200);
+    // La racine renvoie vers le jeu publié (302, rien retenu) ; le texte sert à qui ne suit pas la redirection.
+    const root = await fetch(`${srv.url}/`, { redirect: 'manual' });
+    assert.equal(root.status, 302);
+    assert.equal(root.headers.get('location'), 'https://macgama.github.io/EarthLife/');
     assert.match(root.headers.get('content-type'), /^text\/plain/);
-    assert.equal((await root.text()).split('\n').filter(Boolean).length, 1);
+    const rootText = await root.text();
+    assert.equal(rootText.split('\n').filter(Boolean).length, 1);
+    assert.ok(rootText.includes('https://macgama.github.io/EarthLife/'));
+    assert.equal((await fetch(`${srv.url}/`, { method: 'HEAD', redirect: 'manual' })).status, 302);
     for (const p of ['/v1/autre', '/v1/health/x', '/__test/log', '/v1/ws']) {
       const r = await fetch(srv.url + p);
       assert.equal(r.status, 404, p);

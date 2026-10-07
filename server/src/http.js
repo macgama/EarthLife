@@ -9,6 +9,8 @@ import { ACCOUNT_RULES } from '../../prototype/src/net/account.js';
 import { SEASON_RULES } from './season.js';
 
 const MAX_BODY = RULES.maxBody;
+// Le jeu publié (GitHub Pages) : où la racine du serveur renvoie.
+const GAME_URL = 'https://macgama.github.io/EarthLife/';
 // Routes des comptes → compteur (counts.account ou counts.save).
 const ACCOUNT_ROUTES = new Map([
   ...['code', 'verify', 'login', 'me', 'password', 'logout', 'delete', 'export'].map((r) => [`/v1/account/${r}`, 'account']),
@@ -235,7 +237,9 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
       if (get ? req.method !== 'GET' && req.method !== 'HEAD' : req.method !== 'POST') {
         return reply(req, res, 405, { ok: false }, { Allow: get ? 'GET, HEAD' : 'POST' });
       }
-      if (route === 'root') return reply(req, res, 200, 'EarthLife : serveur du jeu à plusieurs.\n');
+      // La racine est l'adresse du serveur, que le jeu utilise en coulisse : qui l'ouvre à la main est renvoyé vers le jeu
+      // (302 : rien n'est retenu par les navigateurs) ; le texte sert à ceux qui ne suivent pas la redirection.
+      if (route === 'root') return reply(req, res, 302, `EarthLife : serveur du jeu à plusieurs. Le jeu : ${GAME_URL}\n`, { Location: GAME_URL });
       if (route === 'health') {
         counts.health++;
         return reply(req, res, 200, room.health());
