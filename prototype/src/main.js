@@ -244,6 +244,9 @@ function homeLatLon() {
   return save.base ? { lat: save.base.lat, lon: save.base.lon } : null;
 }
 
+// Drapeau de session posé par « Reprendre ici » en partie : la page rechargée relance la partie au lieu d'ouvrir le menu.
+const RESUME_KEY = 'earthlife.reprise';
+
 // Adresse de la page sans un paramètre (fresh), pour l'historique et les rechargements.
 function urlWithout(name) {
   const u = new URL(location.href);
@@ -488,7 +491,18 @@ window.addEventListener('keydown', (e) => {
   if (cardInfo?.blocking) pressCard(cardInfo.escape);
   else hideCard();
 });
+// Après « Reprendre ici » en partie : le drapeau de session est lu une seule fois ; sans lieu retenu, retour au menu.
+const resumeAfterTakeOver = (() => {
+  try {
+    const v = sessionStorage.getItem(RESUME_KEY);
+    sessionStorage.removeItem(RESUME_KEY);
+    return v === '1';
+  } catch {
+    return false;
+  }
+})();
 if (params.get('autostart') === '1') startGame(picker.getPlace() ?? placeFromCity(CITIES[0]));
+else if (resumeAfterTakeOver && picker.getPlace()) startGame(picker.getPlace());
 else picker.show();
 
 function toMenu() {
@@ -2477,17 +2491,29 @@ function otherPageLine() {
   return `L'autre page a sauvegardé il y a ${ms < 60000 ? `${Math.round(ms / 1000)}\u00a0s` : durationLabel(ms)}.`;
 }
 
+// Carte en partie : « Reprendre ici » relit la sauvegarde, recharge la page et relance la partie tout de suite (RESUME_KEY) ;
+// « Jouer sans sauvegarder » garde cet écran, sans rien enregistrer.
 function showTakeOverCard() {
   showCard({
-    title: 'Sauvegarde', tone: 'warn', lines: [SAVE_MESSAGES.otherTab, otherPageLine()].filter(Boolean),
-    buttons: [{ id: 'take', label: SAVE_MESSAGES.takeOver, primary: true }, { id: 'close', label: 'Fermer' }],
-  }, (id) => { if (id === 'take') takeOver(); }, { escape: 'close' });
+    title: 'Partie ouverte ailleurs', tone: 'warn',
+    lines: [
+      ['Cette partie est ouverte dans un autre onglet.', otherPageLine()].filter(Boolean).join(' '),
+      'Reprendre ici : tu continues avec la partie sauvegardée, l\'autre onglet s\'arrête.',
+      'Jouer sans sauvegarder : rien n\'est enregistré tant que tu restes ainsi.',
+    ],
+    buttons: [{ id: 'take', label: SAVE_MESSAGES.takeOver, primary: true }, { id: 'close', label: 'Jouer sans sauvegarder' }],
+  }, (id) => { if (id === 'take') takeOver({ resume: true }); }, { escape: 'close' });
 }
 
-// « Reprendre ici » : relit la sauvegarde, reprend la main et recharge la page.
-function takeOver() {
+// « Reprendre ici » : relit la sauvegarde, reprend la main et recharge la page. `resume` (carte en partie) : la page
+// rechargée relance aussitôt la partie, sans repasser par le menu.
+function takeOver({ resume = false } = {}) {
   const res = saveStore.takeOver();
-  if (res.ok) { reloadClean(); return; }
+  if (res.ok) {
+    if (resume) { try { sessionStorage.setItem(RESUME_KEY, '1'); } catch { /* sans stockage de session : retour au menu */ } }
+    reloadClean();
+    return;
+  }
   const why = res.error ?? saveStore.reason ?? 'Reprise impossible';
   if (session && !$('hud').classList.contains('hidden')) toast(why, 5, 'danger');
   renderSaveLine();
