@@ -195,6 +195,51 @@ export function fits(grid, x, z, r = 0.4) {
   );
 }
 
+// Le disque de rayon `r` posé en (x, z) peut-il s'éloigner d'au moins `reach` m par des pas de `step` m qui tiennent chacun ? Écarte
+// les poches où l'on tient mais d'où aucun pas ne passe (façade contre un voisin, angle de la surcouche d'un intérieur).
+export function canLeave(grid, x, z, r = 0.4, reach = 0.8, step = 0.1) {
+  if (!fits(grid, x, z, r)) return false;
+  const n = Math.ceil(reach / step);
+  // Sens francs d'abord : en terrain dégagé, un seul suffit.
+  for (const [ux, uz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    let k = 1;
+    while (k <= n && fits(grid, x + ux * k * step, z + uz * k * step, r)) k++;
+    if (k > n) return true;
+  }
+  // Sinon, recherche en largeur sur le quadrillage de `step` m (couloirs coudés, portes).
+  const seen = new Set(['0,0']);
+  const queue = [[0, 0]];
+  for (let q = 0; q < queue.length && queue.length < 2000; q++) {
+    const [i, j] = queue[q];
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const a = i + di, b = j + dj, key = `${a},${b}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!fits(grid, x + a * step, z + b * step, r)) continue;
+      if (Math.hypot(a, b) * step >= reach) return true;
+      queue.push([a, b]);
+    }
+  }
+  return false;
+}
+
+// Point le plus proche (couronnes de `step` m, jusqu'à `maxD` m) où le disque de rayon `r` tient et peut repartir (canLeave), ou
+// null. `accept(x, z)` filtre en plus. Sert à dégager le joueur quand l'ouverture ou la fermeture d'un intérieur change les règles
+// sous ses pieds : chaque pas de moveWithCollisions doit tenir en entier, un joueur pris dans un mur ne pourrait plus en sortir.
+export function nearestFit(grid, x, z, r = 0.4, { maxD = 2, step = 0.05, accept = null } = {}) {
+  const ok = (px, pz) => canLeave(grid, px, pz, r) && (!accept || accept(px, pz));
+  if (ok(x, z)) return { x, z };
+  for (let d = step; d <= maxD + 1e-9; d += step) {
+    const n = Math.max(8, Math.ceil((2 * Math.PI * d) / step));
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * Math.PI * 2;
+      const px = x + Math.cos(a) * d, pz = z + Math.sin(a) * d;
+      if (ok(px, pz)) return { x: px, z: pz };
+    }
+  }
+  return null;
+}
+
 // Déplace un cercle de rayon `r` en glissant le long des obstacles.
 export function moveWithCollisions(grid, pos, dx, dz, r = 0.4) {
   const ok = (x, z) => fits(grid, x, z, r);
