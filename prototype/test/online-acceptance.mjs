@@ -1,5 +1,5 @@
 // Scénarios Playwright du jeu à plusieurs (spec 9.3, O1 à O21) et du compte facultatif (spécification des comptes 7.3,
-// O22 à O27), soit O1 à O27, hors ligne : A sur ordinateur (1280 × 800) et B sur téléphone (390 × 844), près de la
+// O22 à O27) et du salon du menu (O28), soit O1 à O28, hors ligne : A sur ordinateur (1280 × 800) et B sur téléphone (390 × 844), près de la
 // place Bellecour, contre le faux serveur lancé dans ce processus (server/dev.mjs : vrai cœur, magasin en mémoire,
 // /__test/log, comptes avec la fausse boîte aux lettres), avec le choix « on » déjà rangé ; puis d'autres contextes
 // pour le repli HTTP (C), les deux onglets (D), la maintenance (E, F), le jeu seul (G, H) et le compte (K, L, M).
@@ -70,7 +70,7 @@ await new Promise((r) => web.listen(GAME_PORT, '127.0.0.1', r));
 const ORIGIN = `http://127.0.0.1:${web.address().port}`;
 const devServer = (port) => startDevServer({ port, store: 'memory', dev: true, bots: 0, origins: [ORIGIN] });
 let srv = await devServer(SRV_PORT);
-const BASE = `${ORIGIN}/index.html?lat=45.7578&lon=4.832&autostart=1&time=day&debug=1`;
+const BASE = `${ORIGIN}/index.html?lat=45.7578&lon=4.832&autostart=1&time=day&debug=1&menu=libre`;
 const URL_ON = `${BASE}&server=http://127.0.0.1:${srv.port}`;
 // Position simulée de B pour « Autour de moi » (O9) : place Bellecour, arrondie par le jeu à 45.758, 4.832.
 const GPS = { lat: 45.75792, lon: 4.83204 };
@@ -1716,7 +1716,7 @@ const ACC_TEXT = {
   deleted: 'Compte supprimé. Ta partie reste sur cet appareil.',
   conflict: 'Deux parties différentes',
 };
-const accUrl = () => `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&server=http://127.0.0.1:${srv.port}`;
+const accUrl = () => `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&menu=libre&server=http://127.0.0.1:${srv.port}`;
 const tokKey = () => `earthlife.online.v1@http://127.0.0.1:${srv.port}`;
 const accKey = () => `earthlife.account.v1@http://127.0.0.1:${srv.port}`;
 let K = null, L = null, M = null;
@@ -2090,6 +2090,64 @@ await scenario('O27', 'suppression', async () => {
 });
 // K, L et M fermés même si un scénario a échoué (violations relevées pour O19).
 for (const t of [K, L, M]) await closeAcc(t);
+
+// =====================================================================================================
+// O28 : salon du menu : onglet « À plusieurs » d'office, trois fronts, un seul bouton ; niveau et onglet retenus ;
+// « Partie libre » rend le menu d'avant ; sans compte, le bouton ouvre la carte « Un compte pour la saison »
+// =====================================================================================================
+await scenario('O28', 'salon du menu', async () => {
+  const N = await open('N (ordinateur, salon du menu)', desktop, `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&server=http://127.0.0.1:${srv.port}`, { waitGame: false });
+  const view = () => ev(N, () => {
+    const $ = (id) => document.getElementById(id);
+    const shown = (el) => !!el && !!(el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden';
+    const fronts = [...document.querySelectorAll('#fronts .front')];
+    return {
+      tab: $('menu').dataset.tab, fronts: fronts.length, checked: fronts.filter((f) => f.getAttribute('aria-checked') === 'true').map((f) => f.dataset.level),
+      names: fronts.map((f) => f.querySelector('.front-name')?.textContent), cta: $('salon-cta-label')?.textContent ?? null, ctaShown: shown($('salon-cta')),
+      play: shown($('play')), tabs: shown($('menu-tabs')), days: $('salon-days')?.textContent ?? '', card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null,
+      scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth,
+      link: $('salon-link-text')?.textContent ?? null, note: $('salon-note')?.hidden === false ? $('salon-note').textContent : null,
+    };
+  });
+  const seen = async (pred, timeout = 30000) => {
+    const t0 = Date.now();
+    let v = null;
+    while (Date.now() - t0 < timeout) {
+      v = await view().catch(() => null);
+      if (v && pred(v)) return { ok: true, v };
+      await wait(250);
+    }
+    return { ok: false, v };
+  };
+  const first = await seen((v) => v.fronts === 3 && v.cta && v.days);
+  check(first.ok && first.v.tab === 'saison' && first.v.tabs && first.v.ctaShown && !first.v.play, `N : menu sur « À plusieurs » (${JSON.stringify(first.v)})`);
+  check(first.ok && first.v.names.join('|') === 'Facile|Moyen|Difficile' && first.v.cta === 'Rejoindre · Facile' && first.v.checked.join() === 'facile', `N : trois fronts, bouton « ${first.v?.cta} »`);
+  check(first.ok && /^\d+ jours? restants?$/.test(first.v.days), `N : jours restants « ${first.v?.days} »`);
+  await shot(N, 'o28-ordi-salon');
+  await click(N, '#fronts .front[data-level="moyen"]');
+  const moyen = await seen((v) => v.cta === 'Rejoindre · Moyen');
+  check(moyen.ok && moyen.v.checked.join() === 'moyen', `N : « Moyen » touché, bouton « ${moyen.v?.cta} »`);
+  await N.page.reload();
+  const again = await seen((v) => v.fronts === 3 && v.cta);
+  check(again.ok && again.v.tab === 'saison' && again.v.cta === 'Rejoindre · Moyen', `N : après rechargement, onglet et niveau retenus (« ${again.v?.cta} »)`);
+  // Partie libre : le menu d'avant, sans bouton du salon ; l'onglet reste choisi au rechargement.
+  await click(N, '#menu-tabs [data-tab="libre"]');
+  const libre = await seen((v) => v.tab === 'libre' && v.play && !v.ctaShown);
+  check(libre.ok, `N : « Partie libre » : « Jouer ici » visible, bouton du salon caché (${JSON.stringify(libre.v)})`);
+  await shot(N, 'o28-ordi-libre');
+  await N.page.reload();
+  const kept = await seen((v) => v.tab === 'libre' && v.play);
+  check(kept.ok, 'N : après rechargement, « Partie libre » reste ouverte');
+  // Sans compte : le bouton du salon ne lance rien, il propose d'ouvrir un compte.
+  await click(N, '#menu-tabs [data-tab="saison"]');
+  await seen((v) => v.tab === 'saison' && v.ctaShown);
+  await click(N, '#salon-cta');
+  const ask = await seen((v) => v.card === 'Un compte pour la saison', 15000);
+  check(ask.ok, `N : sans compte, carte « ${ask.v?.card} »`);
+  await shot(N, 'o28-ordi-compte');
+  check(ask.v && ask.v.scrollW <= ask.v.innerW, `N : pas de défilement horizontal (${ask.v?.scrollW} / ${ask.v?.innerW})`);
+  await closeCtx(N);
+});
 
 // =====================================================================================================
 // O19 : toute la séance : aucune erreur de console, aucune exception, aucune violation de la politique de

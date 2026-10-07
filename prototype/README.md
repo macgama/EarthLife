@@ -10,6 +10,8 @@ Le document de game design qui fixe ce périmètre : https://claude.ai/code/arti
 
 Le menu est une carte du monde : on cherche une ville, un village ou une adresse (ou « Autour de moi »), on peut aussi toucher n'importe quel point de la carte, puis « Jouer ici ». Le dernier lieu choisi est retenu sur l'appareil. Avec un refuge, un lieu à 1,5 km ou moins de lui ramène à sa porte (« Rentrer au refuge »), un lieu plus loin part en expédition (« Partir en expédition ici ») ; une ligne sous celle du refuge le dit, avec comment changer de refuge (en jeu, « Déménager ici »), et « Voir mon refuge » recentre la carte sur lui.
 
+**Le salon du menu.** Quand le jeu à plusieurs est possible, le menu s'ouvre sur l'onglet « À plusieurs » (l'onglet « Partie libre » garde le menu d'avant, avec « Jouer ici »). Sa bannière donne la saison et les jours restants, puis les survivants en ligne, les villes désinfectées et les zombies restants ; trois cartes (Facile, Moyen, Difficile) disent la ville de chaque niveau, son état (en cours, cœur du foyer, désinfectée), la part de zombies éliminée, les habitants sauvés et les survivants en ligne ; un seul gros bouton en bas, « Rejoindre · Facile » (ou « Reprendre · Moyen » une fois inscrit), lance la partie de la saison. Les villes dont le serveur donne la position sont repérées sur la carte du menu. Le serveur n'est pas interrogé si le joueur a choisi de jouer seul ; s'il est en panne ou bloqué (maintenance, mise à jour, code d'invitation), la bannière le dit et la partie libre reste possible. L'onglet et le niveau choisis sont retenus sur l'appareil ; `?menu=libre` ou `?menu=saison` impose l'onglet pour une visite (les tests d'acceptation prennent `libre`). Règles pures et tests dans `src/salon.js` et `test/salon.test.js`.
+
 Le monde se construit au fil de la marche : rues, bâtiments, eau, parcs et arbres apparaissent dans un rayon d'environ 110 m autour du personnage, par carrés de 64 m, les plus proches d'abord. Ce qui s'éloigne est démonté pour garder le jeu fluide sur mobile. Les données arrivent par tuiles vectorielles d'environ 1,7 km de côté, demandées 600 m à l'avance.
 
 Chaque tuile téléchargée est gardée dans le cache de l'appareil : revenir dans un quartier déjà visité ne télécharge plus rien. Le cache est vidé automatiquement quand OpenFreeMap publie une nouvelle version de la carte. Une base partagée entre joueurs (ce que les joueurs construisent ou changent) viendra plus tard.
@@ -170,6 +172,7 @@ Les réponses du réseau viennent de `test/fixtures/offline-routes.mjs` : de vra
 ## Organisation
 
 - `src/picker.js` : carte du monde du menu, recherche et choix du lieu
+- `src/salon.js` : salon du menu (état des lieux de la saison, onglets, bouton unique), modèles purs et branchement sur les éléments
 - `src/tiles.js`, `src/mvt.js`, `src/tile-worker.js` : téléchargement, cache et lecture des tuiles vectorielles
 - `src/world.js` : monde du joueur (bâtiments, lieux, butin), chargement des tuiles au fil de la marche
 - `src/chunks.js` : construction et démontage des carrés de 64 m autour du joueur
