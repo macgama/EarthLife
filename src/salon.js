@@ -121,6 +121,19 @@ export function pinsOf(fronts) {
   }));
 }
 
+// Cadrage de la carte du menu sur ces repères : la ville du niveau touché, ou toutes les villes ensemble ; null s'il n'y a rien à montrer
+// (aucun repère, ou niveau sans ville : la carte ne bouge pas).
+export function framingOf(pins, level = null) {
+  const list = Array.isArray(pins) ? pins : [];
+  if (level) {
+    const one = list.find((p) => p.level === level);
+    return one ? { kind: 'city', level, lat: one.lat, lon: one.lon } : null;
+  }
+  if (!list.length) return null;
+  if (list.length === 1) return { kind: 'city', level: list[0].level, lat: list[0].lat, lon: list[0].lon };
+  return { kind: 'all', points: list.map((p) => ({ level: p.level, lat: p.lat, lon: p.lon })) };
+}
+
 // ---------- DOM ----------
 
 const setText = (el, text) => { if (el && el.textContent !== text) el.textContent = text; };
