@@ -262,9 +262,11 @@ test('style : classes en rp-, cibles tactiles de 44 px, jetons du guide avec rep
   }
   assert.match(PANEL_CSS, /\.rp-fold \{[^}]*min-height: 56px/);
   assert.match(PANEL_CSS, /\.rp-cbtn \{[^}]*min-height: 48px/);
-  // Feuille basse de 60vh sur téléphone, tiroir de 420 px sur ordinateur.
-  assert.match(PANEL_CSS, /@media \(max-width: 759px\) \{\s*\.rp-panel \{[^}]*height: 60vh; height: 60dvh;/);
-  assert.match(PANEL_CSS, /@media \(min-width: 760px\) \{\s*\.rp-panel \{[^}]*width: min\(420px, 100vw\)/);
+  // Feuille basse de 60vh sur téléphone et sur tablette en portrait (56 %, centrée sur 640 px), tiroir de 420 px sur
+  // ordinateur et tablette à l'horizontale.
+  assert.match(PANEL_CSS, /@media \(max-width: 759px\), \(min-width: 760px\) and \(max-width: 1023px\) and \(orientation: portrait\) \{\s*\.rp-panel \{[^}]*height: 60vh; height: 60dvh;/);
+  assert.match(PANEL_CSS, /@media \(min-width: 1024px\), \(min-width: 760px\) and \(orientation: landscape\) \{\s*\.rp-panel \{[^}]*width: min\(420px, 100vw\)/);
+  assert.match(PANEL_CSS, /@media \(min-width: 760px\) and \(max-width: 1023px\) and \(orientation: portrait\) \{\s*\.rp-panel \{[^}]*height: 56vh; height: 56dvh;/);
   assert.match(PANEL_CSS, /body\.panel-open #controls \{ display: none !important; \}/);
   // Couleurs : jetons du guide, l'hexadécimal n'apparaît qu'en valeur de repli d'un var().
   assert.doesNotMatch(stripVars(PANEL_CSS), /#[0-9a-f]{3,6}\b/i);
@@ -372,12 +374,21 @@ test('téléphone : la poignée est un vrai bouton qui replie la feuille, au-des
   assert.match(head, /class="rp-icon-btn rp-close" data-ui="close"/);
   // Cachée sur ordinateur ; sur téléphone, tout l'en-tête (60 px), trait de 36 × 4 px dessiné en haut.
   assert.match(PANEL_CSS, /^\.rp-handle \{ display: none; \}/m);
-  const phone = /@media \(max-width: 759px\) \{([\s\S]*?)\n\}/.exec(PANEL_CSS)[1];
+  const phone = /@media \(max-width: 759px\), [^{]*\{([\s\S]*?)\n\}/.exec(PANEL_CSS)[1];
   assert.match(phone, /\.rp-handle \{ display: block; position: absolute; inset: 0; z-index: 0;[^}]*min-height: var\(--touch, 44px\)/);
   assert.match(phone, /\.rp-handle::before \{[^}]*width: 36px; height: 4px;/);
   assert.match(phone, /\.rp-head \.rp-icon-btn \{ position: relative; z-index: 1; \}/);
   assert.doesNotMatch(PANEL_CSS, /\.rp-head::before/);
   assert.match(PANEL_CSS, /\.rp-head \{ position: relative;/);
+});
+
+test('téléphone : en-tête sur deux lignes au plus, pied en trois colonnes égales sans icône', () => {
+  const phone = /@media \(max-width: 759px\), [^{]*\{([\s\S]*?)\n\}/.exec(PANEL_CSS)[1];
+  assert.match(phone, /\.rp-title \{[^}]*-webkit-line-clamp: 2;/);
+  assert.match(phone, /\.rp-perk \{[^}]*-webkit-line-clamp: 1;/);
+  assert.match(phone, /\.rp-foot-actions \{ display: grid; grid-auto-flow: column; grid-auto-columns: minmax\(0, 1fr\);/);
+  assert.match(phone, /\.rp-foot-actions \.rp-btn svg \{ display: none; \}/);
+  assert.match(phone, /\.rp-foot-actions \.rp-why \{[^}]*-webkit-line-clamp: 2;/);
 });
 
 test('Défense : ligne « Changer de refuge » en tête, sous la ligne de nuit, échappée, absente en alerte ou sans texte', () => {

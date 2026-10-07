@@ -1309,7 +1309,9 @@ async function mapMarker(page, kind, want = 'any', timeout = 3000) {
   return st ?? mapState(page);
 }
 
-// État attendu au 13.5, avec le leurre puis sans : [coin, côté (px), boutons], ou null quand la carte est masquée.
+// État attendu au 13.5, avec le leurre puis sans : [coin, côté (px), boutons, étape ('plein' par défaut)], ou null quand la
+// carte est masquée. Téléphone en portrait : la carte fait 96 px (88 sous 380 px de large) dans la colonne de droite ; quand
+// le sac, leurre compris, monte jusqu'à elle, le garde-fou retire d'abord les boutons, puis réduit la carte (× 0,75).
 // besideBag : téléphone étroit à l'horizontale, carte à gauche de la grille du sac.
 const MAP_LAYOUTS = {
   desktop: [
@@ -1318,11 +1320,11 @@ const MAP_LAYOUTS = {
     { width: 768, height: 1024, lure: ['bas-gauche', 152, true], none: ['bas-gauche', 152, true] },
   ],
   mobile: [
-    { width: 390, height: 844, lure: ['haut-droite', 120, true], none: ['haut-droite', 120, true] },
+    { width: 390, height: 844, lure: ['haut-droite', 96, true], none: ['haut-droite', 96, true] },
     // Hauteurs visibles sous les barres du navigateur : iPhone 12 à 15 dans Safari (390 × 664), petit Android (360 ×
     // 640), iPhone SE (375 × 553, la carte n'a pas la place au-dessus du plus haut toast).
-    { width: 390, height: 664, lure: ['haut-droite', 72, false], none: ['haut-droite', 72, true] },
-    { width: 360, height: 640, lure: ['haut-droite', 64, false], none: ['haut-droite', 64, false] },
+    { width: 390, height: 664, lure: ['haut-droite', 96, false, 'sans-boutons'], none: ['haut-droite', 96, true] },
+    { width: 360, height: 640, lure: ['haut-droite', 66, false, 'reduite'], none: ['haut-droite', 88, false, 'sans-boutons'] },
     { width: 375, height: 553, lure: null, none: null },
     { width: 844, height: 390, lure: ['haut-droite', 128, true], none: ['haut-droite', 128, true] },
     { width: 667, height: 375, lure: null, none: ['haut-droite', 88, false], besideBag: true },
@@ -1378,6 +1380,7 @@ const mapLayout = (page) => ev(page, () => {
   const btn = vis(document.querySelector('#mapbox .zoom-btns .small'));
   return {
     st, parts, others, map: vis(document.getElementById('minimap')), vitals: vis(document.getElementById('vitals')), inv: vis(document.getElementById('inventory')),
+    horde: vis(document.getElementById('horde-banner')),
     edge: { left: hr.left + parseFloat(pad.paddingLeft), right: hr.right - parseFloat(pad.paddingRight), bottom: hr.bottom - parseFloat(pad.paddingBottom) },
     btn: btn ? Math.round(btn.right - btn.left) : 0,
   };
@@ -1402,12 +1405,17 @@ async function mapCorners(page, device, tag) {
         const box = m.parts[0];
         if (lay.besideBag) where = !!m.inv && m.map.right <= m.inv.left && m.inv.left - m.map.right <= 10;
         else if (want[0] === 'bas-gauche') where = near(box.left, m.edge.left, 2) && near(box.bottom, m.edge.bottom, 2);
-        // Haut-droite : juste sous les jauges, dans leur colonne (calée à droite, ou à gauche quand l'écran est bas).
-        else where = !!m.vitals && box.top >= m.vitals.bottom && box.top - m.vitals.bottom <= 12 && box.left >= m.vitals.left - 1 && box.right <= m.edge.right + 1;
+        // Haut-droite : juste sous la bande de l'état (et le bandeau de horde quand il est là), calée à droite.
+        else {
+          // Le bandeau de horde ne compte que s'il est dans la grille, pleine largeur (portrait) ; à l'horizontale il est au centre.
+          const full = m.horde && m.horde.right - m.horde.left >= 0.9 * (m.edge.right - m.edge.left);
+          const above = Math.max(m.vitals?.bottom ?? 0, full ? m.horde.bottom : 0);
+          where = !!m.vitals && box.top >= above && box.top - above <= 12 && box.left >= m.vitals.left - 1 && box.right <= m.edge.right + 1;
+        }
       }
       const got = m.st.visible ? `${m.st.corner}, ${m.st.size} px, ${m.st.buttons ? `boutons${touch ? ` de ${m.btn} px` : ''}` : 'sans boutons'}, étape ${m.st.step}` : `masquée (${m.st.step})`;
       const ok = want
-        ? m.st.visible && m.st.corner === want[0] && m.st.size === want[1] && m.st.buttons === want[2] && m.st.step === 'plein' && (!touch || !want[2] || m.btn >= 44) && where
+        ? m.st.visible && m.st.corner === want[0] && m.st.size === want[1] && m.st.buttons === want[2] && m.st.step === (want[3] ?? 'plein') && (!touch || !want[2] || m.btn >= 44) && where
         : !m.st.visible;
       check(ok && !hits.length,
         `${tag} 13.5 : ${lay.width}×${lay.height} ${lure ? 'avec' : 'sans'} leurre : ${got}${want ? (where ? ', dans son coin' : ', hors de son coin') : ''}, aucun chevauchement${hits.length ? ` : ${hits.join(', ')}` : ''}`);
