@@ -1575,9 +1575,10 @@ await scenario('O9', 'B part « Autour de moi », marche 60 s dans la zone puis 
   const withF = fA.filter((f) => f.m.f.length > 0).length;
   const named = fA.filter((f) => f.m.p.some((e) => e[5] !== 0)).length;
   check(arrows.every((x) => / : 0$/.test(x)) && withF === 0, `A : aucune flèche vers B en couronne (${arrows.join(', ')}), ${withF} instantané avec f sur ${fA.length}`);
-  // Caméra de A tournée vers B et abaissée (comme en O1) : l'étiquette est à l'écran.
+  // Caméra de A tournée vers B et abaissée (comme en O1) : l'étiquette est à l'écran. Attente de 30 s : sous swiftshader, la
+  // position de B arrive parfois plus de 10 s après la marche de A (O9 rouge au premier passage sur main, vert à la relance).
   await face(A, await where(B));
-  const labs = (await until(A, () => { const l = window.__earthlife.othersView?.stats().labels ?? []; return l.length ? l : null; }, null, 10000)) ?? [];
+  const labs = (await until(A, () => { const l = window.__earthlife.othersView?.stats().labels ?? []; return l.length ? l : null; }, null, 30000)) ?? [];
   const dNow = await apart(A, B);
   check(labs.includes('Survivant') && !labs.includes(nameB) && named === 0, `A à ${dNow.toFixed(1)} m : étiquette ${JSON.stringify(labs)}, sans le surnom « ${nameB} » (sid ${sidB}), ${named} ligne nommée`);
   await shot(A, 'o9-ordi-survivant-anonyme');
