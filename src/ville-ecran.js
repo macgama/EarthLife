@@ -522,6 +522,7 @@ export function createCityGame(host) {
     const rt = createCityRuntime({ store, client, template, proj: s.store.proj, onEvent: (e) => onEvent(s, e), ville, ...built, season: { net: n } });
     seasonRef.rt = rt;
     s.city = rt;
+    s.seasonLevel = plan.level; // « Reprendre ici » relance la saison à ce niveau
     s.cityAcc = 0;
     s.cityNight = null;
     s.cityObj = null;
