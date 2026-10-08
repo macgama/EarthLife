@@ -831,6 +831,12 @@ async function desktop() {
     until(page2, () => window.__earthlife.saveStore.readOnly, null, 90000),
   ]);
   check(owner && !!handed, `${tag} 7 : « Reprendre ici » du menu : la 1re page reprend la main, la 2e passe en lecture seule`);
+  // La 1re page relance sa partie toute seule (autostart=1) : elle doit tourner et avoir écrit avant que la 2e reprenne la main.
+  // Sinon, sur un coureur lent, la dernière des deux à démarrer sa partie prend la main à l'autre (la page qui n'a encore rien
+  // écrit relit la partie puis écrit) et la 2e, rechargée en dernier, se retrouve en lecture seule.
+  const running1 = await started(page);
+  const wrote1 = running1 && await ev(page, () => { const st = window.__earthlife.saveStore; st.markDirty(); return st.flush('essai').ok; });
+  check(wrote1, `${tag} 7 : la 1re page, rechargée, relance sa partie et sauvegarde avant la reprise de la 2e`);
   // « Reprendre ici » sur la carte en partie : la page recharge et relance la partie aussitôt (pas de retour au menu).
   const card2 = await until(page2, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') ? c.querySelector('[data-card-btn="take"]')?.textContent.trim() ?? null : null; }, null, 20000);
   check(card2 === 'Reprendre ici', `${tag} 7 : la 2e page, en partie, affiche la carte (bouton « ${card2} »)`);
