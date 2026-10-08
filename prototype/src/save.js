@@ -6,6 +6,12 @@ import { maxHp, CHEST } from './base.js';
 export const SAVE_KEY = 'earthlife.save.v1';
 export const PREV_KEY = 'earthlife.save.v1.prev';
 export const CORRUPT_KEY = 'earthlife.save.corrupt';
+// Présence des pages : { w: écrivain, at: heure, vis: visible } ; une page qui tient la partie la renouvelle toutes les 3 s tant
+// qu'elle est à l'écran et l'abaisse (vis: false) en passant au second plan ou en se fermant. Une page qui n'a plus de présence
+// fraîche et visible ne bloque pas l'autre : celle-ci reprend la main toute seule. `hold` : une page qui vient de reprendre la
+// main (« Reprendre ici ») va recharger ; sa présence reste valable `holdMs` le temps que la page rechargée démarre.
+export const PRESENCE_KEY = 'earthlife.presence.v1';
+export const PRESENCE = { freshMs: 10000, beatMs: 3000, holdMs: 120000 };
 export const SAVE_VERSION = 1;
 export const LIMITS = { searchedMs: 86400000, dismantledMs: 259200000, maxEntries: 1500, journal: 30, journalChars: 160 };
 
@@ -747,7 +753,7 @@ function halveEntries(save) {
 export function createSaveStore({
   storage = defaultStorage(), now = Date.now, fresh = false, onExternal = () => {},
   rand = Math.random, delayMs = 2000, itemKeys = ITEM_KEYS, beforeWrite = () => {}, listen = true, companion = null,
-  onWrite = () => {},
+  onWrite = () => {}, presence = undefined, visible = undefined,
 } = {}) {
   const writer = newWriter(rand);
   let readOnly = false;
@@ -821,6 +827,41 @@ export function createSaveStore({
     }
   }
 
+  // Présence : publiée par une page qui tient la partie (elle a écrit ou une écriture attend), dans un navigateur seulement
+  // (`presence: true` force, pour les essais). `visible()` : la page est à l'écran.
+  const presenceOn = presence ?? (listen && typeof window !== 'undefined' && !!window.addEventListener);
+  const isVisible = visible ?? (() => typeof document === 'undefined' || document.visibilityState !== 'hidden');
+  let goneSent = false;     // « l'autre page est partie » déjà signalé pour ce conflit
+  let holdUntil = 0;        // jusqu'à quand la présence reste valable, même page cachée ou fermée (reprise suivie d'un rechargement)
+  let playedReadOnly = false; // du jeu s'est joué depuis le passage en lecture seule (rien n'en est sauvegardé)
+
+  function readPresence() {
+    try {
+      const p = JSON.parse(read(PRESENCE_KEY) ?? 'null');
+      return isObj(p) && typeof p.w === 'string' && finite(p.at) ? p : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Seule la page qui tient la partie publie : une page en lecture seule laisse la présence de l'autre intacte.
+  function publish(vis = isVisible()) {
+    if (!presenceOn || readOnly) return;
+    const rec = { w: writer, at: now(), vis };
+    if (holdUntil > rec.at) rec.hold = holdUntil;
+    tryWrite(PRESENCE_KEY, JSON.stringify(rec));
+  }
+
+  // Une autre page, visible et vivante, tient-elle la partie ? Sa présence fait foi ; une page sans présence (ancienne version,
+  // stockage vidé) compte tant que sa dernière écriture date de moins de 10 s.
+  function otherAlive() {
+    const p = readPresence();
+    if (p && p.w !== writer && ((p.vis === true && now() - p.at < PRESENCE.freshMs) || (finite(p.hold) && p.hold > now()))) return true;
+    if (p && p.w === conflict?.writer) return false;
+    const t = conflict?.savedAt;
+    return finite(t) && now() - t < PRESENCE.freshMs;
+  }
+
   function goReadOnly(text = null) {
     if (readOnly) return;
     if (text !== null) conflict = metaOf(text);
@@ -828,7 +869,42 @@ export function createSaveStore({
     reason = SAVE_MESSAGES.otherTab;
     dirty = false;
     stale = false;
-    onExternal({ type: 'other-tab', message: SAVE_MESSAGES.otherTab, action: SAVE_MESSAGES.takeOver, since: conflict?.savedAt ?? null });
+    playedReadOnly = false;
+    const alive = otherAlive();
+    const visibleNow = isVisible();
+    // L'autre page n'est plus là et celle-ci est à l'écran : le signal part avec cet événement, pas une seconde fois.
+    goneSent = !alive && visibleNow;
+    onExternal({
+      type: 'other-tab', message: SAVE_MESSAGES.otherTab, action: SAVE_MESSAGES.takeOver, since: conflict?.savedAt ?? null,
+      alive, visible: visibleNow,
+    });
+  }
+
+  // Avant un rechargement voulu (« Reprendre ici », import, reprise automatique) : la présence de cette page reste valable
+  // `holdMs`, même si la page se cache ou se ferme avant que la nouvelle ait démarré.
+  function holdPresence() {
+    holdUntil = now() + PRESENCE.holdMs;
+    if (wrote || dirty) publish(isVisible());
+  }
+
+  // Lecture seule à cause d'une autre page qui n'est plus là (cachée, fermée, plantée) : cette page, à l'écran, le dit une fois
+  // pour que main.js reprenne la main (« Reprendre ici » tout seul). Rend vrai si le signal part.
+  function recheck() {
+    if (!readOnly || reason !== SAVE_MESSAGES.otherTab || goneSent || !isVisible() || otherAlive()) return false;
+    goneSent = true;
+    onExternal({
+      type: 'other-gone', message: SAVE_MESSAGES.otherTab, action: SAVE_MESSAGES.takeOver, since: conflict?.savedAt ?? null,
+      keepLive: playedReadOnly,
+    });
+    return true;
+  }
+
+  // Battement : la page qui tient la partie et qui est à l'écran renouvelle sa présence ; la page en lecture seule se demande si
+  // l'autre est encore là.
+  function beat() {
+    if (readOnly) return recheck();
+    if (isVisible() && (wrote || dirty)) publish(true);
+    return false;
   }
 
   // Une autre page a écrit la partie (texte lu ou reçu). Une page qui n'a encore rien écrit ni modifié (restée au menu)
@@ -844,7 +920,11 @@ export function createSaveStore({
 
   function markDirty() {
     quiet = false;
-    if (readOnly || dirty) return;
+    if (readOnly) {
+      if (reason === SAVE_MESSAGES.otherTab) playedReadOnly = true;
+      return;
+    }
+    if (dirty) return;
     dirty = true;
     wait = delayMs;
   }
@@ -916,6 +996,7 @@ export function createSaveStore({
     dirty = false;
     wait = 0;
     lastError = null;
+    if (isVisible()) publish(true);
     try {
       onWrite({ why, text: out });
     } catch {
@@ -948,6 +1029,10 @@ export function createSaveStore({
 
   // Événement `storage` d'un autre onglet sur la clé de la partie.
   function onStorage(e) {
+    if (e && e.key === PRESENCE_KEY) {
+      recheck();
+      return;
+    }
     if (!e || e.key !== SAVE_KEY || e.newValue === null || e.newValue === undefined) return;
     const w = writerOf(e.newValue);
     if (w && w !== writer) noteForeign(e.newValue);
@@ -991,12 +1076,13 @@ export function createSaveStore({
   }
 
   // « Reprendre ici » : relit la sauvegarde, reprend la main et la réécrit telle quelle (sans l'état vivant périmé
-  // de cet onglet). main.js recharge ensuite la page, comme après un import.
-  function takeOver() {
+  // de cet onglet). main.js recharge ensuite la page, comme après un import. `keepLive` : cette page a continué à jouer en
+  // lecture seule et l'autre n'est plus là ; c'est l'état de cette page, à l'écran, qui est écrit à la place de l'autre.
+  function takeOver({ keepLive = false } = {}) {
     const stored = read(SAVE_KEY);
     const r = parseSave(stored, now(), { itemKeys });
     if (r.status === 'newer') return { ok: false, error: SAVE_MESSAGES.newer };
-    const reread = r.status === 'ok';
+    const reread = r.status === 'ok' && !keepLive;
     if (reread) {
       replaceInPlace(save, r.save);
       fixes = r.fixes;
@@ -1011,6 +1097,8 @@ export function createSaveStore({
     reason = null;
     stale = false;
     conflict = null;
+    goneSent = false;
+    playedReadOnly = false;
     lastSeen = stored;
     // Rien de lisible à relire : la partie de cet onglet reste la bonne, état vivant compris.
     return write('reprise', !reread);
@@ -1101,15 +1189,26 @@ export function createSaveStore({
     on(window, 'storage', onStorage);
     if (typeof document !== 'undefined' && document.addEventListener) {
       on(document, 'visibilitychange', () => {
-        if (document.visibilityState === 'hidden') onHidden('arriere-plan');
-        else {
+        if (document.visibilityState === 'hidden') {
+          onHidden('arriere-plan');
+          if (wrote || dirty) publish(false);
+        } else {
           quiet = false;
           check();
+          if (!recheck() && !readOnly && (wrote || dirty)) publish(true);
         }
       });
     }
-    on(window, 'pagehide', () => onHidden('fermeture'));
-    on(window, 'pageshow', (e) => { if (e?.persisted) check(); });
+    on(window, 'pagehide', () => {
+      onHidden('fermeture');
+      if (wrote || dirty) publish(false);
+    });
+    on(window, 'pageshow', (e) => { if (e?.persisted) { check(); recheck(); } });
+    if (presenceOn && typeof setInterval === 'function') {
+      const timer = setInterval(beat, PRESENCE.beatMs);
+      timer?.unref?.(); // sous node (essais), le battement ne retient pas le processus
+      offs.push(() => clearInterval(timer));
+    }
   }
   function dispose() {
     while (offs.length) offs.pop()();
@@ -1133,6 +1232,6 @@ export function createSaveStore({
     get storedText() { return lastSeen; },
     get stale() { return stale; },
     get conflict() { return conflict; },
-    markDirty, flush, tick, takeOver, exportText, importText, persist, onStorage, check, refresh, dispose, wipe,
+    markDirty, flush, tick, takeOver, exportText, importText, persist, onStorage, check, refresh, dispose, wipe, beat, recheck, holdPresence,
   };
 }

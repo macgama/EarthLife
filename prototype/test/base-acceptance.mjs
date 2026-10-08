@@ -843,7 +843,22 @@ async function desktop() {
   // Partie de saison : le drapeau porte le niveau, la page rechargée relance la saison (l'essai n'a pas de compte : la carte « Un compte
   // pour la saison » le prouve) au lieu de retomber sur le menu.
   await ev(page2, () => { sessionStorage.setItem('earthlife.reprise', JSON.stringify({ season: 'facile' })); });
+  // Présence des pages : la 2e page, qui tient la partie, la quitte (pagehide) ; la 1re, à l'écran et en lecture seule, ne reste
+  // pas bloquée sur « Partie ouverte ailleurs » : elle recharge toute seule, reprend la main et relance la partie.
+  const writer1 = await ev(page, () => window.__earthlife.saveStore.writer);
+  // La 2e page (rechargée par « Reprendre ici ») a écrit au moins une fois : sa présence ne porte plus le délai du rechargement.
+  await ev(page2, () => { const st = window.__earthlife.saveStore; st.markDirty(); return st.flush('essai').ok; });
+  // La 1re page joue : sa première écriture trouve celle de la 2e (page à l'écran et vivante) et passe en lecture seule avec la carte.
+  const blocked = await ev(page, () => { const st = window.__earthlife.saveStore; st.markDirty(); st.flush('essai'); return st.readOnly; });
+  check(blocked, `${tag} 7 : tant que la 2e page est à l'écran, la 1re reste en lecture seule (pas de reprise automatique)`);
   await page2.goto(START.replace('&autostart=1', ''));
+  const auto = await until(page, (w) => {
+    const st = window.__earthlife?.saveStore;
+    return st && st.writer !== w && !st.readOnly ? st.writer : null;
+  }, writer1, 90000);
+  check(!!auto, `${tag} 7 : la 2e page quitte → la 1re reprend la main toute seule (nouvelle page : ${auto ? 'oui' : 'non'}, sans carte)`);
+  const autoCard = await ev(page, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') && /Partie ouverte ailleurs/.test(c.textContent); });
+  check(!autoCard, `${tag} 7 : aucune carte « Partie ouverte ailleurs » après la reprise automatique`);
   const seasonCard = await until(page2, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') && /saison/i.test(c.textContent) ? c.querySelector('.rp-card-title')?.textContent.trim() ?? null : null; }, null, 20000);
   check(!!seasonCard, `${tag} 7 : « Reprendre ici » dans une partie de saison relance la saison (carte « ${seasonCard ?? '?'} »)`);
   await page2.close();

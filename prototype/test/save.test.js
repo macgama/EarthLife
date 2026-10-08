@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SAVE_KEY, PREV_KEY, CORRUPT_KEY, SAVE_VERSION, LIMITS, ITEM_KEYS, SAVE_MESSAGES,
+  SAVE_KEY, PREV_KEY, CORRUPT_KEY, PRESENCE_KEY, PRESENCE, SAVE_VERSION, LIMITS, ITEM_KEYS, SAVE_MESSAGES,
   emptySave, validateSave, parseSave, purgeOld, createSaveStore, memoryStorage, exportFileName, isBlankSave,
   searchStamp, searchRooms, searchedWhole, markRoom,
 } from '../src/save.js';
@@ -629,6 +629,238 @@ test('page endormie (retour au premier plan, cache arrière/avant) : check() rat
   l.check();
   assert.equal(l.readOnly, false);
   assert.equal(l.stale, false);
+});
+
+// Deux pages sur le même stockage, avec une horloge et une visibilité propres à chacune (présence des pages).
+function pagePair() {
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const clock = { t: NOW };
+  const mk = (seed) => {
+    const page = { visible: true, seen: [] };
+    page.store = createSaveStore({
+      storage, now: () => clock.t, rand: seeded(seed), listen: false, presence: true,
+      visible: () => page.visible, onExternal: (e) => page.seen.push(e),
+    });
+    return page;
+  };
+  return { storage, clock, a: mk(51), b: mk(52) };
+}
+const presenceOf = (storage) => JSON.parse(storage.map.get(PRESENCE_KEY) ?? 'null');
+const writeNow = (page) => { page.store.markDirty(); return page.store.flush('test'); };
+
+test('présence : la page qui sauvegarde à l\'écran publie, une page en lecture seule ou au menu ne publie pas', () => {
+  const { storage, clock, a, b } = pagePair();
+  assert.equal(presenceOf(storage), null, 'rien tant qu\'aucune page n\'a écrit');
+  a.store.beat();
+  assert.equal(presenceOf(storage), null, 'une page qui n\'a rien écrit ne publie pas');
+  assert.equal(writeNow(a).ok, true);
+  assert.deepEqual(presenceOf(storage), { w: a.store.writer, at: NOW, vis: true });
+  clock.t += 3000;
+  a.store.beat();
+  assert.equal(presenceOf(storage).at, NOW + 3000, 'le battement renouvelle l\'heure');
+  a.visible = false;
+  a.store.beat();
+  assert.equal(presenceOf(storage).at, NOW + 3000, 'cachée : plus de renouvellement');
+  // b prend la main (a est cachée) ; a, en lecture seule, ne touche plus à la présence de b.
+  assert.equal(b.store.takeOver().ok, true);
+  assert.equal(presenceOf(storage).w, b.store.writer);
+  a.visible = true;
+  a.store.markDirty();
+  assert.equal(a.store.flush('test').ok, false);
+  assert.equal(a.store.readOnly, true);
+  clock.t += 3000;
+  a.store.beat();
+  assert.equal(presenceOf(storage).w, b.store.writer);
+});
+
+test('présence : l\'autre page est à l\'écran et vivante → carte « autre onglet », pas de reprise automatique', () => {
+  const { storage, clock, a, b } = pagePair();
+  assert.equal(writeNow(a).ok, true);
+  assert.equal(b.store.takeOver().ok, true);
+  clock.t += 1000;
+  a.store.markDirty();
+  assert.equal(a.store.flush('test').ok, false);
+  assert.equal(a.seen.length, 1);
+  assert.equal(a.seen[0].type, 'other-tab');
+  assert.equal(a.seen[0].alive, true);
+  assert.equal(a.seen[0].visible, true);
+  // Tant que b renouvelle sa présence, a ne dit jamais que b est partie.
+  for (let i = 0; i < 5; i++) {
+    clock.t += PRESENCE.beatMs;
+    b.store.beat();
+    assert.equal(a.store.beat(), false);
+  }
+  assert.equal(a.seen.length, 1, 'aucun autre signal');
+  assert.equal(a.store.readOnly, true);
+  assert.equal(presenceOf(storage).w, b.store.writer);
+});
+
+test('présence : l\'autre page passe en arrière-plan ou se ferme → l\'événement « autre page partie » arrive, une seule fois', () => {
+  const { storage, clock, a, b } = pagePair();
+  assert.equal(writeNow(a).ok, true);
+  assert.equal(b.store.takeOver().ok, true);
+  clock.t += 1000;
+  a.store.markDirty();
+  assert.equal(a.store.flush('test').ok, false);
+  assert.equal(a.seen[0].alive, true);
+  // b se ferme : sa présence passe à « cachée » (l'événement `storage` de PRESENCE_KEY arrive chez a).
+  b.visible = false;
+  b.store.beat();
+  storage.setItem(PRESENCE_KEY, JSON.stringify({ w: b.store.writer, at: clock.t, vis: false }));
+  a.store.onStorage({ key: PRESENCE_KEY, newValue: storage.getItem(PRESENCE_KEY) });
+  assert.equal(a.seen.length, 2);
+  assert.equal(a.seen[1].type, 'other-gone');
+  assert.equal(a.seen[1].keepLive, false, 'rien joué en lecture seule : on reprend la partie de l\'autre');
+  a.store.onStorage({ key: PRESENCE_KEY, newValue: storage.getItem(PRESENCE_KEY) });
+  assert.equal(a.store.beat(), false);
+  assert.equal(a.seen.length, 2, 'un seul signal par conflit');
+  // La reprise relit la partie de b et reprend la main ; la présence passe à a.
+  const kills = JSON.parse(storage.map.get(SAVE_KEY)).profile.kills;
+  assert.equal(a.store.takeOver().ok, true);
+  assert.equal(a.store.readOnly, false);
+  assert.equal(a.store.save.profile.kills, kills);
+  assert.equal(presenceOf(storage).w, a.store.writer);
+});
+
+test('présence : l\'autre page est plantée (présence périmée) → repérée au battement, après 10 s', () => {
+  const { clock, a, b } = pagePair();
+  assert.equal(writeNow(a).ok, true);
+  assert.equal(b.store.takeOver().ok, true);
+  clock.t += 1000;
+  a.store.markDirty();
+  assert.equal(a.store.flush('test').ok, false);
+  clock.t += PRESENCE.freshMs - 2000;
+  assert.equal(a.store.beat(), false, 'encore fraîche');
+  clock.t += 2000;
+  assert.equal(a.store.beat(), true);
+  assert.equal(a.seen.at(-1).type, 'other-gone');
+});
+
+test('présence : une page cachée ne reprend rien, elle le fait à son retour à l\'écran', () => {
+  const { storage, clock, a, b } = pagePair();
+  assert.equal(writeNow(a).ok, true);
+  assert.equal(b.store.takeOver().ok, true);
+  b.visible = false;
+  b.store.beat();
+  storage.setItem(PRESENCE_KEY, JSON.stringify({ w: b.store.writer, at: clock.t, vis: false }));
+  a.visible = false;
+  a.store.markDirty();
+  assert.equal(a.store.flush('test').ok, false);
+  assert.equal(a.seen[0].alive, false);
+  assert.equal(a.seen[0].visible, false, 'cachée : main.js ne reprend pas encore');
+  assert.equal(a.store.beat(), false);
+  assert.equal(a.store.recheck(), false);
+  assert.equal(a.seen.length, 1);
+  a.visible = true;
+  assert.equal(a.store.recheck(), true);
+  assert.equal(a.seen.at(-1).type, 'other-gone');
+  void clock;
+});
+
+test('présence : l\'autre page est déjà partie quand celle-ci le découvre → un seul événement, avec « alive: false »', () => {
+  const { storage, a, b } = pagePair();
+  assert.equal(writeNow(a).ok, true);
+  assert.equal(b.store.takeOver().ok, true);
+  b.visible = false;
+  storage.setItem(PRESENCE_KEY, JSON.stringify({ w: b.store.writer, at: NOW, vis: false }));
+  a.store.markDirty();
+  assert.equal(a.store.flush('test').ok, false);
+  assert.equal(a.seen.length, 1);
+  assert.equal(a.seen[0].type, 'other-tab');
+  assert.equal(a.seen[0].alive, false);
+  assert.equal(a.seen[0].visible, true);
+  assert.equal(a.store.beat(), false, 'main.js a déjà reçu le signal : pas de doublon');
+  assert.equal(a.seen.length, 1);
+});
+
+test('présence : ancienne version sans présence → vivante tant que sa dernière écriture date de moins de 10 s', () => {
+  const clock = { t: NOW };
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const seen = [];
+  const a = createSaveStore({
+    storage, now: () => clock.t, rand: seeded(61), listen: false, presence: true, visible: () => true, onExternal: (e) => seen.push(e),
+  });
+  a.markDirty();
+  assert.equal(a.flush('test').ok, true);
+  const old = { ...EXAMPLE, writer: 'wancienne', savedAt: clock.t + 500 };
+  clock.t += 500;
+  storage.setItem(SAVE_KEY, JSON.stringify(old));
+  a.markDirty();
+  assert.equal(a.flush('test').ok, false);
+  assert.equal(seen[0].alive, true, 'sa sauvegarde est toute fraîche');
+  clock.t += PRESENCE.freshMs - 1000;
+  assert.equal(a.beat(), false);
+  clock.t += 1500;
+  assert.equal(a.beat(), true, 'plus d\'écriture depuis plus de 10 s : l\'autre page ne compte plus');
+  assert.equal(seen.at(-1).type, 'other-gone');
+});
+
+test('présence : jouer en lecture seule puis voir l\'autre page partir → la partie de l\'écran est gardée (keepLive)', () => {
+  const { storage, clock, a, b } = pagePair();
+  assert.equal(writeNow(a).ok, true);
+  assert.equal(b.store.takeOver().ok, true);
+  b.store.save.profile.kills = 50;
+  assert.equal(writeNow(b).ok, true);
+  clock.t += 1000;
+  a.store.save.profile.kills = 70;
+  a.store.markDirty();
+  assert.equal(a.store.flush('test').ok, false);
+  assert.equal(a.seen[0].alive, true);
+  // a continue à jouer sans sauvegarder, puis b se ferme.
+  a.store.markDirty();
+  b.visible = false;
+  storage.setItem(PRESENCE_KEY, JSON.stringify({ w: b.store.writer, at: clock.t, vis: false }));
+  a.store.onStorage({ key: PRESENCE_KEY, newValue: storage.getItem(PRESENCE_KEY) });
+  assert.equal(a.seen.at(-1).type, 'other-gone');
+  assert.equal(a.seen.at(-1).keepLive, true);
+  assert.equal(a.store.takeOver({ keepLive: true }).ok, true);
+  assert.equal(JSON.parse(storage.map.get(SAVE_KEY)).profile.kills, 70, 'l\'état de a est écrit, pas celui de b');
+  assert.equal(JSON.parse(storage.map.get(SAVE_KEY)).writer, a.store.writer);
+  assert.equal(a.store.readOnly, false);
+});
+
+test('présence : rechargement voulu → la présence de l\'ancienne page reste valable le temps du démarrage', () => {
+  const { storage, clock, a, b } = pagePair();
+  assert.equal(writeNow(a).ok, true);
+  // b reprend la main à la demande de l'utilisateur puis recharge (arrière-plan, puis fermeture de l'ancienne page).
+  assert.equal(b.store.takeOver().ok, true);
+  b.store.holdPresence();
+  assert.equal(presenceOf(storage).hold, NOW + PRESENCE.holdMs);
+  b.visible = false;
+  b.store.holdPresence();
+  assert.equal(presenceOf(storage).vis, false);
+  assert.equal(presenceOf(storage).hold, NOW + PRESENCE.holdMs, 'la fermeture ne retire pas le délai');
+  clock.t += 1000;
+  a.store.markDirty();
+  assert.equal(a.store.flush('test').ok, false);
+  assert.equal(a.seen[0].type, 'other-tab');
+  assert.equal(a.seen[0].alive, true, 'la page qui a repris la main va recharger : elle n\'est pas « partie »');
+  clock.t += PRESENCE.freshMs * 3;
+  assert.equal(a.store.beat(), false);
+  assert.equal(a.seen.length, 1, 'la page rechargée a le temps de démarrer');
+  // Si elle ne revient pas, la page à l'écran reprend la main une fois le délai passé.
+  clock.t += PRESENCE.holdMs;
+  assert.equal(a.store.beat(), true);
+  assert.equal(a.seen.at(-1).type, 'other-gone');
+  // La page rechargée, elle, publie sa propre présence (sans délai) dès sa première écriture.
+  const c = createSaveStore({ storage, now: () => clock.t, rand: seeded(81), listen: false, presence: true, visible: () => true });
+  assert.equal(c.takeOver().ok, true);
+  assert.equal(presenceOf(storage).w, c.writer);
+  assert.equal(presenceOf(storage).hold, undefined);
+  // Une page restée au menu (rien écrit) ne publie rien en rechargeant.
+  const menu = createSaveStore({ storage: fakeStorage(), now: () => clock.t, rand: seeded(82), listen: false, presence: true, visible: () => true });
+  menu.holdPresence();
+  assert.equal(menu.recheck(), false);
+});
+
+test('présence : sans navigateur (essais, serveur) rien n\'est publié ni lu', () => {
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const s = createSaveStore({ storage, now: () => NOW, rand: seeded(71), listen: false });
+  s.markDirty();
+  assert.equal(s.flush('test').ok, true);
+  assert.equal(storage.map.has(PRESENCE_KEY), false);
+  assert.equal(s.beat(), false);
+  assert.equal(s.recheck(), false);
 });
 
 test('refresh : sans effet pour une page qui a écrit, et une sauvegarde illisible ou plus récente n\'est jamais adoptée', () => {
