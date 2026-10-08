@@ -1575,12 +1575,29 @@ await scenario('O9', 'B part « Autour de moi », marche 60 s dans la zone puis 
   const withF = fA.filter((f) => f.m.f.length > 0).length;
   const named = fA.filter((f) => f.m.p.some((e) => e[5] !== 0)).length;
   check(arrows.every((x) => / : 0$/.test(x)) && withF === 0, `A : aucune flèche vers B en couronne (${arrows.join(', ')}), ${withF} instantané avec f sur ${fA.length}`);
-  // Caméra de A tournée vers B et abaissée (comme en O1) : l'étiquette est à l'écran. Attente de 30 s : sous swiftshader, la
-  // position de B arrive parfois plus de 10 s après la marche de A (O9 rouge au premier passage sur main, vert à la relance).
-  await face(A, await where(B));
-  const labs = (await until(A, () => { const l = window.__earthlife.othersView?.stats().labels ?? []; return l.length ? l : null; }, null, 30000)) ?? [];
+  // Caméra de A tournée vers B et abaissée (comme en O1) : l'étiquette est à l'écran. O9 est rouge une fois sur deux sur main
+  // (étiquette [] même après 30 s d'attente : ce n'est pas un retard) : trois cadrages (tangage 0,6, 0,4, 0,8) de 8 s, et,
+  // si l'étiquette manque encore, l'état vu par A (B dans online.others, survivants dessinés, caméra) dans le message.
+  let labs = [];
+  for (const pitch of [0.6, 0.4, 0.8]) {
+    await face(A, await where(B), pitch);
+    labs = (await until(A, () => { const l = window.__earthlife.othersView?.stats().labels ?? []; return l.length ? l : null; }, null, 8000)) ?? [];
+    if (labs.includes('Survivant')) break;
+  }
   const dNow = await apart(A, B);
-  check(labs.includes('Survivant') && !labs.includes(nameB) && named === 0, `A à ${dNow.toFixed(1)} m : étiquette ${JSON.stringify(labs)}, sans le surnom « ${nameB} » (sid ${sidB}), ${named} ligne nommée`);
+  const viewOfA = await ev(A, (sid) => {
+    const el = window.__earthlife, s = el.session, v = el.othersView?.stats();
+    const o = el.online.others(Date.now()).find((x) => x.sid === sid) ?? null;
+    return {
+      enLigne: o && { flags: o.flags, alpha: o.alpha, nom: o.name ?? null },
+      dessines: v?.survivors.map((x) => ({ sid: x.sid, d: Math.round(x.d), alpha: x.alpha })), moi: v?.me ?? null,
+      camera: { dist: s.cameraDist, tangage: s.cameraPitch, effectif: s.camPitchEff, cap: s.zoomLimited, lacet: s.cameraYaw },
+      pause: s.paused, fin: s.ended, horde: s.refuge?.phase ?? null,
+    };
+  }, sidB);
+  note(`vu par A : ${JSON.stringify(viewOfA)}`);
+  const seenByA = labs.includes('Survivant') ? '' : ` ; vu par A : ${JSON.stringify(viewOfA)}`;
+  check(labs.includes('Survivant') && !labs.includes(nameB) && named === 0, `A à ${dNow.toFixed(1)} m : étiquette ${JSON.stringify(labs)}, sans le surnom « ${nameB} » (sid ${sidB}), ${named} ligne nommée${seenByA}`);
   await shot(A, 'o9-ordi-survivant-anonyme');
   await ev(A, () => { window.__earthlife.session.cameraPitch = 1.0; });
   await shot(B, 'o9-tel-couronne');
