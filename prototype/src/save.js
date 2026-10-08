@@ -11,7 +11,7 @@ export const CORRUPT_KEY = 'earthlife.save.corrupt';
 // fraîche et visible ne bloque pas l'autre : celle-ci reprend la main toute seule. `hold` : une page qui vient de reprendre la
 // main (« Reprendre ici ») va recharger ; sa présence reste valable `holdMs` le temps que la page rechargée démarre.
 export const PRESENCE_KEY = 'earthlife.presence.v1';
-export const PRESENCE = { freshMs: 10000, beatMs: 3000, holdMs: 120000 };
+export const PRESENCE = { freshMs: 30000, beatMs: 3000, holdMs: 120000 };
 export const SAVE_VERSION = 1;
 export const LIMITS = { searchedMs: 86400000, dismantledMs: 259200000, maxEntries: 1500, journal: 30, journalChars: 160 };
 
@@ -852,14 +852,20 @@ export function createSaveStore({
     tryWrite(PRESENCE_KEY, JSON.stringify(rec));
   }
 
-  // Une autre page, visible et vivante, tient-elle la partie ? Sa présence fait foi ; une page sans présence (ancienne version,
-  // stockage vidé) compte tant que sa dernière écriture date de moins de 10 s.
+  // Une autre page, visible et vivante, tient-elle la partie ? Il faut une preuve qu'elle est partie, pas seulement l'absence de
+  // preuve qu'elle est là : une page qui rend la main (arrière-plan, fermeture) ou qui ne renouvelle plus sa présence depuis 30 s
+  // (plantée) est partie ; sans présence lisible (ancienne version, présence pas encore publiée, ou la sienne propre), la page
+  // compte tant que sa dernière écriture date de moins de 30 s.
   function otherAlive() {
     const p = readPresence();
-    if (p && p.w !== writer && ((p.vis === true && now() - p.at < PRESENCE.freshMs) || (finite(p.hold) && p.hold > now()))) return true;
-    if (p && p.w === conflict?.writer) return false;
-    const t = conflict?.savedAt;
-    return finite(t) && now() - t < PRESENCE.freshMs;
+    const t = now();
+    if (p && p.w !== writer) {
+      if (finite(p.hold) && p.hold > t) return true;
+      if (p.vis === true && t - p.at < PRESENCE.freshMs) return true;
+      if (!conflict?.writer || p.w === conflict.writer) return false;
+    }
+    const saved = conflict?.savedAt;
+    return finite(saved) && t - saved < PRESENCE.freshMs;
   }
 
   function goReadOnly(text = null) {
