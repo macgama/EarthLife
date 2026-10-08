@@ -26,7 +26,7 @@ import {
   planDelivery, questText, updateQuest, currentTarget, placeWith, refugeQuest, offerMissions, questReward, missionLine,
   durationLabel as questDuration,
 } from './quest.js';
-import { createSaveStore, LIMITS, exportFileName, SAVE_MESSAGES, isBlankSave, searchedWhole, searchOldest } from './save.js';
+import { createSaveStore, LIMITS, PRESENCE_KEY, exportFileName, SAVE_MESSAGES, isBlankSave, searchedWhole, searchOldest } from './save.js';
 import { createRefuge, clockLabel, durationLabel, TAKEN_TEXT } from './refuge.js';
 import { FICHE, ficheOf } from './fiche.js';
 import { kindLabel, countsLabel, countOf, chestCap, moveItems, depositAll, prepareBag, storeItems, refugeWarmth, TIMES } from './base.js';
@@ -258,6 +258,7 @@ function urlWithout(name) {
 
 // Après un import ou une reprise (« Reprendre ici ») : la partie en mémoire a changé, on recharge sans ?fresh.
 function reloadClean() {
+  saveStore.holdPresence();
   location.replace(urlWithout('fresh'));
 }
 
@@ -267,6 +268,7 @@ function reloadPage({ fresh = false } = {}) {
   if (!fresh) { reloadClean(); return; }
   const u = new URL(location.href);
   u.searchParams.set('fresh', '1');
+  saveStore.holdPresence();
   location.replace(u.toString());
 }
 
@@ -2474,12 +2476,19 @@ function nextFrame() {
 function onSaveExternal(e) {
   renderSaveLine();
   const playing = session?.player && !$('hud').classList.contains('hidden');
+  // L'autre page a écrit mais n'est plus là (cachée, fermée, plantée) alors que celle-ci est à l'écran : elle reprend la main
+  // toute seule, sans carte ni choix à faire (save.js, présence des pages).
+  if (e.type === 'other-gone' || (e.type === 'other-tab' && e.alive === false && e.visible)) {
+    // Trace de la décision (console, pour comprendre une reprise inattendue : état de la présence au moment où elle part).
+    try { console.info('[sauvegarde] autre page absente', JSON.stringify({ e: e.type, keepLive: !!e.keepLive, presence: localStorage.getItem(PRESENCE_KEY), conflict: saveStore.conflict, now: Date.now() })); } catch { /* trace seulement */ }
+    if (handOver(!!e.keepLive)) return;
+  }
   // Stockage plein, territoire non enregistré ou allégé : un toast (une fois), le motif reste dans la ligne de la sauvegarde.
   if (e.type === 'full' || e.type === 'companion-full' || e.type === 'compacted' || e.type === 'dropped') {
     if (playing) toast(e.message, 6, 'danger');
     return;
   }
-  if (e.type !== 'other-tab' || !playing) return;
+  if ((e.type !== 'other-tab' && e.type !== 'other-gone') || !playing) return;
   showTakeOverCard();
 }
 
@@ -2513,8 +2522,8 @@ function showTakeOverCard() {
 
 // « Reprendre ici » : relit la sauvegarde, reprend la main et recharge la page. `resume` (carte en partie) : la page
 // rechargée relance aussitôt la partie, sans repasser par le menu.
-function takeOver({ resume = false } = {}) {
-  const res = saveStore.takeOver();
+function takeOver({ resume = false, keepLive = false } = {}) {
+  const res = saveStore.takeOver({ keepLive });
   if (res.ok) {
     if (resume) { try { sessionStorage.setItem(RESUME_KEY, encodeResume(session?.seasonLevel ?? null)); } catch { /* sans stockage de session : retour au menu */ } }
     reloadClean();
@@ -2523,6 +2532,29 @@ function takeOver({ resume = false } = {}) {
   const why = res.error ?? saveStore.reason ?? 'Reprise impossible';
   if (session && !$('hud').classList.contains('hidden')) toast(why, 5, 'danger');
   renderSaveLine();
+}
+
+// « Reprendre ici » sans carte : la partie sauvegardée par l'autre page est relue et la page recharge ; en partie, elle relance
+// aussitôt la partie (au même niveau en saison). Ce que cette page n'avait pas encore écrit (2 s au plus) est abandonné, sauf
+// si elle a continué à jouer en lecture seule (`keepLive`) : alors c'est sa partie, celle de l'écran, qui est écrite.
+// Garde-fou : deux pages à l'écran qui se croiraient seules ne se reprennent pas la main en boucle ; une même page ne le fait
+// qu'une fois par minute, sinon la carte « Partie ouverte ailleurs » reste. Rend vrai si la reprise est partie.
+const HANDOVER_KEY = 'earthlife.handover';
+const HANDOVER_GAP_MS = 60000;
+let handingOver = false;
+function handOver(keepLive = false) {
+  if (handingOver) return true;
+  let last = 0;
+  try { last = Number(sessionStorage.getItem(HANDOVER_KEY)) || 0; } catch { /* sans stockage de session : pas de garde-fou */ }
+  if (Date.now() - last < HANDOVER_GAP_MS) return false;
+  try { sessionStorage.setItem(HANDOVER_KEY, String(Date.now())); } catch { /* idem */ }
+  handingOver = true;
+  try {
+    takeOver({ resume: !!(session?.player && !$('hud').classList.contains('hidden')), keepLive });
+  } finally {
+    handingOver = false;
+  }
+  return true;
 }
 
 // Changer la météo ou l'heure depuis le menu s'applique à la reprise.

@@ -99,7 +99,10 @@ async function newContext(device) {
 const pageErrors = [];
 function watchErrors(page, tag) {
   page.on('pageerror', (e) => pageErrors.push(`${tag} : exception : ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(`${tag} : console : ${m.text().slice(0, 300)}`); });
+  page.on('console', (m) => {
+    if (m.type() === 'error') pageErrors.push(`${tag} : console : ${m.text().slice(0, 300)}`);
+    else if (m.text().startsWith('[sauvegarde]')) note(`${tag} : ${m.text().slice(0, 700)}`);
+  });
   page.on('requestfailed', (r) => { if (!/ERR_ABORTED/.test(r.failure()?.errorText ?? '')) note(`requête en échec : ${r.url().slice(0, 160)} (${r.failure()?.errorText})`); });
 }
 
@@ -831,6 +834,12 @@ async function desktop() {
     until(page2, () => window.__earthlife.saveStore.readOnly, null, 90000),
   ]);
   check(owner && !!handed, `${tag} 7 : « Reprendre ici » du menu : la 1re page reprend la main, la 2e passe en lecture seule`);
+  // La 1re page relance sa partie toute seule (autostart=1) : elle doit tourner et avoir écrit avant que la 2e reprenne la main.
+  // Sinon, sur un coureur lent, la dernière des deux à démarrer sa partie prend la main à l'autre (la page qui n'a encore rien
+  // écrit relit la partie puis écrit) et la 2e, rechargée en dernier, se retrouve en lecture seule.
+  const running1 = await started(page);
+  const wrote1 = running1 && await ev(page, () => { const st = window.__earthlife.saveStore; st.markDirty(); return st.flush('essai').ok; });
+  check(wrote1, `${tag} 7 : la 1re page, rechargée, relance sa partie et sauvegarde avant la reprise de la 2e`);
   // « Reprendre ici » sur la carte en partie : la page recharge et relance la partie aussitôt (pas de retour au menu).
   const card2 = await until(page2, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') ? c.querySelector('[data-card-btn="take"]')?.textContent.trim() ?? null : null; }, null, 20000);
   check(card2 === 'Reprendre ici', `${tag} 7 : la 2e page, en partie, affiche la carte (bouton « ${card2} »)`);
@@ -843,7 +852,22 @@ async function desktop() {
   // Partie de saison : le drapeau porte le niveau, la page rechargée relance la saison (l'essai n'a pas de compte : la carte « Un compte
   // pour la saison » le prouve) au lieu de retomber sur le menu.
   await ev(page2, () => { sessionStorage.setItem('earthlife.reprise', JSON.stringify({ season: 'facile' })); });
+  // Présence des pages : la 2e page, qui tient la partie, la quitte (pagehide) ; la 1re, à l'écran et en lecture seule, ne reste
+  // pas bloquée sur « Partie ouverte ailleurs » : elle recharge toute seule, reprend la main et relance la partie.
+  const writer1 = await ev(page, () => window.__earthlife.saveStore.writer);
+  // La 2e page (rechargée par « Reprendre ici ») a écrit au moins une fois : sa présence ne porte plus le délai du rechargement.
+  await ev(page2, () => { const st = window.__earthlife.saveStore; st.markDirty(); return st.flush('essai').ok; });
+  // La 1re page joue : sa première écriture trouve celle de la 2e (page à l'écran et vivante) et passe en lecture seule avec la carte.
+  const blocked = await ev(page, () => { const st = window.__earthlife.saveStore; st.markDirty(); st.flush('essai'); return st.readOnly; });
+  check(blocked, `${tag} 7 : tant que la 2e page est à l'écran, la 1re reste en lecture seule (pas de reprise automatique)`);
   await page2.goto(START.replace('&autostart=1', ''));
+  const auto = await until(page, (w) => {
+    const st = window.__earthlife?.saveStore;
+    return st && st.writer !== w && !st.readOnly ? st.writer : null;
+  }, writer1, 90000);
+  check(!!auto, `${tag} 7 : la 2e page quitte → la 1re reprend la main toute seule (nouvelle page : ${auto ? 'oui' : 'non'}, sans carte)`);
+  const autoCard = await ev(page, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') && /Partie ouverte ailleurs/.test(c.textContent); });
+  check(!autoCard, `${tag} 7 : aucune carte « Partie ouverte ailleurs » après la reprise automatique`);
   const seasonCard = await until(page2, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') && /saison/i.test(c.textContent) ? c.querySelector('.rp-card-title')?.textContent.trim() ?? null : null; }, null, 20000);
   check(!!seasonCard, `${tag} 7 : « Reprendre ici » dans une partie de saison relance la saison (carte « ${seasonCard ?? '?'} »)`);
   await page2.close();
