@@ -840,6 +840,12 @@ async function desktop() {
   const back = await started(page2);
   const back2 = await ev(page2, () => ({ menuHidden: document.getElementById('menu').classList.contains('hidden'), readOnly: window.__earthlife.saveStore.readOnly }));
   check(back && back2.menuHidden && !back2.readOnly, `${tag} 7 : après « Reprendre ici » en partie, la partie repart sans menu et sauvegarde (menu caché : ${back2.menuHidden}, lecture seule : ${back2.readOnly})`);
+  // Partie de saison : le drapeau porte le niveau, la page rechargée relance la saison (l'essai n'a pas de compte : la carte « Un compte
+  // pour la saison » le prouve) au lieu de retomber sur le menu.
+  await ev(page2, () => { sessionStorage.setItem('earthlife.reprise', JSON.stringify({ season: 'facile' })); });
+  await page2.goto(START.replace('&autostart=1', ''));
+  const seasonCard = await until(page2, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') && /saison/i.test(c.textContent) ? c.querySelector('.rp-card-title')?.textContent.trim() ?? null : null; }, null, 20000);
+  check(!!seasonCard, `${tag} 7 : « Reprendre ici » dans une partie de saison relance la saison (carte « ${seasonCard ?? '?'} »)`);
   await page2.close();
   await ctx.close();
 }

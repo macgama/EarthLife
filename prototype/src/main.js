@@ -52,6 +52,8 @@ import { createCommuneCache } from './commune.js';
 import { createResilientBlocks } from './ville-jeu.js';
 import { createCityGame } from './ville-ecran.js';
 import { createSeasonNet } from './net/season.js';
+import { LEVEL_KEYS } from './quartier.js';
+import { encodeResume, decodeResume } from './reprise.js';
 // Icônes (HUD, chargement, fin) sous un espace de noms : pas de conflit avec d'autres imports nommés.
 import * as icons from './icons.js';
 // Jeu à plusieurs : une couche posée à côté du jeu solo (spécification 7).
@@ -493,17 +495,19 @@ window.addEventListener('keydown', (e) => {
   if (cardInfo?.blocking) pressCard(cardInfo.escape);
   else hideCard();
 });
-// Après « Reprendre ici » en partie : le drapeau de session est lu une seule fois ; sans lieu retenu, retour au menu.
+// Après « Reprendre ici » en partie : le drapeau de session est lu une seule fois. Partie libre : sans lieu retenu, retour au
+// menu. Partie de saison : relancée au même niveau, la ville vient du serveur (pas de lieu à retenir).
 const resumeAfterTakeOver = (() => {
   try {
     const v = sessionStorage.getItem(RESUME_KEY);
     sessionStorage.removeItem(RESUME_KEY);
-    return v === '1';
+    return decodeResume(v, LEVEL_KEYS);
   } catch {
-    return false;
+    return null;
   }
 })();
 if (params.get('autostart') === '1') startGame(picker.getPlace() ?? placeFromCity(CITIES[0]));
+else if (resumeAfterTakeOver?.season) startGame(picker.getPlace() ?? null, { season: resumeAfterTakeOver.season });
 else if (resumeAfterTakeOver && picker.getPlace()) startGame(picker.getPlace());
 else picker.show();
 
@@ -2512,7 +2516,7 @@ function showTakeOverCard() {
 function takeOver({ resume = false } = {}) {
   const res = saveStore.takeOver();
   if (res.ok) {
-    if (resume) { try { sessionStorage.setItem(RESUME_KEY, '1'); } catch { /* sans stockage de session : retour au menu */ } }
+    if (resume) { try { sessionStorage.setItem(RESUME_KEY, encodeResume(session?.seasonLevel ?? null)); } catch { /* sans stockage de session : retour au menu */ } }
     reloadClean();
     return;
   }
