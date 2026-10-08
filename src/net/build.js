@@ -1,1 +1,1 @@
-export const BUILD = 'ea51adb';
+export const BUILD = 'bed1b56';
