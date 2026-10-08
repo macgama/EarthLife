@@ -722,7 +722,7 @@ test('présence : l\'autre page passe en arrière-plan ou se ferme → l\'évén
   assert.equal(presenceOf(storage).w, a.store.writer);
 });
 
-test('présence : l\'autre page est plantée (présence périmée) → repérée au battement, après 30 s', () => {
+test('présence : l\'autre page est plantée (présence périmée) → repérée au battement, après 90 s', () => {
   const { clock, a, b } = pagePair();
   assert.equal(writeNow(a).ok, true);
   assert.equal(b.store.takeOver().ok, true);
@@ -773,7 +773,7 @@ test('présence : l\'autre page est déjà partie quand celle-ci le découvre �
   assert.equal(a.seen.length, 1);
 });
 
-test('présence : ancienne version sans présence → vivante tant que sa dernière écriture date de moins de 30 s', () => {
+test('présence : ancienne version sans présence → vivante tant que sa dernière écriture date de moins de 90 s', () => {
   const clock = { t: NOW };
   const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
   const seen = [];
@@ -791,7 +791,7 @@ test('présence : ancienne version sans présence → vivante tant que sa derni�
   clock.t += PRESENCE.freshMs - 1000;
   assert.equal(a.beat(), false);
   clock.t += 1500;
-  assert.equal(a.beat(), true, 'plus d\'écriture depuis plus de 30 s : l\'autre page ne compte plus');
+  assert.equal(a.beat(), true, 'plus d\'écriture depuis plus de 90 s : l\'autre page ne compte plus');
   assert.equal(seen.at(-1).type, 'other-gone');
 });
 
@@ -835,11 +835,11 @@ test('présence : rechargement voulu → la présence de l\'ancienne page reste 
   assert.equal(a.store.flush('test').ok, false);
   assert.equal(a.seen[0].type, 'other-tab');
   assert.equal(a.seen[0].alive, true, 'la page qui a repris la main va recharger : elle n\'est pas « partie »');
-  clock.t += PRESENCE.freshMs * 3;
+  clock.t += PRESENCE.holdMs - 10000;
   assert.equal(a.store.beat(), false);
   assert.equal(a.seen.length, 1, 'la page rechargée a le temps de démarrer');
   // Si elle ne revient pas, la page à l'écran reprend la main une fois le délai passé.
-  clock.t += PRESENCE.holdMs;
+  clock.t += 20000;
   assert.equal(a.store.beat(), true);
   assert.equal(a.seen.at(-1).type, 'other-gone');
   // La page rechargée, elle, publie sa propre présence (sans délai) dès sa première écriture.
@@ -860,15 +860,15 @@ test('présence : page occupée (démarrage lent) ou présence d\'une autre page
   clock.t += 1000;
   a.store.markDirty();
   assert.equal(a.store.flush('test').ok, false);
-  // b est occupée 25 s sans renouveler sa présence (chargement d'une ville sur un appareil lent) : toujours vivante.
-  clock.t += 25000;
+  // b est occupée 80 s sans renouveler sa présence (chargement d'une ville sur un appareil lent) : toujours vivante.
+  clock.t += PRESENCE.freshMs - 10000;
   assert.equal(a.store.beat(), false);
   assert.equal(a.seen.length, 1);
   // Présence d'une troisième page, cachée : ce n'est pas la preuve que la page qui a écrit en dernier est partie.
   storage.setItem(PRESENCE_KEY, JSON.stringify({ w: 'wtroisieme', at: clock.t, vis: false }));
-  assert.equal(a.store.beat(), false, 'sauvegarde de b écrite il y a 26 s : b compte encore');
-  clock.t += 5000;
-  assert.equal(a.store.beat(), true, 'plus d\'écriture ni de présence de b depuis plus de 30 s');
+  assert.equal(a.store.beat(), false, 'sauvegarde de b écrite il y a moins de 90 s : b compte encore');
+  clock.t += 11000;
+  assert.equal(a.store.beat(), true, 'plus d\'écriture ni de présence de b depuis plus de 90 s');
   // Sa propre présence, restée dans la case, n'est pas une preuve non plus.
   const { storage: s2, clock: c2, a: a2, b: b2 } = pagePair();
   assert.equal(writeNow(a2).ok, true);

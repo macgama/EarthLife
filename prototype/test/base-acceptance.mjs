@@ -99,7 +99,10 @@ async function newContext(device) {
 const pageErrors = [];
 function watchErrors(page, tag) {
   page.on('pageerror', (e) => pageErrors.push(`${tag} : exception : ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error') pageErrors.push(`${tag} : console : ${m.text().slice(0, 300)}`); });
+  page.on('console', (m) => {
+    if (m.type() === 'error') pageErrors.push(`${tag} : console : ${m.text().slice(0, 300)}`);
+    else if (m.text().startsWith('[sauvegarde]')) note(`${tag} : ${m.text().slice(0, 700)}`);
+  });
   page.on('requestfailed', (r) => { if (!/ERR_ABORTED/.test(r.failure()?.errorText ?? '')) note(`requête en échec : ${r.url().slice(0, 160)} (${r.failure()?.errorText})`); });
 }
 

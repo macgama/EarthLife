@@ -26,7 +26,7 @@ import {
   planDelivery, questText, updateQuest, currentTarget, placeWith, refugeQuest, offerMissions, questReward, missionLine,
   durationLabel as questDuration,
 } from './quest.js';
-import { createSaveStore, LIMITS, exportFileName, SAVE_MESSAGES, isBlankSave, searchedWhole, searchOldest } from './save.js';
+import { createSaveStore, LIMITS, PRESENCE_KEY, exportFileName, SAVE_MESSAGES, isBlankSave, searchedWhole, searchOldest } from './save.js';
 import { createRefuge, clockLabel, durationLabel, TAKEN_TEXT } from './refuge.js';
 import { FICHE, ficheOf } from './fiche.js';
 import { kindLabel, countsLabel, countOf, chestCap, moveItems, depositAll, prepareBag, storeItems, refugeWarmth, TIMES } from './base.js';
@@ -2478,7 +2478,11 @@ function onSaveExternal(e) {
   const playing = session?.player && !$('hud').classList.contains('hidden');
   // L'autre page a écrit mais n'est plus là (cachée, fermée, plantée) alors que celle-ci est à l'écran : elle reprend la main
   // toute seule, sans carte ni choix à faire (save.js, présence des pages).
-  if ((e.type === 'other-gone' || (e.type === 'other-tab' && e.alive === false && e.visible)) && handOver(!!e.keepLive)) return;
+  if (e.type === 'other-gone' || (e.type === 'other-tab' && e.alive === false && e.visible)) {
+    // Trace de la décision (console, pour comprendre une reprise inattendue : état de la présence au moment où elle part).
+    try { console.info('[sauvegarde] autre page absente', JSON.stringify({ e: e.type, keepLive: !!e.keepLive, presence: localStorage.getItem(PRESENCE_KEY), conflict: saveStore.conflict, now: Date.now() })); } catch { /* trace seulement */ }
+    if (handOver(!!e.keepLive)) return;
+  }
   // Stockage plein, territoire non enregistré ou allégé : un toast (une fois), le motif reste dans la ligne de la sauvegarde.
   if (e.type === 'full' || e.type === 'companion-full' || e.type === 'compacted' || e.type === 'dropped') {
     if (playing) toast(e.message, 6, 'danger');
