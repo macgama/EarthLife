@@ -14,6 +14,7 @@ import { localDate, utcOffsetFor } from './horde.js';
 import { storeItems, chestCap, countOf, countsLabel, claimableShape } from './base.js';
 import { nearestOpen } from './collision.js';
 import { SEASON_TEXT } from './net/season.js';
+import { createMenuSheet } from './menu-sheet.js';
 import { createSalon, createTabs, frontModel, summaryOf, ctaModel, clockOf, pinsOf, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
 const LEVEL_KEY = 'earthlife.niveau';
@@ -32,7 +33,7 @@ export function createCityGame(host) {
   // Menu : inscription, état des lieux (relu au plus toutes les 30 s), niveau voulu avant de se connecter, message passager.
   const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, busy: false, after: null, note: '', noteAt: 0, pins: [], framed: false };
   const ls = (() => { try { return window.localStorage; } catch { return null; } })();
-  let salon = null, tabs = null;
+  let salon = null, tabs = null, sheet = null;
   const seasonRef = { rt: null };                                            // runtime de la saison en cours (messages du serveur)
 
   function readLevel() {
@@ -73,7 +74,10 @@ export function createCityGame(host) {
     picker.setSeasonPinHandler?.((level) => doc.querySelector(`#fronts .front[data-level="${level}"]`)?.click());
     // « À plusieurs » cadre les villes de la saison ; « Partie libre » ramène la carte au lieu choisi. Une fois la carte remise à la taille du
     // nouveau panneau (resize recale ses marges, ce qui arrêterait un vol commencé avant).
+    // Téléphone : la feuille du menu se replie à chaque changement d'onglet (la carte reste à l'écran) ; la carte se recale sur elle.
+    sheet = createMenuSheet({ root: $('menu'), handle: $('sheet-handle'), onChange: () => requestAnimationFrame(() => picker.resize?.()) });
     tabs = createTabs({ doc, root: $('menu'), storage: ls, params, onChange: (name) => requestAnimationFrame(() => {
+      sheet?.close();
       picker.resize?.();
       if (name === 'libre') picker.recenter?.();
       else picker.frameCities?.(framingOf(seasonUi.pins), { prefer: salon?.pick() ?? DEFAULT_FRONT });

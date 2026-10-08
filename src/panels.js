@@ -1,7 +1,7 @@
 // Panneau du refuge (onglets Défense, Fabriquer, Coffre) et cartes de jeu (#card).
 // panelHtml et cardHtml sont purs et échappent tous les textes (testés sous node) ; createRefugePanel et
 // createCard touchent au DOM. Le style est injecté une fois (<style id="rp-style">) ; ses classes commencent
-// toutes par rp-. Ordinateur : tiroir de 420 px à droite ; téléphone (759 px et moins) : feuille basse de 60vh.
+// toutes par rp-. Ordinateur et tablette à l'horizontale : tiroir de 420 px à droite ; téléphone (759 px et moins) et tablette en portrait : feuille basse.
 import { icon } from './icons.js';
 
 export const TABS = [
@@ -706,8 +706,9 @@ export const PANEL_CSS = `
   .rp-fold:hover { background: ${T.raised}; }
 }
 
-/* Ordinateur et tablette : tiroir de 420 px à droite, sur toute la hauteur. */
-@media (min-width: 760px) {
+/* Ordinateur et tablette à l'horizontale : tiroir de 420 px à droite, sur toute la hauteur. Une tablette en portrait
+   (760 à 1023 px) garde la feuille basse du téléphone : le tiroir cacherait l'état et le sac du HUD. */
+@media (min-width: 1024px), (min-width: 760px) and (orientation: landscape) {
   .rp-panel { top: 0; right: 0; bottom: 0; width: min(420px, 100vw); border-width: 0 0 0 1px; border-radius: 0;
     padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) 0;
     animation: rp-in-right ${T.slow} ${T.easeOut}; }
@@ -716,8 +717,9 @@ export const PANEL_CSS = `
   .rp-fold-btn svg { transform: rotate(180deg); }
   .rp-fold-chevron { transform: none; }
 }
-/* Téléphone : feuille basse de 60 % de l'écran ; la vue 3D reste visible au-dessus. */
-@media (max-width: 759px) {
+/* Téléphone, et tablette en portrait : feuille basse de 60 % de l'écran (56 % sur tablette, centrée sur 640 px) ; la vue 3D
+   et l'état restent visibles au-dessus. */
+@media (max-width: 759px), (min-width: 760px) and (max-width: 1023px) and (orientation: portrait) {
   .rp-panel { left: 0; right: 0; bottom: 0; height: 60vh; height: 60dvh; max-height: calc(100% - 64px); border-width: 1px 0 0;
     padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
     animation: rp-in-up ${T.slow} ${T.easeOut}; }
@@ -729,9 +731,18 @@ export const PANEL_CSS = `
     transition: background-color ${T.fast} ${T.easeStd}; }
   .rp-handle:active::before { background: ${T.text2}; }
   .rp-head .rp-icon-btn { position: relative; z-index: 1; }
-  .rp-title { font-size: var(--fs-md, 15px); }
-  .rp-perk { font-size: var(--fs-xs, 12px); }
+  .rp-title { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: var(--fs-md, 15px); }
+  .rp-perk { display: -webkit-box; overflow: hidden; margin-top: 2px; -webkit-line-clamp: 1; -webkit-box-orient: vertical; font-size: var(--fs-xs, 12px); }
+  .rp-head { min-height: 56px; padding-top: 4px; padding-bottom: 4px; }
   .rp-panel.rp-folded .rp-fold { min-height: 55px; }
+  /* Pied : trois colonnes égales, le libellé sans icône (Dormir passe sur deux lignes au plus), le motif en dessous. */
+  .rp-foot-actions { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--sp-2, 8px); }
+  .rp-foot-actions .rp-btn { min-height: 52px; padding: 4px; }
+  .rp-foot-actions .rp-btn svg { display: none; }
+  .rp-foot-actions .rp-why { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 11px; line-height: 1.15; }
+}
+@media (min-width: 760px) and (max-width: 1023px) and (orientation: portrait) {
+  .rp-panel { left: max(0px, calc(50% - 320px)); right: max(0px, calc(50% - 320px)); height: 56vh; height: 56dvh; border-width: 1px 1px 0; }
 }
 @media (max-height: 500px) and (orientation: landscape) {
   .rp-head { min-height: 52px; padding-top: 4px; padding-bottom: 4px; }
