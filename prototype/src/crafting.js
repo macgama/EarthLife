@@ -15,6 +15,7 @@ export const RECIPES = {
   batte_cloutee: { name: 'Batte cloutée', time: 8, desc: 'Arme : 75 dégâts, 60 coups', needs: { bois: 1, clous: 3 }, makes: { batte_cloutee: 1 }, upgrade: null, requires: null, plan: null },
   bandage: { name: 'Bandage', time: 3, desc: 'Donne 1 bandage (+15 PV)', needs: { tissu: 2 }, makes: { bandage: 1 }, upgrade: null, requires: null, plan: null },
   manteau: { name: 'Manteau chaud', time: 12, desc: 'Vêtement : +12 °C ressentis par temps froid', needs: { tissu: 4, ruban: 1 }, makes: { manteau: 1 }, upgrade: null, requires: null, plan: null },
+  sac_randonnee: { name: 'Sac de randonnée', time: 12, desc: 'Équipement : sac de 45 places au lieu de 30', needs: { tissu: 3, ruban: 2 }, makes: { sac_randonnee: 1 }, upgrade: null, requires: null, plan: null },
   poncho: { name: 'Poncho', time: 8, desc: 'Vêtement : mouillure ×0,25, +4 °C', needs: { tissu: 2, ruban: 2 }, makes: { poncho: 1 }, upgrade: null, requires: null, plan: null },
   leurre: { name: 'Leurre', time: 4, desc: 'Se lance (touche 5) : attire les zombies à 45 m pendant 20 s', needs: { ferraille: 1, ruban: 1 }, makes: { leurre: 1 }, upgrade: null, requires: null, plan: null },
   etabli: { name: 'Établi', time: 20, desc: 'Aménagement : débloque plaque, hache, récupérateur, sirène', needs: { bois: 4, clous: 3, ferraille: 2 }, makes: null, upgrade: 'etabli', requires: null, plan: 'etabli' },
@@ -49,7 +50,7 @@ function knowsPlan(plan, ctx) {
 // mais l'objet qu'il remplace, s'il est intact, en prend une (simulation sur une copie : rien n'est modifié).
 function chestNeed(r, survivor) {
   if (!survivor) return countsTotal(r.makes);
-  const sim = { weapon: survivor.weapon ? { ...survivor.weapon } : null, clothing: survivor.clothing ?? null };
+  const sim = { weapon: survivor.weapon ? { ...survivor.weapon } : null, clothing: survivor.clothing ?? null, pack: survivor.pack ?? null };
   const dest = {};
   for (const [k, n] of Object.entries(r.makes)) {
     for (let i = 0; i < n; i++) {

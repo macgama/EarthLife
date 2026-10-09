@@ -5,7 +5,7 @@
 // 150 ms, et on ne réécrit que ce qui change (textes, largeurs des jauges, classes, icônes).
 import * as icons from './icons.js';
 import { normalizeAngle } from './game.js';
-import { count, bagUsed, BAG_CAPACITY, ITEMS, WEAPONS } from './survival.js';
+import { count, bagUsed, bagCapacity, ITEMS, WEAPONS } from './survival.js';
 
 const USES = [['eat', 'Manger'], ['drink', 'Boire'], ['heal', 'Soigner'], ['warm', 'Chauffer'], ['lure', 'Leurre']];
 const VITAL_ICONS = { health: 'sante', stamina: 'endurance', food: 'faim', water: 'soif', fatigue: 'fatigue' };
@@ -333,8 +333,9 @@ export function createHud({ $, input }) {
       st.counts[action] = n;
     }
     const used = bagUsed(sv);
-    setText(el.bagCount, `Sac ${used}/${BAG_CAPACITY}`);
-    el.bag?.classList.toggle('full', used >= BAG_CAPACITY);
+    const cap = bagCapacity(sv);
+    setText(el.bagCount, `Sac ${used}/${cap}`);
+    el.bag?.classList.toggle('full', used >= cap);
     setText(el.gear, gearText(sv));
     if (el.base) {
       el.base.classList.toggle('hidden', !info.baseLine);

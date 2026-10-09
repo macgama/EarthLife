@@ -23,11 +23,12 @@ export const ITEMS = {
   plaque: { name: 'Plaque de métal', one: 'plaque', many: 'plaques' },
   piege: { name: 'Piège à pointes', one: 'piège', many: 'pièges' },
   leurre: { name: 'Leurre', verb: 'Lancer', lure: true, one: 'leurre', many: 'leurres' },
-  // Équipement : une arme et un vêtement portés, qui n'occupent pas de place dans le sac.
+  // Équipement : une arme, un vêtement et un sac portés, qui n'occupent pas de place dans le sac.
   batte_cloutee: { name: 'Batte cloutée', equip: 'weapon', damage: 75, uses: 60, one: 'batte cloutée', many: 'battes cloutées' },
   hache: { name: 'Hache', equip: 'weapon', damage: 90, uses: 50, chop: true, one: 'hache', many: 'haches' },
   manteau: { name: 'Manteau chaud', equip: 'clothing', warm: 12, one: 'manteau chaud', many: 'manteaux chauds' },
   poncho: { name: 'Poncho', equip: 'clothing', warm: 4, wetMul: 0.25, one: 'poncho', many: 'ponchos' },
+  sac_randonnee: { name: 'Sac de randonnée', equip: 'bag', capacity: 45, one: 'sac de randonnée', many: 'sacs de randonnée' },
 };
 
 // Armes : la batte de base ne s'use pas et n'est pas un objet du sac.
@@ -37,7 +38,8 @@ export const WEAPONS = {
   hache: { name: ITEMS.hache.name, damage: ITEMS.hache.damage, uses: ITEMS.hache.uses, chop: true },
 };
 
-export const BAG_CAPACITY = 30;
+// Places du sac sans sac de randonnée ; `bagCapacity` donne celles du survivor selon le sac qu'il porte.
+export const BAG_BASE = 30;
 export const CONSUMABLE_KEYS = ['conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette'];
 export const MATERIAL_KEYS = ['bois', 'clous', 'ferraille', 'tissu', 'ruban'];
 
@@ -68,8 +70,8 @@ export const LOOT = {
   house: [['conserve', 0.45, 2], ['eau', 0.45, 2], ['manteau', 0.15, 1], ['bandage', 0.25, 1], ['chaufferette', 0.2, 1],
     ['bois', 0.35, 2], ['clous', 0.3, 3], ['tissu', 0.4, 2], ['ruban', 0.15, 1], ['ferraille', 0.15, 1]],
   food: [['conserve', 0.6, 2], ['eau', 0.7, 2], ['soda', 0.6, 2], ['barre', 0.4, 1], ['bois', 0.25, 2]],
-  clothes: [['manteau', 0.65, 1], ['chaufferette', 0.3, 1], ['tissu', 0.85, 4], ['poncho', 0.2, 1]],
-  outdoor: [['manteau', 0.5, 1], ['chaufferette', 0.5, 2], ['eau', 0.5, 2], ['batte_cloutee', 0.25, 1], ['ruban', 0.5, 2], ['tissu', 0.4, 2], ['poncho', 0.3, 1]],
+  clothes: [['manteau', 0.65, 1], ['chaufferette', 0.3, 1], ['tissu', 0.85, 4], ['poncho', 0.2, 1], ['sac_randonnee', 0.05, 1]],
+  outdoor: [['manteau', 0.5, 1], ['chaufferette', 0.5, 2], ['eau', 0.5, 2], ['batte_cloutee', 0.25, 1], ['ruban', 0.5, 2], ['tissu', 0.4, 2], ['poncho', 0.3, 1], ['sac_randonnee', 0.12, 1]],
 };
 const KIND_ALIASES = {
   apartments: 'house', residential: 'house', detached: 'house', yes: 'house', terrace: 'house', semidetached_house: 'house', dormitory: 'house',
@@ -141,6 +143,7 @@ export function createSurvivor() {
     inventory: { eau: 1, conserve: 1 }, // le sac
     weapon: { key: 'batte', uses: null },
     clothing: null, // null = veste légère, sinon 'manteau' ou 'poncho'
+    pack: null, // null = sac de base (30 places), sinon 'sac_randonnee' (45)
     warmth: 0, // effet temporaire d'une chaufferette
   };
 }
@@ -211,16 +214,30 @@ export function bagUsed(s) {
   return countsTotal(s.inventory);
 }
 
+// Places du sac : 30, ou celles du sac de randonnée porté (45).
+export function bagCapacity(s) {
+  return ITEMS[s?.pack]?.capacity ?? BAG_BASE;
+}
+
+// Clé de l'objet porté à l'emplacement `equip` ('weapon', 'clothing' ou 'bag'), null si rien (ou la batte de base).
+export function wornKey(s, equip) {
+  if (equip === 'weapon') return s.weapon?.key ?? null;
+  if (equip === 'bag') return s.pack ?? null;
+  return s.clothing ?? null;
+}
+
 // Dégâts de l'arme portée (batte de base si rien).
 export function weaponDamage(s) {
   return (WEAPONS[s.weapon?.key] ?? WEAPONS.batte).damage;
 }
 
-// Un objet trouvé ou fabriqué s'équipe tout seul : une arme si elle frappe plus fort, un vêtement si l'emplacement est vide.
+// Un objet trouvé ou fabriqué s'équipe tout seul : une arme si elle frappe plus fort, un vêtement si l'emplacement est vide,
+// un sac s'il est plus grand que celui que l'on porte.
 function betterThanWorn(s, key) {
   const item = ITEMS[key];
   if (item?.equip === 'weapon') return item.damage > weaponDamage(s);
   if (item?.equip === 'clothing') return !s.clothing;
+  if (item?.equip === 'bag') return item.capacity > bagCapacity(s);
   return false;
 }
 
@@ -248,6 +265,11 @@ function wear(s, key) {
     const prev = s.weapon?.key && s.weapon.key !== 'batte' && ITEMS[s.weapon.key] ? s.weapon.key : null;
     if (s.weapon) { s.weapon.key = key; s.weapon.uses = item.uses; } else s.weapon = { key, uses: item.uses };
     return { back: discarded ? null : prev, discarded };
+  }
+  if (item.equip === 'bag') {
+    const prev = s.pack ?? null;
+    s.pack = key;
+    return { back: prev, discarded: null };
   }
   const prev = s.clothing ?? null;
   s.clothing = key;
@@ -279,24 +301,59 @@ export function equipOrStoreInfo(s, key, chest = null) {
 export function equipFrom(s, key, from) {
   const item = ITEMS[key];
   if (!item?.equip || !((from?.[key] ?? 0) > 0)) return false;
-  if (key === (item.equip === 'weapon' ? s.weapon?.key : s.clothing)) return false;
+  if (key === wornKey(s, item.equip)) return false;
   takeCount(from, key, 1);
   const { back } = wear(s, key);
   if (back) addCount(from, back, 1);
   return true;
 }
 
+// Objets du sac qui ne tiendraient plus dans les 30 places de base si l'on enlevait le sac de randonnée.
+export function packSurplus(s) {
+  return Math.max(0, bagUsed(s) - BAG_BASE);
+}
+
+export const PACK_REMOVE_FULL = 'Coffre plein : le surplus du sac ne tient pas';
+
+// Enlève le sac de randonnée : il va au coffre, avec ce qui ne tient plus dans les 30 places de base (les dernières clés
+// d'abord). Refusé si le coffre ne peut pas tout prendre : rien ne bouge. `chest` : le coffre du refuge, `chestCap` sa place.
+// Renvoie { ok, why, moved } ; `moved` compte ce qui est allé au coffre (le sac compris).
+export function removePack(s, chest, chestCap) {
+  const key = s.pack;
+  if (!key) return { ok: false, why: 'Tu ne portes pas de sac de randonnée', moved: {} };
+  const surplus = packSurplus(s);
+  if (surplus + 1 > chestCap - countsTotal(chest)) return { ok: false, why: PACK_REMOVE_FULL, moved: {} };
+  const moved = {};
+  let left = surplus;
+  for (const k of Object.keys(s.inventory).reverse()) {
+    if (left <= 0) break;
+    const n = Math.min(s.inventory[k] ?? 0, left);
+    if (n <= 0) continue;
+    takeCount(s.inventory, k, n);
+    addCount(chest, k, n);
+    addCount(moved, k, n);
+    left -= n;
+  }
+  addCount(chest, key, 1);
+  addCount(moved, key, 1);
+  s.pack = null;
+  return { ok: true, why: '', moved };
+}
+
 // Ramasse le butin dans le sac, dans la limite de sa place ; le surplus reste par terre (`left`).
-// `discarded` : armes entamées jetées parce qu'une meilleure a été équipée d'office.
+// `discarded` : armes entamées jetées parce qu'une meilleure a été équipée d'office. Un sac de randonnée trouvé est
+// porté d'abord : la place qu'il donne sert au reste du butin.
 export function addLoot(s, found) {
   const res = { equipped: [], stored: {}, left: {}, discarded: [] };
   const toBag = (k, n) => {
-    const kept = Math.min(n, Math.max(0, BAG_CAPACITY - bagUsed(s)));
+    const kept = Math.min(n, Math.max(0, bagCapacity(s) - bagUsed(s)));
     addCount(s.inventory, k, kept);
     addCount(res.stored, k, kept);
     addCount(res.left, k, n - kept);
   };
-  for (const [k, raw] of Object.entries(found ?? {})) {
+  const isPack = (k) => ITEMS[k]?.equip === 'bag';
+  const entries = Object.entries(found ?? {}).sort(([a], [b]) => Number(isPack(b)) - Number(isPack(a)));
+  for (const [k, raw] of entries) {
     const n = Math.floor(raw);
     if (!ITEMS[k] || !(n > 0)) continue;
     let rest = n;
@@ -323,12 +380,16 @@ export function wearWeapon(s) {
   return 'broken';
 }
 
-// Mort : le sac est vidé (son contenu reste au sol, `bag`), l'arme perd 25 % de son usure maximale
-// (`lost` coups), le vêtement est gardé. Les besoins du réveil sont dans `wakeAfterDeath`.
+// Mort : le sac est vidé (son contenu reste au sol, `bag`, le sac de randonnée porté compris), l'arme perd 25 % de son usure
+// maximale (`lost` coups), le vêtement est gardé. Les besoins du réveil sont dans `wakeAfterDeath`.
 export function deathPenalty(s) {
   const bag = {};
   for (const [k, n] of Object.entries(s.inventory ?? {})) if (n > 0) bag[k] = n;
   for (const k of Object.keys(s.inventory ?? {})) delete s.inventory[k];
+  if (s.pack) {
+    addCount(bag, s.pack, 1);
+    s.pack = null;
+  }
   let lost = 0, broken = false;
   const max = WEAPONS[s.weapon?.key]?.uses;
   if (max) {

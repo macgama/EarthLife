@@ -14,6 +14,7 @@ const TABLE = {
   batte_cloutee: [{ bois: 1, clous: 3 }, { batte_cloutee: 1 }, null, null, null],
   bandage: [{ tissu: 2 }, { bandage: 1 }, null, null, null],
   manteau: [{ tissu: 4, ruban: 1 }, { manteau: 1 }, null, null, null],
+  sac_randonnee: [{ tissu: 3, ruban: 2 }, { sac_randonnee: 1 }, null, null, null],
   poncho: [{ tissu: 2, ruban: 2 }, { poncho: 1 }, null, null, null],
   leurre: [{ ferraille: 1, ruban: 1 }, { leurre: 1 }, null, null, null],
   etabli: [{ bois: 4, clous: 3, ferraille: 2 }, null, 'etabli', null, 'etabli'],
@@ -22,7 +23,7 @@ const TABLE = {
   sirene: [{ ferraille: 2, clous: 2, ruban: 1 }, null, 'sirene', 'etabli', null],
 };
 
-test('les 12 recettes : coût exact, produit et conditions du tableau 3.3', () => {
+test('les 13 recettes : coût exact, produit et conditions du tableau 3.3', () => {
   assert.deepEqual(Object.keys(RECIPES), Object.keys(TABLE));
   for (const [key, [needs, makes, upgrade, requires, plan]] of Object.entries(TABLE)) {
     const r = RECIPES[key];
@@ -164,7 +165,7 @@ test('l\'équipement fabriqué s\'équipe tout seul s\'il est meilleur', () => {
 
 test('onglet Fabriquer : une ligne par recette, coût comparé au stock', () => {
   const rows = recipeRows(ctxWith({ chest: { bois: 10, clous: 3 }, bag: { bois: 2, clous: 1 } }));
-  assert.equal(rows.length, 12);
+  assert.equal(rows.length, 13);
   const planches = rows.find((r) => r.key === 'planches');
   assert.deepEqual(planches, { key: 'planches', name: 'Planches', desc: 'Donne 1 planche', cost: '2 bois (12) · 1 clou (4)', time: 4, ok: true, why: '' });
   const piege = rows.find((r) => r.key === 'piege');
@@ -217,4 +218,39 @@ test('chaque recette a une durée de fabrication en secondes, et les lignes du p
   assert.equal(RECIPES.bandage.time, Math.min(...times));
   const rows = recipeRows(ctxWith());
   assert.deepEqual(rows.map((r) => [r.key, r.time]), Object.entries(RECIPES).map(([k, r]) => [k, r.time]));
+});
+
+test('sac de randonnée : 3 tissus et 2 rubans en 12 s, sans établi, porté tout de suite', () => {
+  const r = RECIPES.sac_randonnee;
+  assert.deepEqual(r.needs, { tissu: 3, ruban: 2 });
+  assert.equal(r.time, 12);
+  assert.equal(craftTime('sac_randonnee'), 12);
+  assert.deepEqual([r.requires, r.plan, r.upgrade], [null, null, null], 'ni établi, ni plan');
+  const sv = createSurvivor();
+  const ctx = ctxWith({ chest: { tissu: 3 }, bag: { ruban: 2 } });
+  const res = craft('sac_randonnee', ctx, sv);
+  assert.equal(res.ok, true);
+  assert.equal(res.equipped, 'sac_randonnee');
+  assert.equal(res.msg, 'Sac de randonnée équipé');
+  assert.equal(sv.pack, 'sac_randonnee');
+  assert.deepEqual(ctx.chest, {}, 'rien au coffre : le sac est porté');
+  assert.deepEqual(ctx.bag, {});
+  // Un deuxième sac, sac déjà porté : il va au coffre.
+  const again = craft('sac_randonnee', ctxWith({ chest: { tissu: 3, ruban: 2 } }), sv);
+  assert.equal(again.equipped, null);
+  assert.equal(again.msg, 'Fabriqué : 1 sac de randonnée');
+});
+
+test('sac de randonnée : la place au coffre tient compte du sac porté tout de suite', () => {
+  // Coffre plein de ses ingrédients : le sac porté d'office ne prend aucune place, le produit entre.
+  const sv = createSurvivor();
+  const needs = { chest: { tissu: 3, ruban: 2 }, chestCap: 5 };
+  assert.deepEqual(canCraft('sac_randonnee', ctxWith(needs), sv), { ok: true, why: '' });
+  // Déjà un sac porté : le produit doit aller au coffre, qui n'a plus de place une fois les ingrédients retirés ? Si : 5 − 0 libres.
+  sv.pack = 'sac_randonnee';
+  assert.deepEqual(canCraft('sac_randonnee', ctxWith(needs), sv), { ok: true, why: '' });
+  assert.deepEqual(canCraft('sac_randonnee', ctxWith({ chest: { tissu: 3, ruban: 2, bois: 1 }, chestCap: 6, bag: {} }), sv), { ok: true, why: '' });
+  assert.deepEqual(canCraft('sac_randonnee', ctxWith({ chest: { tissu: 2, ruban: 2, bois: 4 }, bag: { tissu: 1 }, chestCap: 8 }), sv).ok, true);
+  // Sans survivant, tout produit compte une place au coffre.
+  assert.deepEqual(canCraft('sac_randonnee', ctxWith({ chest: { tissu: 3, ruban: 2, bois: 4 }, chestCap: 9 })), { ok: true, why: '' });
 });

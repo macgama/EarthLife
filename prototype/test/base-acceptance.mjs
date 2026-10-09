@@ -3,7 +3,7 @@
 //   npm run acceptance       (ou : node test/base-acceptance.mjs [dossier-des-captures], browser-shots/acceptance par défaut)
 // Variables : ROUTES (réponses enregistrées, test/fixtures/offline-routes.mjs par défaut ; ROUTES=none : réseau réel),
 // PLAYWRIGHT_MODULE (chemin du module playwright), PORT (0 : port libre), ONLY (desktop ou mobile ; vue : la section 13,
-// zoom et carte des environs, seule sur une partie neuve).
+// zoom et carte des environs, seule sur une partie neuve ; stats : « Mes statistiques » au menu, ordinateur et téléphone).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
@@ -551,6 +551,166 @@ async function repelWave(page, tag) {
   check(!after.horde.held.includes(key) && JSON.stringify(after.journal) === JSON.stringify(before.journal), `${tag} : nuit forcée ni tenue (held ${JSON.stringify(after.horde.held)}) ni écrite au carnet (${after.journal.length} lignes)`);
 }
 
+// ---------- Sac de randonnée et « Mes statistiques » (scénario 15) ----------
+
+// Tuiles de la carte « Mes statistiques » : { libellé: valeur } (espaces insécables ramenées à des espaces simples), ou null.
+const statsTiles = (page) => ev(page, () => {
+  const card = document.getElementById('card');
+  if (card.classList.contains('hidden') || card.querySelector('.rp-card-title')?.textContent !== 'Mes statistiques') return null;
+  return Object.fromEntries([...card.querySelectorAll('.rp-stat')].map((t) => [t.querySelector('dt').textContent.trim(), t.querySelector('dd').textContent.replace(/ /g, ' ').trim()]));
+});
+const statsOpen = (page) => until(page, () => {
+  const card = document.getElementById('card');
+  return !card.classList.contains('hidden') && card.querySelector('.rp-card-title')?.textContent === 'Mes statistiques' ? 1 : null;
+}, null, 10000);
+const cardClosed = (page) => until(page, () => (document.getElementById('card').classList.contains('hidden') ? 1 : null), null, 5000);
+
+// Au refuge (panneau ouvert) : fabriquer le sac de randonnée (porté d'office, 45 places), « Mes statistiques » depuis le panneau,
+// puis enlever le sac (surplus au coffre). Le coffre et le sac sont remis comme avant à la fin.
+async function packAndStats(page, tag) {
+  const before = await ev(page, () => {
+    const { save, session: s } = window.__earthlife;
+    const b = { chest: { ...save.base.chest }, bag: { ...s.survivor.inventory } };
+    save.base.chest.tissu = (save.base.chest.tissu ?? 0) + 3;
+    save.base.chest.ruban = (save.base.chest.ruban ?? 0) + 2;
+    return { ...b, pack: s.survivor.pack };
+  });
+  check(before.pack === null, `${tag} 2c : sac de base au départ`);
+  await page.click('#rp-tab-craft');
+  await page.click(panelButton('craft', 'sac_randonnee'));
+  const act = await ev(page, () => { const a = window.__earthlife.session.action; return a ? { id: a.id, time: a.time } : null; });
+  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 120000);
+  const bagText = await until(page, () => {
+    const t = document.getElementById('bag-count').textContent.replace(/\s+/g, ' ').trim();
+    return /\/45$/.test(t) ? t : null;
+  }, null, 10000);
+  const made = await ev(page, () => {
+    const { save, session: s } = window.__earthlife;
+    return { pack: s.survivor.pack, inChest: save.base.chest.sac_randonnee ?? 0, inBag: s.survivor.inventory.sac_randonnee ?? 0, saved: save.survivor.pack };
+  });
+  check(act?.id === 'craft' && act.time >= 12, `${tag} 2c : fabrication de ${act?.time} s`);
+  check(made.pack === 'sac_randonnee' && made.inChest === 0 && made.inBag === 0, `${tag} 2c : sac de randonnée porté d'office (ni au coffre ni dans le sac)`);
+  check(!!bagText, `${tag} 2c : HUD « ${bagText} »`);
+  const toast = await toastSeen(page, 'Sac de randonnée', 5000);
+  check(toast === 'Sac de randonnée équipé', `${tag} 2c : notification « ${toast} »`);
+  await page.click('#rp-tab-chest');
+  const chest = await ev(page, () => ({
+    head: document.querySelector('#refuge-panel .rp-chest-count')?.textContent.replace(/\s+/g, ' ').trim(),
+    gear: document.querySelector('#refuge-panel .rp-gear')?.textContent.replace(/\s+/g, ' ').trim(),
+    unpack: !!document.querySelector('#refuge-panel button[data-act="unpack"]:not([disabled])'),
+  }));
+  check(/Sac \d+\/45/.test(chest.head ?? '') && /Sac : Sac de randonnée/.test(chest.gear ?? '') && chest.unpack, `${tag} 2c : coffre « ${chest.head} », « ${chest.gear} », bouton « Enlever » actif`);
+  await shot(page, `${tag}-05-sac-randonnee`);
+
+  // Mes statistiques, depuis le panneau : valeurs posées dans le profil, relues sur la carte.
+  const profile = await ev(page, () => {
+    const p = window.__earthlife.save.profile;
+    const old = JSON.parse(JSON.stringify(p));
+    Object.assign(p, { nightsHeld: 7, wavesRepelled: 9, wavesLost: 1, kills: 1342, deliveries: 2, deaths: 1, distanceM: 12400, playSec: 18720, weathers: { rain: 3, clear: 1 } });
+    return old;
+  });
+  await page.click('#refuge-panel [data-ui="stats"]');
+  if (check(await statsOpen(page), `${tag} 2c : « Mes statistiques » ouvert depuis le panneau du refuge`)) {
+    const t = await statsTiles(page);
+    const want = {
+      'Nuits tenues': '7', 'Vagues repoussées': '9', 'Vagues perdues': '1', 'Zombies abattus': '1 342', Livraisons: '2', Morts: '1',
+      'Distance à pied': '12,4 km', 'Temps de jeu': '5 h 12 min', 'Jours de partie': '1', Pluie: '3', 'Ciel dégagé': '1',
+    };
+    const wrong = Object.entries(want).filter(([k, v]) => t?.[k] !== v);
+    check(wrong.length === 0, `${tag} 2c : compteurs justes${wrong.length ? ` (écarts : ${wrong.map(([k, v]) => `${k} ${t?.[k]} au lieu de ${v}`).join(' ; ')})` : ''}`);
+    check(await ev(page, () => window.__earthlife.session.paused !== true && document.querySelector('#card .rp-card-lines')?.textContent.startsWith('Partie commencée le ')), `${tag} 2c : date de début sur la carte`);
+    await wait(600);
+    await shot(page, `${tag}-06-statistiques`);
+    await page.click('#card [data-card-btn="close"]');
+    check(await cardClosed(page), `${tag} 2c : « Fermer » referme la carte`);
+  }
+  await ev(page, (old) => { Object.assign(window.__earthlife.save.profile, old); }, profile);
+
+  // Enlever le sac : avec 40 objets, les 10 de trop vont au coffre avec le sac ; le sac repasse à 30 places.
+  await page.click('#rp-tab-chest');
+  const full = await ev(page, () => {
+    const { save, session: s } = window.__earthlife;
+    const inv = s.survivor.inventory;
+    const used = Object.values(inv).reduce((a, n) => a + n, 0);
+    inv.ferraille = (inv.ferraille ?? 0) + (40 - used);
+    return { chest: Object.values(save.base.chest).reduce((a, n) => a + n, 0) };
+  });
+  await until(page, () => (document.querySelector('#refuge-panel button[data-act="unpack"]:not([disabled])') ? 1 : null), null, 5000);
+  await page.click('#refuge-panel button[data-act="unpack"]');
+  const after = await ev(page, () => {
+    const { save, session: s } = window.__earthlife;
+    return { pack: s.survivor.pack, saved: save.survivor.pack, bag: Object.values(s.survivor.inventory).reduce((a, n) => a + n, 0), chest: Object.values(save.base.chest).reduce((a, n) => a + n, 0), packInChest: save.base.chest.sac_randonnee ?? 0 };
+  });
+  check(after.pack === null && after.bag === 30 && after.packInChest === 1 && after.chest === full.chest + 11,
+    `${tag} 2c : sac enlevé : ${after.bag} objets au sac, coffre ${full.chest} → ${after.chest} (surplus de 10 et le sac)`);
+  const bag30 = await until(page, () => (/\/30$/.test(document.getElementById('bag-count').textContent.replace(/\s+/g, ' ').trim()) ? 1 : null), null, 5000);
+  check(!!bag30, `${tag} 2c : HUD de nouveau à 30 places`);
+  // Remise en état : coffre et sac comme avant (mêmes objets, modifiés sur place).
+  await ev(page, (b) => {
+    const { save, session: s } = window.__earthlife;
+    for (const [target, src] of [[save.base.chest, b.chest], [s.survivor.inventory, b.bag]]) {
+      for (const k of Object.keys(target)) delete target[k];
+      Object.assign(target, src);
+    }
+  }, before);
+}
+
+// Menu → « Mes statistiques », sur ordinateur et sur téléphone : distance à pied et temps de jeu comptés pendant la partie,
+// un saut (téléportation) n'est pas de la marche, carte lisible dans l'écran.
+async function statsMenu(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 15`;
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  const w0 = await ev(page, () => ({ d: window.__earthlife.save.profile.distanceM, t: window.__earthlife.save.profile.playSec }));
+  if (device === 'desktop') {
+    await page.keyboard.down('ArrowUp');
+    await wait(4000);
+    await page.keyboard.up('ArrowUp');
+  } else await wait(3000);
+  const w1 = await ev(page, () => ({ d: window.__earthlife.save.profile.distanceM, t: window.__earthlife.save.profile.playSec }));
+  check(w1.t > w0.t, `${tag} : temps de jeu compté (${round(w0.t, 1)} → ${round(w1.t, 1)} s)`);
+  if (device === 'desktop') check(w1.d - w0.d > 0.5 && w1.d - w0.d < 60, `${tag} : distance à pied comptée (${round(w0.d, 1)} → ${round(w1.d, 1)} m)`);
+  // Un saut de 80 m ne compte pas comme de la marche.
+  await ev(page, () => { const p = window.__earthlife.session.player; window.__earthlife.debug.teleport(p.x + 80, p.z); });
+  await wait(1500);
+  const w2 = await ev(page, () => window.__earthlife.save.profile.distanceM);
+  check(w2 - w1.d < 3, `${tag} : téléportation de 80 m non comptée (+${round(w2 - w1.d, 2)} m)`);
+
+  await hit(page, device, '#quit');
+  check(!!(await until(page, () => (document.getElementById('menu').classList.contains('hidden') ? null : 1), null, 10000)), `${tag} : menu ouvert`);
+  if (device === 'mobile') {
+    const hidden = await ev(page, () => getComputedStyle(document.getElementById('stats-open')).display === 'none');
+    check(hidden, `${tag} : bouton caché sur la feuille repliée (la carte garde l'écran)`);
+    await page.tap('#sheet-handle');
+    await until(page, () => (document.getElementById('menu').dataset.sheet === 'open' ? 1 : null), null, 5000);
+  }
+  await page.waitForSelector('#stats-open', { state: 'visible', timeout: 5000 }).catch(() => {});
+  const box = await ev(page, () => { const r = document.getElementById('stats-open').getBoundingClientRect(); return { h: Math.round(r.height), w: Math.round(r.width) }; });
+  check(box.h >= 44, `${tag} : bouton « Mes statistiques » de ${box.w} × ${box.h} px (44 px au moins)`);
+  await hit(page, device, '#stats-open');
+  if (!check(await statsOpen(page), `${tag} : carte « Mes statistiques » ouverte depuis le menu`)) { await ctx.close(); return; }
+  const t = await statsTiles(page);
+  check(Object.keys(t).length === 9 && t['Zombies abattus'] === '0' && t['Nuits tenues'] === '0' && t['Jours de partie'] === '1', `${tag} : 9 compteurs, partie neuve à zéro (${Object.entries(t).map(([k, v]) => `${k} ${v}`).join(' · ')})`);
+  check(/^(moins d'1 min|\d+ min)$/.test(t['Temps de jeu']), `${tag} : temps de jeu « ${t['Temps de jeu']} »`);
+  if (device === 'desktop') check(/^\d+ m$/.test(t['Distance à pied']) && t['Distance à pied'] !== '0 m', `${tag} : distance « ${t['Distance à pied']} »`);
+  const fit = await ev(page, () => {
+    const c = document.querySelector('#card .rp-card');
+    const r = c.getBoundingClientRect();
+    const cuts = [...c.querySelectorAll('.rp-stat dt, .rp-stat dd')].filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent.trim());
+    return { inside: r.left >= 0 && r.right <= innerWidth + 0.5 && r.top >= 0 && r.bottom <= innerHeight + 0.5, scrolls: c.scrollHeight > c.clientHeight + 1, cuts, w: Math.round(r.width), h: Math.round(r.height), vh: innerHeight };
+  });
+  check(fit.inside && fit.cuts.length === 0, `${tag} : carte de ${fit.w} × ${fit.h} px dans l'écran de ${fit.vh} px de haut${fit.scrolls ? ' (défile)' : ''}, aucun texte coupé${fit.cuts.length ? ` (${fit.cuts.join(', ')})` : ''}`);
+  await wait(600); // la carte finit son apparition (320 ms)
+  await shot(page, `${tag.replace(' ', '-')}-statistiques`);
+  await page.click('#card [data-card-btn="close"]');
+  check(await cardClosed(page), `${tag} : « Fermer » referme la carte`);
+  await ctx.close();
+}
+
 // ---------- Ordinateur (1280 × 800) : scénarios 1 à 8 ----------
 
 async function desktop() {
@@ -593,6 +753,9 @@ async function desktop() {
     `${tag} 2 : fabrication chronométrée (${craftAct?.time} s), rien au coffre avant la fin`);
   check((s2a.base.chest.planche ?? 0) - (craftBefore.base.chest.planche ?? 0) === 3, `${tag} 2 : 3 planches fabriquées (« ${await toastSeen(page, 'Fabriqué')} »)`);
   await shot(page, `${tag}-03-fabriquer`);
+
+  // 2c. Sac de randonnée (45 places) et « Mes statistiques » depuis le panneau.
+  await packAndStats(page, tag);
   await page.click('#rp-tab-defense');
   await page.click(panelButton('nail', 0));
   const nailTime = await until(page, () => window.__earthlife.session.action?.time ?? null, null, 5000);
@@ -2369,6 +2532,9 @@ async function ambushScenario() {
 try {
   if (only === 'ambush') {
     await ambushScenario();
+  } else if (only === 'stats') {
+    await statsMenu('desktop');
+    await statsMenu('mobile');
   } else if (only === 'vue') {
     await vueSeule('desktop');
     await vueSeule('mobile');
@@ -2378,6 +2544,8 @@ try {
     if (only !== 'mobile') await relocation('desktop');
     if (only !== 'mobile') await ambushScenario();
     if (only !== 'desktop') await relocation('mobile');
+    await statsMenu(only === 'mobile' ? 'mobile' : 'desktop');
+    if (!only) await statsMenu('mobile');
   }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {
