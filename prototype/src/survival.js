@@ -171,8 +171,8 @@ function fatigueTier(f) {
 export const COMFORT_LOW = 18, COMFORT_HIGH = 28;
 
 export function updateSurvivor(s, env, dt) {
-  // env : { feelsLike, raining, snowing, sheltered, running, windKmh, inside, night, refugeWarmth, climb } ; climb : pente de
-  // montée lissée (relief, slope.js), la soif monte plus vite en grimpant.
+  // env : { feelsLike, raining, snowing, sheltered, running, windKmh, inside, night, refugeWarmth, climb, runMul } ; climb : pente
+  // de montée lissée (relief, slope.js), la soif monte plus vite en grimpant ; runMul : facteur de la fatigue de course (1 sans bonus).
   const effects = { hypothermia: false, hyperthermia: false, starving: false, dehydrated: false, damage: 0, fatigue: 0 };
   s.warmth = Math.max(0, s.warmth - dt);
 
@@ -185,7 +185,8 @@ export function updateSurvivor(s, env, dt) {
   const fatigue = s.fatigue ?? FATIGUE.start;
   if (env.inside) s.fatigue = fatigue;
   else {
-    const perMin = (FATIGUE.walk + (env.running ? FATIGUE.run : 0)) * (env.night ? FATIGUE.nightMul : 1);
+    // `runMul` : compétence Course (skills.js), la fatigue de la course seule en est allégée.
+    const perMin = (FATIGUE.walk + (env.running ? FATIGUE.run * (env.runMul ?? 1) : 0)) * (env.night ? FATIGUE.nightMul : 1);
     s.fatigue = Math.min(100, Math.max(0, fatigue + (perMin / 60) * dt));
   }
   effects.fatigue = fatigueTier(s.fatigue);
@@ -370,9 +371,11 @@ export function addLoot(s, found) {
 }
 
 // Un coup qui touche (ou un arbre abattu à la hache) use l'arme ; à 0, elle casse et la batte de base revient.
-export function wearWeapon(s) {
+// `keep` (0 à 1) : chance que le coup use vraiment l'arme (compétence Combat, skills.js) ; `rand` : le tirage, pour les essais.
+export function wearWeapon(s, keep = 1, rand = Math.random) {
   const w = s.weapon;
   if (!w || w.uses === null || w.uses === undefined) return null;
+  if (keep < 1 && rand() >= keep) return null;
   w.uses -= 1;
   if (w.uses > 0) return null;
   w.key = 'batte';

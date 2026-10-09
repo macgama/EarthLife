@@ -45,7 +45,8 @@ import {
   zonesCard, ONLINE_TEXTS, ACCOUNT_TEXTS,
 } from './panels.js';
 import { createHud, distanceText } from './hud.js';
-import { addStep, statsCard } from './stats.js';
+import { addStep, statsCard, MAX_STEP_M } from './stats.js';
+import { bucketFor, addXp, effectsOf, craftXp, levelUpText, GAIN } from './skills.js';
 import { createMinimap } from './minimap.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
 import { makeProjection } from './geo.js';
@@ -997,6 +998,8 @@ function buildSession(place, origin, home, store, grid, loader, chunks, start, l
     viewRadius: ZOOM.radius, covered: ZOOM.radius, coveredFog: ZOOM.radius, zoomCap: Infinity, edgeCap: Infinity,
     zoomGoal: clampZoom(viewPrefs.zoom, lowPower), zoomLimited: '', zoomSeen: clampZoom(viewPrefs.zoom, lowPower),
     isNight: false, nextPrefetch: 0, actionMul: 1, respawnedAt: null, lastPanel: 0,
+    // Compétences (skills.js) : durées de fouille et de fabrication à multiplier, saison jouée (null hors saison).
+    searchMul: 1, craftMul: 1, seasonId: null,
     // Jeu à plusieurs : zone privée du moment, drapeaux à relire, « à terre » jusqu'à, survivants de l'image.
     zone: null, flagsDirty: true, downUntil: 0, othersNow: [], aroundShown: 0, ring: null, takenSeen: new Set(),
     sessionStart: Date.now(), weatherAt: liveWeather.fetchedAt ?? Date.now(),
@@ -1194,11 +1197,16 @@ function step(s, inp, dt) {
   const w = s.weather;
   const inside = r.inside;
   const sheltered = inside || buildingNear(s.grid, p.x, p.z, 1.0) !== null;
+  // Compétences : fouille et fabrication plus rapides, course moins fatigante (le combat joue à chaque coup).
+  const fx = skillEffects(s);
+  s.searchMul = fx.searchMul;
+  s.craftMul = fx.craftMul;
   const effects = updateSurvivor(sv, {
     feelsLike: w.feelsLike ?? w.temperature, raining: w.kind === 'rain' || w.kind === 'storm', snowing: w.kind === 'snow',
     sheltered, running: p.running && !inside, windKmh: w.windKmh, inside, night: s.isNight,
     refugeWarmth: inside ? refugeWarmth(r.base) : 0,
     climb: inside ? 0 : p.grade ?? 0, // relief : pente de montée lissée (la soif monte plus vite en grimpant)
+    runMul: fx.runFatigueMul,
   }, dt);
   s.effects = effects;
   if (effects.damage) {
@@ -1234,6 +1242,10 @@ function step(s, inp, dt) {
   const still = s.action && !s.action.inside;
   updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
   addStep(save.profile, p.x - before.x, p.z - before.z, dt); // « Mes statistiques » : distance à pied et temps de jeu
+  if (p.running && !inside) {
+    const run = Math.hypot(p.x - before.x, p.z - before.z); // même règle que addStep : un saut (réveil, replacement) ne compte pas
+    if (run > 0 && run <= MAX_STEP_M) gainSkill(s, 'course', run * GAIN.runPerM);
+  }
   // Intérieur ouvert : sortie détectée, toit effacé ou rendu, lueur du meuble à fouiller.
   interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches });
   // 7. Boutons E et R.
@@ -1426,7 +1438,7 @@ function chooseActions(s) {
     // Fouillé par un autre survivant depuis moins de 6 h : « · fouillée il y a 12 min » (butin réduit).
     const other = s.store.source === 'tiles' ? online.searchedByOther(building.id) : null;
     const when = other ? ` · fouillée ${searchedLabel(online.serverNow() - other.at)}` : '';
-    primary = { id: 'search', arg: near, label: `Fouiller : ${title}${touch ? '' : ' (E)'}${when}`, time: SEARCH_TIME * s.actionMul, slot: 'primary', title };
+    primary = { id: 'search', arg: near, label: `Fouiller : ${title}${touch ? '' : ' (E)'}${when}`, time: SEARCH_TIME * s.actionMul * s.searchMul, slot: 'primary', title };
   }
   if (!primary && !r.inside) {
     const prop = s.chunks.propNear(p.x, p.z);
@@ -1499,7 +1511,7 @@ function startAction(s, a) {
     // Fabrication au refuge : la durée de la recette, allongée par la fatigue ; le coût n'est pris qu'à la fin.
     const can = canCraft(a.arg, craftCtx(s), s.survivor);
     if (!can.ok) { toast(can.why, 2.5); return; }
-    s.action = { ...base, time: craftTime(a.arg) * s.actionMul, label: `Fabrication : ${RECIPES[a.arg].name}…`, icon: actionIcon(a) };
+    s.action = { ...base, time: craftTime(a.arg) * s.actionMul * s.craftMul, label: `Fabrication : ${RECIPES[a.arg].name}…`, icon: actionIcon(a) };
     return;
   }
   const c = r.check(a.id, a.arg, refugeCtx(s, a.id === 'claim' || a.id === 'move' ? claimCtx(s, a.arg) : {}));
@@ -1529,7 +1541,10 @@ function finishCraft(s, a) {
   if (!s.refuge.base) return;
   const res = craft(a.arg, craftCtx(s), s.survivor);
   toast(res.msg, 2.5, res.ok ? 'success' : '');
-  if (res.ok) saveStore.flush('fabrication');
+  if (res.ok) {
+    gainSkill(s, 'fabrication', craftXp(craftTime(a.arg)));
+    saveStore.flush('fabrication');
+  }
 }
 
 // Fouille terminée : plan de l'établi (vraies rues), butin au sac dans la limite de sa place.
@@ -1549,6 +1564,7 @@ function finishSearch(s, a) {
   for (const k of res.equipped) got[k] = (got[k] ?? 0) + 1;
   toast(`${a.title} : ${countsLabel(got) || 'rien'}${other ? ' · il restait peu de choses' : ''}`, 3, 'loot');
   lootNotes(res);
+  gainSkill(s, 'fouille', GAIN.search); // après le butin : le niveau gagné passe derrière la notification du butin
   if (tiles) online.mark('s', b.id);
   claimHint(s, b, a.arg);
   saveStore.markDirty();
@@ -1578,6 +1594,7 @@ function finishRoom(s, a) {
     toast('Bâtiment fouillé : toutes les pièces', 2.5, 'success');
     s.claimAfter = b.id;
   }
+  gainSkill(s, 'fouille', GAIN.room);
   saveStore.markDirty();
 }
 
@@ -1726,20 +1743,45 @@ function throwLure(s) {
   saveStore.markDirty();
 }
 
+// « 3,5 » : une durée en secondes, au dixième près, virgule française (« 4 » quand elle est ronde).
+function secondsText(t) {
+  return String(Math.round(t * 10) / 10).replace('.', ',');
+}
+
+// Compétences (skills.js) : le jeu de points de la partie en cours (la saison jouée, sinon le jeu libre) et ses effets. La
+// sauvegarde est relue à chaque appel : une reprise ou un import peut en changer le profil.
+function skillSet(s) {
+  const season = !!s?.city?.season;
+  return bucketFor(save.profile, season ? 'season' : 'free', season ? s.seasonId : null);
+}
+function skillEffects(s) {
+  return effectsOf(skillSet(s));
+}
+// Gagne des points ; un niveau franchi s'annonce (« Combat : niveau 3 ») et la partie est à enregistrer.
+function gainSkill(s, skill, amount) {
+  const r = addXp(skillSet(s), skill, amount);
+  if (!r.up) return;
+  toast(levelUpText(skill, r.level), 3, 'success');
+  saveStore.markDirty();
+}
+
 // Coup : l'arme s'use à chaque coup qui touche et peut se briser ; il interrompt une action dehors.
 function attack(s) {
   const p = s.player, sv = s.survivor;
   const before = p.kills;
-  const hits = playerAttack(p, s.director.zombies, s.grid, weaponDamage(sv));
+  const fx = skillEffects(s); // Combat : dégâts plus forts, arme qui s'use moins
+  const hits = playerAttack(p, s.director.zombies, s.grid, weaponDamage(sv) * fx.damageMul);
   if (s.action && !s.action.inside) cancelAction(s);
   if (hits.length) {
     const key = sv.weapon?.key;
-    if (wearWeapon(sv) === 'broken') toast(`Ta ${ITEMS[key]?.one ?? 'arme'} s'est brisée`, 2.5, 'danger');
+    if (wearWeapon(sv, fx.wearKeep) === 'broken') toast(`Ta ${ITEMS[key]?.one ?? 'arme'} s'est brisée`, 2.5, 'danger');
   }
   if (p.kills > before) {
     save.profile.kills += p.kills - before;
     toast('Zombie à terre', 1);
   }
+  // Combat : un point par zombie touché, quatre de plus par zombie abattu (le niveau gagné passe derrière « Zombie à terre »).
+  if (hits.length) gainSkill(s, 'combat', hits.length * GAIN.hit + Math.max(0, p.kills - before) * GAIN.kill);
 }
 
 // Sac perdu à la mort : repris en passant à 1,5 m ou moins, dans la limite de la place du sac.
@@ -1913,7 +1955,7 @@ function refugeView(s) {
     extras: r.extras(ctx),
     craft: recipeRows(craftCtx(s), sv).map((row) => ({
       key: row.key, name: row.name, desc: row.desc, cost: row.cost,
-      button: { action: 'craft', arg: row.key, label: `Fabriquer · ${row.time} s`, enabled: row.ok && !s.action, why: s.action ? 'Action en cours' : row.why },
+      button: { action: 'craft', arg: row.key, label: `Fabriquer · ${secondsText(row.time * s.craftMul)} s`, enabled: row.ok && !s.action, why: s.action ? 'Action en cours' : row.why },
     })),
     chest: {
       head: `Coffre ${chestN}/${cap} · Sac ${bagN}/${bagMax}`,
@@ -2920,7 +2962,10 @@ async function inviteHere() {
 
 // « Mes statistiques » : les compteurs de la partie (save.profile) ; la carte met le jeu en pause le temps de la lecture.
 function showStats() {
-  showCard(statsCard(save.profile, { nowMs: Date.now() }), null, { escape: 'close' });
+  // En saison, les points de la saison jouée sont relus d'abord (une autre saison les remet à zéro).
+  const season = !!session?.city?.season;
+  if (season) skillSet(session);
+  showCard(statsCard(save.profile, { nowMs: Date.now(), mode: season ? 'season' : 'free', seasonId: season ? session.seasonId : null }), null, { escape: 'close' });
 }
 $('stats-open')?.addEventListener('click', () => showStats());
 

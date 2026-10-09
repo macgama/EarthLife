@@ -25,6 +25,10 @@ const EXAMPLE = {
     nightsHeld: 1, wavesRepelled: 1, wavesLost: 0,
     kills: 14, deliveries: 1, deaths: 0,
     distanceM: 4120, playSec: 5230,
+    skills: {
+      free: { combat: 120, fouille: 45, fabrication: 0, course: 310 },
+      season: { id: '1', combat: 0, fouille: 12.5, fabrication: 0, course: 0 },
+    },
     weathers: { rain: 1 },
     plans: [],
     sinceLastPlan: 6,
@@ -1555,15 +1559,17 @@ test('ancienne partie sans les champs nouveaux : chargée sans correction, avec 
   const old = example();
   delete old.profile.distanceM;
   delete old.profile.playSec;
+  delete old.profile.skills;
   delete old.survivor.pack;
   const r = validateSave(old, NOW);
   assert.equal(r.ok, true);
   assert.deepEqual(r.fixes, [], 'aucune correction signalée');
   assert.equal(r.save.profile.distanceM, 0);
   assert.equal(r.save.profile.playSec, 0);
+  assert.deepEqual(r.save.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0 } });
   assert.equal(r.save.survivor.pack, null);
   // Le reste de la partie ne bouge pas.
-  assert.deepEqual({ ...r.save, profile: { ...r.save.profile, distanceM: 4120, playSec: 5230 }, survivor: { ...r.save.survivor, pack: null } }, EXAMPLE);
+  assert.deepEqual({ ...r.save, profile: { ...r.save.profile, distanceM: 4120, playSec: 5230, skills: EXAMPLE.profile.skills }, survivor: { ...r.save.survivor, pack: null } }, EXAMPLE);
   // Par le magasin : lue puis réécrite avec les champs nouveaux, sans rien perdre.
   const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(old) } });
   const store = createSaveStore({ storage, now: () => NOW });
@@ -1590,4 +1596,56 @@ test('une partie vide le reste même après quelques pas : les compteurs de marc
   s.profile.distanceM = 800;
   s.profile.playSec = 600;
   assert.equal(isBlankSave(s), true);
+});
+
+test('compétences : points bornés de 0 à 10 niveaux, saison identifiée, jeu libre séparé', () => {
+  const ok = validateSave(example(), NOW);
+  assert.deepEqual(ok.fixes, []);
+  assert.deepEqual(ok.save.profile.skills, EXAMPLE.profile.skills);
+  assert.equal(ok.save.profile.skills.season.fouille, 12.5, 'les points fractionnaires de la course ou de la fouille sont gardés');
+  const p = (edit) => check((s) => edit(s.profile.skills)).save.profile.skills;
+  assert.equal(p((k) => { k.free.combat = -5; }).free.combat, 0);
+  assert.equal(p((k) => { k.free.course = 1e12; }).free.course, 5720, 'plafonné au niveau 10');
+  assert.equal(p((k) => { k.season.id = null; }).season.id, null);
+  const bad = check((s) => { s.profile.skills.free.fouille = 'beaucoup'; s.profile.skills.season.id = '<b>1</b>'; });
+  assert.equal(bad.save.profile.skills.free.fouille, 0);
+  assert.equal(bad.save.profile.skills.season.id, null, 'identifiant de saison illisible : aucun');
+  assert.ok(hasFix(bad, 'profile.skills.free.fouille'));
+  assert.ok(hasFix(bad, 'profile.skills.season.id'));
+  // Un morceau illisible ou inconnu : remis à zéro, signalé, le reste de la partie intact.
+  const junk = check((s) => { s.profile.skills = 'oups'; });
+  assert.equal(junk.ok, true);
+  assert.deepEqual(junk.save.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0 } });
+  assert.ok(hasFix(junk, 'profile.skills'));
+  assert.equal(junk.save.profile.kills, 14);
+  const extra = check((s) => { s.profile.skills.tir = { free: 1 }; s.profile.skills.free.tir = 40; });
+  assert.ok(hasFix(extra, 'profile.skills.tir'));
+  assert.equal(extra.save.profile.skills.tir, undefined);
+  assert.equal(extra.save.profile.skills.free.tir, undefined, 'une compétence inconnue est ignorée (elle viendra avec sa version du jeu)');
+});
+
+test('partie neuve : compétences à zéro ; une partie qui en a n\'est pas « vide »', () => {
+  const fresh = emptySave(NOW);
+  assert.deepEqual(fresh.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0 } });
+  assert.equal(isBlankSave(fresh), true);
+  const free = emptySave(NOW);
+  free.profile.skills.free.fouille = 12;
+  assert.equal(isBlankSave(free), false);
+  const season = emptySave(NOW);
+  season.profile.skills.season.combat = 3;
+  assert.equal(isBlankSave(season), false);
+  const idOnly = emptySave(NOW);
+  idOnly.profile.skills.season.id = '1';
+  assert.equal(isBlankSave(idOnly), true, 'un identifiant de saison sans point ne compte pas');
+  // Par le magasin : écrites avec la partie, relues telles quelles.
+  const storage = fakeStorage({});
+  const store = createSaveStore({ storage, now: () => NOW });
+  store.save.profile.skills.free.combat = 321.5;
+  store.save.profile.skills.season = { id: '1', combat: 0, fouille: 0, fabrication: 40, course: 0 };
+  store.markDirty();
+  store.flush('essai');
+  const again = createSaveStore({ storage, now: () => NOW });
+  assert.equal(again.save.profile.skills.free.combat, 321.5);
+  assert.deepEqual(again.save.profile.skills.season, { id: '1', combat: 0, fouille: 0, fabrication: 40, course: 0 });
+  assert.deepEqual(again.fixes, []);
 });

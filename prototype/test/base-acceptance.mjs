@@ -3,7 +3,8 @@
 //   npm run acceptance       (ou : node test/base-acceptance.mjs [dossier-des-captures], browser-shots/acceptance par défaut)
 // Variables : ROUTES (réponses enregistrées, test/fixtures/offline-routes.mjs par défaut ; ROUTES=none : réseau réel),
 // PLAYWRIGHT_MODULE (chemin du module playwright), PORT (0 : port libre), ONLY (desktop ou mobile ; vue : la section 13,
-// zoom et carte des environs, seule sur une partie neuve ; stats : « Mes statistiques » au menu, ordinateur et téléphone).
+// zoom et carte des environs, seule sur une partie neuve ; stats : « Mes statistiques » au menu, ordinateur et téléphone ;
+// skills : les compétences, ordinateur et téléphone).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
@@ -588,7 +589,8 @@ async function packAndStats(page, tag) {
     const { save, session: s } = window.__earthlife;
     return { pack: s.survivor.pack, inChest: save.base.chest.sac_randonnee ?? 0, inBag: s.survivor.inventory.sac_randonnee ?? 0, saved: save.survivor.pack };
   });
-  check(act?.id === 'craft' && act.time >= 12, `${tag} 2c : fabrication de ${act?.time} s`);
+  // 12 s de recette, moins 4 % par niveau de Fabrication (les trois planches d'avant donnent le niveau 1 : 11,5 s).
+  check(act?.id === 'craft' && act.time > 10 && act.time <= 12, `${tag} 2c : fabrication de ${act?.time} s`);
   check(made.pack === 'sac_randonnee' && made.inChest === 0 && made.inBag === 0, `${tag} 2c : sac de randonnée porté d'office (ni au coffre ni dans le sac)`);
   check(!!bagText, `${tag} 2c : HUD « ${bagText} »`);
   const toast = await toastSeen(page, 'Sac de randonnée', 5000);
@@ -695,6 +697,8 @@ async function statsMenu(device) {
   if (!check(await statsOpen(page), `${tag} : carte « Mes statistiques » ouverte depuis le menu`)) { await ctx.close(); return; }
   const t = await statsTiles(page);
   check(Object.keys(t).length === 9 && t['Zombies abattus'] === '0' && t['Nuits tenues'] === '0' && t['Jours de partie'] === '1', `${tag} : 9 compteurs, partie neuve à zéro (${Object.entries(t).map(([k, v]) => `${k} ${v}`).join(' · ')})`);
+  const lines = await skillLines(page);
+  check(lines.length === 4 && lines.every((l) => l.set === 'Compétences · Jeu libre' && l.level === 'Niveau 0'), `${tag} : 4 compétences de jeu libre au niveau 0 (${lines.map((l) => l.name).join(', ')})`);
   check(/^(moins d'1 min|\d+ min)$/.test(t['Temps de jeu']), `${tag} : temps de jeu « ${t['Temps de jeu']} »`);
   if (device === 'desktop') check(/^\d+ m$/.test(t['Distance à pied']) && t['Distance à pied'] !== '0 m', `${tag} : distance « ${t['Distance à pied']} »`);
   const fit = await ev(page, () => {
@@ -2570,6 +2574,166 @@ async function ambushScenario() {
   await ctx.close();
 }
 
+// ---------- Compétences (scénario 16) ----------
+
+// Lignes de compétences de la carte « Mes statistiques » ouverte : [{ set, name, level, next, effect }].
+const skillLines = (page) => ev(page, () => [...document.querySelectorAll('#card .rp-skills')].flatMap((sec) => {
+  const set = sec.querySelector('.rp-stats-title').textContent.trim();
+  return [...sec.querySelectorAll('.rp-skill')].map((li) => ({
+    set, name: li.querySelector('.rp-skill-name').textContent.trim(), level: li.querySelector('.rp-skill-level').textContent.trim(),
+    next: li.querySelector('.rp-skill-next')?.textContent.trim() ?? null, effect: li.querySelector('.rp-skill-note span').textContent.replace(/\s+/g, ' ').trim(),
+  }));
+}));
+// Notification de niveau attendue (« Combat : niveau 1 ») ; en cas d'échec, les notifications vues aident à comprendre.
+async function levelToast(page, tag, want) {
+  const got = await toastSeen(page, want.replace(/\d+$/, ''), 40000);
+  check(got === want, `${tag} : notification « ${got} »`);
+  if (got !== want) note(`${tag} : notifications vues : ${JSON.stringify((await seen(page)).toasts.slice(-8))}`);
+}
+const freeSkills = (page) => ev(page, () => ({ ...window.__earthlife.save.profile.skills.free }));
+const setFreeSkill = (page, key, xp) => ev(page, ([k, v]) => { window.__earthlife.save.profile.skills.free[k] = v; }, [key, xp]);
+
+// Un zombie de `health` points de vie, posé devant le joueur, puis des coups jusqu'à ce qu'il tombe. Renvoie vrai s'il est tombé.
+async function fell(page, device, health) {
+  const kills = await ev(page, (h) => {
+    const { session: s, save } = window.__earthlife;
+    const p = s.player;
+    s.director.zombies.length = 0;
+    const z = s.director.spawnAt(p.x + Math.sin(p.yaw) * 1.4, p.z + Math.cos(p.yaw) * 1.4, 'errant', { free: true, test: true });
+    if (!z) return null;
+    z.health = h;
+    z.state = 'chase';
+    return save.profile.kills;
+  }, health);
+  if (kills === null) return false;
+  const start = Date.now();
+  while (Date.now() - start < 60000) {
+    if (device === 'mobile') await page.tap('#attack'); else await page.keyboard.press('Space');
+    await wait(250);
+    if (await ev(page, (k) => window.__earthlife.save.profile.kills > k, kills)) return true;
+    await clearAmbient(page);
+  }
+  return false;
+}
+// Garde le zombie du test seul : les autres (apparitions du directeur) sont retirés.
+const clearAmbient = (page) => ev(page, () => {
+  const zs = window.__earthlife.session.director.zombies;
+  for (let i = zs.length - 1; i >= 0; i--) if (!zs[i].tags?.test) zs.splice(i, 1);
+});
+
+// Compétences : combat (dégâts, niveau), fouille et fabrication (points, niveau, durée), notification de niveau, écran
+// « Mes statistiques ». Les durées avec un niveau élevé sont vérifiées en posant les points dans la sauvegarde.
+async function skillsScenario(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 16`;
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  const zero = await freeSkills(page);
+  check(Object.keys(zero).length === 4 && Object.values(zero).every((v) => v === 0), `${tag} : partie neuve, quatre compétences à zéro`);
+
+  // Combat : deux zombies d'un coup (santé 40, bâton de 50) rapportent 2 × (1 + 4) = 10 points : niveau 1.
+  const down = [await fell(page, device, 40), await fell(page, device, 40)];
+  check(down.every(Boolean), `${tag} : deux zombies abattus`);
+  const combat = (await freeSkills(page)).combat;
+  check(combat === 10, `${tag} : Combat ${combat} points (2 zombies : 2 coups et 2 abattus)`);
+  await levelToast(page, tag, 'Combat : niveau 1');
+  await shot(page, `${tag.replace(' ', '-')}-niveau-gagne`);
+  // Dégâts : au niveau 10, 50 × 1,3 = 65 ; un zombie de 64 points tombe d'un seul coup (au niveau 1 il tiendrait).
+  await setFreeSkill(page, 'combat', 5720);
+  await wait(200);
+  const strong = await fell(page, device, 64);
+  check(strong, `${tag} : Combat niveau 10, un zombie de 64 points tombe d'un coup (+30 % de dégâts)`);
+  await setFreeSkill(page, 'combat', 10);
+  await clearZombies(page);
+
+  // Fouille, puis refuge pour fabriquer.
+  const claim = await install(page, device, tag);
+  if (!check(!!claim, `${tag} : refuge installé (une fouille faite)`)) { await shot(page, `${tag.replace(' ', '-')}-echec`); await ctx.close(); return; }
+  await wait(300);
+  const afterSearch = await freeSkills(page);
+  check(afterSearch.fouille >= 12 && afterSearch.fouille % 12 === 0, `${tag} : Fouille ${afterSearch.fouille} points (12 par fouille terminée)`);
+  await levelToast(page, tag, 'Fouille : niveau 1');
+
+  // Fabrication : planches (4 s de recette, 20 points), niveau 1, puis la durée affichée suit le niveau.
+  await hit(page, device, '#rp-tab-craft');
+  const label0 = await ev(page, (sel) => document.querySelector(sel)?.textContent.replace(/\s+/g, ' ').trim(), panelButton('craft', 'planches'));
+  check(label0 === 'Fabriquer · 4 s', `${tag} : bouton « ${label0} » au niveau 0`);
+  await ev(page, () => { const b = window.__earthlife.save.base.chest; b.bois = (b.bois ?? 0) + 8; b.clous = (b.clous ?? 0) + 4; });
+  await hit(page, device, panelButton('craft', 'planches'));
+  const t0 = await until(page, () => window.__earthlife.session.action?.time ?? null, null, 5000);
+  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 120000);
+  const fab = (await freeSkills(page)).fabrication;
+  check(Math.abs(t0 - 4) < 0.01 && fab === 20, `${tag} : planches en ${t0} s, Fabrication ${fab} points (5 par seconde de recette)`);
+  await levelToast(page, tag, 'Fabrication : niveau 1');
+  const label1 = await until(page, (sel) => { const t = document.querySelector(sel)?.textContent.replace(/\s+/g, ' ').trim(); return t === 'Fabriquer · 3,8 s' ? t : null; }, panelButton('craft', 'planches'), 5000);
+  check(!!label1, `${tag} : bouton « ${label1} » au niveau 1 (−4 %)`);
+  // Niveau 10 : la fabrication prend 60 % du temps de recette, soit 2,4 s ; Fouille niveau 10 : 60 % de la fouille.
+  await setFreeSkill(page, 'fabrication', 5720);
+  await setFreeSkill(page, 'fouille', 5720);
+  const label10 = await until(page, (sel) => { const t = document.querySelector(sel)?.textContent.replace(/\s+/g, ' ').trim(); return t === 'Fabriquer · 2,4 s' ? t : null; }, panelButton('craft', 'planches'), 5000);
+  check(!!label10, `${tag} : bouton « ${label10} » au niveau 10 (−40 %)`);
+  await hit(page, device, panelButton('craft', 'planches'));
+  const t10 = await until(page, () => window.__earthlife.session.action?.time ?? null, null, 5000);
+  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 120000);
+  check(Math.abs(t10 - 2.4) < 0.01, `${tag} : planches en ${t10} s au niveau 10`);
+  const mul = await ev(page, () => window.__earthlife.session.searchMul);
+  check(Math.abs(mul - 0.6) < 1e-9, `${tag} : durée de fouille × ${mul} au niveau 10`);
+  await setFreeSkill(page, 'fabrication', 20);
+  await setFreeSkill(page, 'fouille', 12);
+
+  // Écran « Mes statistiques », depuis le panneau du refuge : quatre lignes, niveaux, progression.
+  await hit(page, device, '#refuge-panel [data-ui="stats"]');
+  if (check(await statsOpen(page), `${tag} : « Mes statistiques » ouvert`)) {
+    const lines = await skillLines(page);
+    const by = Object.fromEntries(lines.map((l) => [l.name, l]));
+    check(lines.length === 4 && lines.every((l) => l.set === 'Compétences · Jeu libre'), `${tag} : quatre compétences « ${lines[0]?.set} »`);
+    check(by.Combat?.level === 'Niveau 1' && by.Fouille?.level === 'Niveau 1' && by.Fabrication?.level === 'Niveau 1' && by.Course?.level === 'Niveau 0',
+      `${tag} : niveaux ${lines.map((l) => `${l.name} ${l.level}`).join(' · ')}`);
+    check(by.Fouille?.next === '2 / 80' && by.Fabrication?.next === '10 / 80', `${tag} : progression vers le niveau suivant (Fouille ${by.Fouille?.next}, Fabrication ${by.Fabrication?.next})`);
+    check(by.Fouille?.effect === 'Fouille 4 % plus rapide' && by.Combat?.effect.startsWith('Dégâts +3 %'), `${tag} : effets « ${by.Combat?.effect} » · « ${by.Fouille?.effect} »`);
+    const fit = await ev(page, () => {
+      const c = document.querySelector('#card .rp-card');
+      c.querySelector('.rp-skills')?.scrollIntoView({ block: 'center' });
+      const r = c.getBoundingClientRect();
+      const cuts = [...c.querySelectorAll('.rp-skill-name, .rp-skill-level, .rp-skill-note span')].filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent.trim());
+      return { inside: r.left >= 0 && r.right <= innerWidth + 0.5 && r.top >= 0 && r.bottom <= innerHeight + 0.5, cuts, w: Math.round(r.width), h: Math.round(r.height), vh: innerHeight };
+    });
+    check(fit.inside && fit.cuts.length === 0, `${tag} : carte de ${fit.w} × ${fit.h} px dans l'écran de ${fit.vh} px, aucun texte coupé${fit.cuts.length ? ` (${fit.cuts.join(', ')})` : ''}`);
+    // La carte finit son apparition (320 ms de montre, bien plus sur un exécuteur lent) avant la capture.
+    await until(page, () => { const c = document.getElementById('card'); return Number(getComputedStyle(c).opacity) >= 1 && Number(getComputedStyle(c.querySelector('.rp-card')).opacity) >= 1 ? 1 : null; }, null, 10000);
+    await wait(400);
+    await shot(page, `${tag.replace(' ', '-')}-competences`);
+    await hit(page, device, '#card [data-card-btn="close"]');
+    check(await cardClosed(page), `${tag} : « Fermer » referme la carte`);
+    // Une partie plus avancée (points posés dans la sauvegarde) : niveaux 5, 7, 4 et 7, le dernier presque au suivant.
+    for (const [k, v] of Object.entries({ combat: 940, fouille: 2260, fabrication: 530, course: 3190 })) await setFreeSkill(page, k, v);
+    await hit(page, device, '#refuge-panel [data-ui="stats"]');
+    if (check(await statsOpen(page), `${tag} : « Mes statistiques » rouvert avec une partie avancée`)) {
+      const adv = Object.fromEntries((await skillLines(page)).map((l) => [l.name, `${l.level} ${l.next}`]));
+      check(adv.Combat === 'Niveau 5 0 / 580' && adv.Fouille === 'Niveau 7 0 / 940' && adv.Fabrication === 'Niveau 4 0 / 410' && adv.Course === 'Niveau 7 930 / 940', `${tag} : progression ${JSON.stringify(adv)}`);
+      await ev(page, () => document.querySelector('#card .rp-skills')?.scrollIntoView({ block: 'center' }));
+      await until(page, () => { const c = document.getElementById('card'); return Number(getComputedStyle(c).opacity) >= 1 && Number(getComputedStyle(c.querySelector('.rp-card')).opacity) >= 1 ? 1 : null; }, null, 10000);
+      await wait(400);
+      await shot(page, `${tag.replace(' ', '-')}-competences-avancees`);
+      await hit(page, device, '#card [data-card-btn="close"]');
+      await cardClosed(page);
+    }
+    for (const [k, v] of Object.entries({ combat: 10, fouille: 12, fabrication: 20, course: 0 })) await setFreeSkill(page, k, v);
+  }
+
+  // Sauvegarde : les points sont écrits avec la partie et relus après un rechargement.
+  await ev(page, () => window.__earthlife.saveStore.markDirty());
+  await until(page, () => !window.__earthlife.saveStore.dirty, null, 10000);
+  await page.reload();
+  check(await started(page), `${tag} : partie reprise après le rechargement`);
+  const again = await freeSkills(page);
+  check(again.combat === 10 && again.fouille === 12 && again.fabrication === 20, `${tag} : compétences relues après le rechargement (${JSON.stringify(again)})`);
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
@@ -2578,6 +2742,9 @@ try {
   } else if (only === 'stats') {
     await statsMenu('desktop');
     await statsMenu('mobile');
+  } else if (only === 'skills') {
+    await skillsScenario('desktop');
+    await skillsScenario('mobile');
   } else if (only === 'vue') {
     await vueSeule('desktop');
     await vueSeule('mobile');
@@ -2589,6 +2756,8 @@ try {
     if (only !== 'desktop') await relocation('mobile');
     await statsMenu(only === 'mobile' ? 'mobile' : 'desktop');
     if (!only) await statsMenu('mobile');
+    await skillsScenario(only === 'mobile' ? 'mobile' : 'desktop');
+    if (!only) await skillsScenario('mobile');
   }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {

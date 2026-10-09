@@ -2,6 +2,7 @@
 // copie de l'écriture précédente, plusieurs onglets, stockage plein, export et import.
 // validateSave, parseSave et purgeOld sont purs ; createSaveStore reçoit le stockage et l'horloge.
 import { maxHp, CHEST } from './base.js';
+import { SKILL_KEYS, XP_MAX, emptyProfileSkills } from './skills.js';
 
 export const SAVE_KEY = 'earthlife.save.v1';
 export const PREV_KEY = 'earthlife.save.v1.prev';
@@ -68,7 +69,7 @@ const WEATHER_KEY = /^[a-z_]{1,20}$/;
 const NORM_TOLERANCE = 0.02;
 
 const TOP_KEYS = ['v', 'writer', 'rev', 'savedAt', 'lastSiegeCheck', 'profile', 'survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'searched', 'dismantled'];
-const PROFILE_KEYS = ['createdAt', 'nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths', 'weathers', 'plans', 'sinceLastPlan', 'firstWaveDone', 'kitGiven', 'journal', 'distanceM', 'playSec'];
+const PROFILE_KEYS = ['createdAt', 'nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths', 'weathers', 'plans', 'sinceLastPlan', 'firstWaveDone', 'kitGiven', 'journal', 'distanceM', 'playSec', 'skills'];
 const SURVIVOR_KEYS = ['health', 'food', 'water', 'bodyTemp', 'wet', 'fatigue', 'bag', 'weapon', 'clothing', 'pack'];
 const BASE_KEYS = ['id', 'lat', 'lon', 'area', 'height', 'kind', 'name', 'place', 'claimedAt', 'density', 'utcOffset', 'perk', 'openings', 'chest', 'upgrades', 'sirenAt', 'lastReserve'];
 const HORDE_KEYS = ['nightKey', 't', 'waves', 'lastWaveEnd', 'held', 'played'];
@@ -76,6 +77,10 @@ const COUNTERS = ['nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveri
 // Compteurs d'« Mes statistiques » ajoutés après la première version : distance à pied (m) et temps de jeu (s). Absents d'une
 // ancienne partie, ils partent de 0 sans correction signalée ; ils ne comptent pas pour une partie « vide » (isBlankSave).
 const METERS = ['distanceM', 'playSec'];
+// Compétences (skills.js) : { free: {…}, season: { id, … } }, des points par compétence. Absentes d'une ancienne partie, elles partent
+// de zéro sans correction signalée ; la saison est identifiée par `id` (les points d'une autre saison sont remis à zéro au jeu).
+const SKILL_SETS = ['free', 'season'];
+const SEASON_ID = /^[A-Za-z0-9_.:-]{1,40}$/;
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const finite = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -95,6 +100,7 @@ export function emptySave(now = Date.now()) {
       nightsHeld: 0, wavesRepelled: 0, wavesLost: 0,
       kills: 0, deliveries: 0, deaths: 0,
       distanceM: 0, playSec: 0,
+      skills: emptyProfileSkills(),
       weathers: {},
       plans: [],
       sinceLastPlan: 0,
@@ -128,6 +134,7 @@ export function isBlankSave(save) {
   const p = isObj(save.profile) ? save.profile : {};
   if (COUNTERS.some((k) => finite(p[k]) && p[k] !== 0)) return false;
   if (p.firstWaveDone === true) return false;
+  if (isObj(p.skills) && SKILL_SETS.some((set) => isObj(p.skills[set]) && SKILL_KEYS.some((k) => finite(p.skills[set][k]) && p.skills[set][k] > 0))) return false;
   if (Array.isArray(p.journal) && p.journal.length) return false;
   if (Array.isArray(p.plans) && p.plans.length) return false;
   for (const field of ['searched', 'dismantled']) {
@@ -465,6 +472,25 @@ function checkSurvivor(raw, c, base) {
   };
 }
 
+// Compétences : un jeu libre et un jeu de saison, des points bornés de 0 à XP_MAX. Rien n'est signalé pour un champ absent.
+function checkSkills(raw, c) {
+  const root = isObj(raw) ? raw : {};
+  if (raw !== undefined && !isObj(raw)) c.fix('profile.skills', 'illisible, remis à zéro');
+  else c.unknown(root, SKILL_SETS, 'profile.skills');
+  const points = (set, path) => {
+    const o = isObj(set) ? set : {};
+    if (set !== undefined && !isObj(set)) c.fix(path, 'illisible, remis à zéro');
+    const out = {};
+    for (const k of SKILL_KEYS) out[k] = o[k] === undefined ? 0 : c.num(o[k], `${path}.${k}`, { min: 0, max: XP_MAX });
+    return out;
+  };
+  const season = isObj(root.season) ? root.season : {};
+  let id = null;
+  if (typeof season.id === 'string' && SEASON_ID.test(season.id)) id = season.id;
+  else if (season.id !== null && season.id !== undefined) c.fix('profile.skills.season.id', 'illisible → null');
+  return { free: points(root.free, 'profile.skills.free'), season: { id, ...points(root.season, 'profile.skills.season') } };
+}
+
 function checkProfile(raw, c, now) {
   const p = isObj(raw) ? raw : {};
   if (!isObj(raw)) c.fix('profile', 'illisible, remis à neuf');
@@ -472,6 +498,7 @@ function checkProfile(raw, c, now) {
   const out = { createdAt: c.time(p.createdAt, 'profile.createdAt', now) };
   for (const k of COUNTERS) out[k] = c.num(p[k], `profile.${k}`, { min: 0, max: MAX_STAT, int: true });
   for (const k of METERS) out[k] = p[k] === undefined ? 0 : c.num(p[k], `profile.${k}`, { min: 0, max: MAX_STAT, int: true });
+  out.skills = checkSkills(p.skills, c);
   out.weathers = {};
   if (isObj(p.weathers)) {
     for (const [k, v] of Object.entries(p.weathers)) {
