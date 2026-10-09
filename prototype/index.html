@@ -547,6 +547,10 @@ select, button { font: inherit; }
 #loading.fatal .load-alert, #loading.notice .load-alert { display: block; }
 #loading.fatal .load-panel, #loading.notice .load-panel { justify-items: center; gap: var(--sp-3); text-align: center; box-shadow: var(--sh-1), inset 0 3px 0 var(--c-warn); }
 #loading.fatal :is(.load-kicker, .load-steps, .load-gauge, .load-tip), #loading.notice :is(.load-kicker, .load-steps, .load-gauge, .load-tip, .logo, .load-tag) { display: none; }
+.load-stuck { display: grid; gap: var(--sp-2); margin-top: var(--sp-2); padding-top: var(--sp-3); border-top: 1px solid var(--c-line); }
+.load-stuck[hidden] { display: none; }
+.load-stuck p { margin: 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+.load-stuck .primary { justify-self: stretch; }
 #loading.notice { background: var(--c-scrim); }
 @media (max-height: 500px) and (orientation: landscape) {
   .load-tag { margin-bottom: var(--sp-3); }
@@ -1631,6 +1635,11 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
       <ol class="load-steps" id="loading-steps" aria-hidden="true"></ol>
       <div id="loading-text" role="status" aria-live="polite">Chargement…</div>
       <div class="load-gauge" aria-hidden="true"><i></i></div>
+      <!-- Chargement bloqué ou en échec (main.js, loadStuck) : ce qui s'est passé et une sortie, jamais un écran sans fin. -->
+      <div id="loading-stuck" class="load-stuck" hidden>
+        <p id="loading-stuck-text"></p>
+        <button type="button" class="primary" id="loading-stuck-reload">Recharger la page</button>
+      </div>
     </div>
     <div class="load-tip">
       <p class="label"><span class="btn-icon" data-icon="aide"></span>Conseil de survie</p>

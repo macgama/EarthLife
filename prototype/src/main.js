@@ -366,6 +366,9 @@ function renderSaveLine() {
 }
 
 // ---------- Rendu ----------
+// Minuteur du chargement qui traîne (setLoading) : déclaré avant le premier appel possible, l'échec de la 3D juste en dessous.
+let stuckTimer = null;
+const STUCK_MS = 45000;
 const canvas = $('view');
 let renderer;
 try {
@@ -610,7 +613,11 @@ function setLoading(text, { notice = false } = {}) {
   box.classList.remove('fatal');
   box.classList.toggle('notice', notice);
   box.classList.toggle('hidden', !text);
+  // Chaque étape a 45 s : au-delà, le message dit laquelle traîne et propose de recharger (loadStuck).
+  clearTimeout(stuckTimer);
+  $('loading-stuck').hidden = true;
   if (!text) return;
+  if (!notice) stuckTimer = setTimeout(() => loadStuck(`Cette étape dure plus longtemps que d'habitude («\u00a0${text.replace(/…$/, '')}\u00a0»). Tu peux attendre, ou recharger la page : ta partie est gardée et tu reviens au menu.`), STUCK_MS);
   const steps = $('loading-steps');
   const previous = $('loading-text').textContent;
   if (fresh) {
@@ -624,6 +631,24 @@ function setLoading(text, { notice = false } = {}) {
     while (steps.children.length > 4) steps.firstElementChild.remove();
   }
   $('loading-text').textContent = text;
+}
+
+// Chargement qui traîne ou qui échoue : le message dit l'étape (et la cause), le bouton recharge la page, qui revient au menu.
+// Aucune attente réseau du chargement ne dépasse 25 s : 45 s sur une étape (STUCK_MS), c'est une panne, jamais un écran sans fin.
+$('loading-stuck-reload').addEventListener('click', () => location.reload());
+function loadStuck(text) {
+  const box = $('loading');
+  if (['hidden', 'notice', 'fatal'].some((c) => box.classList.contains(c))) return;
+  $('loading-stuck-text').textContent = text;
+  $('loading-stuck').hidden = false;
+}
+// Une erreur pendant le lancement d'une partie (startGame) : elle est lue à l'écran, plus seulement dans la console.
+function loadFailed(err) {
+  console.error('Lancement de la partie en échec', err);
+  clearTimeout(stuckTimer);
+  const step = $('loading-text').textContent.replace(/…$/, '');
+  const why = String(err?.message ?? err ?? '').replace(/\s+/g, ' ').slice(0, 160);
+  loadStuck(`Le chargement s'est arrêté à l'étape «\u00a0${step}\u00a0»${why ? ` : ${why}` : ''}. Ta partie est gardée : recharge la page pour revenir au menu.`);
 }
 
 // Conseils affichés pendant le chargement (tous vérifiés dans les règles du jeu).
@@ -678,6 +703,8 @@ async function startGame(place, { spawn = 'place', confirmed = false, season = n
     // Premier passage en ligne : la carte « Jouer à plusieurs » avant le départ, jamais pendant une partie.
     if (spawn === 'place' && onlineOn) await onlineChoice();
     await launch(place, spawn, plan);
+  } catch (err) {
+    loadFailed(err);
   } finally {
     starting = false;
   }
