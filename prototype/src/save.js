@@ -721,6 +721,17 @@ function writerOf(text) {
   }
 }
 
+// Temps de jeu (s) compté dans un texte de sauvegarde : 0 si absent (ancienne version) ou illisible.
+function playSecOf(text) {
+  try {
+    const raw = JSON.parse(text);
+    const v = isObj(raw) && isObj(raw.profile) ? raw.profile.playSec : 0;
+    return finite(v) && v > 0 ? v : 0;
+  } catch {
+    return 0;
+  }
+}
+
 // Écrivain et heure d'enregistrement d'un texte de sauvegarde (diagnostic de la carte « Reprendre ici »).
 function metaOf(text) {
   try {
@@ -849,6 +860,7 @@ export function createSaveStore({
   let goneSent = false;     // « l'autre page est partie » déjà signalé pour ce conflit
   let holdUntil = 0;        // jusqu'à quand la présence reste valable, même page cachée ou fermée (reprise suivie d'un rechargement)
   let playedReadOnly = false; // du jeu s'est joué depuis le passage en lecture seule (rien n'en est sauvegardé)
+  let unsavedAtConflict = false; // des changements n'étaient pas enregistrés quand l'autre page a pris la main (fin d'une fabrication)
 
   function readPresence() {
     try {
@@ -897,6 +909,9 @@ export function createSaveStore({
     if (text !== null) conflict = metaOf(text);
     readOnly = true;
     reason = SAVE_MESSAGES.otherTab;
+    // Des changements en attente (fin d'une fabrication, d'un combat) ne sont écrits nulle part : la reprise automatique ne doit
+    // pas les abandonner en rechargeant la page depuis la sauvegarde de l'autre.
+    unsavedAtConflict = dirty;
     dirty = false;
     stale = false;
     playedReadOnly = false;
@@ -906,8 +921,17 @@ export function createSaveStore({
     goneSent = !alive && visibleNow;
     onExternal({
       type: 'other-tab', message: SAVE_MESSAGES.otherTab, action: SAVE_MESSAGES.takeOver, since: conflict?.savedAt ?? null,
-      alive, visible: visibleNow, kind,
+      alive, visible: visibleNow, kind, unsaved: unsavedAtConflict, keepLive: keepMine(),
     });
+  }
+
+  // Des changements non enregistrés et une partie plus jouée que celle de l'autre page (temps de jeu) : c'est la partie de cet
+  // écran qu'on écrit à la reprise, sans la perdre. Sinon l'autre page a au moins autant joué : on ne l'écrase pas en silence.
+  function keepMine() {
+    if (!unsavedAtConflict) return false;
+    const theirs = playSecOf(read(SAVE_KEY));
+    const ours = finite(save.profile?.playSec) ? save.profile.playSec : 0;
+    return ours > theirs;
   }
 
   // Avant un rechargement voulu (« Reprendre ici », import, reprise automatique) : la présence de cette page reste valable
@@ -924,7 +948,7 @@ export function createSaveStore({
     goneSent = true;
     onExternal({
       type: 'other-gone', message: SAVE_MESSAGES.otherTab, action: SAVE_MESSAGES.takeOver, since: conflict?.savedAt ?? null,
-      keepLive: playedReadOnly, kind: judge().kind,
+      keepLive: playedReadOnly || keepMine(), unsaved: unsavedAtConflict, kind: judge().kind,
     });
     return true;
   }
@@ -1107,7 +1131,8 @@ export function createSaveStore({
 
   // « Reprendre ici » : relit la sauvegarde, reprend la main et la réécrit telle quelle (sans l'état vivant périmé
   // de cet onglet). main.js recharge ensuite la page, comme après un import. `keepLive` : cette page a continué à jouer en
-  // lecture seule et l'autre n'est plus là ; c'est l'état de cette page, à l'écran, qui est écrit à la place de l'autre.
+  // lecture seule, ou avait des changements non enregistrés et une partie plus jouée, et l'autre n'est plus là ; c'est l'état
+  // de cette page, à l'écran, qui est écrit à la place de l'autre.
   function takeOver({ keepLive = false } = {}) {
     const stored = read(SAVE_KEY);
     const r = parseSave(stored, now(), { itemKeys });
@@ -1129,6 +1154,7 @@ export function createSaveStore({
     conflict = null;
     goneSent = false;
     playedReadOnly = false;
+    unsavedAtConflict = false;
     lastSeen = stored;
     // Rien de lisible à relire : la partie de cet onglet reste la bonne, état vivant compris.
     return write('reprise', !reread);
