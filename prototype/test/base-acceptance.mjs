@@ -1073,6 +1073,38 @@ async function desktop() {
   await foreign('wancienneversion', 18000);
   const life4 = await newLife(life3);
   check(!!life4 && !(await ailleurs()), `${tag} 7 bis : une ancienne version sans présence qui n'a pas écrit depuis 18 s ne bloque pas (reprise toute seule, sans carte)`);
+  // Fin d'une fabrication (changements non enregistrés) alors que l'autre page n'est plus là. L'autre page a moins joué (temps de
+  // jeu) : la partie de l'écran est écrite, la reprise ne lui fait pas perdre sa planche. `delta` : écart de temps de jeu de l'autre page.
+  const craftEnd = (delta) => ev(page, ({ delta }) => {
+    const st = window.__earthlife.saveStore, save = window.__earthlife.save;
+    const text = JSON.stringify({ ...JSON.parse(JSON.stringify(save)), writer: 'wanciennepage', savedAt: Date.now() - 18000,
+      profile: { ...JSON.parse(JSON.stringify(save.profile)), playSec: save.profile.playSec + delta } });
+    st.markDirty();
+    localStorage.setItem('earthlife.save.v1', text);
+    st.onStorage({ key: 'earthlife.save.v1', newValue: text });
+  }, { delta });
+  const planches = () => ev(page, () => window.__earthlife.session.survivor.inventory.planche ?? 0);
+  await started(page);
+  await ev(page, () => sessionStorage.removeItem('earthlife.handover'));
+  const life5 = await ev(page, () => window.__earthlife.saveStore.writer);
+  await debug(page, 'give', { planche: 3 });
+  const before5 = await planches();
+  await craftEnd(-100);
+  const life6 = await newLife(life5);
+  check(!!life6 && !(await ailleurs()), `${tag} 7 bis : fin d'une fabrication, l'autre page (moins jouée) est partie : la page reprend la main sans carte`);
+  const after5 = await planches();
+  check(before5 >= 3 && after5 >= before5, `${tag} 7 bis : les planches fabriquées ne sont pas perdues (avant ${before5}, après la reprise ${after5})`);
+  // Même fin de fabrication, mais l'autre page a plus joué : rien n'est écrasé ni perdu en silence, la carte laisse le choix.
+  await started(page);
+  await ev(page, () => sessionStorage.removeItem('earthlife.handover'));
+  await debug(page, 'give', { planche: 2 });
+  const before6 = await planches();
+  await craftEnd(+100);
+  const card6 = await until(page, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') && /Partie ouverte ailleurs/.test(c.textContent) ? 1 : null; }, null, 15000);
+  const same6 = await ev(page, () => window.__earthlife.saveStore.writer);
+  check(!!card6 && same6 === life6 && (await planches()) === before6, `${tag} 7 bis : l'autre page a plus joué : la carte s'affiche, la page ne se recharge pas et garde ses planches (${before6})`);
+  await page.click('#card [data-card-btn="take"]');
+  await newLife(life6);
   // Témoin : une autre page à l'écran (présence fraîche) garde la carte, avec son détail.
   await started(page);
   await ev(page, () => sessionStorage.removeItem('earthlife.handover'));

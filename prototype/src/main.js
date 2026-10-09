@@ -2597,8 +2597,12 @@ function onSaveExternal(e) {
   // toute seule, sans carte ni choix à faire (save.js, présence des pages).
   if (e.type === 'other-gone' || (e.type === 'other-tab' && e.alive === false && e.visible)) {
     // Trace de la décision (console, pour comprendre une reprise inattendue : état de la présence au moment où elle part).
-    try { console.info('[sauvegarde] autre page absente', JSON.stringify({ e: e.type, kind: e.kind ?? null, keepLive: !!e.keepLive, previous: previousLife, presence: localStorage.getItem(PRESENCE_KEY), conflict: saveStore.conflict, now: Date.now() })); } catch { /* trace seulement */ }
-    if (handOver(!!e.keepLive, e.kind === 'own')) return;
+    try { console.info('[sauvegarde] autre page absente', JSON.stringify({ e: e.type, kind: e.kind ?? null, keepLive: !!e.keepLive, unsaved: !!e.unsaved, previous: previousLife, presence: localStorage.getItem(PRESENCE_KEY), conflict: saveStore.conflict, now: Date.now() })); } catch { /* trace seulement */ }
+    // Des changements non enregistrés (fin d'une fabrication) et l'autre page a plus joué : recharger leur ferait
+    // perdre ces changements, écraser la partie de l'autre serait pire. La carte laisse le choix (la partie reste à l'écran).
+    // Autrement la reprise écrit la partie de l'écran (keepLive) ou relit celle de l'autre (rien à perdre).
+    const lossy = !!e.unsaved && !e.keepLive && e.kind !== 'own';
+    if (!lossy && handOver(!!e.keepLive, e.kind === 'own')) return;
   }
   // Stockage plein, territoire non enregistré ou allégé : un toast (une fois), le motif reste dans la ligne de la sauvegarde.
   if (e.type === 'full' || e.type === 'companion-full' || e.type === 'compacted' || e.type === 'dropped') {

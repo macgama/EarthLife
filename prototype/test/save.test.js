@@ -705,6 +705,9 @@ test('présence : l\'autre page passe en arrière-plan ou se ferme → l\'évén
   const { storage, clock, a, b } = pagePair();
   assert.equal(writeNow(a).ok, true);
   assert.equal(b.store.takeOver().ok, true);
+  b.store.save.profile.playSec += 120; // b a joué depuis sa reprise : sa partie est la plus avancée
+  b.store.markDirty();
+  assert.equal(b.store.flush('test').ok, true);
   clock.t += 1000;
   a.store.markDirty();
   assert.equal(a.store.flush('test').ok, false);
@@ -835,6 +838,108 @@ test('présence : une ancienne page a écrit 18 s avant le premier essai d\'écr
   page2.markDirty();
   assert.equal(page2.flush('fabrication').ok, false);
   assert.equal(seen2[0].alive, true);
+});
+
+test('présence : une page périmée qui se modifie ne recouvre pas la présence de l\'autre, qui reste lue (O16)', () => {
+  const clock = { t: NOW };
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const seen = [];
+  const second = createSaveStore({
+    storage, now: () => clock.t, rand: seeded(67), listen: false, presence: true, visible: () => true, onExternal: (e) => seen.push(e),
+  });
+  // La première page tient la partie : elle a écrit et publié sa présence, puis ne change plus rien.
+  storage.setItem(SAVE_KEY, JSON.stringify({ ...EXAMPLE, writer: 'wpremiere', savedAt: clock.t }));
+  storage.setItem(PRESENCE_KEY, JSON.stringify({ w: 'wpremiere', at: clock.t, vis: true }));
+  second.onStorage({ key: SAVE_KEY, newValue: storage.getItem(SAVE_KEY) });
+  assert.equal(second.stale, true);
+  // La seconde page, périmée, se modifie et bat : sa présence ne remplace pas celle de la première.
+  clock.t += 8000;
+  second.markDirty();
+  assert.equal(second.beat(), false);
+  assert.equal(JSON.parse(storage.getItem(PRESENCE_KEY)).w, 'wpremiere');
+  clock.t += 8000;
+  second.markDirty();
+  assert.equal(second.flush('test').ok, false);
+  assert.equal(seen[0].alive, true, 'la première page est lue (présence à l\'écran), 16 s sans écriture ne la font pas partir');
+  assert.equal(seen[0].kind, 'visible');
+  assert.equal(second.beat(), false);
+  assert.equal(seen.length, 1, 'pas de reprise automatique');
+  // Si la première s'était cachée, sa présence le dirait aussitôt : l'autre reprend la main.
+  const storage2 = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const seen2 = [];
+  const page2 = createSaveStore({
+    storage: storage2, now: () => clock.t, rand: seeded(68), listen: false, presence: true, visible: () => true, onExternal: (e) => seen2.push(e),
+  });
+  storage2.setItem(SAVE_KEY, JSON.stringify({ ...EXAMPLE, writer: 'wpremiere', savedAt: clock.t }));
+  storage2.setItem(PRESENCE_KEY, JSON.stringify({ w: 'wpremiere', at: clock.t, vis: false }));
+  page2.onStorage({ key: SAVE_KEY, newValue: storage2.getItem(SAVE_KEY) });
+  page2.markDirty();
+  page2.beat();
+  assert.equal(page2.flush('test').ok, false);
+  assert.equal(seen2[0].alive, false);
+  assert.equal(seen2[0].kind, 'gone');
+});
+
+// Fin d'une fabrication sur une page périmée : la première écriture est refusée, l'autre page n'est plus là.
+function staleCraft({ theirPlaySec, ourPlaySec = 5230, dirty = true, ageMs = 18000 }) {
+  const clock = { t: NOW };
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const seen = [];
+  const page = createSaveStore({
+    storage, now: () => clock.t, rand: seeded(70), listen: false, presence: true, visible: () => true, onExternal: (e) => seen.push(e),
+  });
+  page.save.profile.playSec = ourPlaySec;
+  const other = { ...EXAMPLE, writer: 'wancienne', savedAt: clock.t, profile: { ...EXAMPLE.profile, playSec: theirPlaySec } };
+  storage.setItem(SAVE_KEY, JSON.stringify(other));
+  page.onStorage({ key: SAVE_KEY, newValue: storage.getItem(SAVE_KEY) });
+  clock.t += ageMs;
+  if (dirty) page.markDirty();
+  assert.equal(page.flush('fabrication').ok, false);
+  return { page, seen, clock, storage };
+}
+
+test('reprise : changements non enregistrés (fin de fabrication) et partie plus jouée que celle de l\'autre page → la partie de l\'écran est gardée', () => {
+  const { seen } = staleCraft({ theirPlaySec: 5100 });
+  assert.equal(seen[0].alive, false);
+  assert.equal(seen[0].unsaved, true);
+  assert.equal(seen[0].keepLive, true, 'main.js reprend la main en écrivant la partie de l\'écran : la planche reste');
+});
+
+test('reprise : changements non enregistrés mais l\'autre page a plus joué → pas de reprise automatique qui les perde', () => {
+  const { seen } = staleCraft({ theirPlaySec: 5231 });
+  assert.equal(seen[0].alive, false);
+  assert.equal(seen[0].unsaved, true);
+  assert.equal(seen[0].keepLive, false, 'main.js garde la carte : rien n\'est écrasé ni perdu en silence');
+  assert.equal(staleCraft({ theirPlaySec: 9000 }).seen[0].keepLive, false);
+  assert.equal(staleCraft({ theirPlaySec: 5230 }).seen[0].keepLive, true, 'à égalité, la partie de l\'écran est gardée');
+});
+
+test('reprise : rien d\'enregistré en attente → la reprise relit la partie de l\'autre page, comme avant', () => {
+  const clock = { t: NOW };
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const seen = [];
+  const page = createSaveStore({
+    storage, now: () => clock.t, rand: seeded(71), listen: false, presence: true, visible: () => true, onExternal: (e) => seen.push(e),
+  });
+  page.markDirty();
+  assert.equal(page.flush('test').ok, true);
+  storage.setItem(SAVE_KEY, JSON.stringify({ ...EXAMPLE, writer: 'wancienne', savedAt: clock.t + 100, profile: { ...EXAMPLE.profile, playSec: 100 } }));
+  clock.t += 20000;
+  page.onStorage({ key: SAVE_KEY, newValue: storage.getItem(SAVE_KEY) });
+  assert.equal(seen[0].unsaved, false);
+  assert.equal(seen[0].keepLive, false);
+});
+
+test('reprise : après « autre page partie », le signal garde l\'état des changements non enregistrés', () => {
+  const { page, seen, clock, storage } = staleCraft({ theirPlaySec: 5100, ageMs: 5000 });
+  assert.equal(seen[0].alive, true, 'l\'autre page a écrit il y a 5 s : encore comptée');
+  assert.equal(seen[0].unsaved, true);
+  clock.t += 13000;
+  assert.equal(page.beat(), true);
+  assert.equal(seen.at(-1).type, 'other-gone');
+  assert.equal(seen.at(-1).unsaved, true);
+  assert.equal(seen.at(-1).keepLive, true);
+  void storage;
 });
 
 test('présence : vie précédente de l\'onglet (rechargé par « Reprendre ici ») → ses écritures et son délai ne sont pas ceux d\'une autre page', () => {
