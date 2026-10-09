@@ -23,7 +23,7 @@ export const ITEM_KEYS = [
   'conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette',
   'bois', 'clous', 'ferraille', 'tissu', 'ruban',
   'planche', 'plaque', 'piege', 'leurre',
-  'batte_cloutee', 'hache', 'manteau', 'poncho',
+  'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee',
 ];
 
 // Textes affichés (5.3).
@@ -44,6 +44,8 @@ const MAX_COUNT = 999;
 export const MAX_ROOMS = 40;
 const MAX_STAT = 1e9;
 const BAG_CAP = 30;
+// Sacs portés et leur place (survival.ITEMS, equip: 'bag') ; sans sac de randonnée, BAG_CAP.
+const PACKS = { sac_randonnee: 45 };
 const ID_MAX = 40;
 // Identifiants de fouille et de démontage, clés de nuit : b45.75718_4.83049, b12,4,0,1, c457561_48311, 2026-10-01…
 // Seuls ces caractères y apparaissent ; un guillemet ou un caractère de contrôle prendrait 2 à 6 octets une fois
@@ -66,11 +68,14 @@ const WEATHER_KEY = /^[a-z_]{1,20}$/;
 const NORM_TOLERANCE = 0.02;
 
 const TOP_KEYS = ['v', 'writer', 'rev', 'savedAt', 'lastSiegeCheck', 'profile', 'survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'searched', 'dismantled'];
-const PROFILE_KEYS = ['createdAt', 'nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths', 'weathers', 'plans', 'sinceLastPlan', 'firstWaveDone', 'kitGiven', 'journal'];
-const SURVIVOR_KEYS = ['health', 'food', 'water', 'bodyTemp', 'wet', 'fatigue', 'bag', 'weapon', 'clothing'];
+const PROFILE_KEYS = ['createdAt', 'nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths', 'weathers', 'plans', 'sinceLastPlan', 'firstWaveDone', 'kitGiven', 'journal', 'distanceM', 'playSec'];
+const SURVIVOR_KEYS = ['health', 'food', 'water', 'bodyTemp', 'wet', 'fatigue', 'bag', 'weapon', 'clothing', 'pack'];
 const BASE_KEYS = ['id', 'lat', 'lon', 'area', 'height', 'kind', 'name', 'place', 'claimedAt', 'density', 'utcOffset', 'perk', 'openings', 'chest', 'upgrades', 'sirenAt', 'lastReserve'];
 const HORDE_KEYS = ['nightKey', 't', 'waves', 'lastWaveEnd', 'held', 'played'];
 const COUNTERS = ['nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths'];
+// Compteurs d'« Mes statistiques » ajoutés après la première version : distance à pied (m) et temps de jeu (s). Absents d'une
+// ancienne partie, ils partent de 0 sans correction signalée ; ils ne comptent pas pour une partie « vide » (isBlankSave).
+const METERS = ['distanceM', 'playSec'];
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const finite = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -89,6 +94,7 @@ export function emptySave(now = Date.now()) {
       createdAt: now,
       nightsHeld: 0, wavesRepelled: 0, wavesLost: 0,
       kills: 0, deliveries: 0, deaths: 0,
+      distanceM: 0, playSec: 0,
       weathers: {},
       plans: [],
       sinceLastPlan: 0,
@@ -101,6 +107,7 @@ export function emptySave(now = Date.now()) {
       bag: { eau: 1, conserve: 1 },
       weapon: { key: 'batte', uses: null },
       clothing: null,
+      pack: null,
     },
     where: null,
     base: null,
@@ -423,7 +430,10 @@ function checkSurvivor(raw, c, base) {
     health = 0;
     if (s.health < 0) c.fix('survivor.health', `${s.health} → 0`);
   } else health = c.num(s.health, 'survivor.health', { min: 1, max: 100, def: 100 });
-  const bag = c.counts(s.bag, 'survivor.bag', BAG_CAP);
+  let pack = null;
+  if (Object.hasOwn(PACKS, s.pack)) pack = s.pack;
+  else if (s.pack !== null && s.pack !== undefined) c.fix('survivor.pack', `${JSON.stringify(s.pack)} → null`);
+  const bag = c.counts(s.bag, 'survivor.bag', pack ? PACKS[pack] : BAG_CAP);
   // L'excédent du sac passe au coffre s'il existe (dans sa limite), sinon il est perdu.
   if (Object.keys(bag.excess).length && base) {
     const lost = c.pour(base.chest, bag.excess, base.perk === 'arriere' ? CHEST.big : CHEST.normal);
@@ -451,6 +461,7 @@ function checkSurvivor(raw, c, base) {
     bag: bag.out,
     weapon,
     clothing,
+    pack,
   };
 }
 
@@ -460,6 +471,7 @@ function checkProfile(raw, c, now) {
   else c.unknown(p, PROFILE_KEYS, 'profile');
   const out = { createdAt: c.time(p.createdAt, 'profile.createdAt', now) };
   for (const k of COUNTERS) out[k] = c.num(p[k], `profile.${k}`, { min: 0, max: MAX_STAT, int: true });
+  for (const k of METERS) out[k] = p[k] === undefined ? 0 : c.num(p[k], `profile.${k}`, { min: 0, max: MAX_STAT, int: true });
   out.weathers = {};
   if (isObj(p.weathers)) {
     for (const [k, v] of Object.entries(p.weathers)) {

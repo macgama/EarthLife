@@ -11,7 +11,8 @@ import { DEM_ATTRIBUTION } from './dem.js';
 import { createChunkManager, VIEW_RADIUS } from './chunks.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
-  offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, BAG_CAPACITY,
+  offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, bagCapacity, wornKey,
+  removePack, packSurplus, PACK_REMOVE_FULL,
 } from './survival.js';
 import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
 import { createCharacters } from './characters.js';
@@ -44,6 +45,7 @@ import {
   zonesCard, ONLINE_TEXTS, ACCOUNT_TEXTS,
 } from './panels.js';
 import { createHud, distanceText } from './hud.js';
+import { addStep, statsCard } from './stats.js';
 import { createMinimap } from './minimap.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
 import { makeProjection } from './geo.js';
@@ -439,7 +441,7 @@ const interior = createInteriorGame({
 const hud = createHud({ $, input });
 const card = createCard($('card'));
 let cardInfo = null; // { blocking, escape, onButton } de la carte affichée
-const panel = createRefugePanel(document.body, { onAction: (action, arg) => onPanelAction(action, arg) });
+const panel = createRefugePanel(document.body, { onAction: (action, arg) => onPanelAction(action, arg), onStats: () => showStats() });
 // Téléphone, en portrait ou à l'horizontale : panneau ouvert, « Sortir » et « Dormir » sont en pied de panneau.
 const phoneLayout = window.matchMedia('(max-width: 759px), (max-height: 500px) and (orientation: landscape)');
 // Feuille basse du refuge (téléphone, tablette en portrait) : elle porte déjà Dormir, Sortir et Missions.
@@ -818,7 +820,7 @@ function restoreCharacter(s) {
   sv.bag ??= {};
   s.player = createPlayer(s.start);
   s.survivor = createSurvivor();
-  Object.assign(s.survivor, { food: sv.food, water: sv.water, bodyTemp: sv.bodyTemp, wet: sv.wet, fatigue: sv.fatigue, clothing: sv.clothing ?? null });
+  Object.assign(s.survivor, { food: sv.food, water: sv.water, bodyTemp: sv.bodyTemp, wet: sv.wet, fatigue: sv.fatigue, clothing: sv.clothing ?? null, pack: sv.pack ?? null });
   s.survivor.inventory = sv.bag;
   s.survivor.weapon = { key: sv.weapon?.key ?? 'batte', uses: sv.weapon?.uses ?? null };
   s.player.health = Math.min(100, sv.health);
@@ -862,7 +864,7 @@ function copyLive(sv) {
   Object.assign(sv.survivor, {
     health: dead ? 0 : Math.max(1, Math.round(Math.min(100, p.health) * 10) / 10),
     food: v.food, water: v.water, bodyTemp: v.bodyTemp, wet: v.wet, fatigue: v.fatigue,
-    bag: v.inventory, weapon: { ...v.weapon }, clothing: v.clothing ?? null,
+    bag: v.inventory, weapon: { ...v.weapon }, clothing: v.clothing ?? null, pack: v.pack ?? null,
   });
   const ll = playerLatLon(s);
   sv.where = { lat: ll.lat, lon: ll.lon, at: Date.now(), inside: !!s.refuge?.inside };
@@ -1231,6 +1233,7 @@ function step(s, inp, dt) {
   const before = { x: p.x, z: p.z };
   const still = s.action && !s.action.inside;
   updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
+  addStep(save.profile, p.x - before.x, p.z - before.z, dt); // « Mes statistiques » : distance à pied et temps de jeu
   // Intérieur ouvert : sortie détectée, toit effacé ou rendu, lueur du meuble à fouiller.
   interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches });
   // 7. Boutons E et R.
@@ -1259,7 +1262,7 @@ function step(s, inp, dt) {
   handleRefugeEvents(s, r.update(dt, {
     player: p, survivor: sv, isNight: s.isNight, forcedTime: mode === 'live' ? null : mode, weather: w, mods: s.mods,
     now: Date.now(), offscreen, zombieEvents: events, sessionStart: s.sessionStart, respawnedAt: s.respawnedAt,
-    ...city.refugeCtx(s),
+    bagCap: bagCapacity(sv), ...city.refugeCtx(s),
   }));
   // Ville : zombies prêtés par les pâtés, contre-attaque, nuits, compteurs et fin de ville.
   city.step(s, dt);
@@ -1361,7 +1364,7 @@ function markSearched(s, b) {
 
 // Contexte des règles du refuge (check, apply, textes du panneau).
 function refugeCtx(s, more = {}) {
-  return { player: s.player, survivor: s.survivor, weather: s.weather, mods: s.mods, now: Date.now(), ...city.refugeCtx(s), ...more };
+  return { player: s.player, survivor: s.survivor, weather: s.weather, mods: s.mods, now: Date.now(), bagCap: bagCapacity(s.survivor), ...city.refugeCtx(s), ...more };
 }
 
 // Maison tirée au hasard dans la ville (refuge installé pour le joueur) : première mission, stockage persistant demandé.
@@ -1746,7 +1749,10 @@ function pickBag(s) {
   const at = s.store.proj.toLocal(d.lat, d.lon);
   if (Math.hypot(at.x - p.x, at.z - p.z) > 1.5) return;
   let moved = 0;
-  for (const k of Object.keys(d.bag)) moved += moveItems(d.bag, s.survivor.inventory, k, d.bag[k], BAG_CAPACITY);
+  // Le sac de randonnée perdu se porte d'abord : sa place sert au reste du contenu.
+  const packKey = Object.keys(d.bag).find((k) => ITEMS[k]?.equip === 'bag' && d.bag[k] > 0);
+  if (packKey && equipFrom(s.survivor, packKey, d.bag)) moved += 1;
+  for (const k of Object.keys(d.bag)) moved += moveItems(d.bag, s.survivor.inventory, k, d.bag[k], bagCapacity(s.survivor));
   if (!countOf(d.bag)) save.dropBag = null;
   if (moved) {
     toast('Sac récupéré', 2.5, 'loot');
@@ -1880,16 +1886,16 @@ function refugeView(s) {
   const r = s.refuge, b = r.base, sv = s.survivor;
   const ctx = refugeCtx(s);
   const cap = chestCap(b);
-  const bagN = bagUsed(sv), chestN = countOf(b.chest);
+  const bagN = bagUsed(sv), bagMax = bagCapacity(sv), chestN = countOf(b.chest);
   const rows = [];
   for (const [key, item] of Object.entries(ITEMS)) {
     const inChest = b.chest[key] ?? 0, inBag = sv.inventory[key] ?? 0;
     if (!inChest && !inBag) continue;
     const buttons = [];
-    if (inChest) buttons.push({ action: 'take', arg: key, label: 'Prendre', enabled: bagN < BAG_CAPACITY, why: 'Sac plein' });
+    if (inChest) buttons.push({ action: 'take', arg: key, label: 'Prendre', enabled: bagN < bagMax, why: 'Sac plein' });
     if (inBag) buttons.push({ action: 'put', arg: key, label: 'Déposer', enabled: chestN < cap, why: 'Coffre plein' });
     // Équiper : la pièce portée (si elle est d'un autre type) revient d'où vient la nouvelle ; une arme entamée est jetée.
-    if (item.equip && key !== (item.equip === 'weapon' ? sv.weapon?.key : sv.clothing)) {
+    if (item.equip && key !== wornKey(sv, item.equip)) {
       const lost = discardedBy(sv, key);
       buttons.push({ action: 'equip', arg: key, label: lost ? `Équiper · ta ${ITEMS[lost].one} usée sera jetée` : 'Équiper', enabled: true });
     }
@@ -1910,12 +1916,14 @@ function refugeView(s) {
       button: { action: 'craft', arg: row.key, label: `Fabriquer · ${row.time} s`, enabled: row.ok && !s.action, why: s.action ? 'Action en cours' : row.why },
     })),
     chest: {
-      head: `Coffre ${chestN}/${cap} · Sac ${bagN}/${BAG_CAPACITY}`,
-      gear: `Arme : ${weapon.name}${wear} · Vêtement : ${clothing}`,
+      head: `Coffre ${chestN}/${cap} · Sac ${bagN}/${bagMax}`,
+      gear: `Arme : ${weapon.name}${wear} · Vêtement : ${clothing} · Sac : ${sv.pack ? ITEMS[sv.pack]?.name ?? 'Sac de base' : 'Sac de base'}`,
       rows,
       buttons: [
-        { action: 'prepare', arg: null, label: 'Préparer le sac', enabled: bagN < BAG_CAPACITY, why: 'Sac plein' },
+        { action: 'prepare', arg: null, label: 'Préparer le sac', enabled: bagN < bagMax, why: 'Sac plein' },
         { action: 'deposit', arg: null, label: 'Tout déposer', enabled: bagN > 0 && chestN < cap, why: bagN ? 'Coffre plein' : 'Sac vide' },
+        // Enlever le sac de randonnée : il va au coffre avec ce qui ne tient plus dans les 30 places de base.
+        sv.pack ? { action: 'unpack', arg: null, label: `Enlever : ${ITEMS[sv.pack]?.name ?? 'sac'}`, enabled: packSurplus(sv) + 1 <= cap - chestN, why: PACK_REMOVE_FULL } : null,
       ],
     },
     // Espaces insécables dans les guillemets : « Déménager ici » ne se coupe pas en fin de ligne sur téléphone.
@@ -1982,7 +1990,7 @@ function onPanelAction(action, arg) {
       else startAction(s, { id: 'craft', arg, slot: 'primary' });
       break;
     case 'take':
-      if (moveItems(b.chest, sv.inventory, arg, 1, BAG_CAPACITY)) saveStore.markDirty();
+      if (moveItems(b.chest, sv.inventory, arg, 1, bagCapacity(sv))) saveStore.markDirty();
       break;
     case 'put':
       if (moveItems(sv.inventory, b.chest, arg, 1, chestCap(b))) saveStore.markDirty();
@@ -1991,9 +1999,15 @@ function onPanelAction(action, arg) {
       equipItem(s, arg);
       break;
     case 'prepare': {
-      const got = prepareBag(sv.inventory, b.chest, BAG_CAPACITY);
+      const got = prepareBag(sv.inventory, b.chest, bagCapacity(sv));
       toast(countOf(got) ? `Sac préparé : ${countsLabel(got)}` : 'Rien à ajouter au sac', 2.5, countOf(got) ? 'loot' : '');
       if (countOf(got)) saveStore.markDirty();
+      break;
+    }
+    case 'unpack': {
+      const res = removePack(sv, b.chest, chestCap(b));
+      toast(res.ok ? `${ITEMS.sac_randonnee.name} enlevé · au coffre : ${countsLabel(res.moved)}` : res.why, 3, res.ok ? 'loot' : '');
+      if (res.ok) saveStore.markDirty();
       break;
     }
     case 'deposit': {
@@ -2066,7 +2080,7 @@ function finishMission(s, won) {
   const lines = [`Livré ${placeWith('à', q.dropoff)} en ${questDuration(q.elapsed)} · ${kills} zombie${kills > 1 ? 's' : ''} à terre`];
   const b = s.refuge.base;
   if (b) {
-    const res = storeItems(reward, b.chest, chestCap(b), s.survivor.inventory, BAG_CAPACITY);
+    const res = storeItems(reward, b.chest, chestCap(b), s.survivor.inventory, bagCapacity(s.survivor));
     if (countOf(res.chest)) lines.push(`Récompense déposée au coffre : ${countsLabel(res.chest)}`);
     if (countOf(res.bag)) lines.push(`Coffre plein : ${countsLabel(res.bag)} dans ton sac`);
     if (countOf(res.lost)) lines.push(`Coffre et sac pleins : ${countsLabel(res.lost)} perdu`);
@@ -2903,6 +2917,12 @@ async function inviteHere() {
     setOnlineNote(`Copie impossible ici. Le lien : ${u.toString()}`, true);
   }
 }
+
+// « Mes statistiques » : les compteurs de la partie (save.profile) ; la carte met le jeu en pause le temps de la lecture.
+function showStats() {
+  showCard(statsCard(save.profile, { nowMs: Date.now() }), null, { escape: 'close' });
+}
+$('stats-open')?.addEventListener('click', () => showStats());
 
 // « Voir mes données » (droit d'accès, section 6.8) : le surnom est recomposé ici, jamais lu comme un texte du réseau.
 // Connecté à un compte : la vue du compte d'abord (spécification des comptes, 6.2), puis l'identité rattachée.

@@ -11,6 +11,8 @@ export const TABS = [
 ];
 const TAB_IDS = TABS.map((t) => t.id);
 const JOURNAL_SHORT = 3;
+// « Mes statistiques », sous le carnet : ouvre la carte des compteurs de la partie (stats.js).
+const STATS_BUTTON = `<button type="button" class="rp-stats-btn" data-ui="stats">${icon('stats', { size: 16 })}<span>Mes statistiques</span></button>`;
 // Icône des boutons selon l'action du panneau.
 const ACTION_ICONS = { sleep: 'lune', missions: 'quete', exit: 'fleche', lure: 'cible', siren: 'alerte', prepare: 'sac', deposit: 'sac' };
 const CARD_ICONS = { success: 'succes', danger: 'zombie', warn: 'alerte' };
@@ -156,7 +158,7 @@ function buildPanel(view = {}, ui = {}) {
   const pane = (id, inner) => `<section class="rp-pane" id="rp-pane-${id}" data-pane="${id}" role="tabpanel" aria-labelledby="rp-tab-${id}"${id === tab ? '' : ' hidden'}>${inner}</section>`;
   const template = fold
     + `<div class="rp-main">${head}${tabs}<div class="rp-body">`
-    + `${pane('defense', defense)}${pane('craft', craft)}${pane('chest', chest)}${journal}</div>`
+    + `${pane('defense', defense)}${pane('craft', craft)}${pane('chest', chest)}${journal}${STATS_BUTTON}</div>`
     + `<footer class="rp-foot">${foot}</footer></div>`;
   const byKey = new Map(leaves);
   const html = template.replace(MARK, (_, k) => byKey.get(k));
@@ -200,10 +202,20 @@ export function cardHtml(spec = {}) {
       : `<p class="rp-card-score"><span class="rp-card-score-num">${esc(spec.score)}</span></p>`;
   }
   const buttons = (spec.buttons ?? []).map((b) => cardButton(b)).join('');
-  return `<div class="rp-card rp-tone-${tone}">`
+  const stats = cardStats(spec.stats);
+  return `<div class="rp-card rp-tone-${tone}${stats ? ' rp-card-scroll' : ''}">`
     + `<div class="rp-card-head">${ico ? `<span class="rp-card-icon">${icon(ico, { size: 32 })}</span>` : ''}<h2 class="rp-card-title" id="rp-card-title">${esc(spec.title ?? '')}</h2></div>`
-    + `${lines ? `<ul class="rp-card-lines">${lines}</ul>` : ''}${score}${cardField(spec.field)}${cardLink(spec.link)}`
+    + `${lines ? `<ul class="rp-card-lines">${lines}</ul>` : ''}${stats}${score}${cardField(spec.field)}${cardLink(spec.link)}`
     + `${buttons ? `<div class="rp-card-btns">${buttons}</div>` : ''}</div>`;
+}
+
+// Sections de compteurs d'une carte (« Mes statistiques », stats.js) : [{ title, items: [{ label, value }], note? }]. La valeur
+// vient avant le libellé à l'écran (CSS), après dans le texte lu : « Nuits tenues, 12 ».
+function cardStats(sections) {
+  const list = (sections ?? []).filter((sec) => sec?.items?.length);
+  return list.map((sec) => `<section class="rp-stats-sec"><h3 class="rp-stats-title">${esc(sec.title)}</h3>`
+    + `<dl class="rp-stats-grid">${sec.items.map((it) => `<div class="rp-stat"><dt>${esc(it.label)}</dt><dd>${esc(it.value)}</dd></div>`).join('')}</dl>`
+    + `${sec.note ? `<p class="rp-stats-note">${esc(sec.note)}</p>` : ''}</section>`).join('');
 }
 
 // Champ de saisie d'une carte (code d'invitation) : { label, value?, maxLength?, placeholder? }. Sa valeur est
@@ -701,12 +713,18 @@ export const PANEL_CSS = `
 .rp-journal-list { display: grid; gap: 6px; padding: 0; list-style: none; color: ${T.text2}; font-size: var(--fs-sm, 13px); overflow-wrap: anywhere; }
 .rp-journal-empty { color: ${T.text3}; font-size: var(--fs-sm, 13px); }
 
+/* « Mes statistiques », sous le carnet. */
+.rp-stats-btn { display: flex; align-items: center; gap: var(--sp-2, 8px); width: 100%; min-height: ${T.touch}; padding: 0; border: 0; border-top: 1px solid ${T.line}; background: transparent;
+  color: ${T.text2}; cursor: pointer; text-align: left; touch-action: manipulation; font: var(--fw-semibold, 600) var(--fs-2xs, 11px) / 1 ${T.display}; letter-spacing: var(--ls-label, .12em); text-transform: uppercase; }
+.rp-stats-btn svg { width: 16px; height: 16px; }
+.rp-stats-btn:focus-visible { outline: 2px solid ${T.accent}; outline-offset: -2px; }
+
 /* Pied : Dormir, Missions, Sortir. */
 .rp-foot { flex: none; padding: var(--sp-2, 8px) var(--sp-3, 12px); border-top: 1px solid ${T.line}; background: ${T.solid}; }
 .rp-foot-actions .rp-btn { flex: 1 1 0; padding: 6px var(--sp-2, 8px); }
 
 @media (hover: hover) and (pointer: fine) {
-  .rp-btn:hover:not(:disabled), .rp-icon-btn:hover, .rp-journal-btn:hover { background: rgba(255, 255, 255, .06); border-color: ${T.text2}; color: ${T.text}; }
+  .rp-btn:hover:not(:disabled), .rp-icon-btn:hover, .rp-journal-btn:hover, .rp-stats-btn:hover { background: rgba(255, 255, 255, .06); border-color: ${T.text2}; color: ${T.text}; }
   .rp-tab:hover { color: ${T.text}; background: ${T.raised}; }
   .rp-fold:hover { background: ${T.raised}; }
 }
@@ -800,6 +818,16 @@ body.panel-open #controls { display: none !important; }
 .rp-card-input { min-height: ${T.touch}; padding: 0 var(--sp-3, 12px); border: 1px solid ${T.lineStrong}; border-radius: ${T.rSm}; background: ${T.raised}; color: ${T.text};
   font: var(--fw-medium, 500) var(--fs-md, 15px) / 1 ${T.textFont}; letter-spacing: .04em; }
 .rp-card-input:focus-visible { outline: 2px solid ${T.accent}; outline-offset: 1px; }
+/* Compteurs (« Mes statistiques ») : trois tuiles par ligne, la valeur au-dessus du libellé ; la carte défile si l'écran est bas. */
+.rp-card-scroll { max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; }
+.rp-stats-sec { margin-top: var(--sp-4, 16px); }
+.rp-stats-title { margin: 0 0 var(--sp-2, 8px); color: ${T.text2}; font: var(--fw-semibold, 600) var(--fs-2xs, 11px) / 1 ${T.display}; letter-spacing: var(--ls-label, .12em); text-transform: uppercase; }
+.rp-stats-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-2, 8px); margin: 0; }
+.rp-stat { display: flex; flex-direction: column-reverse; justify-content: flex-end; gap: 4px; min-width: 0; padding: var(--sp-2, 8px); background: ${T.raised};
+  border: 1px solid ${T.line}; border-left: 2px solid ${T.accent}; border-radius: ${T.rSm}; }
+.rp-stat dt { color: ${T.text2}; font: var(--fw-semibold, 600) 10px / 1.15 ${T.display}; letter-spacing: .04em; text-transform: uppercase; overflow-wrap: break-word; hyphens: auto; }
+.rp-stat dd { margin: 0; color: ${T.text}; font: var(--fw-bold, 700) clamp(15px, 4.6vw, 20px) / 1.1 ${T.textFont}; font-variant-numeric: tabular-nums; }
+.rp-stats-note { margin: var(--sp-2, 8px) 0 0; color: ${T.text3}; font: var(--fw-medium, 500) var(--fs-xs, 12px) / 1.3 ${T.textFont}; }
 .rp-card-link { margin: var(--sp-3, 12px) 0 0; font: var(--fw-medium, 500) var(--fs-sm, 13px) / 1.3 ${T.textFont}; }
 .rp-card-a { display: inline-flex; align-items: center; min-height: ${T.touch}; color: ${T.text2}; text-decoration: underline; text-underline-offset: 3px; }
 .rp-card-a:hover, .rp-card-a:focus-visible { color: ${T.text}; }
@@ -835,7 +863,7 @@ function injectStyle(doc) {
 // Panneau du refuge, ajouté à `root`. onAction(action, arg) pour les boutons de la vue (nail, craft, take…).
 // onChange({ open, folded, tab }) (facultatif) quand le panneau s'ouvre, se ferme, se replie ou change d'onglet.
 // Pose `panel-open` (et `panel-folded`) sur <body> : input.js n'y capture Tab que dans ce cas.
-export function createRefugePanel(root, { onAction = () => {}, onChange = () => {} } = {}) {
+export function createRefugePanel(root, { onAction = () => {}, onChange = () => {}, onStats = () => {} } = {}) {
   const doc = root.ownerDocument ?? document;
   injectStyle(doc);
   const el = doc.createElement('aside');
@@ -950,6 +978,7 @@ export function createRefugePanel(root, { onAction = () => {}, onChange = () => 
     if (what === 'fold') return toggleFold();
     if (what === 'tab') return setTab(b.dataset.tab);
     if (what === 'journal') { ui.journalOpen = !ui.journalOpen; paint(true); return; }
+    if (what === 'stats') return onStats();
     if (!b.dataset.act) return;
     let arg = null;
     try {

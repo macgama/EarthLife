@@ -24,6 +24,7 @@ const EXAMPLE = {
     createdAt: 1790859900000,
     nightsHeld: 1, wavesRepelled: 1, wavesLost: 0,
     kills: 14, deliveries: 1, deaths: 0,
+    distanceM: 4120, playSec: 5230,
     weathers: { rain: 1 },
     plans: [],
     sinceLastPlan: 6,
@@ -39,6 +40,7 @@ const EXAMPLE = {
     bag: { eau: 1, conserve: 1, planche: 1, leurre: 1 },
     weapon: { key: 'batte_cloutee', uses: 48 },
     clothing: null,
+    pack: null,
   },
   where: { lat: 45.75712, lon: 4.83055, at: 1790881200000, inside: true },
   base: {
@@ -1505,4 +1507,87 @@ test('fouille des pièces : aides de lecture et d’écriture', () => {
   // Le nombre de pièces change (plan différent) : on repart de zéro.
   assert.ok(markRoom(map, 'x', 0, 5, NOW));
   assert.deepEqual(map.x, { n: 5, r: { 0: NOW } });
+});
+
+// ---------- Sac de randonnée et compteurs de « Mes statistiques » ----------
+
+test('sac de randonnée : porté, le sac garde ses 45 places ; sinon 30 et l\'excédent passe au coffre', () => {
+  const worn = check((s) => { s.survivor.pack = 'sac_randonnee'; s.survivor.bag = { eau: 20, conserve: 25 }; });
+  assert.equal(worn.save.survivor.pack, 'sac_randonnee');
+  assert.deepEqual(worn.save.survivor.bag, { eau: 20, conserve: 25 });
+  assert.deepEqual(worn.fixes, []);
+  // Au-delà de 45, même avec le sac : l'excédent va au coffre.
+  const over = check((s) => { s.survivor.pack = 'sac_randonnee'; s.survivor.bag = { eau: 30, conserve: 20 }; });
+  assert.deepEqual(over.save.survivor.bag, { eau: 30, conserve: 15 });
+  assert.equal(over.save.base.chest.conserve, EXAMPLE.base.chest.conserve + 5);
+  // Sans le sac : 30 places, comme avant.
+  const bare = check((s) => { s.survivor.bag = { eau: 20, conserve: 25 }; });
+  assert.equal(bare.save.survivor.pack, null);
+  assert.deepEqual(bare.save.survivor.bag, { eau: 20, conserve: 10 });
+  // Un sac inconnu est refusé : 30 places.
+  const bad = check((s) => { s.survivor.pack = 'valise'; s.survivor.bag = { eau: 20, conserve: 25 }; });
+  assert.equal(bad.save.survivor.pack, null);
+  assert.ok(hasFix(bad, 'survivor.pack'));
+  assert.deepEqual(bad.save.survivor.bag, { eau: 20, conserve: 10 });
+  // L'objet lui-même se range au sac, au coffre et au sac laissé sur place.
+  const stored = check((s) => {
+    s.survivor.bag = { sac_randonnee: 1, eau: 1 };
+    s.base.chest = { sac_randonnee: 1 };
+    s.dropBag = { lat: 45.7, lon: 4.8, at: NOW, bag: { sac_randonnee: 1, bois: 2 } };
+  });
+  assert.deepEqual(stored.fixes, []);
+  assert.equal(stored.save.survivor.bag.sac_randonnee, 1);
+  assert.equal(stored.save.dropBag.bag.sac_randonnee, 1);
+});
+
+test('compteurs de statistiques : distance et temps de jeu, entiers de 0 à 1 milliard', () => {
+  const p = (edit) => check((s) => edit(s.profile)).save.profile;
+  assert.equal(p((x) => { x.distanceM = 1234.6; }).distanceM, 1235);
+  assert.equal(p((x) => { x.playSec = -5; }).playSec, 0);
+  assert.equal(p((x) => { x.playSec = 5e12; }).playSec, 1e9);
+  const bad = check((s) => { s.profile.distanceM = 'loin'; });
+  assert.equal(bad.save.profile.distanceM, 0);
+  assert.ok(hasFix(bad, 'profile.distanceM'));
+  assert.equal(validateSave(example(), NOW).save.profile.distanceM, 4120);
+});
+
+test('ancienne partie sans les champs nouveaux : chargée sans correction, avec des valeurs par défaut', () => {
+  const old = example();
+  delete old.profile.distanceM;
+  delete old.profile.playSec;
+  delete old.survivor.pack;
+  const r = validateSave(old, NOW);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.fixes, [], 'aucune correction signalée');
+  assert.equal(r.save.profile.distanceM, 0);
+  assert.equal(r.save.profile.playSec, 0);
+  assert.equal(r.save.survivor.pack, null);
+  // Le reste de la partie ne bouge pas.
+  assert.deepEqual({ ...r.save, profile: { ...r.save.profile, distanceM: 4120, playSec: 5230 }, survivor: { ...r.save.survivor, pack: null } }, EXAMPLE);
+  // Par le magasin : lue puis réécrite avec les champs nouveaux, sans rien perdre.
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(old) } });
+  const store = createSaveStore({ storage, now: () => NOW });
+  assert.equal(store.status, 'ok');
+  assert.deepEqual(store.fixes, []);
+  assert.equal(store.save.profile.kills, 14);
+  assert.equal(store.save.base.chest.bois, 4);
+  store.markDirty();
+  store.flush('essai');
+  const written = JSON.parse(storage.map.get(SAVE_KEY));
+  assert.equal(written.profile.distanceM, 0);
+  assert.equal(written.survivor.pack, null);
+});
+
+test('partie neuve : distance, temps de jeu et sac de base à zéro', () => {
+  const s = emptySave(NOW);
+  assert.equal(s.profile.distanceM, 0);
+  assert.equal(s.profile.playSec, 0);
+  assert.equal(s.survivor.pack, null);
+});
+
+test('une partie vide le reste même après quelques pas : les compteurs de marche ne comptent pas', () => {
+  const s = emptySave(NOW);
+  s.profile.distanceM = 800;
+  s.profile.playSec = 600;
+  assert.equal(isBlankSave(s), true);
 });

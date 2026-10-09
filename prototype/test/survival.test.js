@@ -5,7 +5,7 @@ import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, lootKind, count, effectiveAmbient, fatigueEffects, bagUsed,
   equipOrStore, equipOrStoreInfo, equipFrom, discardedBy, discardText,
   weaponDamage, wearWeapon, deathPenalty, wakeAfterDeath, offlineRecovery, itemLabel, countsLabel,
-  ITEMS, LOOT, WEAPONS, BAG_CAPACITY, CONSUMABLE_KEYS, MATERIAL_KEYS,
+  ITEMS, LOOT, WEAPONS, BAG_BASE, CONSUMABLE_KEYS, MATERIAL_KEYS, bagCapacity, wornKey, removePack, packSurplus,
 } from '../src/survival.js';
 import { featuresFromBytes } from '../src/tiles.js';
 import { createWorldStore, addFeatures, buildPatch } from '../src/world.js';
@@ -93,13 +93,14 @@ const maxRand = () => { let i = 0; return () => (i++ % 2 ? 0.999 : 0); };
 test('nouveau survivant : sac de départ, batte de base, veste légère, fatigue 10', () => {
   assert.deepEqual(createSurvivor(), {
     food: 80, water: 80, bodyTemp: 37, wet: 0, fatigue: 10,
-    inventory: { eau: 1, conserve: 1 }, weapon: { key: 'batte', uses: null }, clothing: null, warmth: 0,
+    inventory: { eau: 1, conserve: 1 }, weapon: { key: 'batte', uses: null }, clothing: null, pack: null, warmth: 0,
   });
   assert.deepEqual(WEAPONS.batte, { name: 'Batte', damage: 50, uses: null });
-  assert.equal(BAG_CAPACITY, 30);
+  assert.equal(BAG_BASE, 30);
+  assert.equal(bagCapacity(createSurvivor()), 30);
   assert.deepEqual(CONSUMABLE_KEYS, ['conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette']);
   assert.deepEqual(MATERIAL_KEYS, ['bois', 'clous', 'ferraille', 'tissu', 'ruban']);
-  for (const k of [...CONSUMABLE_KEYS, ...MATERIAL_KEYS, 'planche', 'plaque', 'piege', 'leurre', 'batte_cloutee', 'hache', 'manteau', 'poncho']) {
+  for (const k of [...CONSUMABLE_KEYS, ...MATERIAL_KEYS, 'planche', 'plaque', 'piege', 'leurre', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee']) {
     assert.ok(ITEMS[k]?.name, `objet ${k}`);
   }
   for (const k of MATERIAL_KEYS) assert.equal(ITEMS[k].mat, true);
@@ -375,7 +376,7 @@ test('sac plein : 30 places, le surplus reste par terre', () => {
   const r = addLoot(s, { ferraille: 30 });
   assert.deepEqual(r.stored, { ferraille: 28 });
   assert.deepEqual(r.left, { ferraille: 2 });
-  assert.equal(bagUsed(s), BAG_CAPACITY);
+  assert.equal(bagUsed(s), bagCapacity(s));
   assert.equal(`Sac plein : ${countsLabel(r.left)} laissées sur place`, 'Sac plein : 2 ferrailles laissées sur place');
   const m = addLoot(s, { manteau: 1 });
   assert.deepEqual(m.equipped, ['manteau'], 'l\'équipement porté ne prend pas de place');
@@ -482,4 +483,115 @@ test('rollLoot avec REDUCED_LOOT : 1 objet au plus par ligne, fréquence divisé
   assert.deepEqual(rollLoot('house', () => 0.99, REDUCED_LOOT), {});
   const all = rollLoot('hardware', () => 0, REDUCED_LOOT);
   assert.ok(Object.values(all).every((n) => n === 1) && Object.keys(all).length === LOOT.hardware.length);
+});
+
+// ---------- Sac de randonnée : 45 places, porté comme l'arme et le vêtement ----------
+
+test('sac de randonnée : un équipement de 45 places, rare en magasin de sport et de vêtements', () => {
+  assert.deepEqual(ITEMS.sac_randonnee, { name: 'Sac de randonnée', equip: 'bag', capacity: 45, one: 'sac de randonnée', many: 'sacs de randonnée' });
+  const line = (kind) => LOOT[kind].find(([k]) => k === 'sac_randonnee');
+  assert.deepEqual(line('outdoor'), ['sac_randonnee', 0.12, 1], 'magasin de sport : environ 12 %');
+  assert.deepEqual(line('clothes'), ['sac_randonnee', 0.05, 1], 'magasin de vêtements : environ 5 %');
+  const elsewhere = Object.entries(LOOT).filter(([kind, rows]) => !['outdoor', 'clothes'].includes(kind) && rows.some(([k]) => k === 'sac_randonnee'));
+  assert.deepEqual(elsewhere, [], 'nulle part ailleurs');
+  assert.deepEqual(rollLoot('outdoor', () => 0.1).sac_randonnee, 1);
+  assert.equal(rollLoot('outdoor', () => 0.13).sac_randonnee, undefined);
+  assert.equal(itemLabel('sac_randonnee', 2), '2 sacs de randonnée');
+});
+
+test('capacité du sac : 30 sans sac de randonnée, 45 avec', () => {
+  const s = createSurvivor();
+  assert.equal(bagCapacity(s), 30);
+  assert.equal(wornKey(s, 'bag'), null);
+  s.pack = 'sac_randonnee';
+  assert.equal(bagCapacity(s), 45);
+  assert.equal(wornKey(s, 'bag'), 'sac_randonnee');
+  assert.equal(bagCapacity({ pack: 'inconnu' }), 30, 'sac inconnu : sac de base');
+  assert.equal(bagCapacity(null), 30);
+  assert.equal(wornKey(s, 'weapon'), 'batte');
+  assert.equal(wornKey(s, 'clothing'), null);
+});
+
+test('sac de randonnée trouvé : porté d\'office, ne prend pas de place, et sa place sert au reste du butin', () => {
+  const s = createSurvivor();
+  const r = addLoot(s, { ferraille: 40, sac_randonnee: 1 }); // le sac passe en premier, quel que soit l'ordre du butin
+  assert.deepEqual(r.equipped, ['sac_randonnee']);
+  assert.equal(s.pack, 'sac_randonnee');
+  assert.deepEqual(r.stored, { ferraille: 40 });
+  assert.deepEqual(r.left, {});
+  assert.equal(bagUsed(s), 42);
+  assert.equal(s.inventory.sac_randonnee, undefined, 'porté, pas rangé');
+  const more = addLoot(s, { bois: 10 });
+  assert.deepEqual(more.stored, { bois: 3 });
+  assert.deepEqual(more.left, { bois: 7 });
+  assert.equal(bagUsed(s), 45);
+  // Un deuxième sac est rangé comme un objet ordinaire (une place), jamais porté à la place du premier.
+  const t = createSurvivor();
+  addLoot(t, { sac_randonnee: 2 });
+  assert.equal(t.pack, 'sac_randonnee');
+  assert.equal(t.inventory.sac_randonnee, 1);
+  assert.equal(bagUsed(t), 3);
+});
+
+test('équiper le sac de randonnée depuis le coffre ou le sac : refusé s\'il est déjà porté', () => {
+  const s = createSurvivor();
+  const chest = { sac_randonnee: 1, bois: 2 };
+  assert.equal(equipFrom(s, 'sac_randonnee', chest), true);
+  assert.equal(s.pack, 'sac_randonnee');
+  assert.deepEqual(chest, { bois: 2 });
+  assert.equal(equipFrom(s, 'sac_randonnee', { sac_randonnee: 1 }), false, 'déjà porté');
+  assert.equal(equipOrStore(createSurvivor(), 'sac_randonnee'), 'sac_randonnee');
+  const u = createSurvivor();
+  u.pack = 'sac_randonnee';
+  const chest2 = {};
+  assert.equal(equipOrStore(u, 'sac_randonnee', chest2), null, 'déjà un sac : rangé au coffre');
+  assert.deepEqual(chest2, { sac_randonnee: 1 });
+});
+
+test('enlever le sac de randonnée : il va au coffre avec le surplus des 30 places, sinon refusé', () => {
+  const s = createSurvivor();
+  s.pack = 'sac_randonnee';
+  s.inventory = { eau: 1, conserve: 1, ferraille: 28, bois: 10 }; // 40 objets, 10 de trop
+  assert.equal(packSurplus(s), 10);
+  // Coffre qui ne prend pas le surplus et le sac (11 places) : rien ne bouge.
+  const full = { clous: 190 };
+  const refused = removePack(s, full, 200);
+  assert.equal(refused.ok, false);
+  assert.match(refused.why, /Coffre plein/);
+  assert.equal(s.pack, 'sac_randonnee');
+  assert.equal(bagUsed(s), 40);
+  assert.deepEqual(full, { clous: 190 });
+  // Coffre de 11 places libres : le surplus (les dernières clés d'abord) et le sac y vont.
+  const chest = { clous: 189 };
+  const ok = removePack(s, chest, 200);
+  assert.equal(ok.ok, true);
+  assert.equal(s.pack, null);
+  assert.equal(bagUsed(s), 30);
+  assert.deepEqual(ok.moved, { bois: 10, sac_randonnee: 1 });
+  assert.deepEqual(chest, { clous: 189, bois: 10, sac_randonnee: 1 });
+  assert.equal(bagCapacity(s), 30);
+  // Sans surplus, le sac seul prend une place au coffre ; sans sac porté, rien à enlever.
+  const t = createSurvivor();
+  t.pack = 'sac_randonnee';
+  const c = {};
+  assert.deepEqual(removePack(t, c, 200), { ok: true, why: '', moved: { sac_randonnee: 1 } });
+  assert.deepEqual(c, { sac_randonnee: 1 });
+  assert.equal(removePack(t, c, 200).ok, false);
+});
+
+test('mort avec le sac de randonnée : il reste dans le sac laissé sur place', () => {
+  const s = createSurvivor();
+  addLoot(s, { sac_randonnee: 1, conserve: 3 });
+  assert.equal(s.pack, 'sac_randonnee');
+  const pen = deathPenalty(s);
+  assert.deepEqual(pen.bag, { eau: 1, conserve: 4, sac_randonnee: 1 });
+  assert.equal(s.pack, null);
+  assert.equal(bagCapacity(s), 30);
+  assert.deepEqual(s.inventory, {});
+  // Le retrouver : porté d'abord depuis le sac laissé, sa place sert au reste.
+  const back = createSurvivor();
+  back.inventory = {};
+  assert.equal(equipFrom(back, 'sac_randonnee', pen.bag), true);
+  assert.equal(back.pack, 'sac_randonnee');
+  assert.deepEqual(pen.bag, { eau: 1, conserve: 4 });
 });
