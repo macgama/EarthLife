@@ -160,7 +160,7 @@ select, button { font: inherit; }
 
 /* ---------- Écrans : menu, aide, chargement, fin (guide de style § 4.4, 4.5 et 4.11 à 4.14) ---------- */
 /* Repère d'angle orange (signature des panneaux) et quadrillage tactique des fonds d'écran. */
-#menu, #loading {
+#menu, #loading, #ride {
   --corner: linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 12px 2px no-repeat border-box, linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 2px 12px no-repeat border-box;
   --grid: repeating-linear-gradient(0deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 32px), repeating-linear-gradient(90deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 32px);
   font-family: var(--font-text);
@@ -526,6 +526,11 @@ select, button { font: inherit; }
 .load-tip { width: 100%; margin-top: var(--sp-5); padding-top: var(--sp-3); border-top: 1px solid var(--c-line); text-align: left; }
 .load-tip .label { display: flex; align-items: center; gap: 6px; margin: 0; }
 .load-tip .label .icon { color: var(--c-accent); }
+#ride { position: fixed; inset: 0; z-index: var(--z-end); display: grid; overflow-y: auto; padding: max(var(--sp-4), env(safe-area-inset-top)) max(var(--sp-4), env(safe-area-inset-right)) max(var(--sp-4), env(safe-area-inset-bottom)) max(var(--sp-4), env(safe-area-inset-left)); text-align: center; background: radial-gradient(ellipse at 50% 45%, transparent 40%, var(--c-scrim)), var(--grid), var(--c-bg); }
+#ride-to { color: var(--c-text); font-size: var(--fs-lg, var(--fs-md)); font-weight: var(--fw-medium); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+.ride-gauge { position: relative; height: var(--gauge-h); margin-top: var(--sp-1); overflow: hidden; background: var(--c-gauge-track); -webkit-mask: var(--gauge-mask); mask: var(--gauge-mask); }
+.ride-gauge i { position: absolute; top: 0; bottom: 0; left: 0; width: 0; background: var(--c-accent); transition: width 0.25s linear; }
+#ride-note { margin: var(--sp-1) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
 #loading-tip { margin: var(--sp-1) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
 .load-alert { display: none; width: 32px; height: 32px; color: var(--c-warn); }
 #loading.fatal .load-alert, #loading.notice .load-alert { display: block; }
@@ -1695,6 +1700,18 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
 
 <!-- Cartes de jeu (panels.js) : livraison, mort, missions, déménagement, vague repoussée, absence. -->
 <div id="card" class="hidden"></div>
+
+<!-- Écran du trajet entre stations (trajet.js) : destination et jauge, jusqu'à l'arrivée. -->
+<div id="ride" class="hidden" role="status" aria-live="polite">
+  <div class="load-box">
+    <div class="load-panel ride-panel">
+      <p class="label load-kicker" id="ride-kicker"></p>
+      <div id="ride-to"></div>
+      <div class="ride-gauge" aria-hidden="true"><i id="ride-bar"></i></div>
+      <p id="ride-note"></p>
+    </div>
+  </div>
+</div>
 
 <script type="module" src="./src/main.js"></script>
 <script>

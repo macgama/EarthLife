@@ -6,7 +6,7 @@ import { fetchWeather, forcedWeather, gameplayModifiers } from './weather.js';
 import { sunPosition, localTimeLabel } from './sun.js';
 import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, buildingAt, lineFree, groundAt, groundNormal } from './collision.js';
 import { buildingFloor } from './terrain.js';
-import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate } from './world.js';
+import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate, addFeatures } from './world.js';
 import { DEM_ATTRIBUTION } from './dem.js';
 import { createChunkManager, VIEW_RADIUS } from './chunks.js';
 import {
@@ -45,6 +45,8 @@ import {
   zonesCard, ONLINE_TEXTS, ACCOUNT_TEXTS,
 } from './panels.js';
 import { createHud, distanceText } from './hud.js';
+import { createRideGame, createRideOverlay } from './trajet.js';
+import { networkOf, lineTitle } from './transport.js';
 import { addStep, statsCard, MAX_STEP_M } from './stats.js';
 import { bucketFor, addXp, effectsOf, craftXp, levelUpText, GAIN } from './skills.js';
 import { createMinimap } from './minimap.js';
@@ -437,6 +439,11 @@ const interior = createInteriorGame({
       claimHint(s, it.b, it.index);
     }
   },
+});
+// Trajets entre stations : bouton devant une station, carte des destinations, trajet chronométré, arrivée sur le quai.
+const ride = createRideGame({
+  current: () => session, showCard: (...a) => showCard(...a), toast: (...a) => toast(...a), saveStore: { markDirty: () => saveStore.markDirty() },
+  prefetch: PREFETCH_RADIUS, overlay: createRideOverlay(document),
 });
 // HUD, panneau du refuge (tiroir ou feuille basse) et cartes de jeu (#card).
 const hud = createHud({ $, input });
@@ -950,6 +957,7 @@ function onTile(key, info) {
 
 function disposeSession() {
   if (!session) return;
+  ride.abort(session);
   interior.close(session, { instant: true });
   othersView?.clear();
   panel.close();
@@ -1221,7 +1229,7 @@ function step(s, inp, dt) {
   if (effects.hypothermia) mods.moveSpeed *= 0.85;
   if (effects.hyperthermia) mods.staminaDrain = (mods.staminaDrain ?? 1) * 1.6;
   // 4. Objets du sac (1 à 4) et leurre (5).
-  if (inp.use && !asleep(s)) useItem(s, inp.use);
+  if (inp.use && !asleep(s) && s.action?.id !== 'ride') useItem(s, inp.use);
   // 5. Monde au fil de la marche : morceaux proches construits (plus loin quand la caméra recule), tuiles suivantes
   // demandées à l'avance ; distance du trou le plus proche, pour le brouillard.
   const built = s.chunks.update(p.x, p.z, { budgetMs: lowPower ? 4 : 6, radius: s.viewRadius });
@@ -1239,7 +1247,7 @@ function step(s, inp, dt) {
   }
   // 6. Déplacement : immobile pendant une action dehors (caché au refuge, le joueur ne bouge pas).
   const before = { x: p.x, z: p.z };
-  const still = s.action && !s.action.inside;
+  const still = s.action && (!s.action.inside || s.action.id === 'ride');
   updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
   addStep(save.profile, p.x - before.x, p.z - before.z, dt); // « Mes statistiques » : distance à pied et temps de jeu
   if (p.running && !inside) {
@@ -1449,6 +1457,8 @@ function chooseActions(s) {
     }
   }
   if (!primary && !r.inside) primary = r.orphanAction(p, { touch, survivor: s.survivor });
+  // Station à portée : prendre la ligne (carte des destinations).
+  if (!primary && !r.inside && !open) primary = ride.action(s, touch);
   return { primary, secondary: menu.secondary, why: menu.why ?? '' };
 }
 
@@ -1469,6 +1479,12 @@ function updateActions(s, inp, dt, before) {
     const moved = Math.hypot(inp.move.x, inp.move.y) > 0.3 || Math.hypot(p.x - before.x, p.z - before.z) > 0.5;
     if (moved || inp.attack) { cancelAction(s); return; }
   }
+  // Trajet : le temps passe, puis l'arrivée attend que ses morceaux soient construisables.
+  if (a.id === 'ride') {
+    a.t += dt;
+    if (ride.arrived(s, a, dt)) finishAction(s, a);
+    return;
+  }
   const prev = a.t;
   a.t += dt;
   // Fouille et démontage font du bruit : les zombies proches l'entendent, deux fois par seconde.
@@ -1484,6 +1500,10 @@ function startAction(s, a) {
   const base = { id: a.id, arg: a.arg, t: 0, slot: a.slot ?? 'primary', inside: r.inside, noise: 0 };
   if (a.id === 'door') {
     interior.open(s, a.arg);
+    return;
+  }
+  if (a.id === 'ride') {
+    ride.open(s, a.arg);
     return;
   }
   if (a.id === 'room') {
@@ -1523,12 +1543,14 @@ function startAction(s, a) {
 }
 
 function cancelAction(s) {
+  if (s.action?.id === 'ride') ride.abort(s);
   s.action = null;
 }
 
 function finishAction(s, a) {
   s.action = null;
-  if (a.id === 'search') finishSearch(s, a);
+  if (a.id === 'ride') ride.finish(s, a);
+  else if (a.id === 'search') finishSearch(s, a);
   else if (a.id === 'room') finishRoom(s, a);
   else if (a.id === 'prop') finishProp(s, a);
   else if (a.id === 'nest' || a.id === 'flag') city.runAction(s, a);
@@ -3101,6 +3123,22 @@ const debug = DEBUG ? {
     s.loader.ensureAround(x, z, PREFETCH_RADIUS);
     s.chunks.buildAll(x, z);
     return { x, z };
+  },
+  // Trajets entre stations : réseau lu dans les tuiles chargées, et ajout de voies et de stations (essais).
+  transit() {
+    const s = session;
+    if (!s) return null;
+    const net = networkOf(s.store);
+    return {
+      lines: [...net.lines.values()].map((l) => ({ id: l.id, mode: l.mode, title: lineTitle(net, l.id), stations: l.stations.map((st) => st.name) })),
+      stations: net.stations.map((st) => ({ id: st.id, name: st.name, x: st.x, z: st.z, entrances: st.entrances.length, lines: st.lines })),
+      action: s.action ? { id: s.action.id, t: s.action.t, time: s.action.time } : null,
+    };
+  },
+  addTransit(tracks, stops) {
+    if (!session) return null;
+    addFeatures(session.store, { buildings: [], roads: [], water: [], waterLines: [], areas: [], zones: [], pois: [], tracks, stops });
+    return session.store.transitRev;
   },
   props: (kind) => session?.chunks.props(kind) ?? [],
   // Hauteur du sol (relief) au point, et pente lissée du joueur.

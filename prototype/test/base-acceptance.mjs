@@ -4,12 +4,14 @@
 // Variables : ROUTES (réponses enregistrées, test/fixtures/offline-routes.mjs par défaut ; ROUTES=none : réseau réel),
 // PLAYWRIGHT_MODULE (chemin du module playwright), PORT (0 : port libre), ONLY (desktop ou mobile ; vue : la section 13,
 // zoom et carte des environs, seule sur une partie neuve ; stats : « Mes statistiques » au menu, ordinateur et téléphone ;
-// skills : les compétences, ordinateur et téléphone).
+// skills : les compétences, ordinateur et téléphone ;
+// trajet : trajet entre stations, ordinateur et téléphone ; trajet:desktop ou trajet:mobile : un seul).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
 import http from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -2574,7 +2576,7 @@ async function ambushScenario() {
   await ctx.close();
 }
 
-// ---------- Compétences (scénario 16) ----------
+// ---------- Compétences (scénario 17) ----------
 
 // Lignes de compétences de la carte « Mes statistiques » ouverte : [{ set, name, level, next, effect }].
 const skillLines = (page) => ev(page, () => [...document.querySelectorAll('#card .rp-skills')].flatMap((sec) => {
@@ -2624,7 +2626,7 @@ const clearAmbient = (page) => ev(page, () => {
 // Compétences : combat (dégâts, niveau), fouille et fabrication (points, niveau, durée), notification de niveau, écran
 // « Mes statistiques ». Les durées avec un niveau élevé sont vérifiées en posant les points dans la sauvegarde.
 async function skillsScenario(device) {
-  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 16`;
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 17`;
   const ctx = await newContext(device);
   const page = await ctx.newPage();
   watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
@@ -2734,6 +2736,128 @@ async function skillsScenario(device) {
   await ctx.close();
 }
 
+// ---------- Trajet entre stations (16) ----------
+// Bellecour dans les vraies tuiles de Lyon (une station, 14 bouches, deux lignes de métro en tunnel) et une seconde station
+// posée sur la même ligne (les essais n'ont que quatre tuiles) : monter, choisir, trajet verrouillé, descendre, remonter.
+async function trajet(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 16`;
+  const ctx = await newContext(device);
+  // La lecture du réseau demande des tuiles autour de la station : celles qui manquent aux essais répondent par une tuile vide.
+  await ctx.route(/tiles\.openfreemap\.org\/\d+\/\d+\/\d+\.pbf$/, (route) => {
+    const m = new URL(route.request().url()).pathname.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
+    if (existsSync(path.join(root, 'test/fixtures/tiles', `${m[1]}-${m[2]}-${m[3]}.mvt`))) return route.fallback();
+    return route.fulfill({ status: 200, body: Buffer.alloc(0), contentType: 'application/vnd.mapbox-vector-tile', headers: { 'access-control-allow-origin': '*' } });
+  });
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  const net0 = await debug(page, 'transit');
+  const bel = net0.stations[0];
+  check(net0.stations.length === 1 && bel.name === 'Bellecour' && bel.entrances === 14 && bel.lines.length === 2,
+    `${tag} : réseau lu dans les tuiles : station Bellecour, 14 bouches, 2 lignes de métro`);
+  // Seconde station du métro, de 250 à 380 m de Bellecour, sur un point des mêmes voies.
+  const added = await ev(page, async () => {
+    const { buildNetwork } = await import('/src/transport.js');
+    const { debug: dbg, session: s } = window.__earthlife;
+    const b = dbg.transit().stations[0];
+    for (const t of s.store.tracks) {
+      if (t.mode !== 'metro') continue;
+      for (const v of t.points) {
+        const d = Math.hypot(v.x - b.x, v.z - b.z);
+        if (d < 250 || d > 380) continue;
+        const cand = { id: 'essai-terminus', kind: 'station', sub: 'subway', name: 'Terminus test', x: v.x, z: v.z };
+        const net = buildNetwork(s.store.tracks, [...s.store.stops, cand]);
+        const from = net.stations.find((x) => x.name === 'Bellecour'), to = net.stations.find((x) => x.name === 'Terminus test');
+        if (from && to && from.lines.some((l) => to.lines.includes(l))) {
+          dbg.addTransit([], [cand, { id: 'essai-entree', kind: 'entrance', sub: 'subway_entrance', name: 'Terminus test', x: v.x + 12, z: v.z }]);
+          return { x: v.x, z: v.z, d: Math.round(d) };
+        }
+      }
+    }
+    return null;
+  });
+  if (!check(!!added, `${tag} : seconde station posée sur la ligne de Bellecour${added ? ` (à ${added.d} m)` : ''}`)) { await ctx.close(); return; }
+  const net1 = await debug(page, 'transit');
+  check(net1.lines.some((l) => l.title === 'Métro · Bellecour – Terminus test'), `${tag} : ligne « ${net1.lines.map((l) => l.title).join(' | ')} »`);
+
+  // Devant une bouche de métro libre : le bouton E propose la ligne.
+  const spot = await ev(page, async () => {
+    const col = await import('/src/collision.js');
+    const { debug: dbg, session: s } = window.__earthlife;
+    for (const e of s.store.stops) {
+      if (e.kind !== 'entrance' || e.name !== 'Bellecour') continue;
+      dbg.teleport(e.x, e.z);
+      const q = col.nearestFree(s.grid, e.x, e.z, 10);
+      if (!q || col.buildingNear(s.grid, q.x, q.z, 3) !== null) continue;
+      Object.assign(s.player, { x: q.x, z: q.z });
+      return { x: q.x, z: q.z };
+    }
+    return null;
+  });
+  if (!check(!!spot, `${tag} : une bouche de métro libre, hors des murs`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  const label = await until(page, () => { const l = window.__label('search'); return l?.startsWith('Prendre le métro : Bellecour') ? l : null; }, null, 15000);
+  check(!!label, `${tag} : bouton « ${label} » devant la bouche`);
+  await shot(page, `${tag.replace(' ', '-')}-trajet-bouton`);
+  await press(page, device, 'e', 'search');
+  const listed = await until(page, () => (document.querySelector('#card .rp-card-title')?.textContent === 'Bellecour' ? 1 : null), null, 40000);
+  if (!check(!!listed, `${tag} : carte des destinations ouverte (réseau lu autour de la station)`)) { await ctx.close(); return; }
+  const lines = await ev(page, () => [...document.querySelectorAll('#card .rp-card-line')].map((l) => l.textContent.replace(/\s+/g, ' ').trim()));
+  check(lines.some((l) => l === 'Métro · Bellecour – Terminus test'), `${tag} : ligne nommée par ses deux bouts (${lines[0]})`);
+  const dest = lines.find((l) => l.startsWith('Terminus test'));
+  check(/^Terminus test · \d+ m · 20 s ?Y aller$/.test(dest ?? ''), `${tag} : destination « ${dest} »`);
+  const fit = await ev(page, () => {
+    const r = document.querySelector('#card .rp-card').getBoundingClientRect();
+    return { inside: r.left >= 0 && r.right <= innerWidth + 0.5 && r.top >= 0 && r.bottom <= innerHeight + 0.5, w: Math.round(r.width), h: Math.round(r.height) };
+  });
+  check(fit.inside, `${tag} : carte de ${fit.w} × ${fit.h} px dans l'écran`);
+  await wait(600);
+  await shot(page, `${tag.replace(' ', '-')}-trajet-carte`);
+  const before = await ev(page, () => { const p = window.__earthlife.session.player; return { x: p.x, z: p.z }; });
+  await page.click('#card [data-card-btn="r0"]');
+  const riding = await until(page, () => (window.__earthlife.debug.transit().action?.id === 'ride' ? 1 : null), null, 10000);
+  if (!check(!!riding, `${tag} : trajet commencé`)) { await ctx.close(); return; }
+  const onboard = await ev(page, () => ({ shown: !document.getElementById('ride').classList.contains('hidden'), to: document.getElementById('ride-to').textContent, hidden: window.__earthlife.session.player.hidden }));
+  check(onboard.shown && onboard.to === 'Terminus test' && onboard.hidden, `${tag} : écran du trajet vers « ${onboard.to} », joueur à l'abri`);
+  // Rien d'autre n'est possible : E ne lance rien, la marche est bloquée, l'écran du trajet couvre les boutons.
+  if (device === 'desktop') {
+    await page.keyboard.press('e');
+    await page.keyboard.down('ArrowUp');
+    await wait(1500);
+    await page.keyboard.up('ArrowUp');
+  } else {
+    const covered = await ev(page, () => { const r = document.getElementById('search').getBoundingClientRect(); return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('#ride') !== null; });
+    check(covered, `${tag} : l'écran du trajet couvre les boutons de jeu`);
+    await wait(1500);
+  }
+  const mid = await ev(page, () => { const s = window.__earthlife.session; return { id: s.action?.id, x: s.player.x, z: s.player.z, w: document.getElementById('ride-bar').style.width }; });
+  check(mid.id === 'ride' && Math.hypot(mid.x - before.x, mid.z - before.z) < 0.5, `${tag} : pendant le trajet, ni marche ni autre action (déplacé de ${round(Math.hypot(mid.x - before.x, mid.z - before.z))} m)`);
+  check(parseInt(mid.w, 10) > 0, `${tag} : jauge du trajet à ${mid.w}`);
+  await shot(page, `${tag.replace(' ', '-')}-trajet-ecran`);
+  // Arrivée.
+  const done = await until(page, () => (window.__earthlife.session.action ? null : 1), null, 180000);
+  check(!!done, `${tag} : trajet terminé`);
+  const there = await ev(page, () => { const p = window.__earthlife.session.player; return { x: p.x, z: p.z, hidden: p.hidden, ride: !document.getElementById('ride').classList.contains('hidden') }; });
+  const off = Math.hypot(there.x - added.x, there.z - added.z);
+  check(off < 60 && !there.hidden && !there.ride, `${tag} : descendu à ${round(off, 1)} m de la station, écran fermé, joueur de nouveau visible`);
+  check(!!(await toastSeen(page, 'Arrivée : Terminus test', 3000)), `${tag} : notification « Arrivée : Terminus test »`);
+  const back = await until(page, () => { const l = window.__label('search'); return l?.startsWith('Prendre le métro : Terminus test') ? l : null; }, null, 15000);
+  const why = back ? '' : await ev(page, async () => {
+    const col = await import('/src/collision.js');
+    const s = window.__earthlife.session, p = s.player;
+    return ` (boutons : ${window.__label('search')} | ${window.__label('action2')} ; bâtiment à ${col.buildingNear(s.grid, p.x, p.z, 1.6)}, action ${s.action?.id})`;
+  });
+  check(!!back, `${tag} : à l'arrivée, le bouton « ${back} » permet de repartir${why}`);
+  await shot(page, `${tag.replace(' ', '-')}-trajet-arrivee`);
+  // Loin de toute station : pas de bouton.
+  await debug(page, 'teleport', before.x + 150, before.z + 150);
+  await wait(800);
+  check((await ev(page, () => window.__label('search')))?.startsWith('Prendre') !== true, `${tag} : loin des stations, pas de bouton de trajet`);
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
@@ -2745,6 +2869,9 @@ try {
   } else if (only === 'skills') {
     await skillsScenario('desktop');
     await skillsScenario('mobile');
+  } else if (only.startsWith('trajet')) {
+    if (only !== 'trajet:mobile') await trajet('desktop');
+    if (only !== 'trajet:desktop') await trajet('mobile');
   } else if (only === 'vue') {
     await vueSeule('desktop');
     await vueSeule('mobile');
@@ -2758,6 +2885,8 @@ try {
     if (!only) await statsMenu('mobile');
     await skillsScenario(only === 'mobile' ? 'mobile' : 'desktop');
     if (!only) await skillsScenario('mobile');
+    await trajet(only === 'mobile' ? 'mobile' : 'desktop');
+    if (!only) await trajet('mobile');
   }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {
