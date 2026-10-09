@@ -298,7 +298,7 @@ export function dayText(day) {
 // recomposé par le client (jamais un texte venu du réseau) ; `refuge` : texte du refuge partagé, composé par main.js.
 // `account` (connecté, spécification des comptes 5.4) : la vue du compte (AccountView) ; ses lignes passent en tête,
 // puis celles de l'identité rattachée (`account.player`, qui remplace alors `data`).
-export function myDataCard(data, { name = null, refuge = '', account = null, nowMs = Date.now() } = {}) {
+export function myDataCard(data, { name = null, refuge = '', account = null, nowMs = Date.now(), local = null } = {}) {
   const n = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
   const who = account ? (account.player ?? null) : data;
   const identity = !who ? [] : [
@@ -309,6 +309,9 @@ export function myDataCard(data, { name = null, refuge = '', account = null, now
     `Masquages : ${n(who.blocks)} · signalements faits : ${n(who.reports)}`,
     'Ta position de jeu n\'est jamais gardée : elle est oubliée 15 s après ton départ.',
   ];
+  // Partie gardée sur cet appareil : l'âge de la dernière sauvegarde, ou le fait qu'elle ne sauvegarde plus (autre page ouverte).
+  const localLine = !local ? [] : local.readOnly ? ['Partie sur cet appareil : non sauvegardée (le jeu est ouvert dans une autre page)']
+    : Number.isFinite(local.savedMs) ? [`Partie sur cet appareil : sauvegardée ${agoText(local.savedMs, nowMs)}`] : [];
   let lines;
   if (account) {
     const created = dayText(account.createdOn), seen = dayText(account.seenOn);
@@ -317,13 +320,15 @@ export function myDataCard(data, { name = null, refuge = '', account = null, now
     lines = [
       `Adresse e-mail : ${typeof account.email === 'string' ? account.email : '—'}`,
       [created ? `Compte créé le ${created}` : '', seen ? `dernière activité le ${seen}` : ''].filter(Boolean).join(' · '),
-      `Appareils connectés : ${n(account.sessions)}`,
+      // Connexions du compte (une par connexion faite sur un appareil ou un navigateur), pas des onglets ouverts.
+      `Connexions ouvertes : ${n(account.sessions)} (une par appareil ou navigateur où tu t'es connecté)`,
+      ...localLine,
       sv ? `Partie sur le serveur : envoyée ${sent || '—'} (${sizeText(sv.bytes)})` : 'Partie sur le serveur : aucune',
       ...identity,
       ACCOUNT_TEXTS.myDataFile,
     ];
   } else {
-    lines = data ? identity : ['Impossible de lire tes données : le serveur ne répond pas, ou tu n\'as pas encore joué en ligne.'];
+    lines = data ? [...localLine, ...identity] : ['Impossible de lire tes données : le serveur ne répond pas, ou tu n\'as pas encore joué en ligne.'];
   }
   return { title: 'Mes données', lines, link: { href: PRIVACY_PAGE, label: ONLINE_TEXTS.keeps }, buttons: [{ id: 'close', label: 'Fermer', primary: true }] };
 }

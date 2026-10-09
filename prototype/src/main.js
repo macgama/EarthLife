@@ -106,8 +106,13 @@ const territoryStore = createTerritoryStore({
   onDirty: () => saveStore.markDirty(),
   onExternal: (e) => setTimeout(() => onSaveExternal(e), 0),
 });
+// Écrivain de la vie précédente de cet onglet (rechargé par « Reprendre ici », une reprise ou un import : sessionStorage reste d'une
+// page à l'autre) : ses dernières écritures ne sont pas celles d'une autre page (save.js, judge).
+const PREV_LIFE_KEY = 'earthlife.prevlife';
+const previousLife = (() => { try { return sessionStorage.getItem(PREV_LIFE_KEY); } catch { return null; } })();
 const saveStore = createSaveStore({
   fresh: params.get('fresh') === '1',
+  previous: previousLife,
   // Différé : la carte, le HUD et les cartes de jeu n'existent pas encore pendant la création du magasin.
   onExternal: (e) => setTimeout(() => onSaveExternal(e), 0),
   beforeWrite: copyLive,
@@ -257,8 +262,15 @@ function urlWithout(name) {
 }
 
 // Après un import ou une reprise (« Reprendre ici ») : la partie en mémoire a changé, on recharge sans ?fresh.
-function reloadClean() {
+// Rechargement voulu : la présence de cette page reste valable le temps du démarrage de la suivante, qui sait que cette page
+// était la sienne (PREV_LIFE_KEY).
+function holdForReload() {
   saveStore.holdPresence();
+  try { sessionStorage.setItem(PREV_LIFE_KEY, saveStore.writer); } catch { /* sans stockage de session : une autre page de plus au pire */ }
+}
+
+function reloadClean() {
+  holdForReload();
   location.replace(urlWithout('fresh'));
 }
 
@@ -268,7 +280,7 @@ function reloadPage({ fresh = false } = {}) {
   if (!fresh) { reloadClean(); return; }
   const u = new URL(location.href);
   u.searchParams.set('fresh', '1');
-  saveStore.holdPresence();
+  holdForReload();
   location.replace(u.toString());
 }
 
@@ -2480,8 +2492,8 @@ function onSaveExternal(e) {
   // toute seule, sans carte ni choix à faire (save.js, présence des pages).
   if (e.type === 'other-gone' || (e.type === 'other-tab' && e.alive === false && e.visible)) {
     // Trace de la décision (console, pour comprendre une reprise inattendue : état de la présence au moment où elle part).
-    try { console.info('[sauvegarde] autre page absente', JSON.stringify({ e: e.type, keepLive: !!e.keepLive, presence: localStorage.getItem(PRESENCE_KEY), conflict: saveStore.conflict, now: Date.now() })); } catch { /* trace seulement */ }
-    if (handOver(!!e.keepLive)) return;
+    try { console.info('[sauvegarde] autre page absente', JSON.stringify({ e: e.type, kind: e.kind ?? null, keepLive: !!e.keepLive, previous: previousLife, presence: localStorage.getItem(PRESENCE_KEY), conflict: saveStore.conflict, now: Date.now() })); } catch { /* trace seulement */ }
+    if (handOver(!!e.keepLive, e.kind === 'own')) return;
   }
   // Stockage plein, territoire non enregistré ou allégé : un toast (une fois), le motif reste dans la ligne de la sauvegarde.
   if (e.type === 'full' || e.type === 'companion-full' || e.type === 'compacted' || e.type === 'dropped') {
@@ -2489,6 +2501,8 @@ function onSaveExternal(e) {
     return;
   }
   if ((e.type !== 'other-tab' && e.type !== 'other-gone') || !playing) return;
+  // Trace de la carte (console) : ce que la page savait de l'autre au moment où elle s'ouvre.
+  try { console.info('[sauvegarde] carte autre page', JSON.stringify({ e: e.type, kind: e.kind ?? null, presence: localStorage.getItem(PRESENCE_KEY), conflict: saveStore.conflict, previous: previousLife, now: Date.now() })); } catch { /* trace seulement */ }
   showTakeOverCard();
 }
 
@@ -2505,6 +2519,18 @@ function otherPageLine() {
   const ms = Math.max(0, Date.now() - at);
   return `L'autre page a sauvegardé il y a ${ms < 60000 ? `${Math.round(ms / 1000)}\u00a0s` : durationLabel(ms)}.`;
 }
+// Ce que la page sait de l'autre (save.js, judge), dit simplement : de quoi la retrouver et la fermer.
+const OTHER_PAGE_KIND = {
+  visible: 'Elle est à l\'écran : ferme-la, ou reprends ici.',
+  reload: 'Elle vient de recharger le jeu.',
+  own: 'C\'est ta propre page, avant son rechargement.',
+  gone: 'Elle est en arrière-plan ou fermée.',
+  third: 'Une autre page est aussi à l\'écran.',
+  unknown: 'On ne sait pas si elle est encore ouverte : peut-être une ancienne version du jeu.',
+};
+function otherPageKind() {
+  return OTHER_PAGE_KIND[saveStore.otherPage?.kind] ?? '';
+}
 
 // Carte en partie : « Reprendre ici » relit la sauvegarde, recharge la page et relance la partie tout de suite (RESUME_KEY) ;
 // « Jouer sans sauvegarder » garde cet écran, sans rien enregistrer.
@@ -2512,7 +2538,7 @@ function showTakeOverCard() {
   showCard({
     title: 'Partie ouverte ailleurs', tone: 'warn',
     lines: [
-      ['Cette partie est ouverte dans un autre onglet.', otherPageLine()].filter(Boolean).join(' '),
+      ['Cette partie est ouverte dans un autre onglet.', otherPageLine(), otherPageKind()].filter(Boolean).join(' '),
       'Reprendre ici : tu continues avec la partie sauvegardée, l\'autre onglet s\'arrête.',
       'Jouer sans sauvegarder : rien n\'est enregistré tant que tu restes ainsi.',
     ],
@@ -2541,12 +2567,13 @@ function takeOver({ resume = false, keepLive = false } = {}) {
 // qu'une fois par minute, sinon la carte « Partie ouverte ailleurs » reste. Rend vrai si la reprise est partie.
 const HANDOVER_KEY = 'earthlife.handover';
 const HANDOVER_GAP_MS = 60000;
+const HANDOVER_OWN_GAP_MS = 5000; // l'écriture vient de la vie précédente de cet onglet : pas de page à se disputer la main
 let handingOver = false;
-function handOver(keepLive = false) {
+function handOver(keepLive = false, own = false) {
   if (handingOver) return true;
   let last = 0;
   try { last = Number(sessionStorage.getItem(HANDOVER_KEY)) || 0; } catch { /* sans stockage de session : pas de garde-fou */ }
-  if (Date.now() - last < HANDOVER_GAP_MS) return false;
+  if (Date.now() - last < (own ? HANDOVER_OWN_GAP_MS : HANDOVER_GAP_MS)) return false;
   try { sessionStorage.setItem(HANDOVER_KEY, String(Date.now())); } catch { /* idem */ }
   handingOver = true;
   try {
@@ -2891,7 +2918,7 @@ async function showMyData() {
   const id = typeof data?.refuge === 'string' ? data.refuge : null;
   const refuge = !id ? '' : id === save.base?.id ? `ton refuge (${kindLabel(save.base.kind)})` : 'un autre bâtiment';
   const view = signedIn && r.ok ? r.account : null;
-  showCard(myDataCard(view ? null : (signedIn ? null : data), { name, refuge, account: view }), null, { escape: 'close' });
+  showCard(myDataCard(view ? null : (signedIn ? null : data), { name, refuge, account: view, local: { savedMs: save.savedAt, readOnly: saveStore.readOnly } }), null, { escape: 'close' });
 }
 
 function askErase() {

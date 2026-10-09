@@ -486,10 +486,20 @@ test('myDataCard : compte en tête (adresse échappée), partie sur le serveur, 
   assert.deepEqual(spec.lines.slice(0, 5), [
     'Adresse e-mail : k.essai+<b>@exemple.test',
     'Compte créé le 4 oct. 2026 · dernière activité le 4 oct. 2026',
-    'Appareils connectés : 2',
+    "Connexions ouvertes : 2 (une par appareil ou navigateur où tu t'es connecté)",
     "Partie sur le serveur : envoyée aujourd'hui à 14 h 20 (18 Ko)",
     'Surnom : Renard des Quais 27',
   ]);
+  // Partie gardée sur l'appareil : son âge, ou « non sauvegardée » quand une autre page a la main.
+  const savedLocal = myDataCard(null, { name: 'Renard', refuge: '', account, nowMs: now, local: { savedMs: now - 5000, readOnly: false } });
+  assert.equal(savedLocal.lines[3], 'Partie sur cet appareil : sauvegardée à l\'instant');
+  assert.equal(savedLocal.lines[4], "Partie sur le serveur : envoyée aujourd'hui à 14 h 20 (18 Ko)");
+  const lateLocal = myDataCard(null, { name: 'Renard', refuge: '', account, nowMs: now, local: { savedMs: now - 5 * 60000, readOnly: false } });
+  assert.equal(lateLocal.lines[3], 'Partie sur cet appareil : sauvegardée il y a 5 min');
+  const roLocal = myDataCard(null, { name: 'Renard', refuge: '', account, nowMs: now, local: { savedMs: now, readOnly: true } });
+  assert.equal(roLocal.lines[3], 'Partie sur cet appareil : non sauvegardée (le jeu est ouvert dans une autre page)');
+  assert.equal(myDataCard({ nm: [0, 0, 27] }, { name: 'Renard', nowMs: now, local: { savedMs: now - 5000, readOnly: false } }).lines[0],
+    'Partie sur cet appareil : sauvegardée à l\'instant');
   assert.ok(spec.lines.includes('Identité créée le 1er oct. 2026'));
   assert.ok(spec.lines.includes('Masquages : 1 · signalements faits : 0'));
   assert.equal(spec.lines.at(-1), 'Le fichier complet : Réglages du compte, puis « Exporter mes données ».');
