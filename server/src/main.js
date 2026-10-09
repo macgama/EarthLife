@@ -110,7 +110,7 @@ function rejectUpgrade(socket, code) {
 // d'e-mails tiré de config.mail, `accountOpts` complète createAccounts (essais : hachage rapide, horloge).
 export async function startServer({
   config, store = null, log = null, exit = (code) => process.exit(code), signals = false, tap = null, extra = null,
-  roomCfg = {}, onTick = null, timers = {}, mailer = null, accountOpts = {},
+  roomCfg = {}, onTick = null, timers = {}, mailer = null, accountOpts = {}, seasonRules = {},
 } = {}) {
   const T = { ...SERVER_TIMERS, ...timers };
   const startedAt = Date.now();
@@ -177,7 +177,7 @@ export async function startServer({
   // Saisons de « Sauver sa ville » (season.js) : ville commune par monde ; seulement avec les comptes (SEASONS=0 les coupe).
   let seasons = null;
   if (config.seasons) {
-    seasons = createSeasons({ store: roomStore, send: (s, m) => room.send(s, m), log, rules: { seats: config.seasonSeats, days: config.seasonDays } });
+    seasons = createSeasons({ store: roomStore, send: (s, m) => room.send(s, m), log, rules: { seats: config.seasonSeats, days: config.seasonDays, ...seasonRules } });
     room.setSeason(seasons.hooks);
     seasons.init().catch(() => {});
   }

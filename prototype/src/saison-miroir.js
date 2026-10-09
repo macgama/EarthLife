@@ -172,3 +172,15 @@ export function resync(ville, fresh) {
   ville.me = me ?? null;
   ville.meOut = !!meOut;
 }
+
+// Un point est-il dans la ville de la saison ? Les tuiles du recensement (clés z/x/y, toutes au même niveau) recouvrent la
+// commune : le serveur les garde avec la ville, sans contour à relire. Faux sans tuile ou sur un point invalide.
+export function insideTiles(tiles, lat, lon) {
+  if (!tiles || typeof tiles !== 'object' || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 85 || Math.abs(lon) > 180) return false;
+  const first = Object.keys(tiles)[0];
+  const z = first ? Number(first.split('/')[0]) : NaN;
+  if (!Number.isInteger(z) || z < 0 || z > 22) return false;
+  const n = 2 ** z, r = (lat * Math.PI) / 180;
+  const x = Math.floor(((lon + 180) / 360) * n), y = Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n);
+  return Object.hasOwn(tiles, `${z}/${x}/${y}`);
+}
