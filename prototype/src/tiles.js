@@ -223,6 +223,20 @@ function poiUse(p, area) {
   return null;
 }
 
+// Voies où roule un trajet : voie ferrée principale (hors voies de service), métro, tram, train léger, monorail.
+const TRANSIT_MODES = { subway: 'metro', tram: 'tram', light_rail: 'tram', monorail: 'tram' };
+export function trackMode(p) {
+  if (p.class === 'rail') return p.subclass === 'rail' && !p.service ? 'train' : null;
+  return p.class === 'transit' ? TRANSIT_MODES[p.subclass] ?? null : null;
+}
+// Stations et bouches de métro : 'station' (gare, halte, arrêt de tram, station de métro) ou 'entrance'.
+export function stopOf(p) {
+  if (p.class === 'railway' && ['station', 'halt', 'tram_stop', 'subway'].includes(p.subclass)) return 'station';
+  if (p.subclass === 'subway_entrance') return 'entrance';
+  return null;
+}
+const cleanName = (v) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 80) : null);
+
 // Région de la position réelle (façades, toits, volets).
 export function regionOf(lat, lon) {
   if (lat >= 35 && lat < 46.5 && lon >= -10 && lon <= 30) return 'sud';
@@ -764,7 +778,7 @@ function facadeEdges(it, walls, streets, squares, shopPts) {
 export function tileFeatures(layers, tx, ty, z, origin) {
   const proj = makeProjection(origin.lat, origin.lon);
   const n = 2 ** z;
-  const out = { buildings: [], roads: [], water: [], waterLines: [], areas: [], zones: [], pois: [] };
+  const out = { buildings: [], roads: [], water: [], waterLines: [], areas: [], zones: [], pois: [], tracks: [], stops: [] };
   const convert = (extent) => {
     return (pt) => {
       const lon = ((tx + pt[0] / extent) / n) * 360 - 180;
@@ -877,6 +891,9 @@ export function tileFeatures(layers, tx, ty, z, origin) {
         continue;
       }
       if (f.type !== 2) continue;
+      // Voies des trajets entre stations (transport.js) : métro en tunnel compris, que le décor ne dessine pas.
+      const mode = trackMode(p);
+      if (mode) for (const part of f.geometry) if (part.length >= 2) out.tracks.push({ mode, layer: Number(p.layer) || 0, points: part.map(toLocal) });
       if (p.brunnel === 'tunnel' || p.class === 'ferry' || p.class === 'aerialway') continue;
       if (Number(p.level) < 0 || p.indoor === 1) continue;
       const width = p.class === 'path' ? (PATH_WIDTHS[p.subclass] ?? 2) : ROAD_WIDTHS[p.class];
@@ -992,6 +1009,17 @@ export function tileFeatures(layers, tx, ty, z, origin) {
         for (const pt of f.geometry.flat()) {
           const p = toLocal(pt);
           poiGrid.add(p.x, p.z, p.x, p.z, { x: p.x, z: p.z, props: fp, family, stamp: 0 });
+        }
+      }
+      // Stations et bouches de métro des trajets entre stations (transport.js), à part des lieux de butin.
+      const stop = stopOf(fp);
+      if (stop) {
+        for (const pt of f.geometry.flat()) {
+          if (!ownTile(pt, pLayer.extent)) continue;
+          const p = toLocal(pt);
+          const ll = proj.toLatLon(p.x, p.z);
+          const name = cleanName(fp.name);
+          out.stops.push({ id: `s${stop}_${ll.lat.toFixed(5)}_${ll.lon.toFixed(5)}`, kind: stop, sub: fp.subclass, name, x: p.x, z: p.z });
         }
       }
       // Sous-classe = valeur OSM d'origine ; la classe ne sert que pour quelques lieux sans ambiguïté.
