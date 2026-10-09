@@ -12,11 +12,9 @@ export const CORRUPT_KEY = 'earthlife.save.corrupt';
 // main (« Reprendre ici ») va recharger ; sa présence reste valable `holdMs` le temps que la page rechargée démarre.
 export const PRESENCE_KEY = 'earthlife.presence.v1';
 // freshMs : une page dont on a la présence reste vivante tant qu'elle la renouvelle (battement de 3 s, 90 s de retard permis) ;
-// holdMs : délai gardé avant un rechargement voulu. Une page dont on ne lit pas la présence compte aussi `freshMs` après sa
-// dernière écriture : ancienne version du jeu (qui n'en publie pas), mais aussi page à jour dont la présence a été recouverte par
-// celle-ci (un seul enregistrement partagé) et qui n'écrit rien tant que rien ne change, donc rien ne la distingue d'une page
-// partie en moins de 90 s.
-export const PRESENCE = { freshMs: 90000, beatMs: 3000, holdMs: 120000 };
+// holdMs : délai gardé avant un rechargement voulu ; unknownMs : page dont on n'a aucune présence (ancienne version du jeu), qui
+// compte tant que sa dernière écriture date de moins de 12 s (une page à l'écran écrit au plus 2 s après chaque changement).
+export const PRESENCE = { freshMs: 90000, beatMs: 3000, holdMs: 120000, unknownMs: 12000 };
 export const SAVE_VERSION = 1;
 export const LIMITS = { searchedMs: 86400000, dismantledMs: 259200000, maxEntries: 1500, journal: 30, journalChars: 160 };
 
@@ -873,9 +871,7 @@ export function createSaveStore({
   // preuve qu'elle est là : une page qui rend la main (arrière-plan, fermeture) ou qui ne renouvelle plus sa présence depuis 90 s
   // (plantée) est partie. Les 90 s couvrent une page très occupée (chargement d'une ville sur un appareil lent, deux pages qui se
   // disputent le processeur) dont le battement de 3 s prend du retard. Sans présence lisible (ancienne version du jeu, qui n'en
-  // publie pas, ou page à jour dont la présence est recouverte par celle-ci), la page compte aussi 90 s après sa dernière
-  // écriture : une page à l'écran qui ne change rien n'écrit rien, 12 s sans écriture ne prouvent pas qu'elle est partie
-  // (essai O16 : deux pages à jour, la seconde reprenait la main toute seule et se rechargeait). L'écriture de la vie précédente de
+  // publie pas), la page compte tant que sa dernière écriture date de moins de `unknownMs`. L'écriture de la vie précédente de
   // cet onglet (`previous`, rechargé par « Reprendre ici », une reprise ou un import) n'est jamais celle d'une autre page.
   // `kind` dit pourquoi, pour la carte et la trace : own, reload, visible, gone, third, unknown.
   function judge() {
@@ -889,7 +885,7 @@ export function createSaveStore({
       if (p.vis === true && t - p.at < PRESENCE.freshMs) return { alive: true, kind: 'visible', savedAt };
       if (!conflict?.writer || p.w === conflict.writer) return { alive: false, kind: 'gone', savedAt };
     }
-    const alive = finite(savedAt) && t - savedAt < PRESENCE.freshMs;
+    const alive = finite(savedAt) && t - savedAt < (other ? PRESENCE.freshMs : PRESENCE.unknownMs);
     return { alive, kind: other ? 'third' : 'unknown', savedAt };
   }
   const otherAlive = () => judge().alive;
