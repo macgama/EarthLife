@@ -925,13 +925,13 @@ export function createSaveStore({
     });
   }
 
-  // Des changements non enregistrés et une partie plus jouée que celle de l'autre page (temps de jeu) : c'est la partie de cet
-  // écran qu'on écrit à la reprise, sans la perdre. Sinon l'autre page a au moins autant joué : on ne l'écrase pas en silence.
+  // Des changements non enregistrés et une partie au moins aussi jouée que celle de l'autre page (temps de jeu) : c'est la partie
+  // de cet écran qu'on écrit à la reprise, sans la perdre. Sinon l'autre page a plus joué : on ne l'écrase pas en silence.
   function keepMine() {
     if (!unsavedAtConflict) return false;
     const theirs = playSecOf(read(SAVE_KEY));
     const ours = finite(save.profile?.playSec) ? save.profile.playSec : 0;
-    return ours > theirs;
+    return ours >= theirs;
   }
 
   // Avant un rechargement voulu (« Reprendre ici », import, reprise automatique) : la présence de cette page reste valable

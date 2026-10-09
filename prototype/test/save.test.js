@@ -701,6 +701,9 @@ test('présence : l\'autre page passe en arrière-plan ou se ferme → l\'évén
   const { storage, clock, a, b } = pagePair();
   assert.equal(writeNow(a).ok, true);
   assert.equal(b.store.takeOver().ok, true);
+  b.store.save.profile.playSec += 120; // b a joué depuis sa reprise : sa partie est la plus avancée
+  b.store.markDirty();
+  assert.equal(b.store.flush('test').ok, true);
   clock.t += 1000;
   a.store.markDirty();
   assert.equal(a.store.flush('test').ok, false);
@@ -898,14 +901,13 @@ test('reprise : changements non enregistrés (fin de fabrication) et partie plus
   assert.equal(seen[0].keepLive, true, 'main.js reprend la main en écrivant la partie de l\'écran : la planche reste');
 });
 
-test('reprise : changements non enregistrés mais l\'autre page a au moins autant joué → pas de reprise automatique qui les perde', () => {
-  const { seen, page } = staleCraft({ theirPlaySec: 5230 });
+test('reprise : changements non enregistrés mais l\'autre page a plus joué → pas de reprise automatique qui les perde', () => {
+  const { seen } = staleCraft({ theirPlaySec: 5231 });
   assert.equal(seen[0].alive, false);
   assert.equal(seen[0].unsaved, true);
   assert.equal(seen[0].keepLive, false, 'main.js garde la carte : rien n\'est écrasé ni perdu en silence');
-  const more = staleCraft({ theirPlaySec: 9000 });
-  assert.equal(more.seen[0].keepLive, false);
-  void page;
+  assert.equal(staleCraft({ theirPlaySec: 9000 }).seen[0].keepLive, false);
+  assert.equal(staleCraft({ theirPlaySec: 5230 }).seen[0].keepLive, true, 'à égalité, la partie de l\'écran est gardée');
 });
 
 test('reprise : rien d\'enregistré en attente → la reprise relit la partie de l\'autre page, comme avant', () => {
