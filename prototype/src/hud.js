@@ -5,7 +5,8 @@
 // 150 ms, et on ne réécrit que ce qui change (textes, largeurs des jauges, classes, icônes).
 import * as icons from './icons.js';
 import { normalizeAngle } from './game.js';
-import { count, bagUsed, bagCapacity, ITEMS, WEAPONS } from './survival.js';
+import { count, nextItem, bagUsed, bagCapacity, ITEMS, WEAPONS } from './survival.js';
+import { itemArtUrl, hasItemArt, sceneUrl } from './art.js';
 
 const USES = [['eat', 'Manger'], ['drink', 'Boire'], ['heal', 'Soigner'], ['warm', 'Chauffer'], ['lure', 'Leurre']];
 const VITAL_ICONS = { health: 'sante', stamina: 'endurance', food: 'faim', water: 'soif', fatigue: 'fatigue' };
@@ -23,6 +24,12 @@ const BLOCKERS = ['conditions', 'quest', 'vitals', 'inventory', 'topbuttons', 'h
 // Notifications en file : 3 au plus, chacune visible au moins 1,2 s avant la suivante.
 const TOAST_QUEUE = 3, TOAST_MIN = 1.2;
 const FATIGUE_LOW = 85;
+// Moments forts : une affiche passe 3,4 s au milieu de l'écran quand l'alerte de horde ou l'assaut commence.
+const MOMENTS = {
+  alert: { kicker: 'Alerte', title: 'Une horde approche', scene: 'horde' },
+  wave: { kicker: 'Assaut', title: 'La horde attaque', scene: 'horde' },
+};
+const MOMENT_MS = 3400;
 
 function setText(el, text) {
   if (el && el.textContent !== text) el.textContent = text;
@@ -66,12 +73,50 @@ function survivorArrows(compass) {
   return dists;
 }
 
+// Image de l'objet sur une puce du sac ; sans image, la puce garde son icône.
+function setChipArt(chip, key) {
+  if (!chip) return;
+  const url = key ? itemArtUrl(key) : null;
+  let img = chip.querySelector('.chip-art');
+  if (!url) {
+    img?.remove();
+    chip.classList.remove('has-art');
+    return;
+  }
+  if (!img) {
+    img = chip.ownerDocument.createElement('img');
+    Object.assign(img, { className: 'chip-art', alt: '', decoding: 'async', draggable: false });
+    chip.insertBefore(img, chip.firstChild);
+  }
+  if (img.getAttribute('src') !== url) img.setAttribute('src', url);
+  chip.classList.add('has-art');
+}
+
+// Images des objets d'une notification de butin : trois au plus, seulement celles qui existent.
+function toastArt(toast, keys) {
+  let box = toast.querySelector('.toast-art');
+  const list = (keys ?? []).filter(hasItemArt).slice(0, 3);
+  if (!list.length) { box?.remove(); return false; }
+  if (!box) {
+    box = toast.ownerDocument.createElement('span');
+    box.className = 'toast-art';
+    toast.insertBefore(box, toast.firstChild);
+  }
+  box.replaceChildren(...list.map((k) => {
+    const img = toast.ownerDocument.createElement('img');
+    Object.assign(img, { alt: '', decoding: 'async', draggable: false });
+    img.setAttribute('src', itemArtUrl(k));
+    return img;
+  }));
+  return true;
+}
+
 export function createHud({ $, input }) {
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
   const el = {
     hud: $('hud'), hurt: $('hurt'), toast: $('toast'), toastText: $('toast-text'), toastIcon: $('toast-icon'),
     compass: $('compass'), compassDist: $('compass-dist'), quest: $('quest'), questDist: $('quest-dist'), questTimer: $('quest-timer'),
-    banner: $('horde-banner'), bannerText: $('horde-text'), bag: $('bag-line'), bagCount: $('bag-count'),
+    banner: $('horde-banner'), bannerText: $('horde-text'), moment: $('moment'), bag: $('bag-line'), bagCount: $('bag-count'),
     base: $('base-line'), baseText: $('base-text'), gear: $('gear'),
     body: $('body'), bodyTemp: $('body-temp'), bodyState: $('body-state'), kills: $('kills'), killsCount: $('kills-count'),
     run: $('run'), stickBase: $('stick-base'), stickKnob: $('stick-knob'), stickHint: $('stick-hint'), refugeOpen: $('refuge-open'),
@@ -128,7 +173,7 @@ export function createHud({ $, input }) {
   let distHalf = 24;
   const st = {
     last: 0, prev: {}, counts: {}, kills: undefined, player: null, start: 0, hurt: undefined, hurtPrev: 0,
-    toastShown: false, toastTimer: 0, toastAge: 0, toastText: '', queue: [], online: '', wheel: '',
+    toastShown: false, toastTimer: 0, toastAge: 0, toastText: '', queue: [], online: '', wheel: '', chipKeys: {}, bannerKind: null, momentTimer: 0,
   };
 
   function flash(node, cls, ms) {
@@ -322,6 +367,12 @@ export function createHud({ $, input }) {
     for (const [action, label] of USES) {
       const n = count(sv, action);
       const prev = st.counts[action];
+      // La puce montre l'objet que le bouton utiliserait (image, si elle existe), à la place de l'icône.
+      const nextKey = n > 0 ? nextItem(sv, action) : null;
+      if (nextKey !== st.chipKeys[action]) {
+        st.chipKeys[action] = nextKey;
+        setChipArt($(`use-${action}`), nextKey);
+      }
       if (n === prev) continue;
       const chip = $(`use-${action}`);
       if (!chip) continue;
@@ -356,6 +407,11 @@ export function createHud({ $, input }) {
       setText(el.bannerText, b.text);
       el.banner.classList.toggle('alert', !!b.alert);
     }
+    const kind = b ? (b.alert ? 'alert' : 'wave') : null;
+    if (kind !== st.bannerKind) {
+      st.bannerKind = kind;
+      if (kind) showMoment(MOMENTS[kind]);
+    }
 
     // Commandes tactiles : Courir estompé à endurance vide, joystick bordé d'orange en course automatique,
     // indication du pouce effacée au premier usage ou après 6 s.
@@ -389,11 +445,13 @@ export function createHud({ $, input }) {
 
   // ---------- Notifications ----------
 
-  function showToast({ text, seconds, kind }) {
+  function showToast({ text, seconds, kind, art }) {
     // Espace insécable avant la ponctuation haute : « Repéré ! » ne se coupe pas.
     el.toastText.textContent = text.replace(/ ([!?:;])/g, ' $1');
     for (const k of Object.keys(TOAST_ICONS)) el.toast.classList.toggle(`toast-${k}`, k === kind);
-    el.toastIcon.hidden = !TOAST_ICONS[kind];
+    const pictured = toastArt(el.toast, art);
+    el.toast.classList.toggle('toast-pictured', pictured);
+    el.toastIcon.hidden = pictured || !TOAST_ICONS[kind];
     if (TOAST_ICONS[kind]) icons.setIcon(el.toastIcon, TOAST_ICONS[kind]);
     el.toast.style.opacity = '1';
     el.toast.animate(reduce.matches
@@ -409,13 +467,13 @@ export function createHud({ $, input }) {
     }
   }
 
-  // Notification : `kind` 'danger', 'success' ou 'loot' ajoute un filet et une icône de couleur. Une notification
+  // `art` : clés d'objets dont l'image remplace l'icône (butin). Notification : `kind` 'danger', 'success' ou 'loot' ajoute un filet et une icône de couleur. Une notification
   // qui arrive pendant qu'une autre vient de s'afficher attend son tour (le danger passe devant).
-  function toast(text, seconds = 2, kind = '') {
+  function toast(text, seconds = 2, kind = '', art = null) {
     if (!text) return;
     if (st.toastShown && text === st.toastText) { st.toastTimer = Math.max(st.toastTimer, seconds); return; }
     if (st.queue.some((q) => q.text === text)) return;
-    const item = { text, seconds, kind };
+    const item = { text, seconds, kind, art };
     if (st.toastShown && st.toastAge < TOAST_MIN) {
       if (kind === 'danger') st.queue.unshift(item);
       else st.queue.push(item);
@@ -440,6 +498,21 @@ export function createHud({ $, input }) {
     }
   }
 
+  // Affiche d'un moment fort : image, sur-titre et titre ; ne bloque rien (pointer-events: none). Rien sans l'image.
+  function showMoment({ kicker, title, scene }) {
+    const url = sceneUrl(scene);
+    if (!el.moment || !url) return;
+    el.moment.style.setProperty('--moment-art', `url("${url}")`);
+    setText(el.moment.querySelector('.moment-kicker'), kicker);
+    setText(el.moment.querySelector('.moment-title'), title);
+    el.moment.classList.remove('hidden');
+    el.moment.classList.remove('show');
+    void el.moment.offsetWidth;
+    el.moment.classList.add('show');
+    clearTimeout(st.momentTimer);
+    st.momentTimer = setTimeout(() => { el.moment.classList.remove('show'); el.moment.classList.add('hidden'); }, MOMENT_MS);
+  }
+
   // Bandeau « Objectif mis à jour » : glisse de 16 px vers le bas, reste 1,6 s, puis s'efface.
   function showObjective() {
     const slide = reduce.matches ? 'none' : 'translateY(-16px)';
@@ -460,6 +533,9 @@ export function createHud({ $, input }) {
     st.player = null;
     st.last = 0;
     st.online = st.wheel = '';
+    st.bannerKind = null;
+    clearTimeout(st.momentTimer);
+    el.moment?.classList.add('hidden');
   }
 
   // Temps de jeu qu'il faut avant que la file des notifications soit passée : de quoi faire attendre un conseil qui

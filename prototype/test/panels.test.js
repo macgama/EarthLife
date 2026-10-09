@@ -254,7 +254,8 @@ test('style : classes en rp-, cibles tactiles de 44 px, jetons du guide avec rep
   // Et toutes celles du HTML produit (hors icônes de icons.js).
   const html = panelHtml(sampleView()) + cardHtml({ title: 'x', lines: ['y'], score: '1 point', buttons: [{ id: 'a', label: 'b' }] });
   const used = new Set([...html.matchAll(/class="([^"]*)"/g)].flatMap((m) => m[1].split(/\s+/)));
-  assert.deepEqual([...used].filter((c) => c && !c.startsWith('rp-') && !c.startsWith('icon')), []);
+  // (les emplacements d'objets viennent de art.js : classes art et art-…)
+  assert.deepEqual([...used].filter((c) => c && !c.startsWith('rp-') && !c.startsWith('icon') && !c.startsWith('art')), []);
   // Cibles tactiles.
   for (const sel of ['.rp-btn', '.rp-tab', '.rp-icon-btn', '.rp-journal-btn', '.rp-handle']) {
     const rule = new RegExp(`${sel.replace('.', '\\.')} \\{[^}]*min-height: var\\(--touch, 44px\\)`);
