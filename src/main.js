@@ -366,6 +366,9 @@ function renderSaveLine() {
 }
 
 // ---------- Rendu ----------
+// Minuteur du chargement qui traîne (setLoading) : déclaré avant le premier appel possible, l'échec de la 3D juste en dessous.
+let stuckTimer = null;
+const STUCK_MS = 45000;
 const canvas = $('view');
 let renderer;
 try {
@@ -610,7 +613,11 @@ function setLoading(text, { notice = false } = {}) {
   box.classList.remove('fatal');
   box.classList.toggle('notice', notice);
   box.classList.toggle('hidden', !text);
+  // Chaque étape a 45 s : au-delà, le message dit laquelle traîne et propose de recharger (loadStuck).
+  clearTimeout(stuckTimer);
+  $('loading-stuck').hidden = true;
   if (!text) return;
+  if (!notice) stuckTimer = setTimeout(() => loadStuck(`Cette étape dure plus longtemps que d'habitude («\u00a0${text.replace(/…$/, '')}\u00a0»). Tu peux attendre, ou recharger la page : ta partie est gardée et tu reviens au menu.`), STUCK_MS);
   const steps = $('loading-steps');
   const previous = $('loading-text').textContent;
   if (fresh) {
@@ -624,6 +631,24 @@ function setLoading(text, { notice = false } = {}) {
     while (steps.children.length > 4) steps.firstElementChild.remove();
   }
   $('loading-text').textContent = text;
+}
+
+// Chargement qui traîne ou qui échoue : le message dit l'étape (et la cause), le bouton recharge la page, qui revient au menu.
+// Aucune attente réseau du chargement ne dépasse 25 s : 45 s sur une étape (STUCK_MS), c'est une panne, jamais un écran sans fin.
+$('loading-stuck-reload').addEventListener('click', () => location.reload());
+function loadStuck(text) {
+  const box = $('loading');
+  if (['hidden', 'notice', 'fatal'].some((c) => box.classList.contains(c))) return;
+  $('loading-stuck-text').textContent = text;
+  $('loading-stuck').hidden = false;
+}
+// Une erreur pendant le lancement d'une partie (startGame) : elle est lue à l'écran, plus seulement dans la console.
+function loadFailed(err) {
+  console.error('Lancement de la partie en échec', err);
+  clearTimeout(stuckTimer);
+  const step = $('loading-text').textContent.replace(/…$/, '');
+  const why = String(err?.message ?? err ?? '').replace(/\s+/g, ' ').slice(0, 160);
+  loadStuck(`Le chargement s'est arrêté à l'étape «\u00a0${step}\u00a0»${why ? ` : ${why}` : ''}. Ta partie est gardée : recharge la page pour revenir au menu.`);
 }
 
 // Conseils affichés pendant le chargement (tous vérifiés dans les règles du jeu).
@@ -678,6 +703,8 @@ async function startGame(place, { spawn = 'place', confirmed = false, season = n
     // Premier passage en ligne : la carte « Jouer à plusieurs » avant le départ, jamais pendant une partie.
     if (spawn === 'place' && onlineOn) await onlineChoice();
     await launch(place, spawn, plan);
+  } catch (err) {
+    loadFailed(err);
   } finally {
     starting = false;
   }
@@ -1569,7 +1596,7 @@ function finishSearch(s, a) {
   const res = addLoot(s.survivor, found);
   const got = { ...res.stored };
   for (const k of res.equipped) got[k] = (got[k] ?? 0) + 1;
-  toast(`${a.title} : ${countsLabel(got) || 'rien'}${other ? ' · il restait peu de choses' : ''}`, 3, 'loot');
+  toast(`${a.title} : ${countsLabel(got) || 'rien'}${other ? ' · il restait peu de choses' : ''}`, 3, 'loot', got);
   lootNotes(res);
   if (tiles) online.mark('s', b.id);
   claimHint(s, b, a.arg);
@@ -1593,7 +1620,7 @@ function finishRoom(s, a) {
   const res = addLoot(s.survivor, found);
   const got = { ...res.stored };
   for (const k of res.equipped) got[k] = (got[k] ?? 0) + 1;
-  toast(`${roomTitle(plan, a.arg)} : ${countsLabel(got) || 'rien'}${other ? ' · il restait peu de choses' : ''}`, 3, 'loot');
+  toast(`${roomTitle(plan, a.arg)} : ${countsLabel(got) || 'rien'}${other ? ' · il restait peu de choses' : ''}`, 3, 'loot', got);
   lootNotes(res);
   if (after.whole) {
     if (tiles) online.mark('s', b.id);
@@ -1865,7 +1892,7 @@ function handleRefugeEvents(s, events) {
       case 'wave-end':
         if (e.outcome === 'repelled') {
           showCard({
-            title: 'Vague repoussée', tone: 'success', autoHideMs: 6000,
+            title: 'Vague repoussée', tone: 'success', art: 'refuge', autoHideMs: 6000,
             lines: [
               `${e.killed} zombies sur ${e.N}`,
               countOf(e.reward) ? `Butin au coffre : ${countsLabel(e.reward)}` : '',
@@ -1934,7 +1961,7 @@ function refugeView(s) {
     defense: r.defenseRows(ctx),
     extras: r.extras(ctx),
     craft: recipeRows(craftCtx(s), sv).map((row) => ({
-      key: row.key, name: row.name, desc: row.desc, cost: row.cost,
+      key: row.key, name: row.name, desc: row.desc, cost: row.cost, art: Object.keys(RECIPES[row.key]?.makes ?? {})[0] ?? null,
       button: { action: 'craft', arg: row.key, label: `Fabriquer · ${row.time} s`, enabled: row.ok && !s.action, why: s.action ? 'Action en cours' : row.why },
     })),
     chest: {
@@ -2022,7 +2049,7 @@ function onPanelAction(action, arg) {
       break;
     case 'prepare': {
       const got = prepareBag(sv.inventory, b.chest, bagCapacity(sv));
-      toast(countOf(got) ? `Sac préparé : ${countsLabel(got)}` : 'Rien à ajouter au sac', 2.5, countOf(got) ? 'loot' : '');
+      toast(countOf(got) ? `Sac préparé : ${countsLabel(got)}` : 'Rien à ajouter au sac', 2.5, countOf(got) ? 'loot' : '', got);
       if (countOf(got)) saveStore.markDirty();
       break;
     }
@@ -2034,7 +2061,7 @@ function onPanelAction(action, arg) {
     }
     case 'deposit': {
       const moved = depositAll(sv.inventory, b.chest, chestCap(b));
-      toast(countOf(moved) ? `Déposé au coffre : ${countsLabel(moved)}` : 'Coffre plein', 2.5, countOf(moved) ? 'loot' : '');
+      toast(countOf(moved) ? `Déposé au coffre : ${countsLabel(moved)}` : 'Coffre plein', 2.5, countOf(moved) ? 'loot' : '', moved);
       if (countOf(moved)) saveStore.markDirty();
       break;
     }
@@ -2118,7 +2145,7 @@ function finishMission(s, won) {
   const score = Math.round((100 + Math.round(left) + kills * 10) * (1 + (s.mods.rewardBonus ?? 0) / 100));
   save.profile.deliveries += 1;
   saveStore.flush('mission');
-  showCard({ title: 'Livraison réussie', tone: 'success', lines, score: `${score} points`, buttons: [{ id: 'ok', label: 'Continuer', primary: true }] }, null, { escape: 'ok' });
+  showCard({ title: 'Livraison réussie', tone: 'success', art: 'victoire', lines, score: `${score} points`, buttons: [{ id: 'ok', label: 'Continuer', primary: true }] }, null, { escape: 'ok' });
 }
 
 // « du supermarché », « de la pharmacie » : lieu connu le plus proche (200 m au plus), ou null.
@@ -2165,7 +2192,7 @@ function onDeath(s) {
   save.profile.deaths += 1;
   saveStore.flush('mort');
   showCard({
-    title: 'Tu es tombé', tone: 'danger', lines,
+    title: 'Tu es tombé', tone: 'danger', art: 'mort', lines,
     buttons: [{ id: 'wake', label: r.base && s.store.source === 'tiles' ? 'Se réveiller au refuge' : 'Repartir', primary: true }, { id: 'menu', label: 'Menu' }],
   }, (id) => {
     if (session !== s) return;
@@ -2201,8 +2228,8 @@ function pressCard(id) {
 }
 
 // Notification du HUD (seulement en partie).
-function toast(text, seconds = 2, kind = '') {
-  if (session) hud.toast(text, seconds, kind);
+function toast(text, seconds = 2, kind = '', counts = null) {
+  if (session) hud.toast(text, seconds, kind, counts ? Object.keys(counts).filter((k) => counts[k] > 0) : null);
 }
 
 // Ce que le HUD affiche en plus de l'état du joueur : boutons d'action, flèches, bandeau, ligne du refuge.
