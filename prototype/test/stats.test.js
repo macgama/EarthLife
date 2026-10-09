@@ -138,3 +138,56 @@ test('panneau du refuge : « Mes statistiques » sous le carnet', () => {
   assert.match(html, /Mes statistiques/);
   assert.ok(html.indexOf('rp-journal') < html.indexOf('rp-stats-btn'), 'après le carnet');
 });
+
+// ---------- Compétences dans « Mes statistiques » ----------
+
+test('compétences : le jeu libre y est toujours, avec quatre lignes et leur progression', () => {
+  const none = statsCard(profile(), { nowMs: at(9) });
+  assert.equal(none.skills.length, 1, 'ancienne partie sans compétences : le jeu libre seulement');
+  assert.equal(none.skills[0].title, 'Compétences · Jeu libre');
+  assert.deepEqual(none.skills[0].rows.map((r) => [r.name, r.level]), [['Combat', 0], ['Fouille', 0], ['Fabrication', 0], ['Course', 0]]);
+  const p = { ...profile(), skills: { free: { combat: 300, fouille: 95, fabrication: 0, course: 1e9 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0 } } };
+  const spec = statsCard(p, { nowMs: at(9) });
+  assert.equal(spec.skills.length, 1, 'saison jamais jouée : pas de section');
+  const [combat, fouille, , course] = spec.skills[0].rows;
+  assert.deepEqual([combat.level, combat.into, combat.span], [3, 50, 280]);
+  assert.deepEqual([fouille.level, fouille.into, fouille.span], [2, 5, 160]);
+  assert.deepEqual([course.level, course.max], [10, true]);
+  // La lecture ne touche pas au profil.
+  assert.deepEqual(p.skills.free, { combat: 300, fouille: 95, fabrication: 0, course: 1e9 });
+});
+
+test('compétences : la saison jouée s\'ajoute, en premier pendant une partie de saison, sans partager ses points', () => {
+  const p = { ...profile(), skills: { free: { combat: 600, fouille: 0, fabrication: 0, course: 0 }, season: { id: '1', combat: 100, fouille: 0, fabrication: 0, course: 0 } } };
+  const menu = statsCard(p, { nowMs: at(9) });
+  assert.deepEqual(menu.skills.map((s) => s.title), ['Compétences · Jeu libre', 'Compétences · Saison 1']);
+  assert.equal(menu.skills[0].rows[0].level, 4);
+  assert.equal(menu.skills[1].rows[0].level, 2);
+  const inSeason = statsCard(p, { nowMs: at(9), mode: 'season', seasonId: '1' });
+  assert.deepEqual(inSeason.skills.map((s) => s.title), ['Compétences · Saison 1', 'Compétences · Jeu libre']);
+  // Première partie de saison : section à zéro. Autre saison que celle rangée : on ne montre pas les anciens points.
+  const first = statsCard(profile(), { nowMs: at(9), mode: 'season', seasonId: '1' });
+  assert.equal(first.skills[0].title, 'Compétences · Saison 1');
+  assert.ok(first.skills[0].rows.every((r) => r.level === 0 && r.into === 0));
+  const next = statsCard(p, { nowMs: at(9), mode: 'season', seasonId: '2' });
+  assert.equal(next.skills[0].title, 'Compétences · Saison 2');
+  assert.ok(next.skills[0].rows.every((r) => r.level === 0), 'nouvelle saison : à zéro');
+});
+
+test('carte : les compétences ont une jauge, un niveau et l\'effet, échappés', () => {
+  const p = { ...profile(), skills: { free: { combat: 300, fouille: 0, fabrication: 0, course: 1e9 } } };
+  const html = cardHtml(statsCard(p, { nowMs: at(9) }));
+  assert.match(html, /Compétences · Jeu libre/);
+  assert.equal((html.match(/class="rp-skill"/g) ?? []).length, 4);
+  assert.match(html, /<li class="rp-skill" data-skill="combat">/);
+  assert.match(html, /Niveau 3/);
+  assert.match(html, /50 \/ 280/);
+  assert.match(html, /Dégâts \+9[^<]%, usure de l(?:'|&#39;)arme −9[^<]%/);
+  assert.match(html, /role="meter"[^>]*aria-label="Combat : niveau 3, 50 points sur 280 pour le niveau suivant"/);
+  assert.match(html, /Niveau max/, 'le niveau 10 n\'a plus de prochain palier');
+  assert.match(html, /style="width:17\.9%"/);
+  const evil = cardHtml({ title: 'T', skills: [{ title: '<b>x</b>', rows: [{ key: '"><i>', name: '<u>n</u>', level: 1, max: false, into: 1, span: 2, ratio: 0.5, effect: '<s>e</s>' }] }] });
+  assert.ok(!evil.includes('<b>') && !evil.includes('<u>') && !evil.includes('<s>') && !evil.includes('<i>'));
+  const plain = cardHtml({ title: 'Salut', lines: ['a'], buttons: [{ id: 'ok', label: 'OK' }] });
+  assert.ok(!plain.includes('rp-skill'));
+});
