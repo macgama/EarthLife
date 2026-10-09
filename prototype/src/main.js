@@ -2118,7 +2118,7 @@ function finishMission(s, won) {
   const score = Math.round((100 + Math.round(left) + kills * 10) * (1 + (s.mods.rewardBonus ?? 0) / 100));
   save.profile.deliveries += 1;
   saveStore.flush('mission');
-  showCard({ title: 'Livraison réussie', tone: 'success', lines, score: `${score} points`, buttons: [{ id: 'ok', label: 'Continuer', primary: true }] }, null, { escape: 'ok' });
+  showCard({ title: 'Livraison réussie', tone: 'success', art: 'victoire', lines, score: `${score} points`, buttons: [{ id: 'ok', label: 'Continuer', primary: true }] }, null, { escape: 'ok' });
 }
 
 // « du supermarché », « de la pharmacie » : lieu connu le plus proche (200 m au plus), ou null.

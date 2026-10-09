@@ -6,8 +6,11 @@ import { icon } from './icons.js';
 
 // Fichiers présents (nom sans extension). Un test vérifie que chaque nom a son fichier .webp.
 export const ART = {
-  items: new Set([]),
-  scenes: new Set([]),
+  items: new Set([
+    'conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette', 'bois', 'clous', 'ferraille', 'tissu', 'ruban', 'planche', 'plaque',
+    'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee',
+  ]),
+  scenes: new Set(['horde', 'metro', 'tram', 'train', 'refuge', 'coop', 'victoire', 'terre', 'mort', 'facile', 'moyen', 'difficile']),
 };
 
 const base = (dir, name) => new URL(`../assets/art/${dir}/${name}.webp`, import.meta.url).href;

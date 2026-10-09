@@ -1,7 +1,7 @@
 // Images du jeu (src/art.js) : emplacements d'objets, repli sans image, fichiers présents.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { ART, ITEM_KIND, ITEM_ICON, itemSlot, itemArtUrl, hasItemArt, sceneUrl, sceneCss, kindOf, kindLabel, ART_CSS } from '../src/art.js';
 import { ITEMS } from '../src/survival.js';
@@ -23,12 +23,20 @@ test('art : chaque image annoncée existe dans assets/art/', () => {
   for (const name of ART.scenes) assert.ok(existsSync(file('scenes', name)), `assets/art/scenes/${name}.webp`);
 });
 
+test('art : tous les objets du jeu ont leur image et aucun fichier livré n\'est oublié dans ART', () => {
+  for (const key of [...Object.keys(ITEMS), 'batte']) assert.ok(ART.items.has(key), `image de ${key}`);
+  const listed = (dir) => readdirSync(fileURLToPath(new URL(`../assets/art/${dir}/`, import.meta.url))).filter((f) => f.endsWith('.webp')).map((f) => f.slice(0, -5)).sort();
+  assert.deepEqual(listed('items'), [...ART.items].sort());
+  assert.deepEqual(listed('scenes'), [...ART.scenes].sort());
+});
+
 test('art : sans image, l\'emplacement garde l\'icône au trait ; avec image, une <img> sans texte alternatif', () => {
   const none = itemSlot('inconnu-sans-image');
   assert.match(none, /art-line/);
   assert.match(none, /<svg/);
   assert.doesNotMatch(none, /<img/);
   assert.equal(itemArtUrl('conserve'), ART.items.has('conserve') ? itemArtUrl('conserve') : null);
+  const hadConserve = ART.items.has('conserve');
   ART.items.add('conserve');
   try {
     assert.ok(hasItemArt('conserve'));
@@ -38,18 +46,19 @@ test('art : sans image, l\'emplacement garde l\'icône au trait ; avec image, un
     assert.match(html, /<b class="art-count">3<\/b>/);
     assert.doesNotMatch(itemSlot('conserve', { count: 1 }), /art-count/);
   } finally {
-    ART.items.delete('conserve');
+    if (!hadConserve) ART.items.delete('conserve');
   }
 });
 
 test('art : une scène sans image donne null ; avec image, une valeur CSS url()', () => {
   assert.equal(sceneUrl('introuvable'), null);
   assert.equal(sceneCss('introuvable'), null);
+  const hadHorde = ART.scenes.has('horde');
   ART.scenes.add('horde');
   try {
     assert.match(sceneCss('horde'), /^url\("[^"]*assets\/art\/scenes\/horde\.webp"\)$/);
   } finally {
-    ART.scenes.delete('horde');
+    if (!hadHorde) ART.scenes.delete('horde');
   }
 });
 

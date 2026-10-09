@@ -270,7 +270,7 @@ export const REPORT_REASONS = [
 // Carte du premier passage : boutons 'on' et 'off' ; avec un code demandé par le serveur, champ « Code d'invitation ».
 export function onlineChoiceCard({ invite = false, inviteRefused = false } = {}) {
   return {
-    title: 'Jouer à plusieurs',
+    title: 'Jouer à plusieurs', art: 'coop',
     lines: [...ONLINE_TEXTS.intro, inviteRefused ? ONLINE_TEXTS.inviteBad : ''],
     field: invite ? { label: ONLINE_TEXTS.invite, maxLength: 16 } : null,
     link: { href: PRIVACY_PAGE, label: ONLINE_TEXTS.keeps },
