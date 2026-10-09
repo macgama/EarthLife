@@ -11,7 +11,10 @@ export const CORRUPT_KEY = 'earthlife.save.corrupt';
 // fraîche et visible ne bloque pas l'autre : celle-ci reprend la main toute seule. `hold` : une page qui vient de reprendre la
 // main (« Reprendre ici ») va recharger ; sa présence reste valable `holdMs` le temps que la page rechargée démarre.
 export const PRESENCE_KEY = 'earthlife.presence.v1';
-export const PRESENCE = { freshMs: 90000, beatMs: 3000, holdMs: 120000 };
+// freshMs : une page dont on a la présence reste vivante tant qu'elle la renouvelle (battement de 3 s, 90 s de retard permis) ;
+// holdMs : délai gardé avant un rechargement voulu ; unknownMs : page dont on n'a aucune présence (ancienne version du jeu), qui
+// compte tant que sa dernière écriture date de moins de 12 s (une page à l'écran écrit au plus 2 s après chaque changement).
+export const PRESENCE = { freshMs: 90000, beatMs: 3000, holdMs: 120000, unknownMs: 12000 };
 export const SAVE_VERSION = 1;
 export const LIMITS = { searchedMs: 86400000, dismantledMs: 259200000, maxEntries: 1500, journal: 30, journalChars: 160 };
 
@@ -753,7 +756,7 @@ function halveEntries(save) {
 export function createSaveStore({
   storage = defaultStorage(), now = Date.now, fresh = false, onExternal = () => {},
   rand = Math.random, delayMs = 2000, itemKeys = ITEM_KEYS, beforeWrite = () => {}, listen = true, companion = null,
-  onWrite = () => {}, presence = undefined, visible = undefined,
+  onWrite = () => {}, presence = undefined, visible = undefined, previous = null,
 } = {}) {
   const writer = newWriter(rand);
   let readOnly = false;
@@ -854,19 +857,26 @@ export function createSaveStore({
 
   // Une autre page, visible et vivante, tient-elle la partie ? Il faut une preuve qu'elle est partie, pas seulement l'absence de
   // preuve qu'elle est là : une page qui rend la main (arrière-plan, fermeture) ou qui ne renouvelle plus sa présence depuis 90 s
-  // (plantée) est partie ; sans présence lisible (ancienne version, présence pas encore publiée, ou la sienne propre), la page
-  // compte tant que sa dernière écriture date de moins de 90 s. Les 90 s couvrent une page très occupée (chargement d'une ville sur un appareil lent, deux pages qui se disputent le processeur) dont le battement de 3 s prend du retard.
-  function otherAlive() {
+  // (plantée) est partie. Les 90 s couvrent une page très occupée (chargement d'une ville sur un appareil lent, deux pages qui se
+  // disputent le processeur) dont le battement de 3 s prend du retard. Sans présence lisible (ancienne version du jeu, qui n'en
+  // publie pas), la page compte tant que sa dernière écriture date de moins de `unknownMs`. L'écriture de la vie précédente de
+  // cet onglet (`previous`, rechargé par « Reprendre ici », une reprise ou un import) n'est jamais celle d'une autre page.
+  // `kind` dit pourquoi, pour la carte et la trace : own, reload, visible, gone, third, unknown.
+  function judge() {
     const p = readPresence();
     const t = now();
-    if (p && p.w !== writer) {
-      if (finite(p.hold) && p.hold > t) return true;
-      if (p.vis === true && t - p.at < PRESENCE.freshMs) return true;
-      if (!conflict?.writer || p.w === conflict.writer) return false;
+    const savedAt = conflict?.savedAt ?? null;
+    if (previous && conflict?.writer === previous) return { alive: false, kind: 'own', savedAt };
+    const other = !!p && p.w !== writer && p.w !== previous;
+    if (other) {
+      if (finite(p.hold) && p.hold > t) return { alive: true, kind: 'reload', savedAt };
+      if (p.vis === true && t - p.at < PRESENCE.freshMs) return { alive: true, kind: 'visible', savedAt };
+      if (!conflict?.writer || p.w === conflict.writer) return { alive: false, kind: 'gone', savedAt };
     }
-    const saved = conflict?.savedAt;
-    return finite(saved) && t - saved < PRESENCE.freshMs;
+    const alive = finite(savedAt) && t - savedAt < (other ? PRESENCE.freshMs : PRESENCE.unknownMs);
+    return { alive, kind: other ? 'third' : 'unknown', savedAt };
   }
+  const otherAlive = () => judge().alive;
 
   function goReadOnly(text = null) {
     if (readOnly) return;
@@ -876,13 +886,13 @@ export function createSaveStore({
     dirty = false;
     stale = false;
     playedReadOnly = false;
-    const alive = otherAlive();
+    const { alive, kind } = judge();
     const visibleNow = isVisible();
     // L'autre page n'est plus là et celle-ci est à l'écran : le signal part avec cet événement, pas une seconde fois.
     goneSent = !alive && visibleNow;
     onExternal({
       type: 'other-tab', message: SAVE_MESSAGES.otherTab, action: SAVE_MESSAGES.takeOver, since: conflict?.savedAt ?? null,
-      alive, visible: visibleNow,
+      alive, visible: visibleNow, kind,
     });
   }
 
@@ -900,7 +910,7 @@ export function createSaveStore({
     goneSent = true;
     onExternal({
       type: 'other-gone', message: SAVE_MESSAGES.otherTab, action: SAVE_MESSAGES.takeOver, since: conflict?.savedAt ?? null,
-      keepLive: playedReadOnly,
+      keepLive: playedReadOnly, kind: judge().kind,
     });
     return true;
   }
@@ -1238,6 +1248,7 @@ export function createSaveStore({
     get storedText() { return lastSeen; },
     get stale() { return stale; },
     get conflict() { return conflict; },
+    get otherPage() { return conflict ? judge() : null; },
     markDirty, flush, tick, takeOver, exportText, importText, persist, onStorage, check, refresh, dispose, wipe, beat, recheck, holdPresence,
   };
 }

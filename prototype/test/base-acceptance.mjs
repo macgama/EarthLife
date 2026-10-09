@@ -871,6 +871,45 @@ async function desktop() {
   const seasonCard = await until(page2, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') && /saison/i.test(c.textContent) ? c.querySelector('.rp-card-title')?.textContent.trim() ?? null : null; }, null, 20000);
   check(!!seasonCard, `${tag} 7 : « Reprendre ici » dans une partie de saison relance la saison (carte « ${seasonCard ?? '?'} »)`);
   await page2.close();
+
+  // 7 bis. Une seule page : ce qui n'est pas une autre page ne bloque jamais la sauvegarde. Écriture d'« une autre page » dans la
+  // sauvegarde, comme si elle venait d'un autre onglet (même origine, la page la reçoit par son événement `storage`).
+  const foreign = (writer, ageMs) => ev(page, ({ writer, ageMs }) => {
+    const key = 'earthlife.save.v1';
+    const text = JSON.stringify({ ...JSON.parse(JSON.stringify(window.__earthlife.save)), writer, savedAt: Date.now() - ageMs });
+    localStorage.setItem(key, text);
+    window.__earthlife.saveStore.onStorage({ key, newValue: text });
+  }, { writer, ageMs });
+  const newLife = (w) => until(page, (old) => {
+    const st = window.__earthlife?.saveStore;
+    return st && st.writer !== old && !st.readOnly && !!window.__earthlife.session?.player && document.getElementById('loading').classList.contains('hidden') ? st.writer : null;
+  }, w, 90000);
+  const ailleurs = () => ev(page, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') && /Partie ouverte ailleurs/.test(c.textContent); });
+  await started(page);
+  // Vie précédente de l'onglet : rechargement voulu (présence gardée 120 s, écrivain noté dans sessionStorage), puis dernière écriture
+  // de l'ancienne vie à sa fermeture : la page rechargée reprend la main toute seule, sans carte.
+  const life1 = await ev(page, () => { const st = window.__earthlife.saveStore; st.holdPresence(); sessionStorage.setItem('earthlife.prevlife', st.writer); return st.writer; });
+  await page.reload();
+  check(await started(page), `${tag} 7 bis : la page rechargée relance sa partie`);
+  const before2 = await ev(page, () => window.__earthlife.saveStore.writer);
+  await foreign(life1, 18000);
+  const life2 = await newLife(before2);
+  check(!!life2 && !(await ailleurs()), `${tag} 7 bis : la dernière écriture de la vie précédente n'est pas une autre page (reprise toute seule, sans carte)`);
+  // Ancienne version du jeu (aucune présence) qui a écrit il y a 18 s : elle ne compte plus.
+  await started(page);
+  const life3 = await ev(page, () => window.__earthlife.saveStore.writer);
+  await foreign('wancienneversion', 18000);
+  const life4 = await newLife(life3);
+  check(!!life4 && !(await ailleurs()), `${tag} 7 bis : une ancienne version sans présence qui n'a pas écrit depuis 18 s ne bloque pas (reprise toute seule, sans carte)`);
+  // Témoin : une autre page à l'écran (présence fraîche) garde la carte, avec son détail.
+  await started(page);
+  await ev(page, () => { localStorage.setItem('earthlife.presence.v1', JSON.stringify({ w: 'wvisible', at: Date.now(), vis: true })); });
+  await foreign('wvisible', 2000);
+  const detail = await until(page, () => {
+    const c = document.getElementById('card');
+    return !c.classList.contains('hidden') && /Partie ouverte ailleurs/.test(c.textContent) ? c.textContent.replace(/\s+/g, ' ').trim() : null;
+  }, null, 20000);
+  check(!!detail && /Elle est à l'écran/.test(detail), `${tag} 7 bis : une autre page à l'écran garde la carte, avec son détail (« ${(detail ?? '?').slice(0, 140)} »)`);
   await ctx.close();
 }
 
