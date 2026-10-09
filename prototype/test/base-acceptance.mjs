@@ -2672,8 +2672,9 @@ async function trajet(device) {
   check(mid.id === 'ride' && Math.hypot(mid.x - before.x, mid.z - before.z) < 0.5, `${tag} : pendant le trajet, ni marche ni autre action (déplacé de ${round(Math.hypot(mid.x - before.x, mid.z - before.z))} m)`);
   check(parseInt(mid.w, 10) > 0, `${tag} : jauge du trajet à ${mid.w}`);
   await shot(page, `${tag.replace(' ', '-')}-trajet-ecran`);
-  // Arrivée.
-  const done = await until(page, () => (window.__earthlife.session.action ? null : 1), null, 180000);
+  // Arrivée. Sans carte graphique le jeu va jusqu'à dix fois moins vite que la montre : sur GitHub l'ordinateur met 3 min 10 s
+  // pour un trajet de 20 s de jeu (PR #36, #39 et main), le téléphone moins de 1 min 30 s. On attend donc 7 minutes.
+  const done = await until(page, () => (window.__earthlife.session.action ? null : 1), null, 420000);
   check(!!done, `${tag} : trajet terminé`);
   const there = await ev(page, () => { const p = window.__earthlife.session.player; return { x: p.x, z: p.z, hidden: p.hidden, ride: !document.getElementById('ride').classList.contains('hidden') }; });
   const off = Math.hypot(there.x - added.x, there.z - added.z);
