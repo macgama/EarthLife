@@ -739,7 +739,7 @@ export function createCityGame(host) {
         host.showCard({ title: `Quartier ${e.line[0] || ''} repris`.replace('  ', ' '), tone: 'success', lines: [`${groupDigits(e.line[10])} habitants sauvés.`, 'Ses pâtés quittent ta sauvegarde : il tient en une ligne.'], buttons: [{ id: 'ok', label: 'Continuer', primary: true }] }, null, { escape: 'ok' });
         break;
       case 'season-end':
-        host.showCard({ title: 'La saison est terminée', tone: 'success',
+        host.showCard({ title: 'La saison est terminée', tone: 'success', art: 'victoire',
           lines: ['Merci d\'avoir joué ! La ville reste visible, mais plus aucun geste ne compte.', 'Les chiffres de la saison sont dans le salon, au menu (onglet « À plusieurs »).'],
           buttons: [{ id: 'ok', label: 'Continuer', primary: true }, { id: 'menu', label: 'Menu' }] }, (id) => { if (id === 'menu' && host.getSession() === s) host.toMenu(); }, { escape: 'ok' });
         if (s.city) s.city.state.ended = true;
@@ -807,7 +807,7 @@ export function createCityGame(host) {
     const names = done.neighbours.slice(0, 3).map((n) => n.name).join(', ');
     if (names) lines.push(`Tes voisines : ${names}${done.neighbours.length > 3 ? '…' : ''}`);
     host.showCard({
-      title: `${sum.name} est sauvée`, tone: 'success', lines,
+      title: `${sum.name} est sauvée`, tone: 'success', art: 'victoire', lines,
       buttons: [done.neighbours.length ? { id: 'next', label: 'Les communes voisines', primary: true } : { id: 'continue', label: 'Continuer', primary: true }, { id: 'menu', label: 'Menu' }],
     }, (id) => {
       if (host.getSession() !== s) return;
@@ -842,7 +842,7 @@ export function createCityGame(host) {
     const v = rt.ville;
     const killed = v.killed[0] + v.killed[1] + v.killed[2];
     host.showCard({
-      title: `${v.name} est sauvée`, tone: 'success',
+      title: `${v.name} est sauvée`, tone: 'success', art: 'victoire',
       lines: [`${groupDigits(killed)} zombies abattus, dont ${groupDigits(v.killed[0])} par les joueurs de la saison${v.killed[1] ? ` et ${groupDigits(v.killed[1])} par les volontaires` : ''}.`,
         `${groupDigits(v.saved)} habitants sauvés. Merci à tous ceux qui ont joué avec toi.`, 'La saison continue : les communes voisines s\'ouvriront à une prochaine étape.'],
       buttons: [{ id: 'continue', label: 'Continuer', primary: true }, { id: 'menu', label: 'Menu' }],
