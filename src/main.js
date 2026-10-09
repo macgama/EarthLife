@@ -6,12 +6,13 @@ import { fetchWeather, forcedWeather, gameplayModifiers } from './weather.js';
 import { sunPosition, localTimeLabel } from './sun.js';
 import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, buildingAt, lineFree, groundAt, groundNormal } from './collision.js';
 import { buildingFloor } from './terrain.js';
-import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate } from './world.js';
+import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate, addFeatures } from './world.js';
 import { DEM_ATTRIBUTION } from './dem.js';
 import { createChunkManager, VIEW_RADIUS } from './chunks.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
-  offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, BAG_CAPACITY,
+  offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, bagCapacity, wornKey,
+  removePack, packSurplus, PACK_REMOVE_FULL,
 } from './survival.js';
 import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
 import { createCharacters } from './characters.js';
@@ -44,6 +45,9 @@ import {
   zonesCard, ONLINE_TEXTS, ACCOUNT_TEXTS,
 } from './panels.js';
 import { createHud, distanceText } from './hud.js';
+import { createRideGame, createRideOverlay } from './trajet.js';
+import { networkOf, lineTitle } from './transport.js';
+import { addStep, statsCard } from './stats.js';
 import { createMinimap } from './minimap.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
 import { makeProjection } from './geo.js';
@@ -106,8 +110,13 @@ const territoryStore = createTerritoryStore({
   onDirty: () => saveStore.markDirty(),
   onExternal: (e) => setTimeout(() => onSaveExternal(e), 0),
 });
+// Écrivain de la vie précédente de cet onglet (rechargé par « Reprendre ici », une reprise ou un import : sessionStorage reste d'une
+// page à l'autre) : ses dernières écritures ne sont pas celles d'une autre page (save.js, judge).
+const PREV_LIFE_KEY = 'earthlife.prevlife';
+const previousLife = (() => { try { return sessionStorage.getItem(PREV_LIFE_KEY); } catch { return null; } })();
 const saveStore = createSaveStore({
   fresh: params.get('fresh') === '1',
+  previous: previousLife,
   // Différé : la carte, le HUD et les cartes de jeu n'existent pas encore pendant la création du magasin.
   onExternal: (e) => setTimeout(() => onSaveExternal(e), 0),
   beforeWrite: copyLive,
@@ -257,8 +266,15 @@ function urlWithout(name) {
 }
 
 // Après un import ou une reprise (« Reprendre ici ») : la partie en mémoire a changé, on recharge sans ?fresh.
-function reloadClean() {
+// Rechargement voulu : la présence de cette page reste valable le temps du démarrage de la suivante, qui sait que cette page
+// était la sienne (PREV_LIFE_KEY).
+function holdForReload() {
   saveStore.holdPresence();
+  try { sessionStorage.setItem(PREV_LIFE_KEY, saveStore.writer); } catch { /* sans stockage de session : une autre page de plus au pire */ }
+}
+
+function reloadClean() {
+  holdForReload();
   location.replace(urlWithout('fresh'));
 }
 
@@ -268,7 +284,7 @@ function reloadPage({ fresh = false } = {}) {
   if (!fresh) { reloadClean(); return; }
   const u = new URL(location.href);
   u.searchParams.set('fresh', '1');
-  saveStore.holdPresence();
+  holdForReload();
   location.replace(u.toString());
 }
 
@@ -423,11 +439,16 @@ const interior = createInteriorGame({
     }
   },
 });
+// Trajets entre stations : bouton devant une station, carte des destinations, trajet chronométré, arrivée sur le quai.
+const ride = createRideGame({
+  current: () => session, showCard: (...a) => showCard(...a), toast: (...a) => toast(...a), saveStore: { markDirty: () => saveStore.markDirty() },
+  prefetch: PREFETCH_RADIUS, overlay: createRideOverlay(document),
+});
 // HUD, panneau du refuge (tiroir ou feuille basse) et cartes de jeu (#card).
 const hud = createHud({ $, input });
 const card = createCard($('card'));
 let cardInfo = null; // { blocking, escape, onButton } de la carte affichée
-const panel = createRefugePanel(document.body, { onAction: (action, arg) => onPanelAction(action, arg) });
+const panel = createRefugePanel(document.body, { onAction: (action, arg) => onPanelAction(action, arg), onStats: () => showStats() });
 // Téléphone, en portrait ou à l'horizontale : panneau ouvert, « Sortir » et « Dormir » sont en pied de panneau.
 const phoneLayout = window.matchMedia('(max-width: 759px), (max-height: 500px) and (orientation: landscape)');
 // Feuille basse du refuge (téléphone, tablette en portrait) : elle porte déjà Dormir, Sortir et Missions.
@@ -806,7 +827,7 @@ function restoreCharacter(s) {
   sv.bag ??= {};
   s.player = createPlayer(s.start);
   s.survivor = createSurvivor();
-  Object.assign(s.survivor, { food: sv.food, water: sv.water, bodyTemp: sv.bodyTemp, wet: sv.wet, fatigue: sv.fatigue, clothing: sv.clothing ?? null });
+  Object.assign(s.survivor, { food: sv.food, water: sv.water, bodyTemp: sv.bodyTemp, wet: sv.wet, fatigue: sv.fatigue, clothing: sv.clothing ?? null, pack: sv.pack ?? null });
   s.survivor.inventory = sv.bag;
   s.survivor.weapon = { key: sv.weapon?.key ?? 'batte', uses: sv.weapon?.uses ?? null };
   s.player.health = Math.min(100, sv.health);
@@ -850,7 +871,7 @@ function copyLive(sv) {
   Object.assign(sv.survivor, {
     health: dead ? 0 : Math.max(1, Math.round(Math.min(100, p.health) * 10) / 10),
     food: v.food, water: v.water, bodyTemp: v.bodyTemp, wet: v.wet, fatigue: v.fatigue,
-    bag: v.inventory, weapon: { ...v.weapon }, clothing: v.clothing ?? null,
+    bag: v.inventory, weapon: { ...v.weapon }, clothing: v.clothing ?? null, pack: v.pack ?? null,
   });
   const ll = playerLatLon(s);
   sv.where = { lat: ll.lat, lon: ll.lon, at: Date.now(), inside: !!s.refuge?.inside };
@@ -935,6 +956,7 @@ function onTile(key, info) {
 
 function disposeSession() {
   if (!session) return;
+  ride.abort(session);
   interior.close(session, { instant: true });
   othersView?.clear();
   panel.close();
@@ -1199,7 +1221,7 @@ function step(s, inp, dt) {
   if (effects.hypothermia) mods.moveSpeed *= 0.85;
   if (effects.hyperthermia) mods.staminaDrain = (mods.staminaDrain ?? 1) * 1.6;
   // 4. Objets du sac (1 à 4) et leurre (5).
-  if (inp.use && !asleep(s)) useItem(s, inp.use);
+  if (inp.use && !asleep(s) && s.action?.id !== 'ride') useItem(s, inp.use);
   // 5. Monde au fil de la marche : morceaux proches construits (plus loin quand la caméra recule), tuiles suivantes
   // demandées à l'avance ; distance du trou le plus proche, pour le brouillard.
   const built = s.chunks.update(p.x, p.z, { budgetMs: lowPower ? 4 : 6, radius: s.viewRadius });
@@ -1217,8 +1239,9 @@ function step(s, inp, dt) {
   }
   // 6. Déplacement : immobile pendant une action dehors (caché au refuge, le joueur ne bouge pas).
   const before = { x: p.x, z: p.z };
-  const still = s.action && !s.action.inside;
+  const still = s.action && (!s.action.inside || s.action.id === 'ride');
   updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
+  addStep(save.profile, p.x - before.x, p.z - before.z, dt); // « Mes statistiques » : distance à pied et temps de jeu
   // Intérieur ouvert : sortie détectée, toit effacé ou rendu, lueur du meuble à fouiller.
   interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches });
   // 7. Boutons E et R.
@@ -1247,7 +1270,7 @@ function step(s, inp, dt) {
   handleRefugeEvents(s, r.update(dt, {
     player: p, survivor: sv, isNight: s.isNight, forcedTime: mode === 'live' ? null : mode, weather: w, mods: s.mods,
     now: Date.now(), offscreen, zombieEvents: events, sessionStart: s.sessionStart, respawnedAt: s.respawnedAt,
-    ...city.refugeCtx(s),
+    bagCap: bagCapacity(sv), ...city.refugeCtx(s),
   }));
   // Ville : zombies prêtés par les pâtés, contre-attaque, nuits, compteurs et fin de ville.
   city.step(s, dt);
@@ -1349,7 +1372,7 @@ function markSearched(s, b) {
 
 // Contexte des règles du refuge (check, apply, textes du panneau).
 function refugeCtx(s, more = {}) {
-  return { player: s.player, survivor: s.survivor, weather: s.weather, mods: s.mods, now: Date.now(), ...city.refugeCtx(s), ...more };
+  return { player: s.player, survivor: s.survivor, weather: s.weather, mods: s.mods, now: Date.now(), bagCap: bagCapacity(s.survivor), ...city.refugeCtx(s), ...more };
 }
 
 // Maison tirée au hasard dans la ville (refuge installé pour le joueur) : première mission, stockage persistant demandé.
@@ -1422,6 +1445,8 @@ function chooseActions(s) {
     }
   }
   if (!primary && !r.inside) primary = r.orphanAction(p, { touch, survivor: s.survivor });
+  // Station à portée : prendre la ligne (carte des destinations).
+  if (!primary && !r.inside && !open) primary = ride.action(s, touch);
   return { primary, secondary: menu.secondary, why: menu.why ?? '' };
 }
 
@@ -1442,6 +1467,12 @@ function updateActions(s, inp, dt, before) {
     const moved = Math.hypot(inp.move.x, inp.move.y) > 0.3 || Math.hypot(p.x - before.x, p.z - before.z) > 0.5;
     if (moved || inp.attack) { cancelAction(s); return; }
   }
+  // Trajet : le temps passe, puis l'arrivée attend que ses morceaux soient construisables.
+  if (a.id === 'ride') {
+    a.t += dt;
+    if (ride.arrived(s, a, dt)) finishAction(s, a);
+    return;
+  }
   const prev = a.t;
   a.t += dt;
   // Fouille et démontage font du bruit : les zombies proches l'entendent, deux fois par seconde.
@@ -1457,6 +1488,10 @@ function startAction(s, a) {
   const base = { id: a.id, arg: a.arg, t: 0, slot: a.slot ?? 'primary', inside: r.inside, noise: 0 };
   if (a.id === 'door') {
     interior.open(s, a.arg);
+    return;
+  }
+  if (a.id === 'ride') {
+    ride.open(s, a.arg);
     return;
   }
   if (a.id === 'room') {
@@ -1496,12 +1531,14 @@ function startAction(s, a) {
 }
 
 function cancelAction(s) {
+  if (s.action?.id === 'ride') ride.abort(s);
   s.action = null;
 }
 
 function finishAction(s, a) {
   s.action = null;
-  if (a.id === 'search') finishSearch(s, a);
+  if (a.id === 'ride') ride.finish(s, a);
+  else if (a.id === 'search') finishSearch(s, a);
   else if (a.id === 'room') finishRoom(s, a);
   else if (a.id === 'prop') finishProp(s, a);
   else if (a.id === 'nest' || a.id === 'flag') city.runAction(s, a);
@@ -1734,7 +1771,10 @@ function pickBag(s) {
   const at = s.store.proj.toLocal(d.lat, d.lon);
   if (Math.hypot(at.x - p.x, at.z - p.z) > 1.5) return;
   let moved = 0;
-  for (const k of Object.keys(d.bag)) moved += moveItems(d.bag, s.survivor.inventory, k, d.bag[k], BAG_CAPACITY);
+  // Le sac de randonnée perdu se porte d'abord : sa place sert au reste du contenu.
+  const packKey = Object.keys(d.bag).find((k) => ITEMS[k]?.equip === 'bag' && d.bag[k] > 0);
+  if (packKey && equipFrom(s.survivor, packKey, d.bag)) moved += 1;
+  for (const k of Object.keys(d.bag)) moved += moveItems(d.bag, s.survivor.inventory, k, d.bag[k], bagCapacity(s.survivor));
   if (!countOf(d.bag)) save.dropBag = null;
   if (moved) {
     toast('Sac récupéré', 2.5, 'loot');
@@ -1868,16 +1908,16 @@ function refugeView(s) {
   const r = s.refuge, b = r.base, sv = s.survivor;
   const ctx = refugeCtx(s);
   const cap = chestCap(b);
-  const bagN = bagUsed(sv), chestN = countOf(b.chest);
+  const bagN = bagUsed(sv), bagMax = bagCapacity(sv), chestN = countOf(b.chest);
   const rows = [];
   for (const [key, item] of Object.entries(ITEMS)) {
     const inChest = b.chest[key] ?? 0, inBag = sv.inventory[key] ?? 0;
     if (!inChest && !inBag) continue;
     const buttons = [];
-    if (inChest) buttons.push({ action: 'take', arg: key, label: 'Prendre', enabled: bagN < BAG_CAPACITY, why: 'Sac plein' });
+    if (inChest) buttons.push({ action: 'take', arg: key, label: 'Prendre', enabled: bagN < bagMax, why: 'Sac plein' });
     if (inBag) buttons.push({ action: 'put', arg: key, label: 'Déposer', enabled: chestN < cap, why: 'Coffre plein' });
     // Équiper : la pièce portée (si elle est d'un autre type) revient d'où vient la nouvelle ; une arme entamée est jetée.
-    if (item.equip && key !== (item.equip === 'weapon' ? sv.weapon?.key : sv.clothing)) {
+    if (item.equip && key !== wornKey(sv, item.equip)) {
       const lost = discardedBy(sv, key);
       buttons.push({ action: 'equip', arg: key, label: lost ? `Équiper · ta ${ITEMS[lost].one} usée sera jetée` : 'Équiper', enabled: true });
     }
@@ -1898,12 +1938,14 @@ function refugeView(s) {
       button: { action: 'craft', arg: row.key, label: `Fabriquer · ${row.time} s`, enabled: row.ok && !s.action, why: s.action ? 'Action en cours' : row.why },
     })),
     chest: {
-      head: `Coffre ${chestN}/${cap} · Sac ${bagN}/${BAG_CAPACITY}`,
-      gear: `Arme : ${weapon.name}${wear} · Vêtement : ${clothing}`,
+      head: `Coffre ${chestN}/${cap} · Sac ${bagN}/${bagMax}`,
+      gear: `Arme : ${weapon.name}${wear} · Vêtement : ${clothing} · Sac : ${sv.pack ? ITEMS[sv.pack]?.name ?? 'Sac de base' : 'Sac de base'}`,
       rows,
       buttons: [
-        { action: 'prepare', arg: null, label: 'Préparer le sac', enabled: bagN < BAG_CAPACITY, why: 'Sac plein' },
+        { action: 'prepare', arg: null, label: 'Préparer le sac', enabled: bagN < bagMax, why: 'Sac plein' },
         { action: 'deposit', arg: null, label: 'Tout déposer', enabled: bagN > 0 && chestN < cap, why: bagN ? 'Coffre plein' : 'Sac vide' },
+        // Enlever le sac de randonnée : il va au coffre avec ce qui ne tient plus dans les 30 places de base.
+        sv.pack ? { action: 'unpack', arg: null, label: `Enlever : ${ITEMS[sv.pack]?.name ?? 'sac'}`, enabled: packSurplus(sv) + 1 <= cap - chestN, why: PACK_REMOVE_FULL } : null,
       ],
     },
     // Espaces insécables dans les guillemets : « Déménager ici » ne se coupe pas en fin de ligne sur téléphone.
@@ -1970,7 +2012,7 @@ function onPanelAction(action, arg) {
       else startAction(s, { id: 'craft', arg, slot: 'primary' });
       break;
     case 'take':
-      if (moveItems(b.chest, sv.inventory, arg, 1, BAG_CAPACITY)) saveStore.markDirty();
+      if (moveItems(b.chest, sv.inventory, arg, 1, bagCapacity(sv))) saveStore.markDirty();
       break;
     case 'put':
       if (moveItems(sv.inventory, b.chest, arg, 1, chestCap(b))) saveStore.markDirty();
@@ -1979,9 +2021,15 @@ function onPanelAction(action, arg) {
       equipItem(s, arg);
       break;
     case 'prepare': {
-      const got = prepareBag(sv.inventory, b.chest, BAG_CAPACITY);
+      const got = prepareBag(sv.inventory, b.chest, bagCapacity(sv));
       toast(countOf(got) ? `Sac préparé : ${countsLabel(got)}` : 'Rien à ajouter au sac', 2.5, countOf(got) ? 'loot' : '');
       if (countOf(got)) saveStore.markDirty();
+      break;
+    }
+    case 'unpack': {
+      const res = removePack(sv, b.chest, chestCap(b));
+      toast(res.ok ? `${ITEMS.sac_randonnee.name} enlevé · au coffre : ${countsLabel(res.moved)}` : res.why, 3, res.ok ? 'loot' : '');
+      if (res.ok) saveStore.markDirty();
       break;
     }
     case 'deposit': {
@@ -2054,7 +2102,7 @@ function finishMission(s, won) {
   const lines = [`Livré ${placeWith('à', q.dropoff)} en ${questDuration(q.elapsed)} · ${kills} zombie${kills > 1 ? 's' : ''} à terre`];
   const b = s.refuge.base;
   if (b) {
-    const res = storeItems(reward, b.chest, chestCap(b), s.survivor.inventory, BAG_CAPACITY);
+    const res = storeItems(reward, b.chest, chestCap(b), s.survivor.inventory, bagCapacity(s.survivor));
     if (countOf(res.chest)) lines.push(`Récompense déposée au coffre : ${countsLabel(res.chest)}`);
     if (countOf(res.bag)) lines.push(`Coffre plein : ${countsLabel(res.bag)} dans ton sac`);
     if (countOf(res.lost)) lines.push(`Coffre et sac pleins : ${countsLabel(res.lost)} perdu`);
@@ -2480,8 +2528,8 @@ function onSaveExternal(e) {
   // toute seule, sans carte ni choix à faire (save.js, présence des pages).
   if (e.type === 'other-gone' || (e.type === 'other-tab' && e.alive === false && e.visible)) {
     // Trace de la décision (console, pour comprendre une reprise inattendue : état de la présence au moment où elle part).
-    try { console.info('[sauvegarde] autre page absente', JSON.stringify({ e: e.type, keepLive: !!e.keepLive, presence: localStorage.getItem(PRESENCE_KEY), conflict: saveStore.conflict, now: Date.now() })); } catch { /* trace seulement */ }
-    if (handOver(!!e.keepLive)) return;
+    try { console.info('[sauvegarde] autre page absente', JSON.stringify({ e: e.type, kind: e.kind ?? null, keepLive: !!e.keepLive, previous: previousLife, presence: localStorage.getItem(PRESENCE_KEY), conflict: saveStore.conflict, now: Date.now() })); } catch { /* trace seulement */ }
+    if (handOver(!!e.keepLive, e.kind === 'own')) return;
   }
   // Stockage plein, territoire non enregistré ou allégé : un toast (une fois), le motif reste dans la ligne de la sauvegarde.
   if (e.type === 'full' || e.type === 'companion-full' || e.type === 'compacted' || e.type === 'dropped') {
@@ -2489,6 +2537,8 @@ function onSaveExternal(e) {
     return;
   }
   if ((e.type !== 'other-tab' && e.type !== 'other-gone') || !playing) return;
+  // Trace de la carte (console) : ce que la page savait de l'autre au moment où elle s'ouvre.
+  try { console.info('[sauvegarde] carte autre page', JSON.stringify({ e: e.type, kind: e.kind ?? null, presence: localStorage.getItem(PRESENCE_KEY), conflict: saveStore.conflict, previous: previousLife, now: Date.now() })); } catch { /* trace seulement */ }
   showTakeOverCard();
 }
 
@@ -2505,6 +2555,18 @@ function otherPageLine() {
   const ms = Math.max(0, Date.now() - at);
   return `L'autre page a sauvegardé il y a ${ms < 60000 ? `${Math.round(ms / 1000)}\u00a0s` : durationLabel(ms)}.`;
 }
+// Ce que la page sait de l'autre (save.js, judge), dit simplement : de quoi la retrouver et la fermer.
+const OTHER_PAGE_KIND = {
+  visible: 'Elle est à l\'écran : ferme-la, ou reprends ici.',
+  reload: 'Elle vient de recharger le jeu.',
+  own: 'C\'est ta propre page, avant son rechargement.',
+  gone: 'Elle est en arrière-plan ou fermée.',
+  third: 'Une autre page est aussi à l\'écran.',
+  unknown: 'On ne sait pas si elle est encore ouverte : peut-être une ancienne version du jeu.',
+};
+function otherPageKind() {
+  return OTHER_PAGE_KIND[saveStore.otherPage?.kind] ?? '';
+}
 
 // Carte en partie : « Reprendre ici » relit la sauvegarde, recharge la page et relance la partie tout de suite (RESUME_KEY) ;
 // « Jouer sans sauvegarder » garde cet écran, sans rien enregistrer.
@@ -2512,7 +2574,7 @@ function showTakeOverCard() {
   showCard({
     title: 'Partie ouverte ailleurs', tone: 'warn',
     lines: [
-      ['Cette partie est ouverte dans un autre onglet.', otherPageLine()].filter(Boolean).join(' '),
+      ['Cette partie est ouverte dans un autre onglet.', otherPageLine(), otherPageKind()].filter(Boolean).join(' '),
       'Reprendre ici : tu continues avec la partie sauvegardée, l\'autre onglet s\'arrête.',
       'Jouer sans sauvegarder : rien n\'est enregistré tant que tu restes ainsi.',
     ],
@@ -2541,12 +2603,13 @@ function takeOver({ resume = false, keepLive = false } = {}) {
 // qu'une fois par minute, sinon la carte « Partie ouverte ailleurs » reste. Rend vrai si la reprise est partie.
 const HANDOVER_KEY = 'earthlife.handover';
 const HANDOVER_GAP_MS = 60000;
+const HANDOVER_OWN_GAP_MS = 5000; // l'écriture vient de la vie précédente de cet onglet : pas de page à se disputer la main
 let handingOver = false;
-function handOver(keepLive = false) {
+function handOver(keepLive = false, own = false) {
   if (handingOver) return true;
   let last = 0;
   try { last = Number(sessionStorage.getItem(HANDOVER_KEY)) || 0; } catch { /* sans stockage de session : pas de garde-fou */ }
-  if (Date.now() - last < HANDOVER_GAP_MS) return false;
+  if (Date.now() - last < (own ? HANDOVER_OWN_GAP_MS : HANDOVER_GAP_MS)) return false;
   try { sessionStorage.setItem(HANDOVER_KEY, String(Date.now())); } catch { /* idem */ }
   handingOver = true;
   try {
@@ -2877,6 +2940,12 @@ async function inviteHere() {
   }
 }
 
+// « Mes statistiques » : les compteurs de la partie (save.profile) ; la carte met le jeu en pause le temps de la lecture.
+function showStats() {
+  showCard(statsCard(save.profile, { nowMs: Date.now() }), null, { escape: 'close' });
+}
+$('stats-open')?.addEventListener('click', () => showStats());
+
 // « Voir mes données » (droit d'accès, section 6.8) : le surnom est recomposé ici, jamais lu comme un texte du réseau.
 // Connecté à un compte : la vue du compte d'abord (spécification des comptes, 6.2), puis l'identité rattachée.
 async function showMyData() {
@@ -2891,7 +2960,7 @@ async function showMyData() {
   const id = typeof data?.refuge === 'string' ? data.refuge : null;
   const refuge = !id ? '' : id === save.base?.id ? `ton refuge (${kindLabel(save.base.kind)})` : 'un autre bâtiment';
   const view = signedIn && r.ok ? r.account : null;
-  showCard(myDataCard(view ? null : (signedIn ? null : data), { name, refuge, account: view }), null, { escape: 'close' });
+  showCard(myDataCard(view ? null : (signedIn ? null : data), { name, refuge, account: view, local: { savedMs: save.savedAt, readOnly: saveStore.readOnly } }), null, { escape: 'close' });
 }
 
 function askErase() {
@@ -3009,6 +3078,22 @@ const debug = DEBUG ? {
     s.loader.ensureAround(x, z, PREFETCH_RADIUS);
     s.chunks.buildAll(x, z);
     return { x, z };
+  },
+  // Trajets entre stations : réseau lu dans les tuiles chargées, et ajout de voies et de stations (essais).
+  transit() {
+    const s = session;
+    if (!s) return null;
+    const net = networkOf(s.store);
+    return {
+      lines: [...net.lines.values()].map((l) => ({ id: l.id, mode: l.mode, title: lineTitle(net, l.id), stations: l.stations.map((st) => st.name) })),
+      stations: net.stations.map((st) => ({ id: st.id, name: st.name, x: st.x, z: st.z, entrances: st.entrances.length, lines: st.lines })),
+      action: s.action ? { id: s.action.id, t: s.action.t, time: s.action.time } : null,
+    };
+  },
+  addTransit(tracks, stops) {
+    if (!session) return null;
+    addFeatures(session.store, { buildings: [], roads: [], water: [], waterLines: [], areas: [], zones: [], pois: [], tracks, stops });
+    return session.store.transitRev;
   },
   props: (kind) => session?.chunks.props(kind) ?? [],
   // Hauteur du sol (relief) au point, et pente lissée du joueur.

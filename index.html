@@ -160,7 +160,7 @@ select, button { font: inherit; }
 
 /* ---------- Écrans : menu, aide, chargement, fin (guide de style § 4.4, 4.5 et 4.11 à 4.14) ---------- */
 /* Repère d'angle orange (signature des panneaux) et quadrillage tactique des fonds d'écran. */
-#menu, #loading {
+#menu, #loading, #ride {
   --corner: linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 12px 2px no-repeat border-box, linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 2px 12px no-repeat border-box;
   --grid: repeating-linear-gradient(0deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 32px), repeating-linear-gradient(90deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 32px);
   font-family: var(--font-text);
@@ -296,7 +296,7 @@ select, button { font: inherit; }
 .save-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); padding: var(--sp-2) var(--sp-3); background: var(--c-bg-2); border: 1px solid var(--c-line); border-left: 2px solid var(--c-refuge); border-radius: var(--r-sm); }
 .save-line > .btn-icon { color: var(--c-refuge); }
 #save-text { flex: 1 1 160px; min-width: 0; color: var(--c-text); font-size: var(--fs-sm); font-weight: var(--fw-semibold); line-height: var(--lh-snug); overflow-wrap: anywhere; }
-#menu .save-line .secondary, .save-actions .secondary, #menu #save-take { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--touch); padding: 0 var(--sp-3); font-family: var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
+#menu .save-line .secondary, .save-actions .secondary, #menu #save-take, #menu #stats-open { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--touch); padding: 0 var(--sp-3); font-family: var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
 .save-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
 .save-actions .secondary { flex: 1 1 180px; }
 /* Aide : carte modale à sections illustrées, commandes au clavier ou au doigt selon l'appareil. */
@@ -487,7 +487,7 @@ select, button { font: inherit; }
   #menu .salon-cta, #menu #play { box-shadow: 0 0 0 var(--sp-2) var(--c-panel-solid), 0 max(var(--sp-3), env(safe-area-inset-bottom)) 0 var(--sp-2) var(--c-panel-solid); }
   /* Aperçu : rien ne défile, la carte garde le reste de l'écran. */
   #menu[data-sheet="peek"] .sheet { gap: var(--sp-2); max-height: none; overflow: hidden; }
-  #menu[data-sheet="peek"] :is(.salon-time, .salon-stats, .salon-label, .front-bar, .front-nums, .front-foot, .front-badge, .front-tag, .sheet-label, .level-row, .level-rule, #city-line, #city-next, .options, .place-title, #online-block, #account-block:not(:has(#account-conflict:not([hidden])))) { display: none; }
+  #menu[data-sheet="peek"] :is(.salon-time, .salon-stats, .salon-label, .front-bar, .front-nums, .front-foot, .front-badge, .front-tag, .sheet-label, .level-row, .level-rule, #city-line, #city-next, .options, .place-title, #stats-open, #online-block, #account-block:not(:has(#account-conflict:not([hidden])))) { display: none; }
   /* À plusieurs : saison sur deux lignes, trois niveaux côte à côte (nom, part de zombies, ville). */
   #menu[data-sheet="peek"] .salon { gap: var(--sp-2); }
   #menu[data-sheet="peek"] .salon-banner { padding: var(--sp-2) var(--sp-3); }
@@ -526,6 +526,11 @@ select, button { font: inherit; }
 .load-tip { width: 100%; margin-top: var(--sp-5); padding-top: var(--sp-3); border-top: 1px solid var(--c-line); text-align: left; }
 .load-tip .label { display: flex; align-items: center; gap: 6px; margin: 0; }
 .load-tip .label .icon { color: var(--c-accent); }
+#ride { position: fixed; inset: 0; z-index: var(--z-end); display: grid; overflow-y: auto; padding: max(var(--sp-4), env(safe-area-inset-top)) max(var(--sp-4), env(safe-area-inset-right)) max(var(--sp-4), env(safe-area-inset-bottom)) max(var(--sp-4), env(safe-area-inset-left)); text-align: center; background: radial-gradient(ellipse at 50% 45%, transparent 40%, var(--c-scrim)), var(--grid), var(--c-bg); }
+#ride-to { color: var(--c-text); font-size: var(--fs-lg, var(--fs-md)); font-weight: var(--fw-medium); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+.ride-gauge { position: relative; height: var(--gauge-h); margin-top: var(--sp-1); overflow: hidden; background: var(--c-gauge-track); -webkit-mask: var(--gauge-mask); mask: var(--gauge-mask); }
+.ride-gauge i { position: absolute; top: 0; bottom: 0; left: 0; width: 0; background: var(--c-accent); transition: width 0.25s linear; }
+#ride-note { margin: var(--sp-1) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
 #loading-tip { margin: var(--sp-1) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
 .load-alert { display: none; width: 32px; height: 32px; color: var(--c-warn); }
 #loading.fatal .load-alert, #loading.notice .load-alert { display: block; }
@@ -1385,6 +1390,8 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         </details>
         <p class="picker-note" id="account-note" role="status" aria-live="polite" hidden></p>
       </div>
+      <!-- « Mes statistiques » (src/stats.js) : les compteurs de la partie que « Jouer » reprend ; replié avec le détail sur téléphone. -->
+      <button type="button" class="secondary" id="stats-open"><span class="btn-icon" data-icon="stats"></span><span>Mes statistiques</span></button>
       <!-- « Voir mon refuge » recentre la carte sur le refuge ; on change de refuge en jeu (« Déménager ici »), #save-move le dit. -->
       <div class="save-line pane-libre" id="save-line" hidden><span class="btn-icon" data-icon="refuge"></span><span id="save-text"></span><button type="button" class="secondary" id="save-home">Voir mon refuge</button></div>
       <p class="picker-note pane-libre" id="save-move" role="status" hidden></p>
@@ -1693,6 +1700,18 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
 
 <!-- Cartes de jeu (panels.js) : livraison, mort, missions, déménagement, vague repoussée, absence. -->
 <div id="card" class="hidden"></div>
+
+<!-- Écran du trajet entre stations (trajet.js) : destination et jauge, jusqu'à l'arrivée. -->
+<div id="ride" class="hidden" role="status" aria-live="polite">
+  <div class="load-box">
+    <div class="load-panel ride-panel">
+      <p class="label load-kicker" id="ride-kicker"></p>
+      <div id="ride-to"></div>
+      <div class="ride-gauge" aria-hidden="true"><i id="ride-bar"></i></div>
+      <p id="ride-note"></p>
+    </div>
+  </div>
+</div>
 
 <script type="module" src="./src/main.js"></script>
 <script>

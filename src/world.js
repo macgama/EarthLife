@@ -20,6 +20,8 @@ export function createWorldStore(origin, { chunkSize = CHUNK, relief = false } =
     origin, chunkSize, proj,
     source: 'tiles', // 'tiles' ou 'procedural' (ville de secours)
     buildings: [], buildingIds: new Map(), pois: [], poiIds: new Set(),
+    // Voies (métro compris) et stations des trajets entre stations (transport.js) ; `rev` change à chaque ajout.
+    tracks: [], trackIds: new Set(), stops: [], stopIds: new Set(), transitRev: 0,
     buckets: new Map(), tiles: new Map(),
     terrain: relief && chunkSize === CHUNK ? createTerrain({ proj }) : null,
   };
@@ -136,11 +138,32 @@ export function addFeatures(store, f) {
     newPois.push(p);
   }
   for (const p of newPois) assignPoi(store, p);
+  addTransit(store, f);
   // Lieux arrivés avant leur bâtiment (tuile voisine chargée plus tôt).
   if (fresh.length) {
     for (const p of store.pois) if (p.building === -1 && fresh.some((b) => within(b.bounds, p.x, p.z, 8))) assignPoi(store, p);
   }
   return fresh.length;
+}
+
+// Voies et stations d'une tuile (le même tronçon, vu par deux tuiles voisines, n'est gardé qu'une fois).
+function addTransit(store, f) {
+  let added = false;
+  for (const t of f.tracks ?? []) {
+    const a = t.points[0], b = t.points[t.points.length - 1];
+    const key = `${t.mode}|${t.layer}|${a.x.toFixed(1)},${a.z.toFixed(1)}|${b.x.toFixed(1)},${b.z.toFixed(1)}|${t.points.length}`;
+    if (store.trackIds.has(key)) continue;
+    store.trackIds.add(key);
+    store.tracks.push(t);
+    added = true;
+  }
+  for (const st of f.stops ?? []) {
+    if (store.stopIds.has(st.id)) continue;
+    store.stopIds.add(st.id);
+    store.stops.push(st);
+    added = true;
+  }
+  if (added) store.transitRev++;
 }
 
 // Voies en pont (rails compris) qui touchent le morceau, à 12 m près (marge des nœuds de bord) : les morceaux voisins
@@ -192,6 +215,15 @@ export function chunkReady(store, cx, cz) {
       if (bridgesNear(store, cx, cz).length && !around(DECK_REACH + BRIDGE_PAD + (canopy ? shade : 0))) return false;
       done.add(key);
     }
+  }
+  return true;
+}
+
+// Tous les morceaux dans `radius` mètres de (x, z) peuvent-ils être construits ? (arrivée d'un trajet)
+export function areaReady(store, x, z, radius) {
+  const cs = store.chunkSize;
+  for (let cx = Math.floor((x - radius) / cs); cx <= Math.floor((x + radius) / cs); cx++) {
+    for (let cz = Math.floor((z - radius) / cs); cz <= Math.floor((z + radius) / cs); cz++) if (!chunkReady(store, cx, cz)) return false;
   }
   return true;
 }
@@ -494,7 +526,8 @@ export function createTileLoader(store, { onTile, maxConcurrent = 2, retries = 2
   }
 
   // Demande les tuiles qui recouvrent un carré de `radius` mètres autour de (x, z), les plus proches d'abord.
-  function ensureAround(x, z, radius) {
+  // `vectorOnly` : seulement les rues et les stations (lecture du réseau des trajets), sans les tuiles d'altitude.
+  function ensureAround(x, z, radius, { vectorOnly = false } = {}) {
     if (store.source === 'procedural') return;
     const wanted = tilesForRect(store.proj, x - radius, z - radius, x + radius, z + radius, TILE_ZOOM);
     for (const t of wanted) {
@@ -504,18 +537,18 @@ export function createTileLoader(store, { onTile, maxConcurrent = 2, retries = 2
       queue.push({ key, ...t });
     }
     pump();
-    if (store.terrain?.enabled) {
+    if (store.terrain?.enabled && !vectorOnly) {
       for (const t of store.terrain.want(x - radius, z - radius, x + radius, z + radius)) demQueue.push(t);
       demPump();
     }
   }
 
   // Attend que les tuiles demandées autour d'un point soient arrivées (ou aient échoué).
-  async function settled(x, z, radius, timeoutMs = 30000) {
+  async function settled(x, z, radius, timeoutMs = 30000, { vectorOnly = false } = {}) {
     const t0 = performance.now();
     const keys = tilesForRect(store.proj, x - radius, z - radius, x + radius, z + radius, TILE_ZOOM).map((t) => tileKey(t.x, t.y, t.z));
     // Les tuiles d'altitude du relief sont attendues aussi (elles ne changent pas le résultat rendu).
-    const demLoading = () => store.terrain?.enabled && store.terrain.states(x - radius, z - radius, x + radius, z + radius).includes('loading');
+    const demLoading = () => !vectorOnly && store.terrain?.enabled && store.terrain.states(x - radius, z - radius, x + radius, z + radius).includes('loading');
     while (keys.some((k) => store.tiles.get(k)?.state === 'loading') || demLoading()) {
       if (performance.now() - t0 > timeoutMs) break;
       await new Promise((r) => setTimeout(r, 50));

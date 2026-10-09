@@ -58,6 +58,7 @@ const WORDS = {
   soda: ['soda', 'sodas'], bandage: ['bandage', 'bandages'], medicaments: ['médicament', 'médicaments'],
   chaufferette: ['chaufferette', 'chaufferettes'], manteau: ['manteau', 'manteaux'], poncho: ['poncho', 'ponchos'],
   batte_cloutee: ['batte cloutée', 'battes cloutées'], hache: ['hache', 'haches'],
+  sac_randonnee: ['sac de randonnée', 'sacs de randonnée'],
 };
 
 export function itemWord(key, n = 1) {

@@ -111,7 +111,7 @@ function pushLimited(list, key, max = 14) {
 function ensureSave(save) {
   save.profile ??= {};
   const p = save.profile;
-  for (const [k, v] of Object.entries({ nightsHeld: 0, wavesRepelled: 0, wavesLost: 0, kills: 0, deliveries: 0, deaths: 0, sinceLastPlan: 0 })) p[k] ??= v;
+  for (const [k, v] of Object.entries({ nightsHeld: 0, wavesRepelled: 0, wavesLost: 0, kills: 0, deliveries: 0, deaths: 0, sinceLastPlan: 0, distanceM: 0, playSec: 0 })) p[k] ??= v;
   p.weathers ??= {};
   p.plans ??= [];
   p.journal ??= [];
