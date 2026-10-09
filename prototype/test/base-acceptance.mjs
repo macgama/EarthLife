@@ -895,14 +895,18 @@ async function desktop() {
   await foreign(life1, 18000);
   const life2 = await newLife(before2);
   check(!!life2 && !(await ailleurs()), `${tag} 7 bis : la dernière écriture de la vie précédente n'est pas une autre page (reprise toute seule, sans carte)`);
-  // Ancienne version du jeu (aucune présence) qui a écrit il y a 18 s : elle ne compte plus.
+  // Ancienne version du jeu (aucune présence) qui a écrit il y a 18 s : elle ne compte plus. La reprise de la vie précédente vient
+  // d'avoir lieu : on retire le garde-fou d'une minute par onglet (« une même page ne se reprend la main qu'une fois par minute »),
+  // sans quoi cette deuxième reprise garderait la carte.
   await started(page);
+  await ev(page, () => sessionStorage.removeItem('earthlife.handover'));
   const life3 = await ev(page, () => window.__earthlife.saveStore.writer);
   await foreign('wancienneversion', 18000);
   const life4 = await newLife(life3);
   check(!!life4 && !(await ailleurs()), `${tag} 7 bis : une ancienne version sans présence qui n'a pas écrit depuis 18 s ne bloque pas (reprise toute seule, sans carte)`);
   // Témoin : une autre page à l'écran (présence fraîche) garde la carte, avec son détail.
   await started(page);
+  await ev(page, () => sessionStorage.removeItem('earthlife.handover'));
   await ev(page, () => { localStorage.setItem('earthlife.presence.v1', JSON.stringify({ w: 'wvisible', at: Date.now(), vis: true })); });
   await foreign('wvisible', 2000);
   const detail = await until(page, () => {
