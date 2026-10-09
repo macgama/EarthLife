@@ -4,6 +4,7 @@
 // createSalon et createTabs posent seulement le DOM. Les textes passent par textContent.
 import { LEVEL_TEXT } from './ville-jeu.js';
 import { groupDigits } from './commune.js';
+import { sceneCss } from './art.js';
 
 export const FRONT_LEVELS = ['facile', 'moyen', 'difficile'];
 export const DEFAULT_FRONT = 'facile';        // le plus doux : proposé d'office à qui n'a pas encore de niveau
@@ -149,11 +150,16 @@ export function createSalon({ doc, storage = null, host = {} } = {}) {
 
   function build() {
     if (!list || cards.size) return;
+    // Affiches : la Terre derrière la bannière de la saison, une scène derrière chaque niveau (si les images sont livrées).
+    const hero = sceneCss('terre'), banner = doc.querySelector?.('.salon-banner');
+    if (hero && banner) { banner.style.setProperty('--banner-art', hero); banner.classList.add('has-art'); }
     for (const level of FRONT_LEVELS) {
       const b = doc.createElement('button');
       b.type = 'button';
       b.className = 'front';
       b.dataset.level = level;
+      const art = sceneCss(level);
+      if (art) { b.style.setProperty('--front-art', art); b.classList.add('has-art'); }
       b.setAttribute('role', 'radio');
       b.innerHTML = '<span class="front-head"><span class="front-name"></span><span class="front-pct"></span><span class="front-badge"></span></span>'
         + '<span class="front-where"><span class="front-city"></span><span class="front-tag"></span></span>'

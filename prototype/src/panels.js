@@ -3,6 +3,7 @@
 // createCard touchent au DOM. Le style est injecté une fois (<style id="rp-style">) ; ses classes commencent
 // toutes par rp-. Ordinateur et tablette à l'horizontale : tiroir de 420 px à droite ; téléphone (759 px et moins) et tablette en portrait : feuille basse.
 import { icon } from './icons.js';
+import { itemSlot, injectArtStyle, sceneUrl } from './art.js';
 
 export const TABS = [
   { id: 'defense', label: 'Défense' },
@@ -123,7 +124,7 @@ function buildPanel(view = {}, ui = {}) {
     const ok = b && b.enabled !== false;
     const action = ok ? actionButton(b, 'rp-craft-btn') : `<p class="rp-blocked">${esc(b?.why ?? '')}</p>`;
     craft += leaf(`c${i}`, 'li', `rp-row rp-recipe${ok ? '' : ' rp-off'}`,
-      `<div class="rp-row-main"><span class="rp-name">${esc(r.name)}</span>`
+      `${r.art ? itemSlot(r.art, { size: 52 }) : ''}<div class="rp-row-main"><span class="rp-name">${esc(r.name)}</span>`
       + `<p class="rp-desc">${esc(r.desc)}</p><p class="rp-cost">${esc(r.cost)}</p></div>${action}`);
   });
   craft += '</ul>';
@@ -139,7 +140,7 @@ function buildPanel(view = {}, ui = {}) {
   if (!rows.length) chest += '<li class="rp-row rp-empty">Coffre et sac vides</li>';
   rows.forEach((r, i) => {
     chest += leaf(`i${i}`, 'li', 'rp-row rp-item',
-      `<span class="rp-item-text"><span class="rp-name">${esc(r.name)}</span> · coffre <span class="rp-num">${esc(n0(r.chest))}</span> · sac <span class="rp-num">${esc(n0(r.bag))}</span></span>`
+      `${r.key ? itemSlot(r.key, { size: 48 }) : ''}<span class="rp-item-text"><span class="rp-name">${esc(r.name)}</span> · coffre <span class="rp-num">${esc(n0(r.chest))}</span> · sac <span class="rp-num">${esc(n0(r.bag))}</span></span>`
       + `<span class="rp-actions rp-item-btns">${actionRow(r.buttons)}</span>`);
   });
   chest += '</ul>';
@@ -183,7 +184,8 @@ function cardButton(b, extra = '') {
   return `<button type="button" class="rp-cbtn${b.primary ? ' rp-cbtn-primary' : ''}${extra}" data-card-btn="${esc(b.id)}">${esc(b.label)}</button>`;
 }
 
-// HTML d'une carte (#card). spec = { title, lines, score?, buttons, autoHideMs?, tone? }.
+// HTML d'une carte (#card). spec = { title, lines, score?, buttons, autoHideMs?, tone?, art? } ; art : nom d'une scène de
+// art.js, montrée en bandeau en haut de la carte (rien si l'image n'est pas livrée).
 // tone : 'success' (livraison, vague repoussée), 'danger' (mort, échec), 'warn' ; sinon accent orange.
 export function cardHtml(spec = {}) {
   const tone = CARD_ICONS[spec.tone] ? spec.tone : 'neutral';
@@ -203,7 +205,9 @@ export function cardHtml(spec = {}) {
   }
   const buttons = (spec.buttons ?? []).map((b) => cardButton(b)).join('');
   const stats = cardStats(spec.stats);
-  return `<div class="rp-card rp-tone-${tone}${stats ? ' rp-card-scroll' : ''}">`
+  const art = spec.art && sceneUrl(spec.art);
+  return `<div class="rp-card rp-tone-${tone}${stats ? ' rp-card-scroll' : ''}${art ? ' rp-card-pictured' : ''}">`
+    + `${art ? `<div class="rp-card-art" style="background-image:url(&quot;${esc(art)}&quot;)" role="presentation"></div>` : ''}`
     + `<div class="rp-card-head">${ico ? `<span class="rp-card-icon">${icon(ico, { size: 32 })}</span>` : ''}<h2 class="rp-card-title" id="rp-card-title">${esc(spec.title ?? '')}</h2></div>`
     + `${lines ? `<ul class="rp-card-lines">${lines}</ul>` : ''}${stats}${score}${cardField(spec.field)}${cardLink(spec.link)}`
     + `${buttons ? `<div class="rp-card-btns">${buttons}</div>` : ''}</div>`;
@@ -266,7 +270,7 @@ export const REPORT_REASONS = [
 // Carte du premier passage : boutons 'on' et 'off' ; avec un code demandé par le serveur, champ « Code d'invitation ».
 export function onlineChoiceCard({ invite = false, inviteRefused = false } = {}) {
   return {
-    title: 'Jouer à plusieurs',
+    title: 'Jouer à plusieurs', art: 'coop',
     lines: [...ONLINE_TEXTS.intro, inviteRefused ? ONLINE_TEXTS.inviteBad : ''],
     field: invite ? { label: ONLINE_TEXTS.invite, maxLength: 16 } : null,
     link: { href: PRIVACY_PAGE, label: ONLINE_TEXTS.keeps },
@@ -697,7 +701,8 @@ export const PANEL_CSS = `
 .rp-gear { color: ${T.text2}; font-size: var(--fs-sm, 13px); }
 .rp-chest-head + .rp-actions { margin-bottom: var(--sp-3, 12px); }
 .rp-item { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2, 8px); }
-.rp-item-text { flex: 1 1 160px; min-width: 0; color: ${T.text2}; overflow-wrap: anywhere; }
+.rp-item > [data-item], .rp-recipe > [data-item] { margin-right: calc(var(--sp-1, 4px) * -1); }
+.rp-item-text { flex: 1 1 140px; min-width: 0; color: ${T.text2}; overflow-wrap: anywhere; }
 .rp-item .rp-item-btns { flex: 0 1 auto; margin-top: 0; }
 .rp-item-btns .rp-btn { flex: 0 1 auto; min-width: 88px; }
 .rp-empty { color: ${T.text2}; }
@@ -789,7 +794,9 @@ body.panel-open #controls { display: none !important; }
 .rp-card { position: relative; width: min(420px, 100%); overflow: hidden; padding: var(--sp-6, 24px) var(--sp-5, 20px) var(--sp-5, 20px);
   background: ${T.solid}; border: 1px solid ${T.line}; border-radius: ${T.rMd}; box-shadow: ${T.sh3}; pointer-events: auto;
   animation: rp-rise ${T.slow} ${T.easeOut}; }
-.rp-card::before { content: ''; position: absolute; inset: 0 0 auto; height: 4px; background: ${T.accent}; }
+.rp-card::before { content: ''; position: absolute; inset: 0 0 auto; height: 4px; background: ${T.accent}; z-index: 1; }
+.rp-card-art { aspect-ratio: 16 / 7; margin: calc(var(--sp-6, 24px) * -1) calc(var(--sp-5, 20px) * -1) var(--sp-3, 12px); background: var(--c-field, #0b0f13) center / cover no-repeat; -webkit-mask-image: linear-gradient(black 62%, transparent); mask-image: linear-gradient(black 62%, transparent); }
+.rp-card-pictured .rp-card-head { margin-top: calc(var(--sp-4, 16px) * -1); position: relative; }
 .rp-tone-success::before { background: ${T.success}; }
 .rp-tone-danger::before { background: ${T.danger}; }
 .rp-tone-warn::before { background: ${T.warn}; }
@@ -856,6 +863,7 @@ function injectStyle(doc) {
   style.id = 'rp-style';
   style.textContent = PANEL_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
+  injectArtStyle(doc);
 }
 
 // ---------- DOM ----------

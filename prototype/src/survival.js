@@ -442,6 +442,11 @@ export function useBest(s, action, player) {
   return key;
 }
 
+// Objet que « Manger », « Boire »… utiliserait maintenant (clé), ou null s'il n'y en a plus.
+export function nextItem(s, action) {
+  return (USES[action] ?? []).find((k) => (s.inventory[k] ?? 0) > 0) ?? null;
+}
+
 export function count(s, action) {
   const keys = USES[action] ?? [];
   return keys.reduce((n, k) => n + (s.inventory[k] ?? 0), 0);

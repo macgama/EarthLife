@@ -7,6 +7,7 @@ import {
   RIDE, MODES, networkOf, stopNear, boardingAt, destinations, lineTitle, landingOf, stationName, boardLabel,
 } from './transport.js';
 import { distanceText } from './stats.js';
+import { sceneCss } from './art.js';
 
 // L'arrivée attend les morceaux construisables à 120 m (rayon de vue), 25 s au plus.
 const ARRIVE_RADIUS = 120;
@@ -96,7 +97,7 @@ export function createRideGame({ current, showCard, toast, saveStore, prefetch, 
     p.vx = 0;
     p.vz = 0;
     s.loader.ensureAround(land.x, land.z, prefetch);
-    overlay.show({ kicker: MODES[d.mode].ride, to: name, seconds: d.seconds });
+    overlay.show({ kicker: MODES[d.mode].ride, to: name, seconds: d.seconds, mode: d.mode });
   }
 
   // À chaque image du trajet : jauge ; vrai quand le joueur peut descendre (temps écoulé et arrivée construisable).
@@ -145,7 +146,12 @@ export function createRideOverlay(doc) {
   const bar = doc.getElementById('ride-bar'), note = doc.getElementById('ride-note');
   const NOTE = 'Tu ne peux rien faire d’autre pendant le trajet.';
   return {
-    show({ kicker: k, to: name }) {
+    show({ kicker: k, to: name, mode = null }) {
+      // Affiche du mode (métro, tram, train) en fond, si l'image est livrée (art.js).
+      const art = mode ? sceneCss(mode) : null;
+      if (art) root.style.setProperty('--ride-art', art); else root.style.removeProperty('--ride-art');
+      root.classList.toggle('pictured', !!art);
+      root.dataset.mode = mode ?? '';
       kicker.textContent = k;
       to.textContent = name;
       bar.style.width = '0%';
