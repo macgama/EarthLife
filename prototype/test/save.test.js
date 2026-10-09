@@ -833,6 +833,46 @@ test('présence : une ancienne page a écrit 18 s avant le premier essai d\'écr
   assert.equal(seen2[0].alive, true);
 });
 
+test('présence : une page périmée qui se modifie ne recouvre pas la présence de l\'autre, qui reste lue (O16)', () => {
+  const clock = { t: NOW };
+  const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const seen = [];
+  const second = createSaveStore({
+    storage, now: () => clock.t, rand: seeded(67), listen: false, presence: true, visible: () => true, onExternal: (e) => seen.push(e),
+  });
+  // La première page tient la partie : elle a écrit et publié sa présence, puis ne change plus rien.
+  storage.setItem(SAVE_KEY, JSON.stringify({ ...EXAMPLE, writer: 'wpremiere', savedAt: clock.t }));
+  storage.setItem(PRESENCE_KEY, JSON.stringify({ w: 'wpremiere', at: clock.t, vis: true }));
+  second.onStorage({ key: SAVE_KEY, newValue: storage.getItem(SAVE_KEY) });
+  assert.equal(second.stale, true);
+  // La seconde page, périmée, se modifie et bat : sa présence ne remplace pas celle de la première.
+  clock.t += 8000;
+  second.markDirty();
+  assert.equal(second.beat(), false);
+  assert.equal(JSON.parse(storage.getItem(PRESENCE_KEY)).w, 'wpremiere');
+  clock.t += 8000;
+  second.markDirty();
+  assert.equal(second.flush('test').ok, false);
+  assert.equal(seen[0].alive, true, 'la première page est lue (présence à l\'écran), 16 s sans écriture ne la font pas partir');
+  assert.equal(seen[0].kind, 'visible');
+  assert.equal(second.beat(), false);
+  assert.equal(seen.length, 1, 'pas de reprise automatique');
+  // Si la première s'était cachée, sa présence le dirait aussitôt : l'autre reprend la main.
+  const storage2 = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });
+  const seen2 = [];
+  const page2 = createSaveStore({
+    storage: storage2, now: () => clock.t, rand: seeded(68), listen: false, presence: true, visible: () => true, onExternal: (e) => seen2.push(e),
+  });
+  storage2.setItem(SAVE_KEY, JSON.stringify({ ...EXAMPLE, writer: 'wpremiere', savedAt: clock.t }));
+  storage2.setItem(PRESENCE_KEY, JSON.stringify({ w: 'wpremiere', at: clock.t, vis: false }));
+  page2.onStorage({ key: SAVE_KEY, newValue: storage2.getItem(SAVE_KEY) });
+  page2.markDirty();
+  page2.beat();
+  assert.equal(page2.flush('test').ok, false);
+  assert.equal(seen2[0].alive, false);
+  assert.equal(seen2[0].kind, 'gone');
+});
+
 test('présence : vie précédente de l\'onglet (rechargé par « Reprendre ici ») → ses écritures et son délai ne sont pas ceux d\'une autre page', () => {
   const clock = { t: NOW };
   const storage = fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify(EXAMPLE) } });

@@ -859,9 +859,11 @@ export function createSaveStore({
     }
   }
 
-  // Seule la page qui tient la partie publie : une page en lecture seule laisse la présence de l'autre intacte.
+  // Seule la page qui tient la partie publie : une page en lecture seule, ou « périmée » (une autre page a écrit depuis sa
+  // lecture : sa première écriture sera refusée), laisse la présence de l'autre intacte. Sinon elle la recouvrirait (un seul
+  // enregistrement partagé) et la jugerait ensuite sans présence, donc « partie » après 12 s sans écriture (essai O16).
   function publish(vis = isVisible()) {
-    if (!presenceOn || readOnly) return;
+    if (!presenceOn || readOnly || stale) return;
     const rec = { w: writer, at: now(), vis };
     if (holdUntil > rec.at) rec.hold = holdUntil;
     tryWrite(PRESENCE_KEY, JSON.stringify(rec));
