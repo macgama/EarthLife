@@ -694,6 +694,7 @@ body:not(.touch) #inventory { display: grid; gap: var(--sp-1); padding: var(--sp
 .chip[data-use="heal"] { --chip-color: var(--c-health); }
 .chip[data-use="warm"] { --chip-color: var(--c-heat); }
 .chip[data-use="lure"] { --chip-color: var(--c-accent); }
+.chip[data-use="shoot"] { --chip-color: var(--c-danger); }
 .chip-icon { display: inline-flex; color: var(--chip-color); }
 .chip-icon .icon { width: 18px; height: 18px; }
 /* Puce avec l'image de l'objet qu'elle utiliserait (src/hud.js) : l'image remplace l'icône. */
@@ -707,6 +708,7 @@ body:not(.touch) #inventory { display: grid; gap: var(--sp-1); padding: var(--sp
 .chip:not(:disabled):active { border-color: var(--c-accent); background: var(--c-accent-soft); transform: scale(.96); }
 .chip:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
 .chip:disabled { opacity: var(--o-disabled); cursor: default; }
+.chip.empty:not(:disabled) { opacity: var(--o-disabled); }
 .chip:disabled .chip-icon { color: var(--c-text); }
 .chip.gain::after { animation: hud-flash 300ms var(--ease-std); }
 .chip.found::after { background: var(--c-accent); animation: hud-flash 600ms var(--ease-std); }
@@ -1464,6 +1466,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <dt><kbd>R</kbd></dt><dd>En faire ton refuge, déménager, poser un piège, dormir</dd>
         <dt><kbd>1</kbd> à <kbd>4</kbd></dt><dd>Manger, boire, te soigner, te réchauffer</dd>
         <dt><kbd>5</kbd></dt><dd>Lancer un leurre</dd>
+        <dt><kbd>F</kbd></dt><dd>Tirer (pistolet ou fusil du sac, sur le zombie le plus proche devant toi)</dd>
         <dt><kbd>Tab</kbd><kbd>B</kbd></dt><dd>Onglet suivant, replier le panneau du refuge</dd>
         <dt><kbd>Échap</kbd></dt><dd>Fermer une carte, la carte des environs ou le panneau, sortir du refuge</dd>
         <dt><kbd>J</kbd><kbd>L</kbd> ou souris</dt><dd>Tourner la caméra</dd>
@@ -1481,7 +1484,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <li><span class="btn-icon" data-icon="frapper"></span><span><b>Frapper</b> et <b>Courir</b>&nbsp;: boutons en bas à droite</span></li>
         <li><span class="btn-icon" data-icon="fouiller"></span><span><b>Fouiller</b>, <b>entrer</b>, <b>clouer</b>&nbsp;: bouton au centre, près d'un bâtiment</span></li>
         <li><span class="btn-icon" data-icon="refuge"></span><span><b>En faire ton refuge</b>, <b>déménager</b>&nbsp;: bouton juste au-dessus, une fois le bâtiment fouillé</span></li>
-        <li><span class="btn-icon" data-icon="sac"></span><span><b>Sac</b>&nbsp;: touche un objet pour l'utiliser, ou un leurre pour le lancer</span></li>
+        <li><span class="btn-icon" data-icon="sac"></span><span><b>Sac</b>&nbsp;: touche un objet pour l'utiliser, un leurre pour le lancer, ou <b>Tirer</b> avec une arme à feu</span></li>
       </ul>
     </section>
     <section class="help-sec">
@@ -1694,6 +1697,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <button class="chip" data-use="heal" id="use-heal" aria-label="Soigner"><span class="chip-icon" data-icon="soigner"></span><span class="chip-name">Soigner</span><span class="chip-count num">0</span><kbd class="chip-key">3</kbd></button>
     <button class="chip" data-use="warm" id="use-warm" aria-label="Chauffer"><span class="chip-icon" data-icon="chauffer"></span><span class="chip-name">Chauffer</span><span class="chip-count num">0</span><kbd class="chip-key">4</kbd></button>
     <button class="chip hidden" data-use="lure" id="use-lure" aria-label="Leurre"><span class="chip-icon" data-icon="leurre"></span><span class="chip-name">Leurre</span><span class="chip-count num">0</span><kbd class="chip-key">5</kbd></button>
+    <button class="chip hidden" data-use="shoot" id="use-shoot" aria-label="Tirer"><span class="chip-icon" data-icon="tirer"></span><span class="chip-name">Tirer</span><span class="chip-count num">0</span><kbd class="chip-key">F</kbd></button>
   </div>
   <div id="topbuttons">
     <button class="small hidden" id="save-warn" aria-label="Cet onglet ne sauvegarde plus : reprendre ici"><span class="small-icon" data-icon="alerte"></span><span class="small-text">Non sauvegardé</span></button>

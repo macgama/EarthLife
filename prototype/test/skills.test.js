@@ -54,7 +54,7 @@ test('addXp : gagne des points, annonce les niveaux franchis, ignore les gains i
   // Gains invalides et compétence inconnue : rien ne bouge.
   const before = { ...b };
   for (const bad of [0, -3, NaN, Infinity, undefined, '5']) assert.equal(addXp(b, 'fouille', bad).up, false);
-  assert.equal(addXp(b, 'tir', 50).up, false);
+  assert.equal(addXp(b, 'peche', 50).up, false, 'une compétence inconnue est ignorée');
   assert.deepEqual(b, before);
   // Plafond : le niveau 10 ne dépasse pas XP_MAX.
   addXp(b, 'course', 1e9);
@@ -64,15 +64,17 @@ test('addXp : gagne des points, annonce les niveaux franchis, ignore les gains i
 });
 
 test('effets : tous les multiplicateurs valent 1 au niveau 0 et restent bornés au niveau 10', () => {
-  assert.deepEqual(effectsOf(emptySkills()), { damageMul: 1, wearKeep: 1, searchMul: 1, craftMul: 1, runFatigueMul: 1 });
-  assert.deepEqual(effectsOf(undefined), { damageMul: 1, wearKeep: 1, searchMul: 1, craftMul: 1, runFatigueMul: 1 });
-  const top = { combat: 1e9, fouille: 1e9, fabrication: 1e9, course: 1e9 };
+  assert.deepEqual(effectsOf(emptySkills()), { damageMul: 1, wearKeep: 1, searchMul: 1, craftMul: 1, runFatigueMul: 1, aimBonus: 0, fireMul: 1 });
+  assert.deepEqual(effectsOf(undefined), { damageMul: 1, wearKeep: 1, searchMul: 1, craftMul: 1, runFatigueMul: 1, aimBonus: 0, fireMul: 1 });
+  const top = { combat: 1e9, fouille: 1e9, fabrication: 1e9, course: 1e9, tir: 1e9 };
   const fx = effectsOf(top);
   assert.ok(Math.abs(fx.damageMul - 1.3) < 1e-9, 'combat +30 %');
   assert.ok(Math.abs(fx.wearKeep - 0.7) < 1e-9, 'usure −30 %');
   assert.ok(Math.abs(fx.searchMul - 0.6) < 1e-9, 'fouille −40 %');
   assert.ok(Math.abs(fx.craftMul - 0.6) < 1e-9, 'fabrication −40 %');
   assert.ok(Math.abs(fx.runFatigueMul - 0.6) < 1e-9, 'course −40 %');
+  assert.ok(Math.abs(fx.aimBonus - 0.3) < 1e-9, 'tir : +30 points de précision');
+  assert.ok(Math.abs(fx.fireMul - 0.7) < 1e-9, 'tir : délai −30 %');
   // Par niveau : 3 % (combat) et 4 % (les autres).
   const lv3 = effectsOf({ combat: LEVEL_XP[3], fouille: LEVEL_XP[3], fabrication: LEVEL_XP[3], course: LEVEL_XP[3] });
   assert.ok(Math.abs(lv3.damageMul - 1.09) < 1e-9);
@@ -80,8 +82,9 @@ test('effets : tous les multiplicateurs valent 1 au niveau 0 et restent bornés 
   assert.equal(PER_LEVEL.combat, 0.03);
   // Jamais hors bornes, quelles que soient les valeurs rangées.
   for (const v of [-50, NaN, 1e12, 'x']) {
-    const e = effectsOf({ combat: v, fouille: v, fabrication: v, course: v });
-    for (const m of Object.values(e)) assert.ok(m >= 0.6 && m <= 1.3, `${v} : ${m}`);
+    const { aimBonus, ...mul } = effectsOf({ combat: v, fouille: v, fabrication: v, course: v, tir: v });
+    for (const m of Object.values(mul)) assert.ok(m >= 0.6 && m <= 1.3, `${v} : ${m}`);
+    assert.ok(aimBonus >= 0 && aimBonus <= 0.3 + 1e-9, `${v} : précision ${aimBonus}`);
   }
 });
 
@@ -104,6 +107,8 @@ test('rythme visé : une journée type donne le niveau 3, une saison le niveau 1
     for (let i = 0; i < 8; i++) addXp(b, 'fabrication', craftXp(8));
     for (let i = 0; i < 60; i++) addXp(b, 'combat', 2 * GAIN.hit + GAIN.kill);
     addXp(b, 'course', 2000 * GAIN.runPerM);
+    // Tir : les munitions sont rares, une journée avec une arme à feu en use une vingtaine (touchées et abattues).
+    for (let i = 0; i < 20; i++) addXp(b, 'tir', GAIN.shotHit + GAIN.shotKill);
     return b;
   };
   const one = day();
@@ -164,18 +169,21 @@ test('textes : effet par niveau, lignes de l\'écran, message de niveau', () => 
   assert.equal(effectText('fabrication', 1), 'Fabrication 4 % plus rapide');
   assert.equal(effectText('course', 5), 'Fatigue de course −20 %');
   assert.equal(effectText('course', 99), 'Fatigue de course −40 %', 'plafonné au niveau 10');
+  assert.equal(effectText('tir', 4), 'Précision +12 %, délai entre deux tirs −12 %');
+  assert.equal(effectText('tir', 0), 'Aucun bonus encore');
   assert.equal(levelUpText('combat', 3), 'Combat : niveau 3');
   assert.equal(levelUpText('fabrication', 10), 'Fabrication : niveau 10');
-  const rows = skillRows({ combat: LEVEL_XP[3] + 30, fouille: 0, fabrication: 1e9, course: 5 });
+  const rows = skillRows({ combat: LEVEL_XP[3] + 30, fouille: 0, fabrication: 1e9, course: 5, tir: LEVEL_XP[1] });
   assert.deepEqual(rows.map((r) => r.key), SKILL_KEYS);
-  assert.deepEqual(rows.map((r) => r.name), ['Combat', 'Fouille', 'Fabrication', 'Course']);
-  const [combat, fouille, fab, course] = rows;
+  assert.deepEqual(rows.map((r) => r.name), ['Combat', 'Fouille', 'Fabrication', 'Course', 'Tir']);
+  const [combat, fouille, fab, course, tir] = rows;
   assert.deepEqual([combat.level, combat.into, combat.span], [3, 30, LEVEL_XP[4] - LEVEL_XP[3]]);
   assert.deepEqual([fouille.level, fouille.into, fouille.span, fouille.ratio], [0, 0, LEVEL_XP[1], 0]);
   assert.deepEqual([fab.level, fab.max, fab.ratio, fab.into, fab.span], [10, true, 1, 0, 0]);
   assert.equal(course.level, 0);
   assert.equal(course.into, 5);
-  assert.equal(skillRows(null).length, 4, 'sans jeu de points : quatre lignes à zéro');
+  assert.deepEqual([tir.level, tir.into], [1, 0]);
+  assert.equal(skillRows(null).length, 5, 'sans jeu de points : cinq lignes à zéro');
 });
 
 test('survival : l\'arme s\'use moins avec Combat, la course fatigue moins avec Course', () => {

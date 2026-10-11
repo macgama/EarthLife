@@ -16,12 +16,14 @@ export const ART = {
 const base = (dir, name) => new URL(`../assets/art/${dir}/${name}.webp`, import.meta.url).href;
 
 // Famille d'un objet : donne la teinte de l'emplacement et l'icône de repli.
-// food faim, water soif, heal santé, warm chaleur, mat matériaux, tool arme ou piège, wear vêtement, pack sac.
+// food faim, water soif, heal santé, warm chaleur, mat matériaux, tool arme ou piège, wear vêtement, pack sac, gun arme à feu,
+// ammo munition.
 export const ITEM_KIND = {
   conserve: 'food', barre: 'food', eau: 'water', soda: 'water', bandage: 'heal', medicaments: 'heal', chaufferette: 'warm',
   bois: 'mat', clous: 'mat', ferraille: 'mat', tissu: 'mat', ruban: 'mat', planche: 'mat', plaque: 'mat',
   piege: 'tool', leurre: 'tool', batte: 'tool', batte_cloutee: 'tool', hache: 'tool',
   manteau: 'wear', poncho: 'wear', sac_randonnee: 'pack',
+  pistolet: 'gun', fusil: 'gun', balles: 'ammo', cartouches: 'ammo',
 };
 
 // Icône de repli par objet (noms d'icons.js).
@@ -30,10 +32,12 @@ export const ITEM_ICON = {
   bois: 'hache', clous: 'marteau', ferraille: 'cle', tissu: 'manteau', ruban: 'cle', planche: 'marteau', plaque: 'marteau',
   piege: 'piege', leurre: 'leurre', batte: 'frapper', batte_cloutee: 'frapper', hache: 'hache',
   manteau: 'manteau', poncho: 'manteau', sac_randonnee: 'sac',
+  pistolet: 'tirer', fusil: 'tirer', balles: 'cible', cartouches: 'cible',
 };
 
 const KIND_LABEL = {
   food: 'Nourriture', water: 'Boisson', heal: 'Soin', warm: 'Chaleur', mat: 'Matériau', tool: 'Arme ou piège', wear: 'Vêtement', pack: 'Sac',
+  gun: 'Arme à feu', ammo: 'Munition',
 };
 
 export const kindOf = (key) => ITEM_KIND[key] ?? 'mat';
@@ -78,6 +82,8 @@ export const ART_CSS = `
 .art-tool { --art-tint: var(--c-accent, #ff7f1f); }
 .art-wear { --art-tint: var(--c-others, #2bb3a3); }
 .art-pack { --art-tint: var(--c-bag, #c58bff); }
+.art-gun { --art-tint: var(--c-danger, #ff5a4f); }
+.art-ammo { --art-tint: var(--c-warn, #f2b84b); }
 `;
 
 // Ajoute le style une seule fois dans le document.

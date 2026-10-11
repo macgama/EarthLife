@@ -5,6 +5,7 @@
 // PLAYWRIGHT_MODULE (chemin du module playwright), PORT (0 : port libre), ONLY (desktop ou mobile ; vue : la section 13,
 // zoom et carte des environs, seule sur une partie neuve ; stats : « Mes statistiques » au menu, ordinateur et téléphone ;
 // skills : les compétences, ordinateur et téléphone ;
+// armes : pistolet et fusil (tir, munitions, bruit), ordinateur et téléphone ;
 // trajet : trajet entre stations, ordinateur et téléphone ; trajet:desktop ou trajet:mobile : un seul).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
@@ -2666,7 +2667,7 @@ async function skillsScenario(device) {
   if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
   await clearZombies(page);
   const zero = await freeSkills(page);
-  check(Object.keys(zero).length === 4 && Object.values(zero).every((v) => v === 0), `${tag} : partie neuve, quatre compétences à zéro`);
+  check(Object.keys(zero).length === 5 && Object.values(zero).every((v) => v === 0), `${tag} : partie neuve, cinq compétences à zéro`);
 
   // Combat : deux zombies d'un coup (santé 40, bâton de 50) rapportent 2 × (1 + 4) = 10 points : niveau 1.
   const down = [await fell(page, device, 40), await fell(page, device, 40)];
@@ -2723,7 +2724,7 @@ async function skillsScenario(device) {
   if (check(await statsOpen(page), `${tag} : « Mes statistiques » ouvert`)) {
     const lines = await skillLines(page);
     const by = Object.fromEntries(lines.map((l) => [l.name, l]));
-    check(lines.length === 4 && lines.every((l) => l.set === 'Compétences · Jeu libre'), `${tag} : quatre compétences « ${lines[0]?.set} »`);
+    check(lines.length === 5 && lines.every((l) => l.set === 'Compétences · Jeu libre'), `${tag} : cinq compétences « ${lines[0]?.set} »`);
     check(by.Combat?.level === 'Niveau 1' && by.Fouille?.level === 'Niveau 1' && by.Fabrication?.level === 'Niveau 1' && by.Course?.level === 'Niveau 0',
       `${tag} : niveaux ${lines.map((l) => `${l.name} ${l.level}`).join(' · ')}`);
     check(by.Fouille?.next === '2 / 80' && by.Fabrication?.next === '10 / 80', `${tag} : progression vers le niveau suivant (Fouille ${by.Fouille?.next}, Fabrication ${by.Fabrication?.next})`);
@@ -2765,6 +2766,136 @@ async function skillsScenario(device) {
   check(await started(page), `${tag} : partie reprise après le rechargement`);
   const again = await freeSkills(page);
   check(again.combat === 10 && again.fouille === 12 && again.fabrication === 20, `${tag} : compétences relues après le rechargement (${JSON.stringify(again)})`);
+  await ctx.close();
+}
+
+// ---------- Armes à feu (scénario 18) ----------
+
+// Un zombie de test posé à `d` mètres du joueur dans la direction `yaw` (point libre le plus proche si le sol est pris) ;
+// renvoie sa position, ou null.
+const putZombie = (page, d, yaw, health = 100) => ev(page, ([dist, ang, hp]) => {
+  const { session: s } = window.__earthlife;
+  const p = s.player;
+  const z = s.director.spawnAt(p.x + Math.sin(ang) * dist, p.z + Math.cos(ang) * dist, 'errant', { free: true, test: true });
+  if (!z) return null;
+  z.health = hp; z.state = 'wander';
+  return { x: z.x, z: z.z };
+}, [d, yaw, health]);
+// Une direction où la ligne de tir reste libre sur `reach` mètres (le point de départ est la place de Bellecour) ; la règle du jeu
+// (lineFree, collision.js) décide. Le joueur s'y tourne et la renvoie.
+const openYaw = (page, reach) => ev(page, async (r) => {
+  const { lineFree } = await import('/src/collision.js');
+  const { session: s } = window.__earthlife;
+  const p = s.player;
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * Math.PI * 2;
+    if (lineFree(s.grid, p.x, p.z, p.x + Math.sin(a) * r, p.z + Math.cos(a) * r)) { p.yaw = a; return a; }
+  }
+  return null;
+}, reach);
+const gun = (page, items) => ev(page, (it) => { Object.assign(window.__earthlife.session.survivor.inventory, it); }, items);
+const bagOf = (page) => ev(page, () => ({ ...window.__earthlife.session.survivor.inventory }));
+// Tirer : F sur ordinateur, la puce « Tirer » sur téléphone. Le tirage est forcé à « touche » le temps du tir.
+async function fireOnce(page, device, { sure = true } = {}) {
+  await ev(page, (forced) => {
+    const p = window.__earthlife.session.player;
+    p.attackTimer = 0;
+    if (forced) { window.__realRandom = window.__realRandom ?? Math.random; Math.random = () => 0; }
+  }, sure);
+  const before = await ev(page, () => ({ toasts: window.__seen.toasts.length, bag: JSON.stringify(window.__earthlife.session.survivor.inventory) }));
+  await press(page, device, 'KeyF', 'use-shoot');
+  // Le jeu traite la touche à l'image suivante (lente sans carte graphique) : un tir part (délai d'arme), ou un message est dit.
+  await until(page, (b) => {
+    const { session: s } = window.__earthlife;
+    return s.player.attackTimer > 0 || window.__seen.toasts.length > b.toasts || JSON.stringify(s.survivor.inventory) !== b.bag ? 1 : null;
+  }, before, 30000);
+  await wait(300);
+  await ev(page, () => { if (window.__realRandom) Math.random = window.__realRandom; });
+}
+
+// Pistolet et fusil : puce « Tirer » (cachée sans arme à feu), touche F ou toucher, une munition par tir, zombie abattu, bruit qui
+// attire les zombies lointains, refus sans munition et sans cible, niveau de Tir, sauvegarde du sac.
+async function armesScenario(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 18`;
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  const chip = () => ev(page, () => { const c = document.getElementById('use-shoot'); return { hidden: c.classList.contains('hidden'), count: c.querySelector('.chip-count').textContent, empty: c.classList.contains('empty') }; });
+  check((await chip()).hidden, `${tag} : sans arme à feu, la puce « Tirer » est cachée`);
+  await press(page, device === 'mobile' ? 'desktop' : device, 'KeyF', 'use-shoot');
+  check(!!(await toastSeen(page, 'Aucune arme à feu', 30000)), `${tag} : F sans arme à feu : « Aucune arme à feu dans ton sac »`);
+
+  // Pistolet et trois balles.
+  await gun(page, { pistolet: 1, balles: 3 });
+  const c1 = await until(page, () => { const c = document.getElementById('use-shoot'); return !c.classList.contains('hidden') ? c.querySelector('.chip-count').textContent : null; }, null, 5000);
+  check(c1 === '3', `${tag} : la puce « Tirer » apparaît avec ses 3 munitions (${c1})`);
+  const yaw = await openYaw(page, 14);
+  if (!check(yaw !== null, `${tag} : une ligne de tir libre trouvée autour du joueur`)) { await ctx.close(); return; }
+  const kills0 = await ev(page, () => window.__earthlife.save.profile.kills);
+  const near = await putZombie(page, 8, yaw, 100);
+  const far = await putZombie(page, 50, yaw + 2.5, 1000); // hors portée de tir, mais dans celle du bruit (80 m)
+  check(!!near && !!far, `${tag} : un zombie à 8 m devant, un autre à 50 m`);
+  await fireOnce(page, device);
+  const after = await ev(page, () => {
+    const { session: s, save } = window.__earthlife;
+    const zs = s.director.zombies.filter((z) => z.tags?.test);
+    const p = s.player;
+    const aim = (z) => z && Math.hypot(z.x - p.x, z.z - p.z);
+    return {
+      dead: zs.filter((z) => z.dead).length, kills: save.profile.kills, bag: { ...s.survivor.inventory }, tir: save.profile.skills.free.tir,
+      farLure: zs.map((z) => z.lure && { x: z.lure.x, z: z.lure.z }).filter(Boolean), px: p.x, pz: p.z, hp: p.health,
+      view: window.__earthlife.tirView.state(), aimed: aim(zs.find((z) => z.dead)),
+    };
+  });
+  check(after.dead === 1 && after.kills === kills0 + 1, `${tag} : le zombie à 8 m est abattu d'un tir (abattus ${kills0} → ${after.kills})`);
+  check(after.bag.balles === 2 && after.bag.pistolet === 1, `${tag} : une balle de moins (${after.bag.balles} restantes), le pistolet reste dans le sac`);
+  check(after.tir === 15, `${tag} : Tir ${after.tir} points (3 pour le tir qui touche, 12 pour le zombie abattu)`);
+  check(after.farLure.length >= 1 && after.farLure.every((l) => Math.hypot(l.x - after.px, l.z - after.pz) < 1), `${tag} : le bruit attire le zombie lointain vers le tireur`);
+  check(after.view.hold > 0 && after.view.gun === 'pistolet', `${tag} : le pistolet est en main après le tir`);
+  check(after.hp === 100, `${tag} : le tireur n'est pas blessé`);
+  check(!!(await toastSeen(page, 'Zombie à terre', 30000)), `${tag} : notification « Zombie à terre »`);
+  await levelToast(page, tag, 'Tir : niveau 1');
+  const c2 = await chip();
+  check(c2.count === '2' && !c2.hidden, `${tag} : la puce affiche 2 munitions`);
+  await shot(page, `${tag.replace(' ', '-')}-pistolet`);
+
+  // Sans munition, puis sans cible : rien ne part.
+  await clearZombies(page);
+  await gun(page, { balles: 0 });
+  await ev(page, () => { delete window.__earthlife.session.survivor.inventory.balles; });
+  await putZombie(page, 6, yaw, 100);
+  await fireOnce(page, device);
+  check(!!(await toastSeen(page, 'Plus de balles', 30000)), `${tag} : sans balle : « Plus de balles »`);
+  const dry = await ev(page, () => ({ alive: window.__earthlife.session.director.zombies.filter((z) => z.tags?.test && !z.dead).length, empty: document.getElementById('use-shoot').classList.contains('empty') }));
+  check(dry.alive === 1 && dry.empty, `${tag} : le zombie est intact et la puce est grisée`);
+  await clearZombies(page);
+  await gun(page, { balles: 1 });
+  await fireOnce(page, device);
+  check(!!(await toastSeen(page, 'Aucun zombie', 30000)), `${tag} : sans zombie devant : « Aucun zombie devant toi à portée »`);
+  check((await bagOf(page)).balles === 1, `${tag} : la balle n'a pas été tirée`);
+
+  // Fusil : un tir, deux zombies du cône abattus, une cartouche.
+  await gun(page, { fusil: 1, cartouches: 2 });
+  await ev(page, () => { window.__earthlife.session.director.zombies.length = 0; });
+  const s1 = await putZombie(page, 6, yaw, 100);
+  const s2 = await putZombie(page, 8, yaw + 0.08, 100);
+  check(!!s1 && !!s2, `${tag} : deux zombies côte à côte, à 6 et 8 m`);
+  await fireOnce(page, device);
+  const gone = await ev(page, () => ({ dead: window.__earthlife.session.director.zombies.filter((z) => z.tags?.test && z.dead).length, bag: { ...window.__earthlife.session.survivor.inventory }, view: window.__earthlife.tirView.state() }));
+  check(gone.dead === 2 && gone.bag.cartouches === 1 && gone.bag.balles === 1, `${tag} : le fusil abat les deux d'un tir (${gone.dead}), une cartouche de moins (${gone.bag.cartouches}), les balles restent (${gone.bag.balles})`);
+  check(gone.view.gun === 'fusil', `${tag} : le fusil est en main`);
+  await shot(page, `${tag.replace(' ', '-')}-fusil`);
+
+  // Sauvegarde : armes et munitions sont écrites avec la partie et relues après un rechargement.
+  await ev(page, () => window.__earthlife.saveStore.markDirty());
+  await until(page, () => !window.__earthlife.saveStore.dirty, null, 10000);
+  await page.reload();
+  check(await started(page), `${tag} : partie reprise après le rechargement`);
+  const again = await bagOf(page);
+  check(again.pistolet === 1 && again.fusil === 1 && again.balles === 1 && again.cartouches === 1, `${tag} : armes et munitions relues (${JSON.stringify(again)})`);
   await ctx.close();
 }
 
@@ -2902,6 +3033,9 @@ try {
   } else if (only === 'skills') {
     await skillsScenario('desktop');
     await skillsScenario('mobile');
+  } else if (only === 'armes') {
+    await armesScenario('desktop');
+    await armesScenario('mobile');
   } else if (only.startsWith('trajet')) {
     if (only !== 'trajet:mobile') await trajet('desktop');
     if (only !== 'trajet:desktop') await trajet('mobile');
@@ -2918,6 +3052,8 @@ try {
     if (!only) await statsMenu('mobile');
     await skillsScenario(only === 'mobile' ? 'mobile' : 'desktop');
     if (!only) await skillsScenario('mobile');
+    await armesScenario(only === 'mobile' ? 'mobile' : 'desktop');
+    if (!only) await armesScenario('mobile');
     await trajet(only === 'mobile' ? 'mobile' : 'desktop');
     if (!only) await trajet('mobile');
   }
