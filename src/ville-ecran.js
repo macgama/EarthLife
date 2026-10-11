@@ -523,6 +523,7 @@ export function createCityGame(host) {
     seasonRef.rt = rt;
     s.city = rt;
     s.seasonLevel = plan.level; // « Reprendre ici » relance la saison à ce niveau
+    s.seasonId = plan.join?.season?.id !== undefined && plan.join?.season?.id !== null ? String(plan.join.season.id) : null; // compétences de la saison (skills.js)
     s.cityAcc = 0;
     s.cityNight = null;
     s.cityObj = null;
