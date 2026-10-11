@@ -16,6 +16,7 @@ export const TABS = ['saison', 'libre'];
 // État d'une ville de la saison (cityStatus, quartier.js) en mot de l'écran.
 export const STATUS = {
   vide: { label: 'À choisir', tone: 'idle' },
+  annoncee: { label: 'Annoncée', tone: 'idle' },
   'en-cours': { label: 'En cours', tone: 'warn' },
   coeur: { label: 'Nuit du cœur', tone: 'danger' },
   nettoyee: { label: 'Désinfectée', tone: 'ok' },
@@ -63,18 +64,20 @@ export function frontModel(level, entry, ctx = {}) {
   const t = LEVEL_TEXT[level];
   const c = entry?.city ?? null;
   const known = !!entry;
-  const status = !c ? 'vide' : (STATUS[c.status] ? c.status : 'en-cours');
+  // Ville annoncée par le serveur pour ce niveau, tant que personne ne l'a commencée : nom et position, rien d'autre.
+  const a = !c && typeof entry?.announced?.name === 'string' && entry.announced.name ? entry.announced : null;
+  const status = c ? (STATUS[c.status] ? c.status : 'en-cours') : a ? 'annoncee' : 'vide';
   const zombies0 = int(c?.zombies0), zombies = int(c?.zombies);
   const cleared = !c ? 0 : status === 'nettoyee' || zombies0 === 0 ? 1 : clamp(1 - zombies / zombies0, 0, 1);
   const enrolled = ctx.enrolled ?? null;
   const mine = enrolled === level;
   const locked = !!enrolled && !mine;
-  const lat = Number(c?.lat), lon = Number(c?.lon);
+  const lat = Number((c ?? a)?.lat), lon = Number((c ?? a)?.lon);
   const where = Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
   return {
     level, name: t.name, pct: t.pct, rule: t.rule, known,
     status, badge: STATUS[status].label, tone: STATUS[status].tone,
-    cityName: typeof c?.name === 'string' ? c.name : null, where,
+    cityName: typeof (c ?? a)?.name === 'string' ? (c ?? a).name : null, where, announced: !!a,
     cleared, clearedText: `${Math.round(cleared * 100)} %`,
     zombies, zombies0, saved: int(c?.saved), toSave: int(c?.toSave), flags: int(c?.flags),
     online: int(entry?.online), players: int(entry?.players), seats: int(entry?.seats) || 100,
@@ -89,7 +92,7 @@ export function summaryOf(fronts) {
   for (const f of fronts) {
     out.online += f.online;
     out.players += f.players;
-    if (f.status !== 'vide') { out.cities++; out.zombies += f.zombies; out.saved += f.saved; }
+    if (f.status !== 'vide' && f.status !== 'annoncee') { out.cities++; out.zombies += f.zombies; out.saved += f.saved; }
     if (f.status === 'nettoyee') out.cleaned++;
   }
   return out;
@@ -104,6 +107,7 @@ export function ctaModel({ fronts, enrolled = null, pick = null, signedIn = fals
   if (blocked) return { kind: 'blocked', level, label: 'Indisponible', sub: blocked, disabled: true };
   const where = [];
   if (f.cityName) where.push(f.cityName);
+  if (f.announced) where.push('ville annoncée');
   if (f.cityName && f.online) where.push(`${plural(f.online, 'survivant en ligne', 'survivants en ligne')}`);
   if (enrolled) {
     return { kind: 'resume', level, label: `Reprendre · ${f.name}`, sub: where.join(' · ') || 'Ta ville de la saison', disabled: false };
@@ -194,10 +198,10 @@ export function createSalon({ doc, storage = null, host = {} } = {}) {
     setAttr(c.b, 'aria-disabled', String(f.locked));
     setText(c.city, !loaded ? (model.failed ? 'État des lieux indisponible' : 'Lecture de l\'état des lieux…') : f.cityName ?? 'Ville à choisir');
     c.city.classList.toggle('empty', !f.cityName);
-    const pct = loaded && f.cityName ? Math.round(f.cleared * 100) : 0;
+    const pct = loaded && f.cityName && !f.announced ? Math.round(f.cleared * 100) : 0;
     if (c.bar.style.getPropertyValue('--p') !== `${pct}%`) c.bar.style.setProperty('--p', `${pct}%`);
-    setText(c.zombies, !loaded ? '' : f.cityName ? `${groupDigits(f.zombies)} zombie${f.zombies > 1 ? 's' : ''} restant${f.zombies > 1 ? 's' : ''} (${f.clearedText} éliminés)` : 'Le premier joueur la choisit pour tout le niveau.');
-    setText(c.saved, loaded && f.cityName ? `${groupDigits(f.saved)} / ${groupDigits(f.toSave)} habitants sauvés` : '');
+    setText(c.zombies, !loaded ? '' : f.announced ? 'Ville annoncée, la même pour tous : elle démarre dès qu\'un joueur entre.' : f.cityName ? `${groupDigits(f.zombies)} zombie${f.zombies > 1 ? 's' : ''} restant${f.zombies > 1 ? 's' : ''} (${f.clearedText} éliminés)` : 'Le premier joueur la choisit pour tout le niveau.');
+    setText(c.saved, loaded && f.cityName && !f.announced ? `${groupDigits(f.saved)} / ${groupDigits(f.toSave)} habitants sauvés` : '');
     setText(c.online, loaded ? `${plural(f.online, 'survivant en ligne', 'survivants en ligne')} · ${groupDigits(f.players)} inscrit${f.players > 1 ? 's' : ''}` : '');
     c.b.querySelector('.front-dot').dataset.live = f.online > 0 ? '1' : '0';
     c.b.title = f.locked ? 'Ton niveau est déjà choisi pour la saison : il ne change plus.' : f.rule;
