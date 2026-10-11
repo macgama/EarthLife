@@ -701,7 +701,7 @@ async function statsMenu(device) {
   const t = await statsTiles(page);
   check(Object.keys(t).length === 9 && t['Zombies abattus'] === '0' && t['Nuits tenues'] === '0' && t['Jours de partie'] === '1', `${tag} : 9 compteurs, partie neuve à zéro (${Object.entries(t).map(([k, v]) => `${k} ${v}`).join(' · ')})`);
   const lines = await skillLines(page);
-  check(lines.length === 4 && lines.every((l) => l.set === 'Compétences · Jeu libre' && l.level === 'Niveau 0'), `${tag} : 4 compétences de jeu libre au niveau 0 (${lines.map((l) => l.name).join(', ')})`);
+  check(lines.length === 5 && lines.every((l) => l.set === 'Compétences · Jeu libre' && l.level === 'Niveau 0'), `${tag} : 5 compétences de jeu libre au niveau 0 (${lines.map((l) => l.name).join(', ')})`);
   check(/^(moins d'1 min|\d+ min)$/.test(t['Temps de jeu']), `${tag} : temps de jeu « ${t['Temps de jeu']} »`);
   if (device === 'desktop') check(/^\d+ m$/.test(t['Distance à pied']) && t['Distance à pied'] !== '0 m', `${tag} : distance « ${t['Distance à pied']} »`);
   const fit = await ev(page, () => {
