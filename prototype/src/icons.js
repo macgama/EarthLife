@@ -32,6 +32,7 @@ const ICONS = {
   chauffer: '<path d="M12 21.5A6.5 6.5 0 0 0 18.5 15c0-4.5-3.5-6.5-4.5-12-2.5 1.5-4.5 4.5-4.5 7.5-1-.6-1.6-1.6-1.9-2.8C6.5 9.6 5.5 12 5.5 15a6.5 6.5 0 0 0 6.5 6.5z"/><path d="M12 21.5a2.8 2.8 0 0 0 2.8-2.8c0-1.8-1.4-2.8-2.8-4.7-1.4 1.9-2.8 2.9-2.8 4.7a2.8 2.8 0 0 0 2.8 2.8z"/>',
   courir: '<circle cx="14.5" cy="4.5" r="2"/><path d="M13 8.5 10.5 14M13 8.5l3 2.5 3-.5M13 8.5l-4 1-2 2.5M10.5 14l3.5 2.5-1 4.5M10.5 14 8 17.5H4.5"/>',
   frapper: '<path d="M19.8 4.2a2.6 2.6 0 0 1 0 3.7l-8.4 8.4-3.7-3.7 8.4-8.4a2.6 2.6 0 0 1 3.7 0z"/><path d="M9.5 14.5l-5 5M3 18.5 5.5 21M3.5 4.5 6 7M8.5 3v2.5M3 9.5h2.5"/>',
+  tirer: '<path d="M3 8.5h14.5a1 1 0 0 1 1 1V12H3z"/><path d="M8 12l-1 6.2a1 1 0 0 0 1 1.1h2.6a1 1 0 0 0 1-1.1L10.8 12M12.5 12v2h2.6"/><path d="M20.8 8.8l1.6-1.2M21 11.4h1.8M20.5 6.2l.8-1.6"/>',
   fouiller: '<path d="M2.5 12h10v8.5h-10zM2.5 16h10"/><circle cx="16.5" cy="7" r="4"/><path d="M19.4 9.9 21.5 12"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   stats: '<path d="M4 20.5h16"/><path d="M6.5 20.5V12M12 20.5V4.5M17.5 20.5V9"/>',
@@ -100,7 +101,7 @@ export const GESTURE_ICONS = ['geste-salut', 'geste-ici', 'geste-attention', 'ge
 const ALIASES = {
   eat: 'manger', drink: 'boire', heal: 'soigner', warm: 'chauffer',
   health: 'sante', stamina: 'endurance', food: 'faim', water: 'soif', body: 'temperature',
-  run: 'courir', attack: 'frapper', search: 'fouiller', kills: 'zombie', quest: 'quete',
+  run: 'courir', attack: 'frapper', shoot: 'tirer', search: 'fouiller', kills: 'zombie', quest: 'quete',
   clear: 'soleil', cloudy: 'nuages', rain: 'pluie', storm: 'orage', snow: 'neige', fog: 'brouillard', wind: 'vent',
   jour: 'soleil', nuit: 'lune', crane: 'zombie',
   'geste-0': 'geste-salut', 'geste-1': 'geste-ici', 'geste-2': 'geste-attention', 'geste-3': 'geste-merci',

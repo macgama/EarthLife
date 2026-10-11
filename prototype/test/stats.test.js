@@ -141,11 +141,11 @@ test('panneau du refuge : « Mes statistiques » sous le carnet', () => {
 
 // ---------- Compétences dans « Mes statistiques » ----------
 
-test('compétences : le jeu libre y est toujours, avec quatre lignes et leur progression', () => {
+test('compétences : le jeu libre y est toujours, avec cinq lignes et leur progression', () => {
   const none = statsCard(profile(), { nowMs: at(9) });
   assert.equal(none.skills.length, 1, 'ancienne partie sans compétences : le jeu libre seulement');
   assert.equal(none.skills[0].title, 'Compétences · Jeu libre');
-  assert.deepEqual(none.skills[0].rows.map((r) => [r.name, r.level]), [['Combat', 0], ['Fouille', 0], ['Fabrication', 0], ['Course', 0]]);
+  assert.deepEqual(none.skills[0].rows.map((r) => [r.name, r.level]), [['Combat', 0], ['Fouille', 0], ['Fabrication', 0], ['Course', 0], ['Tir', 0]]);
   const p = { ...profile(), skills: { free: { combat: 300, fouille: 95, fabrication: 0, course: 1e9 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0 } } };
   const spec = statsCard(p, { nowMs: at(9) });
   assert.equal(spec.skills.length, 1, 'saison jamais jouée : pas de section');
@@ -178,7 +178,7 @@ test('carte : les compétences ont une jauge, un niveau et l\'effet, échappés'
   const p = { ...profile(), skills: { free: { combat: 300, fouille: 0, fabrication: 0, course: 1e9 } } };
   const html = cardHtml(statsCard(p, { nowMs: at(9) }));
   assert.match(html, /Compétences · Jeu libre/);
-  assert.equal((html.match(/class="rp-skill"/g) ?? []).length, 4);
+  assert.equal((html.match(/class="rp-skill"/g) ?? []).length, 5);
   assert.match(html, /<li class="rp-skill" data-skill="combat">/);
   assert.match(html, /Niveau 3/);
   assert.match(html, /50 \/ 280/);

@@ -29,6 +29,11 @@ export const ITEMS = {
   manteau: { name: 'Manteau chaud', equip: 'clothing', warm: 12, one: 'manteau chaud', many: 'manteaux chauds' },
   poncho: { name: 'Poncho', equip: 'clothing', warm: 4, wetMul: 0.25, one: 'poncho', many: 'ponchos' },
   sac_randonnee: { name: 'Sac de randonnée', equip: 'bag', capacity: 45, one: 'sac de randonnée', many: 'sacs de randonnée' },
+  // Armes à feu et munitions (tir.js) : rares, jamais fabriquées. Elles occupent le sac et ne se portent pas : la batte reste en main.
+  pistolet: { name: 'Pistolet', gun: true, one: 'pistolet', many: 'pistolets' },
+  fusil: { name: 'Fusil de chasse', gun: true, one: 'fusil de chasse', many: 'fusils de chasse' },
+  balles: { name: 'Balles', ammo: true, one: 'balle', many: 'balles' },
+  cartouches: { name: 'Cartouches', ammo: true, one: 'cartouche', many: 'cartouches' },
 };
 
 // Armes : la batte de base ne s'use pas et n'est pas un objet du sac.
@@ -37,6 +42,16 @@ export const WEAPONS = {
   batte_cloutee: { name: ITEMS.batte_cloutee.name, damage: ITEMS.batte_cloutee.damage, uses: ITEMS.batte_cloutee.uses },
   hache: { name: ITEMS.hache.name, damage: ITEMS.hache.damage, uses: ITEMS.hache.uses, chop: true },
 };
+
+// Armes à feu : contre les zombies seulement (jamais un autre joueur). `ammo` : munition consommée, une par tir ; `damage` : sur
+// chaque zombie touché ; `range` : portée en mètres ; `cone` : demi-angle (radians) du cône de plombs, 0 pour une seule cible ;
+// `cooldown` : secondes entre deux tirs ; `accuracy` : chance de toucher au niveau 0 de la compétence Tir (skills.js) ;
+// `noise` : rayon (m) où les zombies viennent voir d'où part le coup. Le fusil passe en premier quand les deux portent.
+export const FIREARMS = {
+  fusil: { name: 'Fusil de chasse', ammo: 'cartouches', damage: 200, range: 12, cone: 0.4, cooldown: 1.6, accuracy: 0.85, noise: 120 },
+  pistolet: { name: 'Pistolet', ammo: 'balles', damage: 120, range: 18, cone: 0, cooldown: 0.8, accuracy: 0.7, noise: 80 },
+};
+export const FIREARM_KEYS = Object.keys(FIREARMS);
 
 // Places du sac sans sac de randonnée ; `bagCapacity` donne celles du survivor selon le sac qu'il porte.
 export const BAG_BASE = 30;
@@ -73,6 +88,11 @@ export const LOOT = {
   clothes: [['manteau', 0.65, 1], ['chaufferette', 0.3, 1], ['tissu', 0.85, 4], ['poncho', 0.2, 1], ['sac_randonnee', 0.05, 1]],
   outdoor: [['manteau', 0.5, 1], ['chaufferette', 0.5, 2], ['eau', 0.5, 2], ['batte_cloutee', 0.25, 1], ['ruban', 0.5, 2], ['tissu', 0.4, 2], ['poncho', 0.3, 1], ['sac_randonnee', 0.12, 1]],
 };
+// Armes à feu et munitions, rares : environ un pistolet pour 40 fouilles d'un commissariat, un fusil pour 50 fouilles d'un magasin
+// de sport, des munitions isolées dans quelques maisons. Lignes ajoutées en fin de table : les tirages d'avant ne bougent pas.
+LOOT.police.push(['pistolet', 0.025, 1], ['balles', 0.35, 6]);
+LOOT.outdoor.push(['fusil', 0.02, 1], ['cartouches', 0.3, 4]);
+LOOT.house.push(['balles', 0.03, 3], ['cartouches', 0.03, 2]);
 const KIND_ALIASES = {
   apartments: 'house', residential: 'house', detached: 'house', yes: 'house', terrace: 'house', semidetached_house: 'house', dormitory: 'house',
   shop: 'retail', supermarket: 'supermarket', office: 'commercial', warehouse: 'industrial', garage: 'industrial', garages: 'industrial',
@@ -225,6 +245,17 @@ export function wornKey(s, equip) {
   if (equip === 'weapon') return s.weapon?.key ?? null;
   if (equip === 'bag') return s.pack ?? null;
   return s.clothing ?? null;
+}
+
+// Armes à feu du sac, dans l'ordre de FIREARM_KEYS : [{ key, ammo, n }] ; `n` : munitions de cette arme dans le sac.
+export function carriedFirearms(s) {
+  return FIREARM_KEYS.filter((k) => (s.inventory?.[k] ?? 0) > 0)
+    .map((key) => ({ key, ammo: FIREARMS[key].ammo, n: s.inventory[FIREARMS[key].ammo] ?? 0 }));
+}
+
+// Munitions que les armes à feu du sac peuvent tirer (0 sans arme à feu).
+export function ammoTotal(s) {
+  return carriedFirearms(s).reduce((n, g) => n + g.n, 0);
 }
 
 // Dégâts de l'arme portée (batte de base si rien).

@@ -23,8 +23,14 @@ test('art : chaque image annoncée existe dans assets/art/', () => {
   for (const name of ART.scenes) assert.ok(existsSync(file('scenes', name)), `assets/art/scenes/${name}.webp`);
 });
 
-test('art : tous les objets du jeu ont leur image et aucun fichier livré n\'est oublié dans ART', () => {
-  for (const key of [...Object.keys(ITEMS), 'batte']) assert.ok(ART.items.has(key), `image de ${key}`);
+// Objets livrés sans image : elles demandent une génération Artlist, soumise à l'accord de Gaël. Ils gardent l'icône au trait.
+const WITHOUT_IMAGE = ['pistolet', 'fusil', 'balles', 'cartouches'];
+
+test('art : tous les objets du jeu ont leur image (sauf les armes à feu, en attente) et aucun fichier livré n\'est oublié dans ART', () => {
+  for (const key of [...Object.keys(ITEMS), 'batte']) {
+    if (WITHOUT_IMAGE.includes(key)) assert.ok(!ART.items.has(key) || existsSync(file('items', key)), `${key} : image annoncée sans fichier`);
+    else assert.ok(ART.items.has(key), `image de ${key}`);
+  }
   const listed = (dir) => readdirSync(fileURLToPath(new URL(`../assets/art/${dir}/`, import.meta.url))).filter((f) => f.endsWith('.webp')).map((f) => f.slice(0, -5)).sort();
   assert.deepEqual(listed('items'), [...ART.items].sort());
   assert.deepEqual(listed('scenes'), [...ART.scenes].sort());
