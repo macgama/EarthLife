@@ -1,6 +1,7 @@
 // « Mes statistiques » : les compteurs du profil de la partie (save.profile), lisibles, et la carte qui les montre.
 // Module pur (ni DOM ni THREE) : testé sous node ; main.js montre la carte et appelle addStep à chaque image de jeu.
 import { dayText } from './panels.js';
+import { skillRows } from './skills.js';
 
 const NBSP = ' ';
 const DAY_MS = 86400000;
@@ -101,12 +102,35 @@ export function statsSections(profile, nowMs = Date.now()) {
   return sections;
 }
 
-// Carte « Mes statistiques » (cardHtml, panels.js) : date de début, trois sections de trois compteurs, météos vécues.
-export function statsCard(profile, { nowMs = Date.now() } = {}) {
+const anyPoints = (b) => !!b && Object.values(b).some((v) => typeof v === 'number' && v > 0);
+
+// Compétences à montrer : [{ title, rows }] (rows : skillRows, skills.js). Le jeu libre y est toujours ; la saison, une fois jouée
+// (ses points ou son identifiant rangés) ou en cours. Le jeu en cours passe en premier. Lecture seule : le profil ne bouge pas.
+// `mode` : 'free' ou 'season' (la partie en cours, 'free' au menu) ; `seasonId` : la saison jouée.
+export function skillSections(profile, { mode = 'free', seasonId = null } = {}) {
+  const sk = profile?.skills ?? {};
+  const free = { title: 'Compétences · Jeu libre', rows: skillRows(sk.free) };
+  const season = sk.season ?? null;
+  // Une autre saison que celle jouée (ses points seront remis à zéro au premier gain) : on ne montre pas les anciens points.
+  const id = seasonId === null || seasonId === undefined ? null : String(seasonId);
+  const stale = mode === 'season' && id !== null && season?.id !== id;
+  const shown = mode === 'season' || season?.id || anyPoints(season);
+  const sets = [free];
+  if (shown) {
+    const label = (stale ? id : season?.id ?? id) ?? null;
+    sets.push({ title: label ? `Compétences · Saison ${label}` : 'Compétences · Saison', rows: skillRows(stale ? null : season) });
+  }
+  return mode === 'season' ? sets.reverse() : sets;
+}
+
+// Carte « Mes statistiques » (cardHtml, panels.js) : date de début, trois sections de trois compteurs, météos vécues, puis les
+// compétences avec leur progression vers le niveau suivant.
+export function statsCard(profile, { nowMs = Date.now(), mode = 'free', seasonId = null } = {}) {
   return {
     title: 'Mes statistiques',
     lines: [startedText(profile?.createdAt, nowMs)],
     stats: statsSections(profile, nowMs),
+    skills: skillSections(profile, { mode, seasonId }),
     buttons: [{ id: 'close', label: 'Fermer', primary: true }],
   };
 }

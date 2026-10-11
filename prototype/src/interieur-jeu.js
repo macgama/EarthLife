@@ -189,7 +189,7 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
     const title = piece.name;
     return {
       id: 'room', arg: room, label: `Fouiller : ${title}${touch ? '' : ' (E)'}`, slot: 'primary', title,
-      time: roomSearchTime(plan, room, searchTime) * (s.actionMul ?? 1),
+      time: roomSearchTime(plan, room, searchTime) * (s.actionMul ?? 1) * (s.searchMul ?? 1),
     };
   }
 

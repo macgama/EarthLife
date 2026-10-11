@@ -204,7 +204,7 @@ export function cardHtml(spec = {}) {
       : `<p class="rp-card-score"><span class="rp-card-score-num">${esc(spec.score)}</span></p>`;
   }
   const buttons = (spec.buttons ?? []).map((b) => cardButton(b)).join('');
-  const stats = cardStats(spec.stats);
+  const stats = cardStats(spec.stats) + cardSkills(spec.skills);
   const art = spec.art && sceneUrl(spec.art);
   return `<div class="rp-card rp-tone-${tone}${stats ? ' rp-card-scroll' : ''}${art ? ' rp-card-pictured' : ''}">`
     + `${art ? `<div class="rp-card-art" style="background-image:url(&quot;${esc(art)}&quot;)" role="presentation"></div>` : ''}`
@@ -220,6 +220,23 @@ function cardStats(sections) {
   return list.map((sec) => `<section class="rp-stats-sec"><h3 class="rp-stats-title">${esc(sec.title)}</h3>`
     + `<dl class="rp-stats-grid">${sec.items.map((it) => `<div class="rp-stat"><dt>${esc(it.label)}</dt><dd>${esc(it.value)}</dd></div>`).join('')}</dl>`
     + `${sec.note ? `<p class="rp-stats-note">${esc(sec.note)}</p>` : ''}</section>`).join('');
+}
+
+// Compétences d'une carte (« Mes statistiques », skills.js) : [{ title, rows: [{ key, name, level, max, into, span, ratio, effect }] }].
+// Une jauge par compétence (niveau, points gagnés dans le niveau), l'effet du niveau actuel dessous.
+function cardSkills(sets) {
+  const list = (sets ?? []).filter((set) => set?.rows?.length);
+  return list.map((set) => `<section class="rp-stats-sec rp-skills"><h3 class="rp-stats-title">${esc(set.title)}</h3><ul class="rp-skill-list">`
+    + set.rows.map((r) => {
+      const level = r.max ? 'Niveau max' : `Niveau ${n0(r.level)}`;
+      const next = r.max ? '' : `${n0(r.into)} / ${n0(r.span)}`;
+      const label = r.max ? `${r.name} : niveau maximum` : `${r.name} : niveau ${n0(r.level)}, ${n0(r.into)} points sur ${n0(r.span)} pour le niveau suivant`;
+      return `<li class="rp-skill" data-skill="${esc(r.key)}"><div class="rp-skill-head"><span class="rp-skill-name">${esc(r.name)}</span><span class="rp-skill-level">${esc(level)}</span></div>`
+        + `<div class="rp-gauge" role="meter" aria-label="${esc(label)}" aria-valuemin="0" aria-valuemax="${r.max ? 1 : n0(r.span)}" aria-valuenow="${r.max ? 1 : n0(r.into)}">`
+        + `<i style="width:${Math.round(Math.max(0, Math.min(1, +r.ratio || 0)) * 1000) / 10}%"></i></div>`
+        + `<p class="rp-skill-note"><span>${esc(r.effect ?? '')}</span>${next ? `<span class="rp-skill-next">${esc(next)}</span>` : ''}</p></li>`;
+    }).join('')
+    + '</ul></section>').join('');
 }
 
 // Champ de saisie d'une carte (code d'invitation) : { label, value?, maxLength?, placeholder? }. Sa valeur est
@@ -834,6 +851,15 @@ body.panel-open #controls { display: none !important; }
   border: 1px solid ${T.line}; border-left: 2px solid ${T.accent}; border-radius: ${T.rSm}; }
 .rp-stat dt { color: ${T.text2}; font: var(--fw-semibold, 600) 10px / 1.15 ${T.display}; letter-spacing: .04em; text-transform: uppercase; overflow-wrap: break-word; hyphens: auto; }
 .rp-stat dd { margin: 0; color: ${T.text}; font: var(--fw-bold, 700) clamp(15px, 4.6vw, 20px) / 1.1 ${T.textFont}; font-variant-numeric: tabular-nums; }
+.rp-skill-list { display: grid; gap: var(--sp-3, 12px); margin: 0; padding: 0; list-style: none; }
+.rp-skill { min-width: 0; }
+.rp-skill-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2, 8px); }
+.rp-skill-name { color: ${T.text}; font: var(--fw-semibold, 600) var(--fs-md, 15px) / 1.2 ${T.textFont}; }
+.rp-skill-level { color: ${T.accent}; font: var(--fw-bold, 700) var(--fs-xs, 12px) / 1 ${T.display}; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+.rp-skill .rp-gauge { margin-top: var(--sp-1, 4px); }
+.rp-skill .rp-gauge > i { background: ${T.accent}; }
+.rp-skill-note { display: flex; justify-content: space-between; gap: var(--sp-2, 8px); margin: var(--sp-1, 4px) 0 0; color: ${T.text3}; font: var(--fw-medium, 500) var(--fs-xs, 12px) / 1.3 ${T.textFont}; }
+.rp-skill-next { flex: none; font-variant-numeric: tabular-nums; }
 .rp-stats-note { margin: var(--sp-2, 8px) 0 0; color: ${T.text3}; font: var(--fw-medium, 500) var(--fs-xs, 12px) / 1.3 ${T.textFont}; }
 .rp-card-link { margin: var(--sp-3, 12px) 0 0; font: var(--fw-medium, 500) var(--fs-sm, 13px) / 1.3 ${T.textFont}; }
 .rp-card-a { display: inline-flex; align-items: center; min-height: ${T.touch}; color: ${T.text2}; text-decoration: underline; text-underline-offset: 3px; }
