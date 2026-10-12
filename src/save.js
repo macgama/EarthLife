@@ -25,6 +25,7 @@ export const ITEM_KEYS = [
   'bois', 'clous', 'ferraille', 'tissu', 'ruban',
   'planche', 'plaque', 'piege', 'leurre',
   'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee',
+  'pistolet', 'fusil', 'balles', 'cartouches',
 ];
 
 // Textes affichés (5.3).
