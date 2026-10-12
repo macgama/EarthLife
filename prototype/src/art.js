@@ -10,6 +10,8 @@ export const ART = {
     'conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette', 'bois', 'clous', 'ferraille', 'tissu', 'ruban', 'planche', 'plaque',
     'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee', 'pistolet', 'fusil', 'balles', 'cartouches',
   ]),
+  // Objets dont l'image n'est pas encore livrée (accord de Gaël pour les crédits Artlist) : ils gardent l'icône au trait.
+  pending: new Set(['bidon', 'batterie']),
   scenes: new Set(['horde', 'metro', 'tram', 'train', 'refuge', 'coop', 'victoire', 'terre', 'mort', 'facile', 'moyen', 'difficile']),
 };
 
@@ -17,13 +19,14 @@ const base = (dir, name) => new URL(`../assets/art/${dir}/${name}.webp`, import.
 
 // Famille d'un objet : donne la teinte de l'emplacement et l'icône de repli.
 // food faim, water soif, heal santé, warm chaleur, mat matériaux, tool arme ou piège, wear vêtement, pack sac, gun arme à feu,
-// ammo munition.
+// ammo munition, fuel carburant.
 export const ITEM_KIND = {
   conserve: 'food', barre: 'food', eau: 'water', soda: 'water', bandage: 'heal', medicaments: 'heal', chaufferette: 'warm',
   bois: 'mat', clous: 'mat', ferraille: 'mat', tissu: 'mat', ruban: 'mat', planche: 'mat', plaque: 'mat',
   piege: 'tool', leurre: 'tool', batte: 'tool', batte_cloutee: 'tool', hache: 'tool',
   manteau: 'wear', poncho: 'wear', sac_randonnee: 'pack',
   pistolet: 'gun', fusil: 'gun', balles: 'ammo', cartouches: 'ammo',
+  bidon: 'fuel', batterie: 'mat',
 };
 
 // Icône de repli par objet (noms d'icons.js).
@@ -33,11 +36,12 @@ export const ITEM_ICON = {
   piege: 'piege', leurre: 'leurre', batte: 'frapper', batte_cloutee: 'frapper', hache: 'hache',
   manteau: 'manteau', poncho: 'manteau', sac_randonnee: 'sac',
   pistolet: 'tirer', fusil: 'tirer', balles: 'cible', cartouches: 'cible',
+  bidon: 'bidon', batterie: 'batterie',
 };
 
 const KIND_LABEL = {
   food: 'Nourriture', water: 'Boisson', heal: 'Soin', warm: 'Chaleur', mat: 'Matériau', tool: 'Arme ou piège', wear: 'Vêtement', pack: 'Sac',
-  gun: 'Arme à feu', ammo: 'Munition',
+  gun: 'Arme à feu', ammo: 'Munition', fuel: 'Carburant',
 };
 
 export const kindOf = (key) => ITEM_KIND[key] ?? 'mat';
@@ -84,6 +88,7 @@ export const ART_CSS = `
 .art-pack { --art-tint: var(--c-bag, #c58bff); }
 .art-gun { --art-tint: var(--c-danger, #ff5a4f); }
 .art-ammo { --art-tint: var(--c-warn, #f2b84b); }
+.art-fuel { --art-tint: var(--c-warn, #f2b84b); }
 `;
 
 // Ajoute le style une seule fois dans le document.

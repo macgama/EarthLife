@@ -56,6 +56,7 @@
   /* Refuge (bleu), sac perdu (violet), horde (rouge) : flèches de boussole et bandeau */
   --c-refuge: #5fb7ff;
   --c-bag: #c58bff;
+  --c-car: #e3c542;
   --c-horde: #ff5d5d;
   --c-horde-soft: rgba(255, 93, 93, .16);
   /* Autres survivants (jeu à plusieurs) : sarcelle, veste, flèches, drapeaux, étiquettes */
@@ -160,7 +161,7 @@ select, button { font: inherit; }
 
 /* ---------- Écrans : menu, aide, chargement, fin (guide de style § 4.4, 4.5 et 4.11 à 4.14) ---------- */
 /* Repère d'angle orange (signature des panneaux) et quadrillage tactique des fonds d'écran. */
-#menu, #loading, #ride {
+#menu, #loading, #ride, #drive {
   --corner: linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 12px 2px no-repeat border-box, linear-gradient(var(--c-accent), var(--c-accent)) 0 0 / 2px 12px no-repeat border-box;
   --grid: repeating-linear-gradient(0deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 32px), repeating-linear-gradient(90deg, rgba(255, 255, 255, .03) 0 1px, transparent 1px 32px);
   font-family: var(--font-text);
@@ -542,6 +543,27 @@ select, button { font: inherit; }
 .ride-gauge { position: relative; height: var(--gauge-h); margin-top: var(--sp-1); overflow: hidden; background: var(--c-gauge-track); -webkit-mask: var(--gauge-mask); mask: var(--gauge-mask); }
 .ride-gauge i { position: absolute; top: 0; bottom: 0; left: 0; width: 0; background: var(--c-accent); transition: width 0.25s linear; }
 #ride-note { margin: var(--sp-1) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+/* Carte de conduite (src/conduite-carte.js) : le cercle que l'essence permet d'atteindre, un point à toucher. */
+#drive { position: fixed; inset: 0; z-index: var(--z-end); display: flex; flex-direction: column; font-family: var(--font-text); color: var(--c-text); background: var(--grid), var(--c-bg); padding-top: env(safe-area-inset-top); }
+#drive.hidden { display: none; }
+.drive-head { flex: none; padding: var(--sp-3) max(var(--sp-4), env(safe-area-inset-right)) var(--sp-2) max(var(--sp-4), env(safe-area-inset-left)); }
+.drive-head h2 { margin: 0; font: var(--fw-bold) var(--fs-lg) / 1.1 var(--font-display); letter-spacing: var(--ls-title); text-transform: uppercase; }
+#drive-range { margin: var(--sp-1) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+#drive-map { position: relative; flex: 1 1 auto; min-height: 0; width: 100%; background: var(--c-field); border-block: 1px solid var(--c-line); }
+#drive-map[hidden] { display: none; }
+#drive-list { flex: 1 1 auto; min-height: 0; margin: 0; padding: var(--sp-3) max(var(--sp-4), env(safe-area-inset-right)) var(--sp-3) max(var(--sp-4), env(safe-area-inset-left)); overflow-y: auto; list-style: none; display: grid; align-content: start; gap: var(--sp-2); color: var(--c-text-2); font-size: var(--fs-sm); }
+#drive-list[hidden] { display: none; }
+#drive-list button { width: 100%; min-height: var(--touch); padding: 0 var(--sp-3); text-align: left; }
+.drive-foot { flex: none; display: grid; gap: var(--sp-1); padding: var(--sp-3) max(var(--sp-4), env(safe-area-inset-right)) max(var(--sp-3), env(safe-area-inset-bottom)) max(var(--sp-4), env(safe-area-inset-left)); background: var(--c-panel-solid); }
+#drive-dest { margin: 0; font-size: var(--fs-md); font-weight: var(--fw-medium); line-height: var(--lh-snug); overflow-wrap: anywhere; }
+#drive-dest.warn { color: var(--c-warn); }
+#drive-cost { min-height: 1.2em; margin: 0; color: var(--c-text-2); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.drive-btns { display: flex; gap: var(--sp-2); margin-top: var(--sp-1); }
+.drive-btns .primary { flex: 1 1 auto; }
+.drive-btns .secondary { flex: none; min-height: 48px; padding: 0 var(--sp-4); }
+.drive-pin { width: 18px; height: 18px; border: 2px solid #12171c; border-radius: 50%; box-shadow: 0 0 0 2px var(--c-car), 0 2px 6px rgba(0, 0, 0, .5); background: var(--c-car); }
+.drive-pin-dest { background: var(--c-accent); box-shadow: 0 0 0 2px var(--c-accent), 0 2px 6px rgba(0, 0, 0, .5); }
+@media (max-height: 500px) and (orientation: landscape) { .drive-head h2 { font-size: var(--fs-md); } #drive-range { display: none; } }
 #loading-tip { margin: var(--sp-1) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
 .load-alert { display: none; width: 32px; height: 32px; color: var(--c-warn); }
 #loading.fatal .load-alert, #loading.notice .load-alert { display: block; }
@@ -808,6 +830,7 @@ body.touch #objective { grid-column: 2 / -1; grid-row: 2; }
 #compass .arrow path { fill: currentColor; stroke: var(--c-on-accent); stroke-width: 2; stroke-linejoin: round; }
 #compass .arrow[data-kind="home"] { left: -13px; top: -13px; width: 26px; height: 26px; transform-origin: 13px 13px; color: var(--c-refuge); }
 #compass .arrow[data-kind="bag"] { left: -12px; top: -12px; width: 24px; height: 24px; transform-origin: 12px 12px; color: var(--c-bag); }
+#compass .arrow[data-kind="car"] { left: -12px; top: -12px; width: 24px; height: 24px; transform-origin: 12px 12px; color: var(--c-car); }
 #compass .arrow[data-kind="horde"] { left: -14px; top: -14px; width: 28px; height: 28px; transform-origin: 14px 14px; color: var(--c-horde); }
 #compass .arrow.near, .compass-dist.near { opacity: .4; }
 #compass .arrow.off, .compass-dist.off { display: none; }
@@ -1719,7 +1742,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <button id="minimap" aria-label="Carte des environs : agrandir" aria-expanded="false" title="Carte des environs (C)"><canvas id="minimap-canvas" aria-hidden="true"></canvas></button>
   </div>
   <!-- Boussole : la flèche de quête reste le premier enfant ; refuge, sac perdu et horde (une par front) ensuite. -->
-  <div id="compass" aria-hidden="true"><svg class="arrow off" data-kind="quest" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="home" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="bag" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="horde" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="horde" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><span class="compass-dist off" id="compass-dist"></span></div>
+  <div id="compass" aria-hidden="true"><svg class="arrow off" data-kind="quest" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="home" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="bag" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="car" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="horde" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="horde" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><span class="compass-dist off" id="compass-dist"></span></div>
   <div id="toast" class="pill" role="status" aria-live="polite" style="opacity:0"><span class="toast-icon" id="toast-icon" hidden></span><span id="toast-text"></span></div>
   <div id="controls">
     <div id="stick-base"><div id="stick-knob"></div></div>
@@ -1753,6 +1776,23 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
       <div id="ride-to"></div>
       <div class="ride-gauge" aria-hidden="true"><i id="ride-bar"></i></div>
       <p id="ride-note"></p>
+    </div>
+  </div>
+</div>
+
+<div id="drive" class="hidden" role="dialog" aria-modal="true" aria-labelledby="drive-title">
+  <div class="drive-head">
+    <h2 id="drive-title">Où va ta voiture ?</h2>
+    <p id="drive-range"></p>
+  </div>
+  <div id="drive-map" aria-label="Carte : le cercle montre jusqu’où ton essence te porte"></div>
+  <ul id="drive-list" hidden></ul>
+  <div class="drive-foot">
+    <p id="drive-dest" role="status"></p>
+    <p id="drive-cost"></p>
+    <div class="drive-btns">
+      <button type="button" id="drive-go" class="primary" disabled>Partir</button>
+      <button type="button" id="drive-close" class="secondary">Fermer</button>
     </div>
   </div>
 </div>

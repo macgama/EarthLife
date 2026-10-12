@@ -8,7 +8,7 @@ import { PRIVATE, roundCoord, forThirdParty, loadZones, saveZones, zoneFor, cove
 // MapLibre 6 : module ES (son worker est chargé depuis le même CDN). Les versions <= 6.4.0 ont une faille XSS connue.
 const MAPLIBRE_JS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.mjs';
 const MAPLIBRE_CSS = 'https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.css';
-const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
+export const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 const PHOTON_URL = 'https://photon.komoot.io/api/';
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/';
 const STORAGE_KEY = 'earthlife.place';
@@ -254,7 +254,7 @@ async function fetchJson(url, signal, ms) {
 }
 
 let nominatimLast = 0;
-async function nominatimJson(path, params, signal) {
+export async function nominatimJson(path, params, signal) {
   for (;;) {
     const wait = nominatimLast + NOMINATIM_GAP_MS - Date.now();
     if (wait <= 0) break;
@@ -267,7 +267,7 @@ async function nominatimJson(path, params, signal) {
 // ---------- Chargement de MapLibre ----------
 let maplibrePromise = null, maplibreTries = 0;
 
-function loadMapLibre() {
+export function loadMapLibre() {
   if (!maplibrePromise) {
     const css = new Promise((resolve) => {
       let link = document.querySelector(`link[href="${MAPLIBRE_CSS}"]`);

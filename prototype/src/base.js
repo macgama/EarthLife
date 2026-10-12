@@ -25,7 +25,7 @@ export const PERKS = {
 const PERK_OF_KIND = {
   house: 'lits',
   pharmacy: 'infirmerie', clinic: 'infirmerie', hospital: 'infirmerie',
-  supermarket: 'reserve', convenience: 'reserve', food: 'reserve',
+  supermarket: 'reserve', convenience: 'reserve', fuel: 'reserve', food: 'reserve',
   hardware: 'atelier', industrial: 'atelier',
   police: 'murs', fire_station: 'murs',
   school: 'abri', station: 'abri',
@@ -36,7 +36,7 @@ const PERK_OF_KIND = {
 export const KIND_LABELS = {
   house: 'Habitation', retail: 'Commerce', commercial: 'Bureaux', industrial: 'Entrepôt', school: 'École', station: 'Gare',
   pharmacy: 'Pharmacie', clinic: 'Clinique', hospital: 'Hôpital', supermarket: 'Supermarché', convenience: 'Épicerie',
-  hardware: 'Quincaillerie', police: 'Commissariat', fire_station: 'Caserne de pompiers', food: 'Commerce de bouche',
+  hardware: 'Quincaillerie', police: 'Commissariat', fire_station: 'Caserne de pompiers', food: 'Commerce de bouche', fuel: 'Station-service',
   clothes: 'Magasin de vêtements', outdoor: 'Magasin de sport',
 };
 

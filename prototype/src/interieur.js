@@ -122,7 +122,7 @@ const FAMILIES = {
 };
 const FAMILY_OF = {
   house: 'house', pharmacy: 'pharmacy', clinic: 'hospital', hospital: 'hospital', school: 'school', industrial: 'warehouse',
-  supermarket: 'shop', convenience: 'shop', hardware: 'shop', food: 'shop', clothes: 'shop', outdoor: 'shop', retail: 'shop',
+  supermarket: 'shop', convenience: 'shop', fuel: 'shop', hardware: 'shop', food: 'shop', clothes: 'shop', outdoor: 'shop', retail: 'shop',
   commercial: 'office', police: 'office', fire_station: 'office', station: 'office',
 };
 export const familyOf = (kind) => FAMILY_OF[lootKind(kind)] ?? 'house';

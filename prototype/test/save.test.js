@@ -69,6 +69,7 @@ const EXAMPLE = {
   orphanChest: null,
   horde: { nightKey: '2026-10-01', t: 372, waves: 1, lastWaveEnd: 345, held: ['2026-10-01'], played: ['2026-10-01'] },
   dropBag: null,
+  car: null,
   searched: { 'b45.75718_4.83049': 1790859980000 },
   dismantled: { c457561_48311: 1790860850000, k457549_48298: 1790861200000 },
 };
@@ -1666,9 +1667,11 @@ test('ancienne partie sans les champs nouveaux : chargée sans correction, avec 
   delete old.profile.playSec;
   delete old.profile.skills;
   delete old.survivor.pack;
+  delete old.car;
   const r = validateSave(old, NOW);
   assert.equal(r.ok, true);
   assert.deepEqual(r.fixes, [], 'aucune correction signalée');
+  assert.equal(r.save.car, null, 'sans voiture');
   assert.equal(r.save.profile.distanceM, 0);
   assert.equal(r.save.profile.playSec, 0);
   assert.deepEqual(r.save.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 } });
