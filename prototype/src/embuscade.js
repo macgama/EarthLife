@@ -8,7 +8,7 @@ export const AMBUSH = Object.freeze({
   // fréquentés, hôpital, supermarché, école, gare, entrepôt, cachent plus de monde que la maison d'à côté.
   chance: Object.freeze({
     hospital: 0.45, supermarket: 0.4, industrial: 0.4, school: 0.35, station: 0.35, clinic: 0.3, pharmacy: 0.25,
-    convenience: 0.25, hardware: 0.25, commercial: 0.25, retail: 0.25, food: 0.25, police: 0.2, clothes: 0.2,
+    convenience: 0.25, fuel: 0.25, hardware: 0.25, commercial: 0.25, retail: 0.25, food: 0.25, police: 0.2, clothes: 0.2,
     outdoor: 0.2, house: 0.18, fire_station: 0.15,
   }),
   fallback: 0.18,

@@ -553,13 +553,14 @@ export function propsForChunk(f, patch, cx, cz, size, proj, opts = {}) {
   };
 }
 
-// Butin d'un objet démonté. Tirages dans l'ordre : voiture (ferraille, ruban, tissu), banc (clous, quantité).
+// Butin d'un objet démonté. Tirages dans l'ordre : voiture (ferraille, ruban, tissu, batterie), banc (clous, quantité).
 export function rollPropLoot(kind, { axe = false } = {}, rand = Math.random) {
   if (kind === 'tree') return { bois: axe ? 3 : 2 };
   if (kind === 'car') {
     const out = { ferraille: 2 + Math.floor(rand() * 2) };
     if (rand() < 0.3) out.ruban = 1;
     if (rand() < 0.3) out.tissu = 1;
+    if (rand() < 0.3) out.batterie = 1; // voiture.js : une batterie sert à en réparer une autre (tirage ajouté en dernier)
     return out;
   }
   if (kind === 'bench') {

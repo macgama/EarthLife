@@ -26,6 +26,7 @@ export const ITEM_KEYS = [
   'planche', 'plaque', 'piege', 'leurre',
   'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee',
   'pistolet', 'fusil', 'balles', 'cartouches',
+  'bidon', 'batterie',
 ];
 
 // Textes affichés (5.3).
@@ -69,7 +70,7 @@ const WEATHER_KEY = /^[a-z_]{1,20}$/;
 // Écart toléré sur la norme d'une normale avant de la renormaliser (arrondis à 3 décimales de createBase).
 const NORM_TOLERANCE = 0.02;
 
-const TOP_KEYS = ['v', 'writer', 'rev', 'savedAt', 'lastSiegeCheck', 'profile', 'survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'searched', 'dismantled'];
+const TOP_KEYS = ['v', 'writer', 'rev', 'savedAt', 'lastSiegeCheck', 'profile', 'survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'car', 'searched', 'dismantled'];
 const PROFILE_KEYS = ['createdAt', 'nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths', 'weathers', 'plans', 'sinceLastPlan', 'firstWaveDone', 'kitGiven', 'journal', 'distanceM', 'playSec', 'skills'];
 const SURVIVOR_KEYS = ['health', 'food', 'water', 'bodyTemp', 'wet', 'fatigue', 'bag', 'weapon', 'clothing', 'pack'];
 const BASE_KEYS = ['id', 'lat', 'lon', 'area', 'height', 'kind', 'name', 'place', 'claimedAt', 'density', 'utcOffset', 'perk', 'openings', 'chest', 'upgrades', 'sirenAt', 'lastReserve'];
@@ -81,6 +82,11 @@ const METERS = ['distanceM', 'playSec'];
 // Compétences (skills.js) : { free: {…}, season: { id, … } }, des points par compétence. Absentes d'une ancienne partie, elles partent
 // de zéro sans correction signalée ; la saison est identifiée par `id` (les points d'une autre saison sont remis à zéro au jeu).
 const SKILL_SETS = ['free', 'season'];
+// Ta voiture (voiture.js) : { lat, lon, yaw, fuel (litres, 0 à 40), wear (0 à 100), from (identifiant de la voiture garée d'origine, qui
+// reste cachée), tint } ou null. Absente d'une ancienne partie : null, sans correction signalée.
+const CAR_KEYS = ['lat', 'lon', 'yaw', 'fuel', 'wear', 'from', 'tint'];
+const CAR_TANK = 40;
+const CAR_TINT = 0x4f6f78;
 const SEASON_ID = /^[A-Za-z0-9_.:-]{1,40}$/;
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -121,6 +127,7 @@ export function emptySave(now = Date.now()) {
     orphanChest: null,
     horde: { nightKey: null, t: 0, waves: 0, lastWaveEnd: 0, held: [], played: [] },
     dropBag: null,
+    car: null,
     searched: {},
     dismantled: {},
   };
@@ -131,7 +138,7 @@ export function emptySave(now = Date.now()) {
 // ne comptent pas : on les a dès la première minute de jeu. Sert à choisir entre reprise et conflit (account.js).
 export function isBlankSave(save) {
   if (!isObj(save)) return true;
-  if (save.base || save.orphanChest || save.dropBag) return false;
+  if (save.base || save.orphanChest || save.dropBag || save.car) return false;
   const p = isObj(save.profile) ? save.profile : {};
   if (COUNTERS.some((k) => finite(p[k]) && p[k] !== 0)) return false;
   if (p.firstWaveDone === true) return false;
@@ -530,6 +537,27 @@ function checkProfile(raw, c, now) {
   return out;
 }
 
+function checkCar(raw, c) {
+  if (raw === null || raw === undefined) return null;
+  if (!c.position(raw)) {
+    c.fix('car', 'position illisible : voiture supprimée');
+    return null;
+  }
+  c.unknown(raw, CAR_KEYS, 'car');
+  let from = null;
+  if (typeof raw.from === 'string' && ID.test(raw.from)) from = raw.from;
+  else if (raw.from !== null && raw.from !== undefined) c.fix('car.from', `${JSON.stringify(raw.from)} → null`);
+  return {
+    lat: raw.lat,
+    lon: raw.lon,
+    yaw: c.num(raw.yaw, 'car.yaw', { min: -7, max: 7, def: 0 }),
+    fuel: c.num(raw.fuel, 'car.fuel', { min: 0, max: CAR_TANK, def: 0 }),
+    wear: c.num(raw.wear, 'car.wear', { min: 0, max: 100, def: 100 }),
+    from,
+    tint: c.num(raw.tint, 'car.tint', { min: 0, max: 0xffffff, def: CAR_TINT, int: true }),
+  };
+}
+
 function checkHorde(raw, c) {
   const h = isObj(raw) ? raw : {};
   if (!isObj(raw)) c.fix('horde', 'illisible, remis à zéro');
@@ -605,6 +633,7 @@ export function validateSave(raw, now = Date.now(), { itemKeys = ITEM_KEYS } = {
     orphanChest,
     horde: checkHorde(raw.horde, c),
     dropBag,
+    car: checkCar(raw.car, c),
     searched: c.stamps(raw.searched, 'searched', true),
     dismantled: c.stamps(raw.dismantled, 'dismantled'),
   };

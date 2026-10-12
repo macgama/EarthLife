@@ -141,7 +141,7 @@ test('butin : les matériaux viennent des vrais lieux (tableau 3.2)', () => {
     assert.deepEqual(rollLoot(kind, () => 0.99), {}, kind);
   }
   assert.deepEqual(rollLoot('house', () => 0.99), {});
-  assert.deepEqual(rollLoot('hardware', maxRand()), { batte_cloutee: 1, chaufferette: 2, manteau: 1, clous: 6, ruban: 2, ferraille: 3, bois: 3 });
+  assert.deepEqual(rollLoot('hardware', maxRand()), { batte_cloutee: 1, chaufferette: 2, manteau: 1, clous: 6, ruban: 2, ferraille: 3, bois: 3, batterie: 1 });
   assert.equal(rollLoot('warehouse', () => 0).ferraille, 1, 'un entrepôt donne de la ferraille');
 });
 
@@ -594,4 +594,26 @@ test('mort avec le sac de randonnée : il reste dans le sac laissé sur place', 
   assert.equal(equipFrom(back, 'sac_randonnee', pen.bag), true);
   assert.equal(back.pack, 'sac_randonnee');
   assert.deepEqual(pen.bag, { eau: 1, conserve: 4 });
+});
+
+test('carburant : la station-service donne un bidon, rarement un entrepôt ou une maison ; la batterie vient d\'un entrepôt ou d\'une quincaillerie', () => {
+  // La station-service a sa propre table (type `fuel`) : celle d\'une épicerie, plus le bidon en dernière ligne.
+  assert.equal(lootKind('fuel'), 'fuel');
+  assert.deepEqual(LOOT.fuel.slice(0, LOOT.convenience.length), LOOT.convenience);
+  assert.deepEqual(LOOT.fuel.at(-1), ['bidon', 0.6, 2]);
+  assert.deepEqual(rollLoot('fuel', () => 0), { conserve: 1, eau: 1, barre: 1, soda: 1, ruban: 1, bidon: 1 });
+  assert.equal(rollLoot('fuel', maxRand()).bidon, 2);
+  assert.equal(rollLoot('fuel', () => 0.99).bidon, undefined);
+  // Rarement ailleurs, en fin de table : les tirages d\'avant ne bougent pas.
+  for (const [kind, item, chance] of [['industrial', 'bidon', 0.08], ['house', 'bidon', 0.04], ['industrial', 'batterie', 0.25], ['hardware', 'batterie', 0.35]]) {
+    const row = LOOT[kind].find((r) => r[0] === item);
+    assert.equal(row?.[1], chance, `${kind} : ${item}`);
+    assert.equal(LOOT[kind].at(-1)[0] === item || LOOT[kind].at(-2)[0] === item, true, `${kind} : ${item} en fin de table`);
+    assert.equal(rollLoot(kind, () => chance + 0.001)[item], undefined);
+  }
+  // Un type inconnu ne tire ni bidon ni batterie.
+  assert.equal(rollLoot('pharmacy', () => 0).bidon, undefined);
+  assert.equal(ITEMS.bidon.fuel, true);
+  assert.equal(itemLabel('bidon', 2), '2 bidons');
+  assert.equal(itemLabel('batterie', 1), '1 batterie');
 });

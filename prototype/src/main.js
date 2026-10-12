@@ -49,6 +49,8 @@ import {
 } from './panels.js';
 import { createHud, distanceText } from './hud.js';
 import { createRideGame, createRideOverlay } from './trajet.js';
+import { createCarGame } from './conduite.js';
+import { createDriveMap } from './conduite-carte.js';
 import { networkOf, lineTitle } from './transport.js';
 import { addStep, statsCard, MAX_STEP_M } from './stats.js';
 import { bucketFor, addXp, effectsOf, craftXp, levelUpText, GAIN } from './skills.js';
@@ -137,7 +139,9 @@ let city = null;
 // Saisons (net/season.js) : créé avec le jeu à plusieurs ; null sans lui.
 let seasonNet = null;
 // Ses propres démontages (72 h, sauvegarde) ; ceux des autres viennent du jeu en ligne.
-const localGone = goneChecker(() => save.dismantled);
+const dismantledGone = goneChecker(() => save.dismantled);
+// La voiture garée que le joueur a réparée est devenue « sa » voiture (conduite.js) : elle ne repousse pas à sa place.
+const localGone = (id) => dismantledGone(id) || save.car?.from === id;
 // ?fresh=1 ne sert qu'une fois : un rechargement à la main ne doit pas effacer la partie.
 if (params.has('fresh')) history.replaceState(history.state, '', urlWithout('fresh'));
 
@@ -389,7 +393,7 @@ const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000);
 // de src/view.js.
 const CAM = { pitch: 1.0, minPitch: 0.6, maxPitch: 1.35, steep: 1.3 };
 const SEARCH_TIME = 2.2;
-const BUILDING_LABELS = { house: 'Habitation', retail: 'Commerce', commercial: 'Bureaux', industrial: 'Entrepôt', school: 'École', station: 'Gare', pharmacy: 'Pharmacie', clinic: 'Clinique', hospital: 'Hôpital', supermarket: 'Supermarché', convenience: 'Épicerie', hardware: 'Quincaillerie', police: 'Commissariat', fire_station: 'Caserne de pompiers' };
+const BUILDING_LABELS = { house: 'Habitation', retail: 'Commerce', commercial: 'Bureaux', industrial: 'Entrepôt', school: 'École', station: 'Gare', pharmacy: 'Pharmacie', clinic: 'Clinique', hospital: 'Hôpital', supermarket: 'Supermarché', convenience: 'Épicerie', fuel: 'Station-service', hardware: 'Quincaillerie', police: 'Commissariat', fire_station: 'Caserne de pompiers' };
 const atmosphere = createAtmosphere(scene, { lowPower });
 const input = createInput(canvas, {
   stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'),
@@ -453,6 +457,15 @@ const ride = createRideGame({
   current: () => session, showCard: (...a) => showCard(...a), toast: (...a) => toast(...a), saveStore: { markDirty: () => saveStore.markDirty() },
   prefetch: PREFETCH_RADIUS, overlay: createRideOverlay(document),
 });
+// Voitures et carburant : réparer ou siphonner une voiture garée, ta voiture (plein, flèche), trajet en voiture vers une autre ville.
+const cars = createCarGame({
+  current: () => session, save, saveStore: { markDirty: () => saveStore.markDirty(), flush: (why) => saveStore.flush(why) },
+  showCard: (...a) => showCard(...a), toast: (...a) => toast(...a), propsView, online, overlay: createRideOverlay(document),
+  addLoot, lootNotes: (res) => lootNotes(res), gainSkill: (...a) => gainSkill(...a), craftXp,
+  arrive: (place, arrival) => arriveByCar(place, arrival), openMap: (args) => driveMap.open(args),
+});
+// Carte de conduite (#drive) : le cercle de portée, un point à toucher, « Partir ».
+const driveMap = createDriveMap({ root: $('drive'), cities: CITIES, onGo: (out) => { if (session) cars.start(session, out); } });
 // HUD, panneau du refuge (tiroir ou feuille basse) et cartes de jeu (#card).
 const hud = createHud({ $, input });
 const card = createCard($('card'));
@@ -716,7 +729,7 @@ async function startGame(place, { spawn = 'place', confirmed = false, season = n
   }
 }
 
-async function launch(place, spawn, plan = { kind: 'free', place }) {
+async function launch(place, spawn, plan = { kind: 'free', place }, arrival = null) {
   picker.hide();
   readZones();
   $('menu').classList.add('hidden');
@@ -728,7 +741,7 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
   // du refuge, pas celui du point choisi à côté.
   if (atHome && save.base) place = homePlace();
   const old = session;
-  if (old && city.canReuse(old, plan) && samePlace(old.origin, origin) && old.store.source === 'tiles' && Date.now() - old.weatherAt < WEATHER_REFRESH_MS) {
+  if (!arrival && old && city.canReuse(old, plan) && samePlace(old.origin, origin) && old.store.source === 'tiles' && Date.now() - old.weatherAt < WEATHER_REFRESH_MS) {
     old.place = place;
     if (old.ended || spawn === 'refuge') await wakeUp(old);
     else {
@@ -809,6 +822,9 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
   const door = s.home ? s.refuge.openingsWorld()[0] : null;
   if (door) await placePlayer(s, { x: door.ax, z: door.az });
   s.player.hidden = s.refuge.inside;
+  // Arrivée en voiture : elle est garée au bord de la route la plus proche, le moteur s'entend (conduite.js).
+  if (arrival) arrival(s);
+  cars.sync(s, 0, true);
   if (firstLaunch) {
     firstLaunch = false;
     afterLoad(s);
@@ -839,6 +855,21 @@ async function launch(place, spawn, plan = { kind: 'free', place }) {
   if (serverNotice) {
     serverNotice = false;
     toast('?server= ignoré : seule la machine locale (127.0.0.1, localhost) est acceptée', 6, 'danger');
+  }
+}
+
+// Arrivée d'un trajet en voiture : le nouveau monde du lieu choisi, comme une visite en partie libre (pas de carte « Commencer cette
+// ville » qui couperait le trajet). Si le chargement échoue, ta voiture et son essence restent où ils étaient.
+async function arriveByCar(place, arrival) {
+  if (starting) return;
+  starting = true;
+  try {
+    saveStore.flush('trajet'); // le monde suivant relit les besoins et l'équipement dans la sauvegarde
+    await launch(place, 'place', { kind: 'free', place }, arrival);
+  } catch (err) {
+    loadFailed(err);
+  } finally {
+    starting = false;
   }
 }
 
@@ -990,6 +1021,8 @@ function onTile(key, info) {
 function disposeSession() {
   if (!session) return;
   ride.abort(session);
+  cars.abort(session);
+  cars.drop();
   interior.close(session, { instant: true });
   othersView?.clear();
   panel.close();
@@ -1262,7 +1295,7 @@ function step(s, inp, dt) {
   if (effects.hypothermia) mods.moveSpeed *= 0.85;
   if (effects.hyperthermia) mods.staminaDrain = (mods.staminaDrain ?? 1) * 1.6;
   // 4. Objets du sac (1 à 4) et leurre (5).
-  if (inp.use && !asleep(s) && s.action?.id !== 'ride') useItem(s, inp.use);
+  if (inp.use && !asleep(s) && !onTrip(s.action)) useItem(s, inp.use);
   // 5. Monde au fil de la marche : morceaux proches construits (plus loin quand la caméra recule), tuiles suivantes
   // demandées à l'avance ; distance du trou le plus proche, pour le brouillard.
   const built = s.chunks.update(p.x, p.z, { budgetMs: lowPower ? 4 : 6, radius: s.viewRadius });
@@ -1280,7 +1313,7 @@ function step(s, inp, dt) {
   }
   // 6. Déplacement : immobile pendant une action dehors (caché au refuge, le joueur ne bouge pas).
   const before = { x: p.x, z: p.z };
-  const still = s.action && (!s.action.inside || s.action.id === 'ride');
+  const still = s.action && (!s.action.inside || onTrip(s.action));
   updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
   addStep(save.profile, p.x - before.x, p.z - before.z, dt); // « Mes statistiques » : distance à pied et temps de jeu
   if (p.running && !inside) {
@@ -1321,8 +1354,9 @@ function step(s, inp, dt) {
   city.step(s, dt);
   // 11. Champ de distances de la horde, calculé par morceaux.
   if (!s.field.ready) s.field.step(4000);
-  // 12. Sac perdu, ramassé en passant.
+  // 12. Sac perdu, ramassé en passant ; ta voiture posée sur le sol.
   pickBag(s);
+  cars.sync(s, dt);
   // 13. Mission de livraison.
   if (s.quest) {
     snapQuestTargets(s);
@@ -1360,10 +1394,12 @@ function step(s, inp, dt) {
 // ---------- Actions (boutons E et R, 5.1 et 5.2) ----------
 // Objets au féminin, pour « laissées sur place » et « équipée ».
 const FEMININE_ITEMS = new Set(['conserve', 'barre', 'eau', 'ferraille', 'planche', 'plaque', 'chaufferette', 'batte_cloutee', 'hache']);
+// Trajet en cours (métro, tram, train ou voiture) : rien d'autre n'est possible, le joueur est caché.
+const onTrip = (a) => a?.id === 'ride' || a?.id === 'drive';
 // Icône du bouton selon l'action (les objets du décor par leur sorte).
 const ACTION_ICONS = {
   search: 'fouiller', room: 'fouiller', door: 'refuge', enter: 'refuge', claim: 'refuge', move: 'refuge', exit: 'fleche', nail: 'marteau', repair: 'marteau',
-  plate: 'marteau', trap: 'piege', sleep: 'lune', craft: 'marteau', orphan: 'sac', tree: 'hache', car: 'cle', bench: 'cle', nest: 'cle', flag: 'marteau',
+  plate: 'marteau', trap: 'piege', sleep: 'lune', craft: 'marteau', orphan: 'sac', tree: 'hache', car: 'cle', owncar: 'voiture', carfix: 'cle', siphon: 'bidon', bench: 'cle', nest: 'cle', flag: 'marteau',
 };
 // Libellé du bouton pendant l'action.
 const BUSY_LABELS = { nail: 'Clouage…', repair: 'Réparation…', plate: 'Pose de la plaque…', trap: 'Pose du piège…', sleep: 'Tu dors…' };
@@ -1459,6 +1495,9 @@ function chooseActions(s) {
   const open = interior.isOpen(s);
   const menu = r.actions(p, { touch, survivor: s.survivor, building: building && !open ? { ...building, index: near } : null, searched, taken });
   let primary = menu.primary;
+  // Voitures : « Ta voiture » (E) passe avant la fouille du bâtiment voisin ; réparer ou siphonner une voiture garée prend le bouton R libre.
+  const carActs = !r.inside && !open ? cars.actions(s, touch) : { primary: null, secondary: null };
+  if (!primary) primary = carActs.primary;
   // Ville à sauver : ouvrir le nid d'un pâté, planter le fanion (avant la fouille du bâtiment voisin).
   if (!primary && !r.inside) primary = city.action(s, touch);
   // Intérieur : « Entrer » à la porte (la fouille se fait pièce par pièce, dedans), puis le meuble de la pièce où l'on est.
@@ -1492,7 +1531,7 @@ function chooseActions(s) {
   if (!primary && !r.inside) primary = r.orphanAction(p, { touch, survivor: s.survivor });
   // Station à portée : prendre la ligne (carte des destinations).
   if (!primary && !r.inside && !open) primary = ride.action(s, touch);
-  return { primary, secondary: menu.secondary, why: menu.why ?? '' };
+  return { primary, secondary: menu.secondary ?? carActs.secondary, why: menu.why ?? '' };
 }
 
 // Bouton E (principal) ou R (secondaire) : lance l'action proposée. Une action chronométrée dehors s'interrompt
@@ -1518,6 +1557,12 @@ function updateActions(s, inp, dt, before) {
     if (ride.arrived(s, a, dt)) finishAction(s, a);
     return;
   }
+  // Trajet en voiture : la durée passe, puis le nouveau monde se charge (conduite.js).
+  if (a.id === 'drive') {
+    a.t += dt;
+    if (cars.arrived(s, a)) finishAction(s, a);
+    return;
+  }
   const prev = a.t;
   a.t += dt;
   // Fouille et démontage font du bruit : les zombies proches l'entendent, deux fois par seconde.
@@ -1537,6 +1582,15 @@ function startAction(s, a) {
   }
   if (a.id === 'ride') {
     ride.open(s, a.arg);
+    return;
+  }
+  if (a.id === 'owncar') {
+    cars.openCar(s);
+    return;
+  }
+  if (a.id === 'carfix' || a.id === 'siphon') {
+    const act = cars.begin(s, a, base);
+    if (act) s.action = act;
     return;
   }
   if (a.id === 'room') {
@@ -1577,12 +1631,15 @@ function startAction(s, a) {
 
 function cancelAction(s) {
   if (s.action?.id === 'ride') ride.abort(s);
+  if (s.action?.id === 'drive') cars.abort(s);
   s.action = null;
 }
 
 function finishAction(s, a) {
   s.action = null;
   if (a.id === 'ride') ride.finish(s, a);
+  else if (a.id === 'drive') cars.land(s, a);
+  else if (a.id === 'carfix' || a.id === 'siphon') cars.finish(s, a);
   else if (a.id === 'search') finishSearch(s, a);
   else if (a.id === 'room') finishRoom(s, a);
   else if (a.id === 'prop') finishProp(s, a);
@@ -2331,6 +2388,9 @@ function hudInfo(s) {
     const b = s.store.proj.toLocal(save.dropBag.lat, save.dropBag.lon);
     arrows.push({ kind: 'bag', x: b.x, z: b.z, near: Math.hypot(b.x - p.x, b.z - p.z) < NEAR_ARROW });
   }
+  // Ta voiture : une flèche comme le refuge (estompée tout près).
+  const carArrow = r.inside ? null : cars.arrow(s, NEAR_ARROW);
+  if (carArrow) arrows.push(carArrow);
   // Fronts de la horde (aucun par brouillard), vus depuis le refuge.
   if (centre) {
     for (const angle of r.hordeArrows()) {
@@ -3340,7 +3400,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, ...(debug ? { debug, online, tirView } : {}),
+  saveStore, picker, renderer, ...(debug ? { debug, online, tirView, cars, driveMap } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.

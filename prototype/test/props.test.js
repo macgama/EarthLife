@@ -663,9 +663,12 @@ test('décor : butin avec un tirage forcé', () => {
   const seq = (...v) => { let i = 0; return () => v[i++ % v.length]; };
   assert.deepEqual(rollPropLoot('tree'), { bois: 2 });
   assert.deepEqual(rollPropLoot('tree', { axe: true }), { bois: 3 });
-  assert.deepEqual(rollPropLoot('car', {}, () => 0), { ferraille: 2, ruban: 1, tissu: 1 });
+  assert.deepEqual(rollPropLoot('car', {}, () => 0), { ferraille: 2, ruban: 1, tissu: 1, batterie: 1 });
   assert.deepEqual(rollPropLoot('car', {}, () => 0.99), { ferraille: 3 });
   assert.deepEqual(rollPropLoot('car', {}, seq(0.6, 0.1, 0.5)), { ferraille: 3, ruban: 1 });
+  // La batterie est le dernier tirage : les trois premiers sont ceux d\'avant.
+  assert.deepEqual(rollPropLoot('car', {}, seq(0.6, 0.1, 0.5, 0.29)), { ferraille: 3, ruban: 1, batterie: 1 });
+  assert.deepEqual(rollPropLoot('car', {}, seq(0.6, 0.1, 0.5, 0.3)), { ferraille: 3, ruban: 1 });
   assert.deepEqual(rollPropLoot('bench', {}, () => 0), { bois: 2, clous: 1 });
   assert.deepEqual(rollPropLoot('bench', {}, seq(0.3, 0.7)), { bois: 2, clous: 2 });
   assert.deepEqual(rollPropLoot('bench', {}, () => 0.99), { bois: 2 });

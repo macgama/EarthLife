@@ -6,7 +6,8 @@
 // zoom et carte des environs, seule sur une partie neuve ; stats : « Mes statistiques » au menu, ordinateur et téléphone ;
 // skills : les compétences, ordinateur et téléphone ;
 // armes : pistolet et fusil (tir, munitions, bruit), ordinateur et téléphone ;
-// trajet : trajet entre stations, ordinateur et téléphone ; trajet:desktop ou trajet:mobile : un seul).
+// trajet : trajet entre stations, ordinateur et téléphone ; trajet:desktop ou trajet:mobile : un seul ;
+// voiture : voitures et carburant (réparer, siphonner, plein, trajet de Lyon à Pérouges), ordinateur et téléphone).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
@@ -3022,6 +3023,300 @@ async function trajet(device) {
   await ctx.close();
 }
 
+// ---------- Voitures et carburant (19) ----------
+// Une voiture garée sur trois se répare, les autres se siphonnent ; « ta voiture » prend le plein au bidon, puis part de Lyon pour
+// Pérouges (partie libre) : trajet comprimé et verrouillé, monde prêt à l'arrivée, voiture garée au bord d'une route, essence
+// décomptée. Sur ordinateur la carte de conduite est la vraie carte (MapLibre) ; sur téléphone elle est absente (réponse vide de
+// la bibliothèque) pour essayer la liste des villes à portée.
+const PEROUGES_PT = { lat: 45.9034, lon: 5.1795 };
+const toastLog = (page) => ev(page, () => window.__seen.toasts.slice());
+
+// Une voiture réparable et une qui ne l'est pas, avec un point libre à 1,5 m de chacune (on tourne autour du départ pour que
+// le décor en charge assez).
+const findCars = (page) => ev(page, async () => {
+  const col = await import('/src/collision.js');
+  const { repairable } = await import('/src/voiture.js');
+  const { session: s, debug: d } = window.__earthlife;
+  const home = { x: s.player.x, z: s.player.z };
+  const spot = (c) => {
+    for (let k = 0; k < 32; k++) {
+      const a = (k / 32) * Math.PI * 2, x = c.x + Math.sin(a) * 1.5, z = c.z + Math.cos(a) * 1.5;
+      if (col.isFree(s.grid, x, z)) return { id: c.id, cx: c.x, cz: c.z, x, z };
+    }
+    return null;
+  };
+  const out = { fix: null, sip: null, seen: 0 };
+  const offsets = [[0, 0], [150, 0], [-150, 0], [0, 150], [0, -150], [150, 150], [-150, -150], [150, -150], [-150, 150], [300, 0], [-300, 0], [0, 300], [0, -300]];
+  for (const [dx, dz] of offsets) {
+    d.teleport(home.x + dx, home.z + dz);
+    const t0 = performance.now();
+    while (s.chunks.stats().decorPending > 0 && performance.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 300));
+    for (const c of d.props('car')) {
+      out.seen += 1;
+      if (repairable(c.id) && !out.fix) out.fix = spot(c);
+      if (!repairable(c.id) && !out.sip) out.sip = spot(c);
+    }
+    if (out.fix && out.sip) break;
+  }
+  return out;
+});
+
+// Instances « carrosseries » à moins de 0,6 m d'un point (échelle de chacune) : la voiture du décor, ou celle du joueur.
+const carsAt = (page, at) => ev(page, (c) => {
+  const bodies = window.__earthlife.session.root.parent.getObjectByName('carrosseries');
+  const out = [];
+  const arr = bodies?.instanceMatrix.array ?? [];
+  for (let i = 0; i < (bodies?.count ?? 0); i++) {
+    const e = arr.subarray(i * 16, i * 16 + 16);
+    if (Math.hypot(e[12] - c.x, e[14] - c.z) < 0.6) out.push(Math.round(Math.hypot(e[0], e[1], e[2]) * 1000) / 1000);
+  }
+  return out;
+}, at);
+
+// Les boutons E et R du moment : { primary, secondary } (identifiant, libellé, grisé).
+const menuOf = (page) => ev(page, () => {
+  const m = window.__earthlife.session.menu;
+  return { e: m?.primary?.id ?? null, r: m?.secondary?.id ?? null, rOff: !!m?.secondary?.off, label: window.__label('search'), label2: window.__label('action2') };
+});
+
+async function voitureScenario(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 19`;
+  const phone = device === 'mobile';
+  const ctx = await newContext(device);
+  // Tuiles manquantes aux essais : tuile vide (comme au trajet entre stations).
+  await ctx.route(/tiles\.openfreemap\.org\/.*\/\d+\/\d+\/\d+\.pbf$/, (route) => {
+    const m = new URL(route.request().url()).pathname.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
+    if (existsSync(path.join(root, 'test/fixtures/tiles', `${m[1]}-${m[2]}-${m[3]}.mvt`))) return route.fallback();
+    return route.fulfill({ status: 200, body: Buffer.alloc(0), contentType: 'application/vnd.mapbox-vector-tile', headers: { 'access-control-allow-origin': '*' } });
+  });
+  // Téléphone : la bibliothèque de carte répond « rien », la liste des villes prend le relais.
+  if (phone) {
+    await ctx.route(/cdn\.jsdelivr\.net\/npm\/maplibre-gl@[^/]+\/dist\/maplibre-gl\.mjs/, (route) => route.fulfill({
+      status: 200, body: 'export default {};', contentType: 'application/javascript', headers: { 'access-control-allow-origin': '*' },
+    }));
+  }
+  const page = await ctx.newPage();
+  watchErrors(page, phone ? 'tél' : 'pc');
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+
+  // 1. Pas de voiture au départ ; deux voitures garées, l'une réparable, l'autre non.
+  check(await ev(page, () => window.__earthlife.save.car === null), `${tag} : au départ, pas de voiture à soi`);
+  const found = await findCars(page);
+  if (!check(!!found.fix && !!found.sip, `${tag} : une voiture réparable (${found.fix?.id}) et une autre (${found.sip?.id}) trouvées parmi ${found.seen} vues`)) { await ctx.close(); return; }
+
+  // 2. Siphonner la voiture qui ne se répare pas : 8 s, 40 % d'un bidon (tirage forcé à 0,3), une seule fois par voiture.
+  await debug(page, 'teleport', found.sip.x, found.sip.z);
+  await clearZombies(page);
+  await until(page, (id) => window.__earthlife.session.menu?.secondary?.arg?.id === id, found.sip.id, 15000);
+  await wait(400);
+  let menu = await menuOf(page);
+  check(menu.r === 'siphon' && !menu.rOff && /^Siphonner( \(R\))? · 8 s$/.test(menu.label2 ?? ''), `${tag} : bouton « ${menu.label2} » à côté d'une voiture non réparable (E : ${menu.label})`);
+  check(menu.e === 'prop' && /^Démonter la voiture/.test(menu.label ?? ''), `${tag} : démonter reste proposé sur E (« ${menu.label} »)`);
+  await shot(page, `${tag.replace(' ', '-')}-siphon-bouton`);
+  const bag0 = await bagOf(page);
+  await ev(page, () => { window.__realRandom = window.__realRandom ?? Math.random; Math.random = () => 0.3; });
+  await press(page, device, 'r', 'action2');
+  const sipTime = await until(page, () => (window.__earthlife.session.action?.id === 'siphon' ? window.__earthlife.session.action.time : null), null, 30000);
+  check(sipTime === 8, `${tag} : siphonnage de ${sipTime} s`);
+  await ev(page, () => { const a = window.__earthlife.session.action; if (a) a.t = a.time - 0.3; }); // la montre va plus vite que le jeu sans carte graphique
+  const sipDone = await until(page, (id) => (window.__earthlife.save.dismantled[`s${id}`] ? 1 : null), found.sip.id, 30000);
+  await ev(page, () => { if (window.__realRandom) Math.random = window.__realRandom; });
+  const bag1 = await bagOf(page);
+  check(!!sipDone && (bag1.bidon ?? 0) === (bag0.bidon ?? 0) + 1, `${tag} : siphonné : +1 bidon d'essence (${bag0.bidon ?? 0} → ${bag1.bidon ?? 0}), marque sur la voiture`);
+  check(!!(await toastSeen(page, 'Siphonné', 30000)), `${tag} : notification « Siphonné… »`);
+  await wait(500);
+  menu = await menuOf(page);
+  check(menu.r === 'siphon' && menu.rOff, `${tag} : la même voiture : « ${menu.label2} » grisé`);
+  await press(page, device, 'r', 'action2');
+  check(!!(await toastSeen(page, 'Cette voiture est déjà vide', 15000)), `${tag} : deuxième essai : « Cette voiture est déjà vide. »`);
+
+  // 3. Réparer l'autre : sans pièce le jeu dit ce qui manque, puis 20 s, 2 ferrailles, 1 ruban, 1 batterie.
+  await debug(page, 'teleport', found.fix.x, found.fix.z);
+  await clearZombies(page);
+  await debug(page, 'give', { ferraille: 2, ruban: 1 });
+  await until(page, (id) => window.__earthlife.session.menu?.secondary?.arg?.id === id, found.fix.id, 15000);
+  await wait(400);
+  menu = await menuOf(page);
+  check(menu.r === 'carfix' && menu.rOff && /^Réparer la voiture( \(R\))? · 20 s$/.test(menu.label2 ?? ''), `${tag} : bouton « ${menu.label2} » grisé sans batterie`);
+  await shot(page, `${tag.replace(' ', '-')}-reparer-bouton`);
+  await press(page, device, 'r', 'action2');
+  const missing = await toastSeen(page, 'Il te manque', 15000);
+  check(!!missing && /atterie/.test(missing), `${tag} : sans batterie : « ${missing} »`);
+  await debug(page, 'give', { batterie: 1, bidon: 3 }); // 1 + 3 = 4 bidons pour le plein
+  await until(page, () => window.__earthlife.session.menu?.secondary?.off === false, null, 10000);
+  const parts0 = await bagOf(page);
+  await ev(page, () => { window.__realRandom = window.__realRandom ?? Math.random; Math.random = () => 0.5; });
+  await press(page, device, 'r', 'action2');
+  const fixTime = await until(page, () => (window.__earthlife.session.action?.id === 'carfix' ? window.__earthlife.session.action.time : null), null, 30000);
+  check(fixTime === 20, `${tag} : réparation de ${fixTime} s`);
+  await shot(page, `${tag.replace(' ', '-')}-reparation`);
+  await ev(page, () => { const a = window.__earthlife.session.action; if (a) a.t = a.time - 0.3; });
+  const fixed = await until(page, () => window.__earthlife.save.car, null, 30000);
+  await ev(page, () => { if (window.__realRandom) Math.random = window.__realRandom; });
+  if (!check(!!fixed, `${tag} : voiture réparée`)) { await ctx.close(); return; }
+  const parts1 = await bagOf(page);
+  check(fixed.from === found.fix.id && fixed.fuel === 1 && fixed.wear === 100, `${tag} : « ta voiture » = ${fixed.from}, ${fixed.fuel} L, usure ${fixed.wear} %`);
+  check((parts0.ferraille ?? 0) - (parts1.ferraille ?? 0) === 2 && (parts0.ruban ?? 0) - (parts1.ruban ?? 0) === 1 && (parts0.batterie ?? 0) - (parts1.batterie ?? 0) === 1,
+    `${tag} : pièces prises : 2 ferrailles, 1 ruban, 1 batterie (ferraille ${parts0.ferraille ?? 0} → ${parts1.ferraille ?? 0})`);
+  check(!!(await toastSeen(page, 'Voiture réparée', 30000)), `${tag} : notification « Voiture réparée… »`);
+  check(await ev(page, (id) => !!window.__earthlife.save.dismantled[id], found.fix.id), `${tag} : la voiture d'origine est notée démontée (pour les autres joueurs aussi)`);
+  await wait(500);
+  const scales = await carsAt(page, { x: found.fix.cx, z: found.fix.cz });
+  check(scales.filter((v) => v > 0).length === 1 && scales.some((v) => v === 0), `${tag} : une seule voiture dessinée à sa place (échelles ${scales.join(', ')}) : l'ancienne est cachée`);
+
+  // 4. Ta voiture : bouton E, carte de la jauge, plein au bidon.
+  await until(page, () => window.__earthlife.session.menu?.primary?.id === 'owncar', null, 15000);
+  await wait(300);
+  menu = await menuOf(page);
+  check(menu.e === 'owncar' && /^Ta voiture · 1 L( \(E\))?$/.test(menu.label ?? ''), `${tag} : bouton « ${menu.label} » à côté d'elle`);
+  await press(page, device, 'e', 'search');
+  const cardOpen = await until(page, () => (document.querySelector('#card .rp-card-title')?.textContent === 'Ta voiture' ? document.getElementById('card').textContent.replace(/\s+/g, ' ').trim() : null), null, 15000);
+  check(!!cardOpen && /Essence : 1 L sur 40 L/.test(cardOpen) && /Portée : 9,6/.test(cardOpen), `${tag} : carte « ${cardOpen} »`);
+  const btns = await ev(page, () => [...document.querySelectorAll('#card [data-card-btn]')].map((b) => `${b.dataset.cardBtn}:${b.textContent.trim()}`));
+  check(btns.some((b) => /^fill:Faire le plein · 4 bidons \(20 L\)/.test(b)) && btns.some((b) => b.startsWith('drive:')), `${tag} : boutons ${btns.join(' | ')}`);
+  await wait(500);
+  await shot(page, `${tag.replace(' ', '-')}-ta-voiture`);
+  await hit(page, device, '#card [data-card-btn="fill"]');
+  const plein = await toastSeen(page, 'Plein', 30000);
+  const after = await ev(page, () => ({ fuel: window.__earthlife.save.car.fuel, bidon: window.__earthlife.session.survivor.inventory.bidon ?? 0 }));
+  check(!!plein && after.fuel === 21 && after.bidon === 0, `${tag} : « ${plein} » : ${after.fuel} L au réservoir, ${after.bidon} bidon au sac`);
+  const again = await until(page, () => (/Essence : 21 L/.test(document.getElementById('card').textContent) ? document.getElementById('card').textContent.replace(/\s+/g, ' ').trim() : null), null, 15000);
+  check(!!again && /Le réservoir est plein|Il te faut un bidon/.test(again), `${tag} : la carte se met à jour (« ${again} »)`);
+
+  // 5. Partir : la carte de conduite.
+  await hit(page, device, '#card [data-card-btn="drive"]');
+  const open = await until(page, () => (!document.getElementById('drive').classList.contains('hidden') ? 1 : null), null, 15000);
+  if (!check(!!open, `${tag} : carte de conduite ouverte`)) { await ctx.close(); return; }
+  const mapState = await until(page, () => document.getElementById('drive').dataset.map || null, null, 30000)
+    .then((first) => (first === 'loading' ? until(page, () => { const m = document.getElementById('drive').dataset.map; return m === 'ready' || m === 'failed' ? m : null; }, null, 60000) : first));
+  check(mapState === (phone ? 'failed' : 'ready'), `${tag} : carte ${phone ? 'absente : liste des villes' : 'prête'} (${mapState})`);
+  const driveInfo = await ev(page, () => ({
+    range: document.getElementById('drive-range').textContent.replace(/\s+/g, ' ').trim(),
+    list: [...document.querySelectorAll('#drive-list button')].map((b) => b.textContent.replace(/\s+/g, ' ').trim()),
+    go: document.getElementById('drive-go').disabled,
+    fit: (() => { const r = document.getElementById('drive-go').getBoundingClientRect(); return r.width > 0 && r.left >= 0 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5; })(),
+    mapBox: (() => { const r = document.getElementById('drive-map').getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })(),
+  }));
+  check(/21 L/.test(driveInfo.range) && driveInfo.go && driveInfo.fit, `${tag} : « ${driveInfo.range} », « Partir » grisé tant qu'aucun point n'est choisi et dans l'écran`);
+  if (phone) {
+    check(driveInfo.list.some((l) => /^Genève · 11\d/.test(l)) && !driveInfo.list.some((l) => l.startsWith('Lyon')) && !driveInfo.list.some((l) => l.startsWith('Paris')),
+      `${tag} : liste des villes à portée : ${driveInfo.list.join(' | ')}`);
+  } else {
+    check(driveInfo.mapBox.w > 200 && driveInfo.mapBox.h > 150, `${tag} : carte de ${driveInfo.mapBox.w} × ${driveInfo.mapBox.h} px`);
+    // Un clic sur la carte choisit un point (le cercle tient dans l'écran : le tiers droit est dedans).
+    const box = await page.locator('#drive-map').boundingBox();
+    await page.mouse.click(box.x + box.width * 0.62, box.y + box.height * 0.45);
+    const clicked = await until(page, () => window.__earthlife.driveMap.state()?.pick?.trip ?? null, null, 15000);
+    check(!!clicked && clicked.ok, `${tag} : un clic sur la carte choisit un point (${clicked ? `${Math.round(clicked.crow / 1000)} km` : '?'} à vol d'oiseau, ${clicked?.ok ? 'permis' : clicked?.why})`);
+    await wait(600);
+    await shot(page, `${tag.replace(' ', '-')}-carte-conduite`);
+  }
+  // Trop loin : Paris est hors du cercle.
+  const far = await ev(page, () => { const t = window.__earthlife.driveMap.choose({ lat: 48.8584, lon: 2.347 }, { name: 'Paris' }); return { ok: t.ok, why: t.why, go: document.getElementById('drive-go').disabled, dest: document.getElementById('drive-dest').textContent }; });
+  check(!far.ok && far.go && /Trop loin pour 21 L/.test(far.dest), `${tag} : Paris hors de portée : « ${far.dest} », « Partir » grisé`);
+  // Pérouges : dans le cercle.
+  const pick = await ev(page, (pt) => {
+    const t = window.__earthlife.driveMap.choose(pt, { name: 'Pérouges' });
+    return { ok: t.ok, litres: t.litres, seconds: t.seconds, go: document.getElementById('drive-go').disabled, cost: document.getElementById('drive-cost').textContent.replace(/\s+/g, ' ').trim(), dest: document.getElementById('drive-dest').textContent };
+  }, PEROUGES_PT);
+  check(pick.ok && !pick.go && /de route · 3,\d L · \d+ s$/.test(pick.cost) && pick.dest === 'Pérouges', `${tag} : Pérouges : « ${pick.dest} · ${pick.cost} »`);
+  await shot(page, `${tag.replace(' ', '-')}-conduite-choix`);
+
+  // 6. Le trajet : écran verrouillé, durée = route ÷ 500 m/s, rien d'autre possible.
+  const before = await ev(page, () => {
+    window.__sessionBefore = window.__earthlife.session;
+    const p = window.__earthlife.session.player;
+    return { x: p.x, z: p.z };
+  });
+  await hit(page, device, '#drive-go');
+  const driving = await until(page, () => (window.__earthlife.session.action?.id === 'drive' ? { time: window.__earthlife.session.action.time } : null), null, 15000);
+  if (!check(!!driving && driving.time === pick.seconds, `${tag} : trajet commencé (${driving?.time} s de jeu, ${pick.seconds} attendues)`)) { await ctx.close(); return; }
+  const onboard = await ev(page, () => ({
+    shown: !document.getElementById('ride').classList.contains('hidden'),
+    to: document.getElementById('ride-to').textContent,
+    kicker: document.getElementById('ride').textContent.replace(/\s+/g, ' ').trim(),
+    hidden: window.__earthlife.session.player.hidden,
+    mapClosed: document.getElementById('drive').classList.contains('hidden'),
+  }));
+  check(onboard.shown && onboard.to === 'Pérouges' && onboard.hidden && onboard.mapClosed && /Trajet en voiture/.test(onboard.kicker), `${tag} : écran du trajet vers « ${onboard.to} » (« ${onboard.kicker} »), carte fermée, joueur à l'abri`);
+  if (!phone) {
+    await page.keyboard.press('e');
+    await page.keyboard.down('ArrowUp');
+    await wait(1200);
+    await page.keyboard.up('ArrowUp');
+  } else {
+    const covered = await ev(page, () => { const r = document.getElementById('search').getBoundingClientRect(); return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('#ride') !== null; });
+    check(covered, `${tag} : l'écran du trajet couvre les boutons de jeu`);
+    await wait(1200);
+  }
+  const mid = await ev(page, () => { const s = window.__earthlife.session; return { id: s.action?.id, x: s.player.x, z: s.player.z, w: document.getElementById('ride-bar').style.width }; });
+  check(mid.id === 'drive' && Math.hypot(mid.x - before.x, mid.z - before.z) < 0.5, `${tag} : pendant le trajet, ni marche ni autre action (déplacé de ${round(Math.hypot(mid.x - before.x, mid.z - before.z))} m)`);
+  // Le jeu va jusqu'à dix fois moins vite que la montre sans carte graphique : on avance le trajet à mi-chemin, puis à une seconde de l'arrivée.
+  await ev(page, () => { const a = window.__earthlife.session.action; if (a?.id === 'drive') a.t = a.time / 2; });
+  const half = await until(page, () => { const w = parseInt(document.getElementById('ride-bar').style.width, 10); return w >= 45 ? w : null; }, null, 30000);
+  check(!!half && half <= 60, `${tag} : jauge du trajet à ${half} % à mi-chemin`);
+  await shot(page, `${tag.replace(' ', '-')}-trajet-ecran`);
+  await ev(page, () => { const a = window.__earthlife.session.action; if (a?.id === 'drive') a.t = a.time - 1; });
+
+  // 7. Arrivée : nouveau monde prêt, voiture garée au bord d'une route, essence décomptée, moteur qui s'entend.
+  const landed = await until(page, () => {
+    const el = window.__earthlife;
+    const s = el.session;
+    return s && s !== window.__sessionBefore && s.player && !s.action && document.getElementById('ride').classList.contains('hidden') && document.getElementById('loading').classList.contains('hidden') ? 1 : null;
+  }, null, 420000);
+  if (!check(!!landed, `${tag} : monde d'arrivée prêt, écran du trajet fermé`)) { await ctx.close(); return; }
+  await wait(1000);
+  const there = await ev(page, async () => {
+    const { parkingSpot } = await import('/src/voiture.js');
+    const { chunkFeatures } = await import('/src/world.js');
+    const { session: s, save } = window.__earthlife;
+    const car = save.car, p = s.player;
+    const at = s.store.proj.toLocal(car.lat, car.lon);
+    const cs = s.store.chunkSize, seen = new Set(), roads = [];
+    for (let cx = Math.floor((at.x - 40) / cs); cx <= Math.floor((at.x + 40) / cs); cx++) {
+      for (let cz = Math.floor((at.z - 40) / cs); cz <= Math.floor((at.z + 40) / cs); cz++) {
+        for (const r of chunkFeatures(s.store, cx, cz).roads) if (!seen.has(r)) { seen.add(r); roads.push(r); }
+      }
+    }
+    const road = parkingSpot(roads, at.x, at.z, 40);
+    return {
+      origin: s.store.origin, car: { ...car }, at, player: { x: p.x, z: p.z, hidden: p.hidden }, roadD: road?.d ?? null, roads: roads.length,
+      hasHome: s.home, arrow: window.__earthlife.cars.arrow(s, 12)?.kind ?? null,
+    };
+  });
+  there.label = await until(page, () => (window.__label('search')?.startsWith('Ta voiture') ? window.__label('search') : null), null, 15000);
+  const dToPlace = await ev(page, async ([car, pt]) => { const { crowM } = await import('/src/voiture.js'); return crowM(car, pt); }, [there.car, PEROUGES_PT]);
+  check(dToPlace < 500, `${tag} : la voiture est garée à ${Math.round(dToPlace)} m du point choisi (${there.car.lat}, ${there.car.lon})`);
+  check(there.roadD !== null && there.roadD < 8, `${tag} : au bord d'une route (à ${there.roadD === null ? '?' : round(there.roadD, 1)} m de l'axe de la plus proche, ${there.roads} routes lues)`);
+  check(Math.abs(there.car.fuel - round(21 - pick.litres, 1)) < 0.06, `${tag} : essence décomptée : ${there.car.fuel} L au réservoir (21 − ${round(pick.litres, 2)})`);
+  const gap = Math.hypot(there.at.x - there.player.x, there.at.z - there.player.z);
+  check(!there.player.hidden && gap <= 2.6, `${tag} : le joueur est descendu à ${round(gap, 1)} m de sa voiture (à portée), visible`);
+  check(there.arrow === 'car' && there.label?.startsWith('Ta voiture'), `${tag} : flèche vers la voiture, bouton « ${there.label} »`);
+  check(!!(await toastSeen(page, 'Arrivée : Pérouges', 30000)), `${tag} : notification « Arrivée : Pérouges… »`);
+  check(!!(await toastSeen(page, 'Le moteur s’entend', 30000)), `${tag} : notification « Le moteur s’entend… »`);
+  const drawn = await carsAt(page, there.at);
+  check(drawn.some((v) => v > 0), `${tag} : la voiture est dessinée à sa place (échelle ${drawn.join(', ')})`);
+  await wait(800);
+  await shot(page, `${tag.replace(' ', '-')}-arrivee`);
+
+  // 8. Sauvegarde : la voiture, au loin, est relue après un rechargement (au départ, à Lyon : ni dessinée ni flèche).
+  await ev(page, () => window.__earthlife.saveStore.markDirty());
+  await until(page, () => !window.__earthlife.saveStore.dirty, null, 15000);
+  await page.reload();
+  check(await started(page), `${tag} : partie reprise après le rechargement`);
+  const kept = await ev(page, () => {
+    const { save, session: s } = window.__earthlife;
+    return { car: save.car && { ...save.car }, arrow: window.__earthlife.cars.arrow(s, 12), origin: s.store.origin };
+  });
+  check(!!kept.car && kept.car.fuel === there.car.fuel && kept.car.from === found.fix.id && Math.abs(kept.car.lat - there.car.lat) < 1e-6,
+    `${tag} : voiture relue : ${kept.car?.fuel} L, à (${kept.car?.lat}, ${kept.car?.lon})`);
+  check(kept.arrow === null, `${tag} : voiture dans une autre ville : pas de flèche (monde à ${kept.origin.lat.toFixed(2)}, ${kept.origin.lon.toFixed(2)})`);
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
@@ -3036,6 +3331,9 @@ try {
   } else if (only === 'armes') {
     await armesScenario('desktop');
     await armesScenario('mobile');
+  } else if (only === 'voiture') {
+    await voitureScenario('desktop');
+    await voitureScenario('mobile');
   } else if (only.startsWith('trajet')) {
     if (only !== 'trajet:mobile') await trajet('desktop');
     if (only !== 'trajet:desktop') await trajet('mobile');
@@ -3056,6 +3354,8 @@ try {
     if (!only) await armesScenario('mobile');
     await trajet(only === 'mobile' ? 'mobile' : 'desktop');
     if (!only) await trajet('mobile');
+    await voitureScenario(only === 'mobile' ? 'mobile' : 'desktop');
+    if (!only) await voitureScenario('mobile');
   }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {
