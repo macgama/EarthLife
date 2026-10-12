@@ -8,7 +8,7 @@ import { icon } from './icons.js';
 export const ART = {
   items: new Set([
     'conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette', 'bois', 'clous', 'ferraille', 'tissu', 'ruban', 'planche', 'plaque',
-    'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee',
+    'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee', 'pistolet', 'fusil', 'balles', 'cartouches',
   ]),
   scenes: new Set(['horde', 'metro', 'tram', 'train', 'refuge', 'coop', 'victoire', 'terre', 'mort', 'facile', 'moyen', 'difficile']),
 };
