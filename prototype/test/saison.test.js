@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createSeasonNet, SEASON_NET } from '../src/net/season.js';
 import {
-  soloOps, seasonOps, applyRows, applyTile, adoptTiles, applyCounts, applyLent, resync,
+  soloOps, seasonOps, applyRows, applyTile, adoptTiles, applyCounts, applyLent, resync, insideTiles,
 } from '../src/saison-miroir.js';
 import { prepareCity, beginCity, createCityRuntime, createResilientBlocks, inlineBlocksWorker } from '../src/ville-jeu.js';
 import { findCommune, findNeighbours, createCommuneCache } from '../src/commune.js';
@@ -464,4 +464,20 @@ test('ville de saison : prêts rendus au serveur en partant', async () => {
   const prets = g.net.events.filter((e) => e[0] === 'l' || e[0] === 't').reduce((s, e) => s + e[2], 0);
   assert.equal(rendus, prets, 'tout ce qui a été emprunté est rendu au serveur');
   assert.equal(zombiesLeft(g.copy), total);
+});
+
+test('insideTiles : un point est dans la ville s\'il tombe dans une tuile du recensement', () => {
+  // Tuiles de zoom 14 autour de Pérouges (45,9 N ; 5,2 E) : x = 8500, y = 5800 contiennent ce point-là.
+  const lon2x = (lon, z) => Math.floor(((lon + 180) / 360) * 2 ** z);
+  const lat2y = (lat, z) => Math.floor(((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * 2 ** z);
+  const x = lon2x(5.2, 14), y = lat2y(45.9, 14);
+  const tiles = { [`14/${x}/${y}`]: { b: null }, [`14/${x + 1}/${y}`]: { b: null } };
+  assert.equal(insideTiles(tiles, 45.9, 5.2), true);
+  assert.equal(insideTiles(tiles, 45.9, 5.2 + 0.0219), true, 'la tuile voisine du recensement');
+  assert.equal(insideTiles(tiles, 45.9, 5.2 + 0.05), false, 'au-delà des tuiles');
+  assert.equal(insideTiles(tiles, 48.85, 2.35), false, 'Paris');
+  for (const bad of [null, undefined, {}, [], 'x', { 'a/b/c': 1 }]) assert.equal(insideTiles(bad, 45.9, 5.2), false);
+  assert.equal(insideTiles(tiles, NaN, 5.2), false);
+  assert.equal(insideTiles(tiles, 45.9, 'x'), false);
+  assert.equal(insideTiles(tiles, 89, 5.2), false, 'pôle : hors du Web Mercator');
 });

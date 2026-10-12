@@ -14,6 +14,7 @@ import { localDate, utcOffsetFor } from './horde.js';
 import { storeItems, chestCap, countOf, countsLabel, claimableShape } from './base.js';
 import { nearestOpen } from './collision.js';
 import { SEASON_TEXT } from './net/season.js';
+import { insideTiles } from './saison-miroir.js';
 import { createMenuSheet } from './menu-sheet.js';
 import { createSalon, createTabs, frontModel, summaryOf, ctaModel, clockOf, pinsOf, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
@@ -338,8 +339,10 @@ export function createCityGame(host) {
 
   // Commune de la première ville du monde : recensement du lieu choisi, carte de confirmation, graine envoyée au serveur.
   // Rend { city, prep } ou null (annulé, refusé : le joueur a lu pourquoi).
-  async function seedCity(place, level) {
+  async function seedCity(picked, level, announced = null) {
     const n = net();
+    // Ville annoncée pour le niveau : c'est elle qu'on recense, où que le joueur ait touché la carte.
+    const place = announced ? { lat: announced.lat, lon: announced.lon, name: announced.name } : picked;
     if (!place) { await askCard(infoCard('Choisis la ville de la saison', 'Personne n\'a encore choisi la ville de ce niveau : touche la carte (ou cherche un lieu), puis lance la saison. Tous les joueurs de ce niveau sauveront cette même ville.'), 'ok'); return null; }
     host.setLoading(CITY_TEXT.searching(place.name));
     let template;
@@ -356,21 +359,23 @@ export function createCityGame(host) {
     host.setLoading(null);
     if (!prep.ok) { await askCard(infoCard('Ville impossible', prep.reason === 'too-big' ? CITY_TEXT.tooBig : prep.reason === 'empty' ? CITY_TEXT.empty : CITY_TEXT.noStreets), 'ok'); return null; }
     if (prep.mode === 'quartiers') { await askCard(infoCard('Ville trop grande', SEASON_TEXT.mode), 'ok'); return null; }
+    if (announced && prep.unit.key !== announced.key) { await askCard(infoCard('Ville impossible', seasonText('annoncee')), 'ok'); return null; }
     if (prep.offline) { await askCard(infoCard('Pas de chiffres officiels', 'La ville de la saison est la même pour tous : elle a besoin des vrais chiffres de la commune. Réessaie avec du réseau.'), 'ok'); return null; }
     const sum = prep.summary[level];
     const id = await askCard({
       title: `${prep.unit.name} : ville de la saison`, tone: 'warn',
       lines: [
         `Tous les joueurs de la saison en ${levelName(level)} sauveront cette même ville, ensemble : ${groupDigits(sum.zombies)} zombies, ${groupDigits(sum.hidden)} habitants à sauver.`,
-        'Ce choix est définitif pour ce niveau, toute la saison.',
+        announced ? 'Cette ville est annoncée pour ce niveau, toute la saison. Tu commenceras où tu as touché la carte, si c\'est dans la ville.'
+          : 'Ce choix est définitif pour ce niveau, toute la saison.',
       ],
-      buttons: [{ id: 'start', label: 'Choisir cette ville', primary: true }, { id: 'cancel', label: 'Annuler' }],
+      buttons: [{ id: 'start', label: announced ? 'Commencer' : 'Choisir cette ville', primary: true }, { id: 'cancel', label: 'Annuler' }],
     }, 'cancel');
     if (id !== 'start') return null;
     host.setLoading('Création de la ville commune…');
     const weights = Object.fromEntries(Object.entries(prep.weights).map(([k, v]) => [k, Math.max(0, Math.round(v))]));
     const r = await n.seed({
-      key: prep.unit.key, name: prep.unit.name, place: { lat: place.lat, lon: place.lon, name: prep.unit.name }, pop: prep.unit.population,
+      key: prep.unit.key, name: announced?.name ?? prep.unit.name, place: { lat: place.lat, lon: place.lon, name: announced?.name ?? prep.unit.name }, pop: prep.unit.population,
       src: typeof prep.unit.source === 'string' ? prep.unit.source : 'insee', approx: prep.unit.source === 'estimation' || prep.commune.approx === true,
       zl: prep.unit.level, tiles: weights, failed: prep.census.failed, mode: 'entiere',
     });
@@ -418,7 +423,7 @@ export function createCityGame(host) {
     if (level !== wanted) notice = `Tu joues la saison en ${levelName(level)} : ce niveau ne change pas.`;
     let city = join.city, prep = null;
     if (!city) {
-      const seeded = await seedCity(place, level);
+      const seeded = await seedCity(place, level, join.announced ?? null);
       if (!seeded) { syncSeason(); return null; }
       ({ city, prep } = seeded);
     }
@@ -440,8 +445,11 @@ export function createCityGame(host) {
     }
     const first = !join.home;
     const home = join.home ? { lat: join.home.a / 1e6, lon: join.home.o / 1e6 } : null;
-    const spawn = home ? { ...home, name: city.name, area: '' }
-      : prep ? place : { lat: city.place?.lat ?? 0, lon: city.place?.lon ?? 0, name: city.name, area: '' };
+    // Sans refuge encore : on commence où le joueur a touché la carte s'il est dans la ville (tuiles du recensement), sinon
+    // au point de la ville. Chacun choisit donc son départ, la ville reste la même pour tous.
+    const centre = { lat: city.place?.lat ?? 0, lon: city.place?.lon ?? 0, name: city.name, area: '' };
+    const inside = !home && !!place && insideTiles(opened.state?.ville?.tiles, place.lat, place.lon);
+    const spawn = home ? { ...home, name: city.name, area: '' } : inside ? place : centre;
     syncSeason();
     return { kind: 'season', level, city, state: opened.state, rv: opened.rv, prep, first, place: spawn, join };
   }

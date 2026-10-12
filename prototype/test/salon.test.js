@@ -223,3 +223,41 @@ test('onglets : le choix du joueur est gardé, ?menu= l\'impose pour une visite'
   const t4 = createTabs({ doc, root: fakeRoot(), storage: fakeStore(), params: new URLSearchParams('menu=zzz') });
   assert.equal(t4.forced, null);
 });
+
+// ---------- Ville annoncée (GET /v1/season/progress : levels[niveau].announced tant que le niveau n'a pas de ville) ----------
+
+const ANNOUNCED = { key: 'c69123', name: 'Lyon', lat: 45.76, lon: 4.836 };
+
+test('front : une ville annoncée tient lieu de ville tant que le niveau n\'en a pas', () => {
+  const f = frontModel('difficile', { players: 4, online: 1, seats: 100, city: null, announced: ANNOUNCED });
+  assert.equal(f.status, 'annoncee');
+  assert.equal(f.badge, 'Annoncée');
+  assert.equal(f.announced, true);
+  assert.equal(f.cityName, 'Lyon');
+  assert.deepEqual(f.where, { lat: 45.76, lon: 4.836 });
+  assert.equal(f.cleared, 0);
+  assert.equal(f.zombies, 0);
+  // Une ville en jeu l'emporte sur l'annonce, et un niveau sans annonce reste « à choisir ».
+  const g = frontModel('facile', { players: 1, online: 0, seats: 100, city: PROGRESS.levels.facile.city, announced: ANNOUNCED });
+  assert.equal(g.status, 'en-cours');
+  assert.equal(g.announced, false);
+  assert.equal(g.cityName, 'Vulliens');
+  assert.equal(frontModel('moyen', { city: null }).status, 'vide');
+  for (const bad of [{ announced: {} }, { announced: { name: 7 } }, { announced: { name: '' } }, { announced: null }]) {
+    assert.equal(frontModel('moyen', { city: null, ...bad }).status, 'vide', JSON.stringify(bad));
+  }
+});
+
+test('ville annoncée : repère sur la carte, hors des villes de la bannière, dite sur le bouton', () => {
+  const list = [
+    frontModel('facile', PROGRESS.levels.facile), frontModel('moyen', PROGRESS.levels.moyen),
+    frontModel('difficile', { players: 0, online: 0, seats: 100, city: null, announced: ANNOUNCED }),
+  ];
+  assert.equal(summaryOf(list).cities, 2, 'une ville annoncée n\'est pas encore une ville en jeu');
+  const pins = pinsOf(list);
+  assert.deepEqual(pins.map((p) => p.level), ['facile', 'difficile']);
+  assert.equal(pins[1].label, 'Difficile · Lyon');
+  const cta = ctaModel({ fronts: list, pick: 'difficile', signedIn: true, status: 'en-ligne', place: null });
+  assert.equal(cta.label, 'Rejoindre · Difficile');
+  assert.equal(cta.sub, 'Lyon · ville annoncée', 'rien ne demande de choisir la ville');
+});

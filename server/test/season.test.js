@@ -2,7 +2,7 @@
 // libération), nuits, rangement et relecture, fin de saison. Salle, comptes et magasin en mémoire sur la même horloge.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSeasons, SEASON_RULES } from '../src/season.js';
+import { createSeasons, SEASON_RULES, readAnnounced } from '../src/season.js';
 import { createAccounts } from '../src/accounts.js';
 import { createMailer } from '../src/mail.js';
 import { createMemoryStore } from '../src/store-memory.js';
@@ -675,4 +675,82 @@ test('évolution de la saison : l\'épingle de la ville est arrondie à 3 décim
   assert.equal(c.lat, 45.903);
   assert.equal(c.lon, 5.18);
   assert.deepEqual(Object.keys((await w.seasons.progress()).body.levels.moyen), ['players', 'online', 'seats', 'city']);
+});
+
+// ---------- Ville annoncée (season-cities.js) : une ville fixée par niveau, avant le premier joueur ----------
+
+const ANN = { facile: { key: 'c01283', name: 'Pérouges', lat: 45.9, lon: 5.2 },
+  moyen: { key: 'c69123', name: 'Lyon', lat: 45.76043, lon: 4.83587 } };
+
+test('ville annoncée : lue avec soin (niveau connu, clé de commune, nom, point sur Terre), le reste est ignoré', () => {
+  assert.deepEqual(readAnnounced({}), {});
+  assert.deepEqual(readAnnounced(null), {});
+  assert.deepEqual(readAnnounced(SEASON_RULES.announced), {});                    // par défaut : aucune, comme avant
+  const ok = readAnnounced({ ...ANN, expert: { key: 'c01', name: 'X', lat: 1, lon: 1 }, difficile: { key: 'constructor', name: 'Nom propre aux objets', lat: 1, lon: 1 } });
+  assert.deepEqual(Object.keys(ok), ['facile', 'moyen']);
+  assert.deepEqual(ok.moyen, { key: 'c69123', name: 'Lyon', lat: 45.76043, lon: 4.83587 });
+  for (const bad of [{ key: 'c1', name: '', lat: 1, lon: 1 }, { key: 'c1', name: 'X', lat: 91, lon: 1 }, { key: 'c1', name: 'X', lat: 1, lon: 'x' },
+    { key: 7, name: 'X', lat: 1, lon: 1 }, { name: 'X', lat: 1, lon: 1 }, 'Lyon', [], null]) {
+    assert.deepEqual(readAnnounced({ facile: bad }), {}, JSON.stringify(bad));
+  }
+});
+
+test('ville annoncée : l\'inscription et l\'évolution de la saison la disent avant tout premier joueur', async () => {
+  const w = rig({ rules: { announced: ANN } });
+  const a = await w.player(1, { join: false });
+  // « Suis-je inscrit ? » ne dit rien du niveau : la ville annoncée vient avec l'inscription.
+  assert.equal((await a.call('/v1/season/join', {})).body.announced, undefined);
+  const j = await a.call('/v1/season/join', { level: 'moyen' });
+  assert.equal(j.status, 200);
+  assert.equal(j.body.city, null);
+  assert.deepEqual(j.body.announced, { key: 'c69123', name: 'Lyon', lat: 45.76, lon: 4.836 });
+  const p = (await w.seasons.progress()).body.levels;
+  assert.deepEqual(p.facile.announced, { key: 'c01283', name: 'Pérouges', lat: 45.9, lon: 5.2 });
+  assert.deepEqual(p.moyen.announced, { key: 'c69123', name: 'Lyon', lat: 45.76, lon: 4.836 });
+  assert.equal(p.facile.city, null);
+  assert.equal(p.difficile.announced, undefined);                                 // pas annoncé : rien de plus qu'avant
+  assert.deepEqual(Object.keys(p.difficile), ['players', 'online', 'seats', 'city']);
+});
+
+test('ville annoncée : seule sa commune peut être semée, le nom et le point sont ceux de l\'annonce', async () => {
+  const w = rig({ rules: { announced: ANN } });
+  const a = await w.player(1);                                                    // facile : Pérouges
+  const bad = await a.call('/v1/season/seed', { ...SEED, key: 'c99999', name: 'Ailleurs', place: { lat: 48.8, lon: 2.3, name: 'Ailleurs' } });
+  assert.equal(bad.status, 409);
+  assert.equal(bad.body.code, 'annoncee');
+  assert.equal(bad.body.announced.name, 'Pérouges');
+  assert.equal(cityOf(w), null);
+  const r = await a.call('/v1/season/seed', { ...SEED, name: 'Nom du client', place: { lat: 46.5, lon: 6.5, name: 'Ailleurs' } });
+  assert.equal(r.body.created, true);
+  assert.equal(r.body.city.name, 'Pérouges');
+  assert.equal(cityOf(w).place.lat, 45.9);
+  assert.equal(cityOf(w).place.lon, 5.2);
+  // La ville existe : l'annonce n'est plus dite (inscription et évolution), et le niveau garde sa ville.
+  const j = await a.call('/v1/season/join', {});
+  assert.equal(j.body.announced, undefined);
+  assert.equal(j.body.city.key, 'c01283');
+  assert.equal((await w.seasons.progress()).body.levels.facile.announced, undefined);
+  // Un autre joueur du niveau rejoint la même ville, sans rien choisir.
+  const b = await w.player(2);
+  assert.equal((await b.call('/v1/season/join', {})).body.city.key, 'c01283');
+});
+
+test('ville annoncée : une ville déjà posée dans le niveau l\'emporte sur l\'annonce (saison en cours inchangée)', async () => {
+  const w = rig();                                                                // saison sans annonce : premier arrivé
+  const a = await seeded(w);
+  w.clock.t += 16000;
+  w.room.tick();
+  await w.seasons.flush();
+  // Serveur redémarré avec une annonce pour un autre lieu : la ville déjà là est gardée, l'annonce n'est pas dite.
+  const again = createSeasons({ store: w.store, now: () => w.clock.t, rules: { announced: { facile: { key: 'c69123', name: 'Lyon', lat: 45.76, lon: 4.83 } } } });
+  await again.init();
+  const j = await again.handle('/v1/season/join', JSON.stringify({ ses: a.ses }));
+  assert.equal(j.body.city.key, 'c01283');
+  assert.equal(j.body.announced, undefined);
+  const p = (await again.progress()).body.levels.facile;
+  assert.equal(p.city.key, 'c01283');
+  assert.equal(p.announced, undefined);
+  // Et la graine d'une autre commune reste refusée comme avant (une ville existe : « autre-commune »).
+  const r = await again.handle('/v1/season/seed', JSON.stringify({ ses: a.ses, ...SEED, key: 'c69123' }));
+  assert.equal(r.body.code, 'autre-commune');
 });
