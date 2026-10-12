@@ -2262,6 +2262,63 @@ await scenario('O29', 'villes de la saison sur la carte du menu', async () => {
 });
 
 // =====================================================================================================
+// O30 : ville annoncée : un niveau sans ville en jeu montre la ville que le serveur annonce (nom, badge « Annoncée », repère sur
+// la carte), le bouton ne demande pas de choisir la ville, et la bannière ne compte pas encore de ville en jeu
+// =====================================================================================================
+await scenario('O30', 'ville annoncée au menu', async () => {
+  const NOW = Date.now(), DAY = 86400000;
+  const progress = {
+    ok: true, now: NOW, season: { id: 1, name: 'Saison 1', startMs: NOW - 6 * DAY, endMs: NOW + 54 * DAY, phase: 'en-cours' },
+    levels: {
+      facile: { players: 0, online: 0, seats: 100, city: null, announced: { key: 'c69123', name: 'Lyon', lat: 45.76, lon: 4.836 } },
+      moyen: { players: 0, online: 0, seats: 100, city: null },
+      difficile: { players: 0, online: 0, seats: 100, city: null, announced: { key: 'c01283', name: 'Pérouges', lat: 45.903, lon: 5.18 } },
+    },
+  };
+  const withAnnounced = (ctx) => ctx.route('**/v1/season/progress', (r) => r.fulfill({
+    status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': ORIGIN, 'cache-control': 'no-store' }, body: JSON.stringify(progress),
+  }));
+  const url = `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&server=http://127.0.0.1:${srv.port}`;
+  const read = (t) => ev(t, () => {
+    const card = (lv) => {
+      const b = document.querySelector(`#fronts .front[data-level="${lv}"]`);
+      return b ? { city: b.querySelector('.front-city')?.textContent, badge: b.querySelector('.front-badge')?.textContent, nums: b.querySelector('.front-zombies')?.textContent,
+        saved: b.querySelector('.front-saved')?.textContent, pct: b.querySelector('.front-bar i')?.style.getPropertyValue('--p') } : null;
+    };
+    return {
+      facile: card('facile'), moyen: card('moyen'), difficile: card('difficile'),
+      pins: [...document.querySelectorAll('.maplibregl-marker.map-pin-hit')].map((m) => m.className.match(/map-pin-saison-(\w+)/)?.[1]).sort().join(),
+      cta: document.getElementById('salon-cta')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      scrollW: document.documentElement.scrollWidth, innerW: innerWidth,
+    };
+  });
+  const until = async (t, pred, timeout = 40000) => {
+    const t0 = Date.now();
+    let v = null;
+    while (Date.now() - t0 < timeout) {
+      v = await read(t).catch(() => null);
+      if (v && pred(v)) return { ok: true, v };
+      await wait(300);
+    }
+    return { ok: false, v };
+  };
+  const N = await open('N3 (ordinateur, ville annoncée)', desktop, url, { waitGame: false, before: withAnnounced });
+  const shown = await until(N, (v) => v.facile?.city === 'Lyon' && v.difficile?.city === 'Pérouges');
+  check(shown.ok, `N3 : les villes annoncées sont sur les cartes des niveaux (${JSON.stringify(shown.v && { facile: shown.v.facile?.city, difficile: shown.v.difficile?.city })})`);
+  check(shown.v?.facile?.badge === 'Annoncée' && shown.v?.difficile?.badge === 'Annoncée', `N3 : badge « Annoncée » (${shown.v?.facile?.badge}, ${shown.v?.difficile?.badge})`);
+  check(/Ville annoncée/.test(shown.v?.facile?.nums ?? '') && shown.v?.facile?.saved === '' && shown.v?.facile?.pct === '0%', `N3 : pas de décompte de zombies pour une ville pas commencée (« ${shown.v?.facile?.nums} », sauvés « ${shown.v?.facile?.saved} », barre ${shown.v?.facile?.pct})`);
+  check(shown.v?.moyen?.city === 'Ville à choisir' && shown.v?.moyen?.badge === 'À choisir', `N3 : un niveau sans annonce reste « à choisir » (${shown.v?.moyen?.city}, ${shown.v?.moyen?.badge})`);
+  const pins = await until(N, (v) => v.pins === 'difficile,facile');
+  check(pins.ok, `N3 : un repère par ville annoncée sur la carte (${pins.v?.pins})`);
+  await click(N, '#fronts .front[data-level="facile"]');
+  const cta = await until(N, (v) => /Rejoindre · Facile/.test(v.cta));
+  check(cta.ok && /Lyon · ville annoncée/.test(cta.v.cta) && !/choisir la ville|Sois le premier/.test(cta.v.cta), `N3 : le bouton dit la ville annoncée et ne demande pas de la choisir (« ${cta.v?.cta} »)`);
+  check(cta.v?.scrollW <= cta.v?.innerW, `N3 : pas de défilement horizontal (${cta.v?.scrollW} / ${cta.v?.innerW})`);
+  await shot(N, 'o30-ordi-ville-annoncee');
+  await closeCtx(N);
+});
+
+// =====================================================================================================
 // O19 : toute la séance : aucune erreur de console, aucune exception, aucune violation de la politique de
 // sécurité (hors fenêtre de O12), aucune requête vers earthlife.needhelpapp.com (sauf F, voulue) ; K, L et M compris
 // (refus voulus des scénarios du compte tolérés dans leur fenêtre : netExpected)

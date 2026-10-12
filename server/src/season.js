@@ -23,6 +23,7 @@ import {
 } from '../../prototype/src/quartier.js';
 import { SEASON, SEASON_KEY, SEASON_COMMUNE, SEASON_TILE, TOKEN_RE, readJson } from '../../prototype/src/net/protocol.js';
 import { createBucket } from './rules.js';
+import { ANNOUNCED_CITIES } from './season-cities.js';
 
 const DAY = 86400000;
 const BLOCK = (k) => typeof k === 'string' && k[0] !== '@' && SEASON_KEY.test(k);
@@ -45,12 +46,28 @@ export const SEASON_RULES = {
   rate: { join: [12, 0.2], state: [6, 0.05], seed: [3, 0.02], tile: [30, 0.5], adj: [30, 0.5], home: [6, 0.05] },
   // Par adresse, avant toute lecture du corps : [capacité, jetons par seconde] ; l'adresse illisible partage un seau dix fois plus large.
   ipRate: [40, 8],
+  // Villes annoncées par niveau (season-cities.js) ; vide : la ville d'un niveau est celle de son premier joueur.
+  announced: ANNOUNCED_CITIES,
 };
 
 export const LEVELS = SEASON.levels;
 
+// Villes annoncées lisibles : un niveau connu, une clé de commune, un nom, un point sur Terre. Le reste est ignoré.
+export function readAnnounced(raw) {
+  const out = {};
+  if (!isObj(raw)) return out;
+  for (const level of LEVELS) {
+    const a = raw[level];
+    if (!isObj(a) || typeof a.key !== 'string' || !SEASON_COMMUNE.test(a.key) || !finite(a.lat, 90) || !finite(a.lon, 180)) continue;
+    const name = cleanText(a.name, 80);
+    if (name) out[level] = { key: a.key, name, lat: a.lat, lon: a.lon };
+  }
+  return out;
+}
+
 export function createSeasons({ store, send = () => {}, log = () => {}, now = Date.now, rand = Math.random, rules = {} } = {}) {
   const R = { ...SEASON_RULES, ...rules, body: { ...SEASON_RULES.body, ...rules.body }, rate: { ...SEASON_RULES.rate, ...rules.rate } };
+  const announced = readAnnounced(R.announced);
   let season = null, ready = false, initing = null, lastInit = -Infinity;
   const worlds = new Map();            // niveau → monde
   const subs = new Map();              // session de la salle → abonné
@@ -531,6 +548,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       await store.seasonPlayerSet(acc, season.id, { commune: city.key, seenMs: now() });
     }
     return { status: 200, body: { ok: true, now: now(), season: seasonView(), level: p.level, world: w.id, city: cityView(city),
+      ...(city ? {} : announcedOf(p.level)),
       home: p.homeKey ? { key: p.homeKey, a: p.homeLat, o: p.homeLon } : null, seats: { used: w.subs.size, max: R.seats } } };
   }
 
@@ -545,6 +563,9 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
         : refuse(409, 'autre-commune', { city: cityView(w.city) });
     }
     if (b.mode !== undefined && b.mode !== 'entiere') return refuse(409, 'mode');
+    // Ville annoncée pour ce niveau : seule sa commune peut être posée (une autre n'a pas sa place dans ce monde).
+    const ann = announced[p.level] ?? null;
+    if (ann && b.key !== ann.key) return refuse(409, 'annoncee', announcedOf(p.level));
     const tiles = {};
     if (!isObj(b.tiles) || Object.keys(b.tiles).length > QUARTIER.maxTiles) return refuse(400, 'requete');
     for (const [k, v] of Object.entries(b.tiles)) {
@@ -554,7 +575,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const failed = Array.isArray(b.failed) ? b.failed.filter((k) => typeof k === 'string' && SEASON_TILE.test(k)).slice(0, QUARTIER.maxTiles) : [];
     if (!inRange(b.pop, 5, 5e7) || !inRange(b.zl ?? 8, 0, 20)) return refuse(400, 'requete');
     if (b.pop < R.popMin) return refuse(409, 'petite');                // une ville de quelques habitants ne se joue pas en une saison
-    const name = cleanText(b.name, 80);
+    const name = ann ? ann.name : cleanText(b.name, 80);
     const ville = startVille({
       key: b.key, name, population: b.pop, source: typeof b.src === 'string' && /^[a-z-]{1,20}$/.test(b.src) ? b.src : null, approx: b.approx === true,
       level: p.level, mode: 'entiere', tiles, failed, zoneLevel: b.zl ?? 8, at: now(),
@@ -562,7 +583,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!ville) return refuse(409, 'ville');
     // Pas d'habitant « moi » dans une ville commune : tous les habitants non zombies sont à sauver.
     ville.hidden0 = Math.max(0, ville.population - ville.zombies0);
-    w.city = makeCity({ key: b.key, place: { lat: place.lat, lon: place.lon, name: cleanText(place.name, 80) || name },
+    w.city = makeCity({ key: b.key, place: ann ? { lat: ann.lat, lon: ann.lon, name } : { lat: place.lat, lon: place.lon, name: cleanText(place.name, 80) || name },
       ville, playedAt: now() });
     for (const tk of Object.keys(ville.tiles)) w.city.dirty.tiles.add(tk);
     p.commune = b.key;
@@ -675,6 +696,13 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   const coords = (place) => (Number.isFinite(place?.lat) && Number.isFinite(place?.lon)
     ? { lat: Math.round(place.lat * 1000) / 1000, lon: Math.round(place.lon * 1000) / 1000 } : {});
 
+  // Ville annoncée d'un niveau, telle que le menu la montre (position à 3 décimales) : `{ announced }` à étaler dans une
+  // réponse, ou rien quand le niveau n'en a pas.
+  const announcedOf = (level) => {
+    const a = announced[level];
+    return a ? { announced: { key: a.key, name: a.name, ...coords(a) } } : {};
+  };
+
   // Évolution de la saison (écran du menu) : publique, gardée 30 s.
   async function progress() {
     if (!(await init())) return refuse(503, 'base');
@@ -691,6 +719,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
           players: counts[level] ?? 0, online: w.subs.size, seats: R.seats,
           city: city ? { key: city.key, name: city.name, ...coords(city.place), population: v.population, zombies: zombiesLeft(v), zombies0: v.zombies0, saved: v.saved,
             toSave: v.hidden0, flags: v.flags, killed: v.killed[0] + v.killed[1] + v.killed[2], status: cityStatus(v), startMs: v.start } : null,
+          ...(city ? {} : announcedOf(level)),
         };
       }
       lastProgress = { at: t, body: { ok: true, now: t, season: seasonView(), levels } };
