@@ -16,6 +16,9 @@ import {
 } from './survival.js';
 import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
 import { createCharacters } from './characters.js';
+import { shoot as fireShot, shotWave, SHOT, SHOT_TEXT } from './tir.js';
+import { createTirView } from './tir-view.js';
+import { playShot } from './tir-son.js';
 import { createAtmosphere } from './atmosphere.js';
 import { createInput } from './input.js';
 import {
@@ -431,6 +434,8 @@ const playerMeshes = characters.root.children.slice(0, 2);
 // Décor démontable (arbres, voitures, bancs) et refuge (ouvertures, drapeau, sac perdu, leurre) : un jeu par page.
 const propsView = createPropsView(scene, { lowPower });
 const baseView = createBaseView(scene);
+// Tir : l'arme en main, l'éclair et la trace de la balle (un jeu par page).
+const tirView = createTirView(scene);
 // Intérieur des bâtiments : la vue (maillages créés à « Entrer », défaits à la sortie) et ses règles dans la partie.
 const interiorView = createInteriorView(scene);
 const interior = createInteriorGame({
@@ -989,6 +994,7 @@ function disposeSession() {
   othersView?.clear();
   panel.close();
   baseView.setLure(null);
+  tirView.clear();
   session.chunks.dispose();
   session.loader.dispose();
   baseView.setGround(null);
@@ -1760,6 +1766,7 @@ function leftText(left) {
 // Objets du sac (touches 1 à 4 et puces) ; le leurre (5) se lance.
 function useItem(s, use) {
   if (use === 'lure') { throwLure(s); return; }
+  if (use === 'shoot') { shootFirearm(s); return; }
   const used = useBest(s.survivor, use, s.player);
   toast(used ? `${ITEMS[used].name} utilisé` : 'Rien dans ton sac pour ça', 1.5, used ? 'success' : '');
 }
@@ -1831,6 +1838,44 @@ function attack(s) {
   }
   // Combat : un point par zombie touché, quatre de plus par zombie abattu (le niveau gagné passe derrière « Zombie à terre »).
   if (hits.length) gainSkill(s, 'combat', hits.length * GAIN.hit + Math.max(0, p.kills - before) * GAIN.kill);
+}
+
+// Tir (touche F, puce « Tirer ») : pistolet ou fusil du sac, une munition, sur le zombie le plus proche devant le joueur (tir.js).
+// Zombies seulement. Le coup de feu s'entend de loin : les zombies alentour viennent voir ; la nuit près du refuge, quelques
+// errants de plus. Les points de Tir viennent des zombies touchés et abattus.
+function shootFirearm(s) {
+  const p = s.player, sv = s.survivor;
+  if (p.hidden) { toast('Pas de tir depuis le refuge', 1.5); return; }
+  const fx = skillEffects(s);
+  const res = fireShot(sv, p, s.director.zombies, s.grid, { fx });
+  if (!res.ok) {
+    if (res.msg) toast(res.msg, 1.5, res.why === 'notarget' ? '' : 'danger');
+    return;
+  }
+  if (s.action && !s.action.inside) cancelAction(s);
+  const ground = s.grid?.terrain?.enabled ? groundAt(s.grid, p.x, p.z) : 0;
+  tirView.fire({ gun: res.gun, from: res.from, aim: res.aim, to: res.to, miss: res.hits === 0, y: ground, hold: SHOT.hold });
+  playShot(res.gun);
+  // Petite vague de nuit près du refuge : des errants arrivent du quartier, avant que le bruit n'attire tout le monde.
+  const base = s.refuge.anchor();
+  const dist = base ? Math.hypot(base.x - p.x, base.z - p.z) : null;
+  const wave = shotWave(res.gun, { night: s.isNight, distToRefuge: dist });
+  let came = 0;
+  for (let i = 0; i < wave && s.director.zombies.length < 60; i++) {
+    const ang = Math.random() * Math.PI * 2, d = 25 + Math.random() * 15;
+    const spot = nearestFree(s.grid, p.x + Math.sin(ang) * d, p.z + Math.cos(ang) * d, 8);
+    if (spot && s.director.spawnAt(spot.x, spot.z, 'errant')) came++;
+  }
+  s.director.lureAt(res.noise.x, res.noise.z, res.noise);
+  if (res.kills) save.profile.kills += res.kills;
+  const left = res.ammoLeft === 0 ? ' · plus de munitions' : '';
+  if (res.kills) toast(`${res.kills > 1 ? `${res.kills} zombies à terre` : 'Zombie à terre'}${left}`, 1.2);
+  else if (res.hits) toast(`${SHOT_TEXT.hit(res.hits)}${left}`, 1.2);
+  else toast(`${SHOT_TEXT.miss}${left}`, 1.2);
+  if (came) toast('Le coup de feu a réveillé le quartier', 2.5, 'danger');
+  // Tir : trois points par zombie touché, douze de plus par zombie abattu (passe derrière le message du coup).
+  if (res.hits) gainSkill(s, 'tir', res.hits * GAIN.shotHit + res.kills * GAIN.shotKill);
+  saveStore.markDirty();
 }
 
 // Sac perdu à la mort : repris en passant à 1,5 m ou moins, dans la limite de la place du sac.
@@ -2426,6 +2471,7 @@ function syncScene(s, dt) {
   // quand un coup porte ou qu'un zombie mord (aucune en mouvement réduit). Au refuge, le joueur est caché.
   for (const m of playerMeshes) m.visible = !p.hidden;
   characters.sync(s, dt, camera, atmosphere.state.daylight);
+  tirView.update(dt, p, s.grid?.terrain?.enabled ? s.grid : null);
   camera.position.add(characters.shake);
   // Champ de la caméra, pour placer la horde hors écran à l'image suivante.
   camera.updateMatrixWorld();
@@ -3294,7 +3340,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, ...(debug ? { debug, online } : {}),
+  saveStore, picker, renderer, ...(debug ? { debug, online, tirView } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.

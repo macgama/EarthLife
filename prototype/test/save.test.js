@@ -26,8 +26,8 @@ const EXAMPLE = {
     kills: 14, deliveries: 1, deaths: 0,
     distanceM: 4120, playSec: 5230,
     skills: {
-      free: { combat: 120, fouille: 45, fabrication: 0, course: 310 },
-      season: { id: '1', combat: 0, fouille: 12.5, fabrication: 0, course: 0 },
+      free: { combat: 120, fouille: 45, fabrication: 0, course: 310, tir: 25 },
+      season: { id: '1', combat: 0, fouille: 12.5, fabrication: 0, course: 0, tir: 0 },
     },
     weathers: { rain: 1 },
     plans: [],
@@ -1671,7 +1671,7 @@ test('ancienne partie sans les champs nouveaux : chargée sans correction, avec 
   assert.deepEqual(r.fixes, [], 'aucune correction signalée');
   assert.equal(r.save.profile.distanceM, 0);
   assert.equal(r.save.profile.playSec, 0);
-  assert.deepEqual(r.save.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0 } });
+  assert.deepEqual(r.save.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 } });
   assert.equal(r.save.survivor.pack, null);
   // Le reste de la partie ne bouge pas.
   assert.deepEqual({ ...r.save, profile: { ...r.save.profile, distanceM: 4120, playSec: 5230, skills: EXAMPLE.profile.skills }, survivor: { ...r.save.survivor, pack: null } }, EXAMPLE);
@@ -1720,18 +1720,18 @@ test('compétences : points bornés de 0 à 10 niveaux, saison identifiée, jeu 
   // Un morceau illisible ou inconnu : remis à zéro, signalé, le reste de la partie intact.
   const junk = check((s) => { s.profile.skills = 'oups'; });
   assert.equal(junk.ok, true);
-  assert.deepEqual(junk.save.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0 } });
+  assert.deepEqual(junk.save.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 } });
   assert.ok(hasFix(junk, 'profile.skills'));
   assert.equal(junk.save.profile.kills, 14);
-  const extra = check((s) => { s.profile.skills.tir = { free: 1 }; s.profile.skills.free.tir = 40; });
-  assert.ok(hasFix(extra, 'profile.skills.tir'));
-  assert.equal(extra.save.profile.skills.tir, undefined);
-  assert.equal(extra.save.profile.skills.free.tir, undefined, 'une compétence inconnue est ignorée (elle viendra avec sa version du jeu)');
+  const extra = check((s) => { s.profile.skills.peche = { free: 1 }; s.profile.skills.free.peche = 40; });
+  assert.ok(hasFix(extra, 'profile.skills.peche'));
+  assert.equal(extra.save.profile.skills.peche, undefined);
+  assert.equal(extra.save.profile.skills.free.peche, undefined, 'une compétence inconnue est ignorée (elle viendra avec sa version du jeu)');
 });
 
 test('partie neuve : compétences à zéro ; une partie qui en a n\'est pas « vide »', () => {
   const fresh = emptySave(NOW);
-  assert.deepEqual(fresh.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0 } });
+  assert.deepEqual(fresh.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 } });
   assert.equal(isBlankSave(fresh), true);
   const free = emptySave(NOW);
   free.profile.skills.free.fouille = 12;
@@ -1746,11 +1746,11 @@ test('partie neuve : compétences à zéro ; une partie qui en a n\'est pas « v
   const storage = fakeStorage({});
   const store = createSaveStore({ storage, now: () => NOW });
   store.save.profile.skills.free.combat = 321.5;
-  store.save.profile.skills.season = { id: '1', combat: 0, fouille: 0, fabrication: 40, course: 0 };
+  store.save.profile.skills.season = { id: '1', combat: 0, fouille: 0, fabrication: 40, course: 0, tir: 0 };
   store.markDirty();
   store.flush('essai');
   const again = createSaveStore({ storage, now: () => NOW });
   assert.equal(again.save.profile.skills.free.combat, 321.5);
-  assert.deepEqual(again.save.profile.skills.season, { id: '1', combat: 0, fouille: 0, fabrication: 40, course: 0 });
+  assert.deepEqual(again.save.profile.skills.season, { id: '1', combat: 0, fouille: 0, fabrication: 40, course: 0, tir: 0 });
   assert.deepEqual(again.fixes, []);
 });

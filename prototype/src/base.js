@@ -59,6 +59,7 @@ const WORDS = {
   chaufferette: ['chaufferette', 'chaufferettes'], manteau: ['manteau', 'manteaux'], poncho: ['poncho', 'ponchos'],
   batte_cloutee: ['batte cloutée', 'battes cloutées'], hache: ['hache', 'haches'],
   sac_randonnee: ['sac de randonnée', 'sacs de randonnée'],
+  pistolet: ['pistolet', 'pistolets'], fusil: ['fusil de chasse', 'fusils de chasse'], balles: ['balle', 'balles'], cartouches: ['cartouche', 'cartouches'],
 };
 
 export function itemWord(key, n = 1) {

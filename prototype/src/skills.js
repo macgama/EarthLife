@@ -1,12 +1,13 @@
-// Compétences du joueur : quatre compétences qui montent par l'usage (comme dans Project Zomboid), de 0 à 10.
+// Compétences du joueur : cinq compétences qui montent par l'usage (comme dans Project Zomboid), de 0 à 10.
 // Module pur (ni DOM ni THREE) : testé sous node. Le jeu (main.js) appelle `addXp` quand le joueur agit et `effectsOf` à chaque
 // image ; l'écran « Mes statistiques » (stats.js) lit `skillRows`.
 //  - Combat : coups portés et zombies abattus ; dégâts et usure de l'arme.
 //  - Fouille : fouilles terminées ; durée de fouille.
 //  - Fabrication : fabrications terminées ; durée de fabrication.
 //  - Course : distance courue ; fatigue de course.
+//  - Tir : tirs au pistolet ou au fusil (tir.js), surtout les zombies abattus ; précision et cadence.
 // Les compétences sont gardées à la mort. Deux jeux de compétences, jamais mélangés : « free » (jeu libre) et « season » (la
-// saison en cours, remise à zéro quand une nouvelle saison commence). Le fil « Armes à feu » y ajoutera « tir ».
+// saison en cours, remise à zéro quand une nouvelle saison commence).
 
 export const MAX_LEVEL = 10;
 
@@ -19,6 +20,8 @@ export const GAIN = {
   room: 8,        // fouille d'une pièce (intérieur)
   craftPerSec: 5, // fabrication : par seconde de la recette (une planche, 20 ; une hache, 50 ; un établi, 100)
   runPerM: 0.15,  // course : par mètre couru
+  shotHit: 3,     // tir : par zombie touché
+  shotKill: 12,   // tir : en plus, par zombie abattu (les munitions sont rares : un tir compte plus qu'un coup)
 };
 
 // Points cumulés pour atteindre chaque niveau (index = niveau) : chaque niveau demande plus que le précédent (courbe en
@@ -27,14 +30,16 @@ export const LEVEL_XP = Array.from({ length: MAX_LEVEL + 1 }, (_, n) => (n === 0
 export const XP_MAX = LEVEL_XP[MAX_LEVEL];
 
 // Effet de chaque niveau : 3 % (combat) ou 4 % (les autres) de mieux par niveau, soit +30 % / −30 % ou −40 % au niveau 10.
-export const PER_LEVEL = { combat: 0.03, fouille: 0.04, fabrication: 0.04, course: 0.04 };
+// Tir : +3 points de précision et −3 % de délai entre deux tirs par niveau (+30 points, −30 % au niveau 10).
+export const PER_LEVEL = { combat: 0.03, fouille: 0.04, fabrication: 0.04, course: 0.04, tir: 0.03 };
 
-export const SKILL_KEYS = ['combat', 'fouille', 'fabrication', 'course'];
+export const SKILL_KEYS = ['combat', 'fouille', 'fabrication', 'course', 'tir'];
 export const SKILLS = {
   combat: { name: 'Combat', how: 'coups portés, zombies abattus' },
   fouille: { name: 'Fouille', how: 'fouilles terminées' },
   fabrication: { name: 'Fabrication', how: 'fabrications terminées' },
   course: { name: 'Course', how: 'distance courue' },
+  tir: { name: 'Tir', how: 'zombies abattus au tir' },
 };
 
 const finite = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -62,8 +67,8 @@ export function progress(xp) {
   return { level, xp: v, from, to, ratio: Math.min(1, (v - from) / (to - from)), max: false };
 }
 
-// Un jeu de compétences à zéro : { combat: 0, fouille: 0, fabrication: 0, course: 0 } (points).
-export const emptySkills = () => ({ combat: 0, fouille: 0, fabrication: 0, course: 0 });
+// Un jeu de compétences à zéro : { combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 } (points).
+export const emptySkills = () => ({ combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 });
 
 // Profil.skills : { free: jeu libre, season: { id, ... } }. `id` est la saison à laquelle appartiennent les points (null : aucune).
 export const emptyProfileSkills = () => ({ free: emptySkills(), season: { id: null, ...emptySkills() } });
@@ -103,7 +108,8 @@ export const craftXp = (seconds) => (finite(seconds) && seconds > 0 ? seconds * 
 //  - damageMul : dégâts des coups (1 à 1,3) ;
 //  - wearKeep : chance qu'un coup qui touche use l'arme (1 à 0,7) ;
 //  - searchMul, craftMul : durée de fouille et de fabrication (1 à 0,6) ;
-//  - runFatigueMul : fatigue de la course (1 à 0,6).
+//  - runFatigueMul : fatigue de la course (1 à 0,6) ;
+//  - aimBonus : points de précision ajoutés à celle de l'arme à feu (0 à 0,3) ; fireMul : délai entre deux tirs (1 à 0,7).
 export function effectsOf(bucket) {
   const lv = (k) => levelOf(bucket?.[k]);
   return {
@@ -112,6 +118,8 @@ export function effectsOf(bucket) {
     searchMul: 1 - PER_LEVEL.fouille * lv('fouille'),
     craftMul: 1 - PER_LEVEL.fabrication * lv('fabrication'),
     runFatigueMul: 1 - PER_LEVEL.course * lv('course'),
+    aimBonus: PER_LEVEL.tir * lv('tir'),
+    fireMul: 1 - PER_LEVEL.tir * lv('tir'),
   };
 }
 
@@ -125,6 +133,7 @@ export function effectText(skill, level) {
   if (skill === 'fouille') return `Fouille ${pct(PER_LEVEL.fouille * n)} plus rapide`;
   if (skill === 'fabrication') return `Fabrication ${pct(PER_LEVEL.fabrication * n)} plus rapide`;
   if (skill === 'course') return `Fatigue de course −${pct(PER_LEVEL.course * n)}`;
+  if (skill === 'tir') return `Précision +${pct(PER_LEVEL.tir * n)}, délai entre deux tirs −${pct(PER_LEVEL.tir * n)}`;
   return '';
 }
 

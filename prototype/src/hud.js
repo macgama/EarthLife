@@ -5,7 +5,7 @@
 // 150 ms, et on ne réécrit que ce qui change (textes, largeurs des jauges, classes, icônes).
 import * as icons from './icons.js';
 import { normalizeAngle } from './game.js';
-import { count, nextItem, bagUsed, bagCapacity, ITEMS, WEAPONS } from './survival.js';
+import { count, nextItem, bagUsed, bagCapacity, carriedFirearms, ammoTotal, ITEMS, WEAPONS } from './survival.js';
 import { itemArtUrl, hasItemArt, sceneUrl } from './art.js';
 
 const USES = [['eat', 'Manger'], ['drink', 'Boire'], ['heal', 'Soigner'], ['warm', 'Chauffer'], ['lure', 'Leurre']];
@@ -382,6 +382,22 @@ export function createHud({ $, input }) {
       chip.setAttribute('aria-label', `${label}, ${n} en réserve`);
       if (prev !== undefined) flash(chip, n > prev ? 'found' : 'gain', n > prev ? 600 : 300);
       st.counts[action] = n;
+    }
+    // Tirer : la puce n'apparaît qu'avec une arme à feu dans le sac ; son compteur donne les munitions de ces armes (grisée à 0,
+    // mais le toucher dit « Plus de balles »).
+    const shootN = carriedFirearms(sv).length ? ammoTotal(sv) : -1;
+    if (shootN !== st.counts.shoot) {
+      const chip = $('use-shoot');
+      if (chip) {
+        const prev = st.counts.shoot;
+        const n = Math.max(0, shootN);
+        chip.classList.toggle('hidden', shootN < 0);
+        chip.classList.toggle('empty', n === 0);
+        setText(chip.querySelector('.chip-count'), String(n));
+        chip.setAttribute('aria-label', `Tirer, ${n} ${n > 1 ? 'munitions' : 'munition'} en réserve`);
+        if (prev !== undefined && prev >= 0 && shootN >= 0) flash(chip, shootN > prev ? 'found' : 'gain', shootN > prev ? 600 : 300);
+      }
+      st.counts.shoot = shootN;
     }
     const used = bagUsed(sv);
     const cap = bagCapacity(sv);
