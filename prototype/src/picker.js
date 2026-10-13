@@ -41,6 +41,7 @@ const MARKER_SVG = '<svg viewBox="0 0 34 46" width="34" height="46" aria-hidden=
 const pinSvg = (fill, glyph) => `<svg viewBox="0 0 34 46" width="30" height="41" aria-hidden="true"><ellipse cx="17" cy="43.5" rx="7" ry="2.5" fill="#000" fill-opacity=".35"/><path d="M17 1.5C8.4 1.5 1.5 8.3 1.5 16.8 1.5 28.4 17 44.5 17 44.5s15.5-16.1 15.5-27.7C32.5 8.3 25.6 1.5 17 1.5z" fill="${fill}" stroke="#0a0d10" stroke-width="2.5"/>${glyph}</svg>`;
 // Repères des villes de la saison (salon), aux couleurs des badges : jaune en cours, rouge nuit du cœur, vert désinfectée ;
 // la lettre du niveau est au centre.
+const MAX_SEASON_PINS = 120;                      // 30 villes au plus par niveau (serveur), trois niveaux
 const SEASON_TONES = { ok: '#3fd08f', warn: '#ffc23d', danger: '#ff5d5d', idle: '#86929c' };
 const seasonSvg = (tone, letter) => pinSvg(SEASON_TONES[tone] ?? SEASON_TONES.warn, `<text x="17" y="22.2" text-anchor="middle" font-family="Chakra Petch, system-ui, sans-serif" font-size="13" font-weight="700" fill="#0a0d10">${letter}</text>`);
 const HOME_SVG = pinSvg('#5fb7ff', '<path d="M17 9.8 10.2 16h2.3v7.2h9V16h2.3z" fill="#0a0d10"/><rect x="15.5" y="18.4" width="3" height="4.8" fill="#5fb7ff"/>');
@@ -824,13 +825,13 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
     el.className = `map-pin map-pin-${pin.kind}`;
     el.setAttribute('role', 'img');
     el.innerHTML = pin.svg;
-    // Un repère de ville de la saison se touche comme la carte du niveau : le salon choisit ce niveau.
+    // Un repère de ville de la saison se touche pour choisir cette ville : le salon prend son niveau et sa ville.
     if (pin.kind.startsWith('saison-')) {
-      const level = pin.kind.slice('saison-'.length);
+      const { level, key } = pin;
       el.setAttribute('role', 'button');
       el.tabIndex = 0;
-      el.classList.add('map-pin-hit');
-      const pick = (e) => { e.stopPropagation(); e.preventDefault(); seasonPinHandler?.(level); };
+      el.classList.add('map-pin-hit', `map-pin-saison-${level}`);
+      const pick = (e) => { e.stopPropagation(); e.preventDefault(); seasonPinHandler?.(level, key); };
       el.addEventListener('click', pick);
       el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') pick(e); });
     }
@@ -1055,18 +1056,18 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
     setBag(bag) {
       setPin('bag', bag, 'Ton sac');
     },
-    // Villes de la saison (salon) : [{ level, lat, lon, tone, label, tag }], un repère par niveau ; [] les retire toutes.
+    // Villes de la saison (salon) : [{ level, key, lat, lon, tone, label, tag }], un repère par ville ouverte de chaque niveau ; [] les retire toutes.
     setSeasonCities(list) {
       const keep = new Set();
-      for (const c of Array.isArray(list) ? list : []) {
+      for (const c of Array.isArray(list) ? list.slice(0, MAX_SEASON_PINS) : []) {
         const p = normalizePlace(c);
-        if (!p || !['facile', 'moyen', 'difficile'].includes(c.level)) continue;
-        const kind = `saison-${c.level}`;
+        if (!p || !['facile', 'moyen', 'difficile'].includes(c.level) || typeof c.key !== 'string' || !/^[A-Za-z0-9_.-]{1,40}$/.test(c.key)) continue;
+        const kind = `saison-${c.level}-${c.key}`;
         keep.add(kind);
         let pin = pinOf(kind);
         const svg = seasonSvg(c.tone, c.level[0].toUpperCase());
         const tag = clean(c.tag).slice(0, 60);
-        if (!pin) { pin = { kind, svg, tag, spot: null, text: '', marker: null }; pins.push(pin); }
+        if (!pin) { pin = { kind, level: c.level, key: c.key, svg, tag, spot: null, text: '', marker: null }; pins.push(pin); }
         else if (pin.svg !== svg || pin.tag !== tag) { pin.marker?.remove(); pin.marker = null; pin.svg = svg; pin.tag = tag; }
         pin.spot = { lat: p.lat, lon: p.lon };
         pin.text = clean(c.label).slice(0, 120) || kind;
@@ -1090,7 +1091,7 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
       framedAway = false;
       flyTo(current, Math.max(map.getZoom(), APPROACH_ZOOM));
     },
-    // Appelé avec le niveau (« facile », « moyen », « difficile ») quand on touche un repère de ville.
+    // Appelé avec le niveau (« facile », « moyen », « difficile ») et la clé de la commune quand on touche un repère de ville.
     setSeasonPinHandler(fn) {
       seasonPinHandler = typeof fn === 'function' ? fn : null;
     },

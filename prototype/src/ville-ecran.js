@@ -16,7 +16,7 @@ import { nearestOpen } from './collision.js';
 import { SEASON_TEXT } from './net/season.js';
 import { insideTiles } from './saison-miroir.js';
 import { createMenuSheet } from './menu-sheet.js';
-import { createSalon, createTabs, frontModel, summaryOf, ctaModel, clockOf, pinsOf, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
+import { createSalon, createTabs, frontModel, summaryOf, ctaModel, destinationOf, clockOf, pinsOf, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
 const LEVEL_KEY = 'earthlife.niveau';
 const DAY_MS = 86_400_000;
@@ -24,6 +24,7 @@ const SUPPLY_ITEMS = ['conserve', 'conserve', 'eau', 'eau', 'barre', 'bandage', 
 const NONE = 'Sans niveau, la partie reste libre (sans ville à sauver). Choisis un niveau pour sauver une vraie ville.';
 const withTimeout = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const plural = (n, one, many) => `${groupDigits(n)} ${n > 1 ? many : one}`;
 
 export function createCityGame(host) {
   const { document: doc, params, save, saveStore, store, communes, client, picker } = host;
@@ -31,8 +32,9 @@ export function createCityGame(host) {
   let menuLevel = readLevel();
   let notice = null;         // message à montrer au premier instant de la partie (repli, ville abandonnée)
   let pendingFirst = null;   // { name, zombies, hidden } de la ville qui commence
-  // Menu : inscription, état des lieux (relu au plus toutes les 30 s), niveau voulu avant de se connecter, message passager.
-  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, busy: false, after: null, note: '', noteAt: 0, pins: [], framed: false };
+  // Menu : inscription, état des lieux (relu au plus toutes les 30 s), niveau voulu avant de se connecter, message passager, et ce que le joueur
+  // a touché pour choisir sa ville (`sel` : un repère de ville ou un point de la carte, sinon rien : il reprend sa ville ou prend la proposition).
+  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, busy: false, after: null, note: '', noteAt: 0, pins: [], framed: false, sel: null };
   const ls = (() => { try { return window.localStorage; } catch { return null; } })();
   let salon = null, tabs = null, sheet = null;
   const seasonRef = { rt: null };                                            // runtime de la saison en cours (messages du serveur)
@@ -67,17 +69,24 @@ export function createCityGame(host) {
     }
     $('city-restart')?.addEventListener('click', () => restartCard());
     salon = createSalon({ doc, storage: ls, host: {
-      onPick: (level) => { syncSeason(); picker.frameCities?.(framingOf(seasonUi.pins, level)); },
+      // Toucher un niveau : sa ville touchée avant ne tient plus ; la carte passe sur ses villes (la tienne d'abord).
+      onPick: (level) => {
+        if (seasonUi.sel?.kind === 'city' && seasonUi.sel.level !== level) seasonUi.sel = null;
+        if (seasonUi.enrolled?.level === level) seasonUi.sel = null;
+        syncSeason();
+        picker.frameCities?.(framingOf(seasonUi.pins, level, ownOf()?.key ?? null));
+      },
       onLocked: () => { seasonUi.note = 'Ton niveau est choisi pour la saison : il ne change plus.'; seasonUi.noteAt = Date.now(); syncSeason(); },
-      onLaunch: (level) => host.startGame(picker.getPlace() ?? null, { season: level }),
+      onLaunch: (level, dest) => { seasonUi.sel = null; host.startGame(picker.getPlace() ?? null, { season: level, dest }); },
     } });
-    // Un repère de ville se touche comme sa carte de niveau (même chemin : niveau choisi, ou « ton niveau est déjà choisi »).
-    picker.setSeasonPinHandler?.((level) => doc.querySelector(`#fronts .front[data-level="${level}"]`)?.click());
+    // Un repère de ville se touche pour choisir cette ville (et son niveau).
+    picker.setSeasonPinHandler?.((level, key) => selectCity(level, key));
     // « À plusieurs » cadre les villes de la saison ; « Partie libre » ramène la carte au lieu choisi. Une fois la carte remise à la taille du
     // nouveau panneau (resize recale ses marges, ce qui arrêterait un vol commencé avant).
     // Téléphone : la feuille du menu se replie à chaque changement d'onglet (la carte reste à l'écran) ; la carte se recale sur elle.
     sheet = createMenuSheet({ root: $('menu'), handle: $('sheet-handle'), onChange: () => requestAnimationFrame(() => picker.resize?.()) });
     tabs = createTabs({ doc, root: $('menu'), storage: ls, params, onChange: (name) => requestAnimationFrame(() => {
+      if (seasonUi.sel?.kind === 'place') { seasonUi.sel = null; syncSeason(); }       // un lieu de la partie libre n'est pas un choix de ville
       sheet?.close();
       picker.resize?.();
       if (name === 'libre') picker.recenter?.();
@@ -176,14 +185,15 @@ export function createCityGame(host) {
     if (seasonUi.note && Date.now() - seasonUi.noteAt > 4000) seasonUi.note = '';
     const progress = seasonUi.progress;
     const enrolled = seasonUi.enrolled?.level ?? null;
-    const ctx = { enrolled, pick: salon.pick() ?? DEFAULT_FRONT };
+    const own = ownOf();
+    const ctx = { enrolled, pick: salon.pick() ?? DEFAULT_FRONT, own, sel: seasonUi.sel };
     const fronts = FRONT_LEVELS.map((lv) => frontModel(lv, progress?.levels?.[lv], ctx));
     const link = { ...LINK.off, ...(LINK[status] ?? {}) };
     const note = blocked ? BLOCKED[status] : seasonUi.note || (status === 'seul' ? 'Tu joues seul. Touche le bouton pour passer en ligne et rejoindre les autres.'
       : seasonUi.failed && !progress ? 'L\'état des lieux est indisponible pour l\'instant : le bouton reste possible.' : '');
     salon.render({
       loaded: !!progress, failed: seasonUi.failed, fronts, clock: clockOf(progress?.season, Date.now()), summary: summaryOf(fronts), link, note,
-      cta: ctaModel({ fronts, enrolled, pick: ctx.pick, signedIn: signedIn(), status, place: picker.getPlace(), loaded: !!progress }),
+      cta: ctaModel({ fronts, enrolled, own, sel: seasonUi.sel, pick: ctx.pick, signedIn: signedIn(), status, place: picker.getPlace(), loaded: !!progress }),
     });
     seasonUi.pins = progress ? pinsOf(fronts) : [];
     picker.setSeasonCities?.(seasonUi.pins);
@@ -194,6 +204,33 @@ export function createCityGame(host) {
       picker.frameCities?.(framingOf(seasonUi.pins), { auto: true, prefer: salon?.pick() ?? DEFAULT_FRONT });
     }
   }
+  // Ta ville de la saison (celle que tu as choisie), telle que l'inscription la donne : { key, name, lat, lon } ou null.
+  function ownOf() {
+    const c = seasonUi.enrolled?.city;
+    if (!c?.key) return null;
+    return { key: c.key, name: typeof c.name === 'string' ? c.name : '', lat: c.place?.lat, lon: c.place?.lon };
+  }
+  // Repère de ville touché : le niveau et la ville sont choisis (le bouton dit où l'on va). Inscrit à un autre niveau : il ne change pas.
+  function selectCity(level, key) {
+    if (!FRONT_LEVELS.includes(level)) return;
+    const enrolled = seasonUi.enrolled?.level ?? null;
+    if (enrolled && enrolled !== level) { seasonUi.note = 'Ton niveau est choisi pour la saison : il ne change plus.'; seasonUi.noteAt = Date.now(); syncSeason(); return; }
+    if ($('menu')?.dataset.tab !== 'saison') doc.querySelector('#menu-tabs [data-tab="saison"]')?.click();
+    const row = seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === key) ?? null;
+    const ann = seasonUi.progress?.levels?.[level]?.announced;
+    const name = row?.name ?? (ann?.key === key ? ann.name : ownOf()?.key === key ? ownOf().name : '');
+    seasonUi.sel = { kind: 'city', level, key, name };
+    salon?.setPick(level);
+    try { ls?.setItem('earthlife.front', level); } catch { /* stockage indisponible */ }
+    syncSeason();
+    picker.frameCities?.(framingOf(seasonUi.pins, level, key));
+  }
+  // Lieu touché sur la carte ou cherché (main.js, picker.onChange) : sur « À plusieurs », c'est la ville voulue ; sur « Partie libre », un lieu de partie libre.
+  function placeChosen(place) {
+    if (!place || $('menu')?.dataset.tab !== 'saison') return;
+    seasonUi.sel = { kind: 'place', place: { lat: place.lat, lon: place.lon, name: place.name } };
+    syncSeason();
+  }
   // Connexion ou déconnexion du compte : l'inscription et l'état des lieux sont relus tout de suite. Un joueur venu pour
   // rejoindre la saison (carte « Un compte pour la saison ») y est mis dès qu'il est connecté.
   function seasonChanged() {
@@ -203,7 +240,7 @@ export function createCityGame(host) {
     const after = seasonUi.after;
     if (after && signedIn() && Date.now() - after.at < 10 * 60_000 && !$('menu')?.classList.contains('hidden')) {
       seasonUi.after = null;
-      host.startGame(picker.getPlace() ?? null, { season: after.level });
+      host.startGame(picker.getPlace() ?? null, { season: after.level, dest: after.dest });
     }
   }
   async function refreshSeason() {
@@ -243,8 +280,8 @@ export function createCityGame(host) {
 
   // Ce que le joueur veut jouer : 'free' (comme avant), 'resume' (sa ville en cours) ou 'new' (une ville à commencer :
   // commune, recensement, niveau, début). null : il annule. { confirmed } : il a déjà dit « Commencer » (voisine).
-  async function prepareLaunch(place, { spawn = 'place', confirmed = false, season = null } = {}) {
-    if (season) return prepareSeason(place, season);
+  async function prepareLaunch(place, { spawn = 'place', confirmed = false, season = null, dest = null } = {}) {
+    if (season) return prepareSeason(place, season, dest);
     notice = null;
     const t = store.territory;
     const cur = currentVille(t);
@@ -337,13 +374,18 @@ export function createCityGame(host) {
     return !!o.live;
   }
 
-  // Commune de la première ville du monde : recensement du lieu choisi, carte de confirmation, graine envoyée au serveur.
-  // Rend { city, prep } ou null (annulé, refusé : le joueur a lu pourquoi).
-  async function seedCity(picked, level, announced = null) {
+  // Ce que le joueur perd en changeant de ville, dit sur chaque carte de changement.
+  const moveLine = (own) => `Tu quittes ${own.name || 'ta ville'} : ton refuge là-bas est abandonné, une nouvelle maison te sera tirée ici. Ton niveau, tes compétences et ton sac restent.`;
+
+  // Ville du lieu choisi (choix libre) : recensement de sa commune, carte de confirmation, puis le serveur ouvre la ville ou y entre.
+  // `known` : sa ligne dans l'état des lieux si elle est déjà ouverte dans ce niveau ; `own` : ta ville actuelle ; `announced` : la ville
+  // annoncée du niveau (nom et point d'annonce) quand c'est elle qu'on ouvre. Rend { city, prep, home } ou null (annulé, refusé : le
+  // joueur a lu pourquoi) ; { city: own } si la commune est celle où il joue déjà.
+  async function seedCity(picked, level, { announced = null, own = null, known = () => null } = {}) {
     const n = net();
-    // Ville annoncée pour le niveau : c'est elle qu'on recense, où que le joueur ait touché la carte.
+    // Ville annoncée : c'est elle qu'on recense, où que le joueur ait touché la carte.
     const place = announced ? { lat: announced.lat, lon: announced.lon, name: announced.name } : picked;
-    if (!place) { await askCard(infoCard('Choisis la ville de la saison', 'Personne n\'a encore choisi la ville de ce niveau : touche la carte (ou cherche un lieu), puis lance la saison. Tous les joueurs de ce niveau sauveront cette même ville.'), 'ok'); return null; }
+    if (!place) { await askCard(infoCard('Choisis ta ville', 'Touche la carte (ou cherche un lieu) : la commune que tu choisis devient ta ville pour ce niveau. Les joueurs qui la choisissent aussi la sauvent avec toi.'), 'ok'); return null; }
     host.setLoading(CITY_TEXT.searching(place.name));
     let template;
     try { template = await host.template(); } catch { template = null; }
@@ -360,35 +402,58 @@ export function createCityGame(host) {
     if (!prep.ok) { await askCard(infoCard('Ville impossible', prep.reason === 'too-big' ? CITY_TEXT.tooBig : prep.reason === 'empty' ? CITY_TEXT.empty : CITY_TEXT.noStreets), 'ok'); return null; }
     if (prep.mode === 'quartiers') { await askCard(infoCard('Ville trop grande', SEASON_TEXT.mode), 'ok'); return null; }
     if (announced && prep.unit.key !== announced.key) { await askCard(infoCard('Ville impossible', seasonText('annoncee')), 'ok'); return null; }
-    if (prep.offline) { await askCard(infoCard('Pas de chiffres officiels', 'La ville de la saison est la même pour tous : elle a besoin des vrais chiffres de la commune. Réessaie avec du réseau.'), 'ok'); return null; }
+    // La commune du lieu touché est celle où tu joues déjà : rien à changer.
+    if (own && prep.unit.key === own.key) return { city: own, prep: null, same: true };
+    if (prep.offline) { await askCard(infoCard('Pas de chiffres officiels', 'La ville de la saison est la même pour ceux qui la choisissent : elle a besoin des vrais chiffres de la commune. Réessaie avec du réseau.'), 'ok'); return null; }
     const sum = prep.summary[level];
+    const name = announced?.name ?? prep.unit.name;
+    const open = known(prep.unit.key);
+    const lines = open
+      ? [`${name} est déjà ouverte en ${levelName(level)} : ${groupDigits(open.zombies)} zombies restants, ${groupDigits(open.saved)} / ${groupDigits(open.toSave)} habitants sauvés${open.online ? `, ${plural(open.online, 'survivant', 'survivants')} en ligne` : ''}.`]
+      : [`Tu es le premier à y jouer en ${levelName(level)} : ${groupDigits(sum.zombies)} zombies, ${groupDigits(sum.hidden)} habitants à sauver. Ceux qui la choisiront après toi la sauveront avec toi.`];
+    if (announced && !open) lines.push('Cette ville est annoncée pour ce niveau. Tu commenceras où tu as touché la carte, si c\'est dans la ville.');
+    if (own) lines.push(moveLine(own));
     const id = await askCard({
-      title: `${prep.unit.name} : ville de la saison`, tone: 'warn',
-      lines: [
-        `Tous les joueurs de la saison en ${levelName(level)} sauveront cette même ville, ensemble : ${groupDigits(sum.zombies)} zombies, ${groupDigits(sum.hidden)} habitants à sauver.`,
-        announced ? 'Cette ville est annoncée pour ce niveau, toute la saison. Tu commenceras où tu as touché la carte, si c\'est dans la ville.'
-          : 'Ce choix est définitif pour ce niveau, toute la saison.',
-      ],
-      buttons: [{ id: 'start', label: announced ? 'Commencer' : 'Choisir cette ville', primary: true }, { id: 'cancel', label: 'Annuler' }],
+      title: open ? `Rejoindre ${name} ?` : `Ouvrir ${name} ?`, tone: 'warn', lines,
+      buttons: [{ id: 'start', label: own ? `Aller à ${name}` : open ? 'Rejoindre' : 'Choisir cette ville', primary: true }, { id: 'cancel', label: 'Annuler' }],
     }, 'cancel');
     if (id !== 'start') return null;
-    host.setLoading('Création de la ville commune…');
+    host.setLoading('Ouverture de la ville…');
     const weights = Object.fromEntries(Object.entries(prep.weights).map(([k, v]) => [k, Math.max(0, Math.round(v))]));
     const r = await n.seed({
-      key: prep.unit.key, name: announced?.name ?? prep.unit.name, place: { lat: place.lat, lon: place.lon, name: announced?.name ?? prep.unit.name }, pop: prep.unit.population,
+      key: prep.unit.key, name, place: { lat: place.lat, lon: place.lon, name }, pop: prep.unit.population,
       src: typeof prep.unit.source === 'string' ? prep.unit.source : 'insee', approx: prep.unit.source === 'estimation' || prep.commune.approx === true,
       zl: prep.unit.level, tiles: weights, failed: prep.census.failed, mode: 'entiere',
     });
     host.setLoading(null);
-    if (r.ok) return { city: r.city, prep };
-    if (r.code === 'autre-commune' && r.city) { notice = `${r.city.name} est déjà la ville de ce niveau : tu la rejoins.`; return { city: r.city, prep: null }; }
+    if (r.ok) return { city: r.city, prep: r.created ? prep : null, home: r.home ?? null };
     await askCard(infoCard('Ville impossible', seasonText(r.code)), 'ok');
     return null;
   }
 
-  // Saison : inscription (une seule fois), ville commune (la première est choisie par le premier joueur), abonnement, état.
-  // Plan { kind: 'season', level, city, state, rv, prep, first, place }, ou null (le joueur a lu pourquoi).
-  async function prepareSeason(place, wanted) {
+  // Entrer dans une ville déjà ouverte du niveau (repère touché), avec une carte de confirmation quand on quitte une autre ville.
+  async function enterCity(level, target, own) {
+    const n = net();
+    const row = seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === target.key) ?? null;
+    if (own) {
+      const name = row?.name || target.name || 'cette ville';
+      const stats = row ? [`${groupDigits(row.zombies)} zombies restants, ${groupDigits(row.saved)} / ${groupDigits(row.toSave)} habitants sauvés${row.online ? `, ${plural(row.online, 'survivant', 'survivants')} en ligne` : ''}.`] : [];
+      const id = await askCard({
+        title: `Aller à ${name} ?`, tone: 'warn', lines: [...stats, moveLine(own)],
+        buttons: [{ id: 'go', label: `Aller à ${name}`, primary: true }, { id: 'cancel', label: 'Annuler' }],
+      }, 'cancel');
+      if (id !== 'go') return null;
+    }
+    host.setLoading('Changement de ville…');
+    const r = await n.enter(target.key);
+    host.setLoading(null);
+    return r;
+  }
+
+  // Saison : inscription (une seule fois), choix de la ville (la tienne, celle d'un repère, celle d'un lieu touché ou la proposition du
+  // niveau), abonnement, état. Plan { kind: 'season', level, city, state, rv, prep, first, place }, ou null (le joueur a lu pourquoi).
+  // `asked` : où le menu a dit d'aller (destinationOf) ; sans lui (reprise après un rechargement), ta ville ou la proposition du niveau.
+  async function prepareSeason(place, wanted, asked = null) {
     notice = null;
     const n = net();
     if (!n?.enabled) { await askCard(infoCard('Saison indisponible', 'La saison demande le jeu à plusieurs, indisponible ici.'), 'ok'); return null; }
@@ -398,7 +463,7 @@ export function createCityGame(host) {
         lines: [SEASON_TEXT.session, 'Ta saison est liée à ton compte : elle te suit sur tous tes appareils. Ta partie solo reste possible sans compte.'],
         buttons: [{ id: 'account', label: 'Ouvrir mon compte', primary: true }, { id: 'cancel', label: 'Plus tard' }],
       }, 'cancel');
-      if (id === 'account') { seasonUi.after = { level: wanted, at: Date.now() }; host.openAccount?.(); }
+      if (id === 'account') { seasonUi.after = { level: wanted, dest: asked, at: Date.now() }; host.openAccount?.(); }
       return null;
     }
     host.setLoading('Connexion à la saison…');
@@ -409,7 +474,7 @@ export function createCityGame(host) {
       // Pas encore inscrit : le niveau se choisit une fois pour la saison.
       const id = await askCard({
         title: `Rejoindre la saison en ${levelName(wanted)} ?`, tone: 'warn',
-        lines: [LEVEL_TEXT[wanted].rule, 'Le niveau ne change plus pendant la saison (2 mois). 100 joueurs au plus en même temps par niveau.'],
+        lines: [LEVEL_TEXT[wanted].rule, 'Le niveau ne change plus pendant la saison (2 mois). 100 joueurs au plus en même temps par niveau. Ta ville, elle, se change quand tu veux.'],
         buttons: [{ id: 'join', label: 'Rejoindre', primary: true }, { id: 'cancel', label: 'Annuler' }],
       }, 'cancel');
       if (id !== 'join') return null;
@@ -421,12 +486,50 @@ export function createCityGame(host) {
     seasonUi.enrolled = join;
     const level = join.level;
     if (level !== wanted) notice = `Tu joues la saison en ${levelName(level)} : ce niveau ne change pas.`;
-    let city = join.city, prep = null;
-    if (!city) {
-      const seeded = await seedCity(place, level, join.announced ?? null);
+    const own = join.city ?? null;                                   // ta ville actuelle (vue du serveur : clé, nom, point), ou rien
+    const ownView = own ? { key: own.key, name: own.name ?? '', lat: own.place?.lat, lon: own.place?.lon } : null;
+    const levelInfo = seasonUi.progress?.levels?.[level] ?? null;
+    // Où aller : ce que le menu a demandé (sur le niveau du joueur), sinon sa ville, sinon la proposition du niveau, sinon le lieu retenu.
+    const fronts = FRONT_LEVELS.map((lv) => frontModel(lv, seasonUi.progress?.levels?.[lv], { enrolled: level, own: ownView }));
+    const fresh = { fronts, enrolled: own ? level : null, own: ownView, pick: level, place };
+    let dest = asked && asked.level === level && asked.kind !== 'none' && asked.kind !== 'resume' ? asked : null;
+    if (dest?.kind === 'city' && !dest.city?.key) dest = null;
+    if (!dest) dest = destinationOf({ ...fresh, sel: null });
+    if (dest.kind === 'city' && join.announced?.key === dest.city.key) dest = { ...dest, announced: join.announced };
+    let city = own, prep = null, first = !join.home, home = join.home;
+    if (dest.kind === 'none') {
+      const seeded = await seedCity(place, level, { own });
       if (!seeded) { syncSeason(); return null; }
       ({ city, prep } = seeded);
+      home = seeded.home ?? (seeded.same ? home : null);
+    } else if (dest.kind === 'place') {
+      const known = (key) => levelInfo?.cities?.find((c) => c.key === key) ?? null;
+      const seeded = await seedCity(dest.place, level, { own, known });
+      if (!seeded) { syncSeason(); return null; }
+      ({ city, prep } = seeded);
+      home = seeded.same ? home : seeded.home ?? null;
+    } else if (dest.kind === 'city' && !(own && own.key === dest.city.key)) {
+      const a = dest.announced ?? levelInfo?.announced ?? null;
+      const open = !!levelInfo?.cities?.some((c) => c.key === dest.city.key);
+      if (a && a.key === dest.city.key && !open) {
+        // Ville annoncée pas encore ouverte : on l'ouvre (recensement de son lieu).
+        const seeded = await seedCity(null, level, { announced: a, own });
+        if (!seeded) { syncSeason(); return null; }
+        ({ city, prep } = seeded);
+        home = seeded.same ? home : seeded.home ?? null;
+      } else {
+        const r = await enterCity(level, dest.city, own);
+        if (!r) { syncSeason(); return null; }
+        if (!r.ok) { await askCard(infoCard('Ville', seasonText(r.code)), 'ok'); syncSeason(); return null; }
+        city = r.city;
+        home = r.home ?? null;
+      }
     }
+    // La ville et la maison peuvent avoir changé : l'inscription gardée pour le menu les suit.
+    join = { ...join, city, home };
+    seasonUi.enrolled = join;
+    seasonUi.at = 0;
+    first = !home;
     host.setLoading(`Connexion à ${city.name}…`);
     const handlers = {
       msg: (m) => seasonRef.rt?.applyServer(m),
@@ -443,13 +546,13 @@ export function createCityGame(host) {
       await askCard(infoCard('Saison', opened.why === 'complet' ? `${seasonText('complet')}` : seasonText(opened.why)), 'ok');
       return null;
     }
-    const first = !join.home;
-    const home = join.home ? { lat: join.home.a / 1e6, lon: join.home.o / 1e6 } : null;
+    const homeAt = home ? { lat: home.a / 1e6, lon: home.o / 1e6 } : null;
     // Sans refuge encore : on commence où le joueur a touché la carte s'il est dans la ville (tuiles du recensement), sinon
-    // au point de la ville. Chacun choisit donc son départ, la ville reste la même pour tous.
+    // au point de la ville. Chacun choisit donc son départ, la ville reste la même pour ceux qui la partagent.
     const centre = { lat: city.place?.lat ?? 0, lon: city.place?.lon ?? 0, name: city.name, area: '' };
-    const inside = !home && !!place && insideTiles(opened.state?.ville?.tiles, place.lat, place.lon);
-    const spawn = home ? { ...home, name: city.name, area: '' } : inside ? place : centre;
+    const touched = dest.kind === 'place' ? dest.place : place;
+    const inside = !homeAt && !!touched && insideTiles(opened.state?.ville?.tiles, touched.lat, touched.lon);
+    const spawn = homeAt ? { ...homeAt, name: city.name, area: '' } : inside ? touched : centre;
     syncSeason();
     return { kind: 'season', level, city, state: opened.state, rv: opened.rv, prep, first, place: spawn, join };
   }
@@ -897,7 +1000,7 @@ export function createCityGame(host) {
   }
 
   return {
-    initMenu, syncMenu, playLabel, prepareLaunch, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws,
+    initMenu, syncMenu, playLabel, placeChosen, prepareLaunch, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws,
     questText, homeGoal, onRefugeAction, onDeath, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },

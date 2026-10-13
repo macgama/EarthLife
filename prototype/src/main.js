@@ -146,7 +146,7 @@ const localGone = (id) => dismantledGone(id) || save.car?.from === id;
 if (params.has('fresh')) history.replaceState(history.state, '', urlWithout('fresh'));
 
 const picker = createPicker({
-  root: $('menu'), cities: CITIES, onChange: (place) => updatePlayLabel(place),
+  root: $('menu'), cities: CITIES, onChange: (place) => { updatePlayLabel(place); city?.placeChosen(place); },
   // « Autour de moi » et « Protéger ce lieu » : picker.js range la zone ; le jeu en ligne relit la liste.
   onMyPosition: () => zonesUpdated(), onProtect: () => zonesUpdated(),
 });
@@ -706,7 +706,7 @@ const samePlace = (a, b) => a && b && Math.abs(a.lat - b.lat) < 1e-6 && Math.abs
 // à 1 500 m ou moins, sinon le lieu choisi (expédition). Le monde est gardé si l'origine ne change pas et si la météo
 // a moins de 15 min ; le personnage n'est jamais remis à neuf. spawn : 'place' (départ ou reprise) ou 'refuge'
 // (réveil au refuge après une mort en expédition).
-async function startGame(place, { spawn = 'place', confirmed = false, season = null } = {}) {
+async function startGame(place, { spawn = 'place', confirmed = false, season = null, dest = null } = {}) {
   if ((!place && !season) || starting) return;
   starting = true;
   try {
@@ -715,7 +715,7 @@ async function startGame(place, { spawn = 'place', confirmed = false, season = n
     if (saveStore.refresh()) syncMenu();
     // Quelle partie ? Libre (comme avant), ta ville en cours, ou une ville à commencer (commune, recensement, niveau) ;
     // null : le joueur annule, on reste où l'on est (menu ou partie).
-    const plan = await city.prepareLaunch(place, { spawn, confirmed, season });
+    const plan = await city.prepareLaunch(place, { spawn, confirmed, season, dest });
     if (!plan) { setLoading(null); return; }
     // Saison : le départ est celui de la saison (dernier refuge, ou ville commune), pas le lieu choisi au menu.
     if (plan.kind === 'season') place = plan.place;

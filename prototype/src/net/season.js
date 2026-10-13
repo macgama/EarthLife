@@ -25,7 +25,8 @@ export const SEASON_TEXT = {
   base: 'Le serveur de la saison est indisponible : réessaie dans un instant.',
   reseau: 'Pas de réseau : réessaie dans un instant.',
   trop: 'Trop de demandes : réessaie dans un instant.',
-  'autre-commune': 'Ce monde a déjà sa ville : tu la rejoins.',
+  inconnue: 'Cette ville n\'est pas encore ouverte dans ton niveau : touche la carte pour la commencer.',
+  'villes-max': 'Ce niveau a déjà toutes ses villes ouvertes : rejoins l\'une d\'elles.',
   mode: 'Cette ville est trop grande pour la saison 1 : choisis une commune plus petite.',
   delai: 'Le serveur de la saison ne répond pas : réessaie dans un instant.',
   monde: 'Ce monde n\'est pas joignable pour l\'instant.',
@@ -234,6 +235,7 @@ export function createSeasonNet({
     join: (level) => call('join', level ? { level } : {}),
     state: () => call('state'),
     seed: (body) => call('seed', body),
+    enter: (key) => call('enter', { key }),
     tile: (body) => call('tile', body),
     home: (body) => call('home', body),
     async progress() {
