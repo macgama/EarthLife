@@ -989,10 +989,12 @@ await scenario('O1', 'A et B à 20 m l’un de l’autre', async () => {
   const d20 = await apart(A, B);
   const band = await Promise.all([A, B].map((t) => ev(t, () => {
     const e = document.querySelector('#weather-line > .wx-around');
-    return { shown: e ? getComputedStyle(e).display !== 'none' : false, text: e?.textContent ?? null, pill: window.__pill() };
+    const p = document.getElementById('online-pill');
+    return { shown: e ? getComputedStyle(e).display !== 'none' : false, text: e?.textContent ?? null, pill: window.__pill(), pillShown: getComputedStyle(p).display !== 'none', quiet: p.hasAttribute('data-quiet') };
   })));
   check(band[0].shown && band[0].text === '· 1 survivant autour', `à ${d20.toFixed(1)} m, A (ordinateur) : bandeau « ${band[0].text} »`);
   check(band[1].pill === 'En ligne · 1 survivant autour', `à ${d20.toFixed(1)} m, B (téléphone) : compte dans la pastille « ${band[1].pill} »`);
+  check(band[1].pillShown && !band[1].quiet, `à ${d20.toFixed(1)} m, B (téléphone) : la pastille n'est pas calme, elle reste affichée (écran allégé)`);
   await shot(A, 'o1-ordi-20m');
   await shot(B, 'o1-tel-20m');
 });

@@ -519,6 +519,12 @@ $('import-file').addEventListener('change', (e) => importSave(e.target));
 $('mods-toggle').addEventListener('click', () => {
   $('mods-toggle').setAttribute('aria-expanded', String(document.body.classList.toggle('show-mods')));
 });
+// Téléphone en portrait (index.html) : la bande des conditions ouvre les effets à la place du bouton Effets, et la quête
+// déplie ses compteurs et la fiche du bâtiment. Ailleurs, ces deux panneaux ne reçoivent pas le toucher (pointer-events).
+$('conditions').addEventListener('click', () => $('mods-toggle').click());
+$('quest').addEventListener('click', () => {
+  $('quest').setAttribute('aria-expanded', String($('quest').classList.toggle('open')));
+});
 // Bloc en ligne du menu (annexe A).
 $('online-toggle')?.addEventListener('change', (e) => {
   online.choose(e.target.checked);
@@ -2994,7 +3000,8 @@ function onlinePill(s) {
   const text = onlineStatusText(st, s);
   const tone = st === 'en-ligne' ? 'ok' : st === 'zone' || st === 'couronne' ? 'zone'
     : ['hors-ligne', 'seul', 'secours'].includes(st) ? 'off' : 'warn';
-  return { text, icon: tone === 'zone' ? 'bouclier' : 'antenne', tone };
+  // Tout va bien et personne autour : sur téléphone en portrait, la pastille se tait (index.html, data-quiet).
+  return { text, icon: tone === 'zone' ? 'bouclier' : 'antenne', tone, quiet: st === 'en-ligne' && !online.around() };
 }
 
 function onlineStatusText(st, s = session) {

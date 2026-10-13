@@ -277,7 +277,7 @@ export function createHud({ $, input }) {
   // Pastille du jeu en ligne : { text, icon, tone } (textes de l'annexe A, composés par main.js), ou null : cachée.
   function onlinePill(o) {
     if (!el.online) return;
-    const key = o ? `${o.text}|${o.icon ?? ''}|${o.tone ?? ''}` : '';
+    const key = o ? `${o.text}|${o.icon ?? ''}|${o.tone ?? ''}|${o.quiet ? 1 : 0}` : '';
     if (key === st.online) return;
     st.online = key;
     el.online.classList.toggle('hidden', !o);
@@ -287,6 +287,7 @@ export function createHud({ $, input }) {
     const name = o.icon === 'bouclier' ? 'bouclier' : 'antenne';
     if (el.onlineIcon && el.onlineIcon.dataset.icon !== name) icons.setIcon(el.onlineIcon, name);
     el.online.dataset.tone = o.tone ?? 'off';
+    if (o.quiet) el.online.dataset.quiet = ''; else delete el.online.dataset.quiet;
   }
 
   // Roue des gestes : { open, enabled } ; le bouton n'existe qu'en ligne, la roue s'ouvre avec T ou ce bouton.

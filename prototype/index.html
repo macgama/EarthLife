@@ -795,6 +795,7 @@ body.touch .small-text { display: none; }
 .moment-kicker { margin: 0; color: var(--c-horde); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
 .moment-title { margin: 2px 0 0; color: var(--c-text); font: var(--fw-bold) var(--fs-lg, 18px) / 1.15 var(--font-display); letter-spacing: var(--ls-title); text-transform: uppercase; }
 @keyframes moment-in { 0% { opacity: 0; transform: translateX(-50%) scale(.94); } 8% { opacity: 1; transform: translateX(-50%) scale(1); } 85% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes moment-in-left { 0% { opacity: 0; transform: scale(.94); } 8% { opacity: 1; transform: scale(1); } 85% { opacity: 1; } 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { #moment.show { animation: moment-fade 3.4s linear both; } @keyframes moment-fade { 0%, 90% { opacity: 1; } 100% { opacity: 0; } } }
 #horde-banner.alert .icon { animation: hud-pulse 1s var(--ease-std) infinite; }
 #hud.has-banner #objective { top: 48px; }
@@ -932,11 +933,44 @@ body.touch #controls { display: block; }
   .vital-stats, .gear-row { grid-column: 1 / -1; }
   #horde-banner { position: static; grid-column: 1 / -1; grid-row: 3; width: auto; max-width: none; margin: 6px 0 0; padding: 6px var(--sp-3); font-size: 14px; }
   #quest { grid-column: 1; grid-row: 4; margin-top: 6px; }
-  #quest-text { -webkit-line-clamp: 3; }
   #online-pill { grid-column: 1; grid-row: 5; margin-top: 6px; }
+  /* Écran allégé (retour de Gaël du 2026-10-13 : « beaucoup trop d'informations et de fenêtres »). Toujours visibles :
+     les cinq jauges, une ligne d'objectif avec sa distance, la carte, le sac et les boutons. Le reste s'ouvre d'un toucher :
+     la quête déplie ses compteurs et la fiche du bâtiment, la bande des conditions ouvre les effets (le bouton Effets
+     disparaît). Température et zombies à terre ne s'affichent que si le corps souffre ; la pastille du jeu en ligne se tait
+     tant que personne n'est autour et que tout va bien. */
+  .vital-stats { display: none; margin-top: 4px; padding-top: 4px; }
+  #vitals:has(#body.cold, #body.hot, #body.low) .vital-stats { display: flex; }
+  #kills { display: none; }
+  #conditions { pointer-events: auto; cursor: pointer; }
+  #conditions::after { content: ''; order: 4; flex: none; width: 6px; height: 6px; margin: -3px 2px 0 4px; border-right: 2px solid var(--c-text-3); border-bottom: 2px solid var(--c-text-3); transform: rotate(45deg); transition: transform var(--t-fast) var(--ease-std); }
+  body.show-mods #conditions::after { margin-top: 3px; transform: rotate(-135deg); }
+  #mods-toggle { display: none; }
+  #quest { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--sp-2); pointer-events: auto; cursor: pointer; }
+  #quest .quest-head { grid-column: 1; grid-row: 1; }
+  #quest .meta { grid-column: 2; grid-row: 1; margin: 0; }
+  #quest:not(.open) .quest-val:not(.quest-timer-val) { display: none; }
+  #quest.open .meta { grid-column: 1 / -1; grid-row: 6; margin-top: 4px; }
+  #quest-text { grid-column: 1 / -1; grid-row: 2; margin-top: 2px; -webkit-line-clamp: 2; }
+  #quest #city-meta, #quest #fiche { grid-column: 1 / -1; }
+  #quest:not(.open) :is(#city-meta, #fiche) { display: none; }
+  #quest.open #quest-text { -webkit-line-clamp: 4; }
+  #quest .quest-head::after { content: ''; flex: none; width: 6px; height: 6px; margin: -3px 2px 0 auto; border-right: 2px solid var(--c-text-3); border-bottom: 2px solid var(--c-text-3); transform: rotate(45deg); transition: transform var(--t-fast) var(--ease-std); }
+  #quest.open .quest-head::after { margin-top: 3px; transform: rotate(-135deg); }
+  #online-pill[data-quiet] { display: none; }
+  /* Affiche d'un moment fort : plus petite (3 : 1), à gauche sous la quête (et le bandeau de horde), hors de la colonne de
+     la carte et au-dessus de la tête du joueur. */
+  #moment { top: calc(var(--hud-t, 12px) + 190px); left: var(--hud-l); width: calc(100vw - var(--hud-l) - var(--hud-r) - 106px); transform: none; }
+  #moment.show { animation-name: moment-in-left; }
+  @media (prefers-reduced-motion: reduce) { #moment.show { animation-name: moment-fade; } }
+  .moment-art { aspect-ratio: 3 / 1; }
+  .moment-text { padding-top: 18px; }
+  .moment-title { font-size: var(--fs-md); }
   body:not(.touch) #inventory { grid-column: 2; grid-row: 6; }
   body:not(.touch) .chip-name { display: none; }
-  #objective, body.touch #objective { grid-column: 1; grid-row: 6; top: 6px; }
+  /* Bandeau « Objectif mis à jour » : sous la quête, à gauche de la colonne de la carte (la quête repliée est plus courte, il
+     remonte jusqu'aux boutons − et +). */
+  #objective, body.touch #objective { grid-column: 1; grid-row: 6; top: 6px; right: auto; margin: 0; max-width: calc(100vw - var(--hud-l) - var(--hud-r) - var(--mm-size) - var(--sp-2)); }
   /* Fouiller et toast : centrés dans la place laissée à gauche de la colonne du sac. */
   #search, #action2, #toast { left: var(--hud-l); right: calc(var(--hud-r) + var(--btn-item) + var(--sp-2)); max-width: calc(100vw - var(--hud-l) - var(--hud-r) - var(--btn-item) - var(--sp-2)); }
   #search, #action2 { bottom: calc(var(--hud-b) + 136px); min-height: 48px; font-size: 14px; }
