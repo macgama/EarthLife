@@ -697,7 +697,7 @@ export function createCityGame(host) {
     if (plan.first) {
       pendingFirst = { name: ville.name, zombies: ville.zombies0, hidden: ville.hidden0 };
       await startHome(s, plan);
-      postHome(s);
+      await postHome(s);
     }
     host.setLoading(null);
     rt.chooseHeart();
@@ -706,14 +706,19 @@ export function createCityGame(host) {
   }
 
   // Maison de la saison : le pâté du refuge et sa position, gardés par le serveur (reprise au dernier refuge).
-  function postHome(s) {
+  // Le serveur n'accepte qu'un pâté dont il connaît la tuile : on attend que celles autour de la maison soient découpées
+  // et envoyées (sinon 400 `requete` quand la maison tirée est loin de l'origine, par exemple après un trajet en voiture).
+  async function postHome(s) {
     const rt = s.city, n = net();
     if (!rt?.season || !n) return;
     const b = host.homeLatLon();
     if (!b) return;
     const o = s.store.proj.toLocal(b.lat, b.lon);
+    await withTimeout(rt.ensureAround(o.x, o.z, { wait: true }), 10_000).catch(() => {});
+    const live = net();
+    if (s.city !== rt || !live) return;
     const key = rt.blockAt(o.x, o.z) ?? rt.nearestBlock(o.x, o.z, 120);
-    if (key) n.home({ key, a: Math.round(b.lat * 1e6), o: Math.round(b.lon * 1e6) });
+    if (key) live.home({ key, a: Math.round(b.lat * 1e6), o: Math.round(b.lon * 1e6) });
   }
 
   // Ta maison : tirée parmi les habitants cachés, déjà fouillée et à toi (refuge). Une ancienne partie garde son refuge.
