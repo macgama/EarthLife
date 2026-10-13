@@ -36,6 +36,7 @@
 //   comme au lancement (porte du refuge, sinon départ de la session) ; la variante après 90 m de marche le note.
 import http from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -2474,7 +2475,15 @@ await scenario('O32', 'départ en voiture vers une autre ville pendant la saison
 
     // V, joueur du navigateur : compte, « Autre » choisie sur la carte du menu.
     const url = `${ORIGIN}/index.html?lat=${HOME.lat}&lon=${HOME.lon}&time=day&debug=1&menu=libre&server=${SERVER}`;
-    const A = await open('V (ordinateur, voiture en saison)', desktop, url, { waitGame: false, before: (ctx) => ctx.addInitScript(acctProbe) });
+    const A = await open('V (ordinateur, voiture en saison)', desktop, url, { waitGame: false, before: async (ctx) => {
+      await ctx.addInitScript(acctProbe);
+      // Tuiles qu'aucun fichier d'essai ne couvre : tuile vide (comme aux essais de la voiture), sans erreur 404 en console.
+      await ctx.route(/tiles\.openfreemap\.org\/.*\/\d+\/\d+\/\d+\.pbf$/, (route) => {
+        const m = new URL(route.request().url()).pathname.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
+        if (existsSync(path.join(root, 'test/fixtures/tiles', `${m[1]}-${m[2]}-${m[3]}.mvt`))) return route.fallback();
+        return route.fulfill({ status: 200, body: Buffer.alloc(0), contentType: 'application/vnd.mapbox-vector-tile', headers: { 'access-control-allow-origin': '*' } });
+      });
+    } });
     check((await accWait(A, (v) => v.menu && v.block, 60000)).ok, 'V : menu affiché, bloc Compte présent');
     const T0 = Date.now();
     A.page.on('response', (r) => { if (r.status() >= 400) note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : ${r.status()} ${r.request().method()} ${new URL(r.url()).pathname}`); });
@@ -2525,12 +2534,19 @@ await scenario('O32', 'départ en voiture vers une autre ville pendant la saison
       const ll = s.store.proj.toLatLon(s.player.x, s.player.z);
       el.save.car = { lat: ll.lat, lon: ll.lon, yaw: 0, fuel: 21, wear: 100, from: 'essai-o32', tint: CAR.tint };
       window.__sessionBefore = s;
-      el.cars.openCar(s);
     });
-    const carCard = await until(A, () => (document.querySelector('#card .rp-card-title')?.textContent === 'Ta voiture' ? 1 : null), null, 15000);
+    // La carte de la voiture refuse le départ tant que la liaison en ligne est coupée (« Pas de connexion… ») : sous swiftshader elle se coupe et se rétablit
+    // pendant le lancement ; l'essai rouvre la carte quand elle est revenue (au plus cinq fois).
+    let btnDrive = false, carCard = null;
+    for (let i = 0; i < 5 && !btnDrive; i++) {
+      await until(A, () => window.__earthlife.online?.live === true, null, 60000);
+      await ev(A, () => window.__earthlife.cars.openCar(window.__earthlife.session));
+      carCard = await until(A, () => (document.querySelector('#card .rp-card-title')?.textContent === 'Ta voiture' ? 1 : null), null, 15000);
+      btnDrive = !!(await until(A, () => !!document.querySelector('#card [data-card-btn="drive"]'), null, 3000));
+      if (!btnDrive) { note(`V : carte sans « Partir en voiture » (essai ${i + 1}) : ${await ev(A, () => document.getElementById('card').textContent.replace(/\s+/g, ' ').trim().slice(0, 160))}`); await A.page.click('#card [data-card-btn="close"]').catch(() => {}); await wait(2000); }
+    }
     check(!!carCard, 'V : carte « Ta voiture »');
-    const btnDrive = await until(A, () => !!document.querySelector('#card [data-card-btn="drive"]'), null, 10000);
-    if (!check(!!btnDrive, `V : bouton « Partir en voiture » (carte : ${(await ev(A, () => document.getElementById('card').textContent.replace(/\s+/g, ' ').trim().slice(0, 200)))})`)) { await closeCtx(A); return; }
+    if (!check(btnDrive, 'V : bouton « Partir en voiture »')) { await closeCtx(A); return; }
     await A.page.click('#card [data-card-btn="drive"]');
     const driveOpen = await until(A, () => (!document.getElementById('drive').classList.contains('hidden') ? 1 : null), null, 15000);
     if (!check(!!driveOpen, 'V : carte de conduite ouverte')) {
@@ -2559,6 +2575,7 @@ await scenario('O32', 'départ en voiture vers une autre ville pendant la saison
     check(!!conf && /Tu quittes Autre/.test(conf.text) && conf.btn === 'Partir pour Pérouges', `V : carte « ${conf?.title} », bouton « ${conf?.btn} »`);
     check(cities().length === 1 && cities()[0].subs === 1, `serveur : rien n'a bougé avant le départ (${JSON.stringify(cities())})`);
     await shot(A, 'o32-ordi-confirmation');
+    await until(A, () => window.__earthlife.online?.live === true, null, 60000); // « Partir » se refuse tant que la liaison est coupée (voir plus haut)
     await A.page.click('#card [data-card-btn="start"]');
     const driving = await until(A, () => (window.__earthlife.session.action?.id === 'drive' ? { time: window.__earthlife.session.action.time, shown: !document.getElementById('ride').classList.contains('hidden'), to: document.getElementById('ride-to').textContent } : null), null, 30000);
     if (!driving) note(`V : pas de trajet : ${JSON.stringify(await ev(A, () => { const e = window.__earthlife, s = e.session; return { toasts: window.__seen.toasts.map((x) => x.t).slice(-4), action: s.action?.id ?? null, inside: s.refuge?.inside ?? null, ended: s.ended, hold: s.holdStep, paused: s.paused, live: e.online.live, loading: document.getElementById('loading').classList.contains('hidden') ? null : document.getElementById('loading').textContent.replace(/\s+/g, ' ').trim().slice(0, 80), card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null, fuel: e.save.car?.fuel }; }))}`);
