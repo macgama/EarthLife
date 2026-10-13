@@ -977,11 +977,14 @@ export function createCityGame(host) {
 
   // ---------- Fin de session ----------
 
+  // Fin de la partie en cours (avant de charger la suivante). L'abonnement à la ville de saison n'est fermé que s'il est encore celui de cette
+  // partie : au menu, onMenu l'a déjà fermé, et la partie suivante (reprise, « Aller ») a pu ouvrir le sien avant que celle-ci soit défaite.
   function detach(s) {
     const season = !!s?.city?.season;
+    const mine = season && seasonRef.rt === s.city;
     s?.city?.dispose(s.director);
     if (s) s.city = null;
-    if (season) {
+    if (mine) {
       seasonRef.rt = null;
       net()?.close();
     }
