@@ -473,7 +473,7 @@ async function goDrive(s, out) {
   if (!s.city?.season) { cars.start(s, out); return; }
   if (starting) return;
   starting = true;
-  s.paused = true;
+  s.holdStep = true; // le jeu attend, mais la position reste partagée (la pause du menu la coupe : la liaison s'éteindrait au bout de 12 s de silence)
   let plan = null;
   try {
     plan = await city.planTrip(out.place);
@@ -482,7 +482,7 @@ async function goDrive(s, out) {
     toast('La ville d\'arrivée n\'a pas pu être préparée', 4, 'danger');
   } finally {
     starting = false;
-    if (session === s) s.paused = false;
+    s.holdStep = false;
     setLoading(null);
   }
   if (plan && session === s) cars.start(s, { ...out, season: plan });
@@ -1194,7 +1194,7 @@ renderer.setAnimationLoop(() => {
   if (s.player && onlineOn) onlineInput(s, inp);
   // Une carte qui attend une réponse (mort, livraison, missions, déménagement, absence) met le jeu en pause.
   const blocked = card.isOpen() && !!cardInfo?.blocking;
-  if (!s.paused && !s.ended && s.player && !blocked) {
+  if (!s.paused && !s.holdStep && !s.ended && s.player && !blocked) {
     const t0 = performance.now();
     step(s, inp, dt);
     if (DEBUG) {

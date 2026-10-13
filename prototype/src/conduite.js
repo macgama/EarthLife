@@ -197,7 +197,8 @@ export function createCarGame(host) {
   function start(s, out) {
     const car = save.car;
     if (!car || s.action || s.ended || host.current() !== s || s.refuge.inside) return;
-    if (blockOf(s, car)) return;
+    const block = blockOf(s, car);
+    if (block) { host.toast(block, 4, 'danger'); return; }
     const trip = tripOf(car, out.place, car.fuel);
     if (!trip.ok) { host.toast(trip.why, 3, 'danger'); return; }
     const p = s.player;
