@@ -912,11 +912,12 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
       map.flyTo({ center: [f.lon, f.lat], zoom: SEASON_ZOOM, offset: [0, Math.min(20, Math.floor(free.h / 4))], speed: 1.6, curve: 1.42, maxDuration: 3500 });
       return;
     }
-    // Marges qui s'ajoutent à celles du panneau : de la place en haut pour le repère et à droite pour son étiquette.
+    // Marges qui s'ajoutent à celles du panneau : de la place en haut pour le repère et à droite pour son étiquette (« Vulliens · 5 en ligne »).
     const e = Math.max(6, Math.min(40, Math.floor(Math.min(free.w, free.h) / 6)));
+    const tag = Math.max(110, Math.min(170, Math.floor(free.w * 0.4)));
     const bounds = new gl.LngLatBounds();
     for (const p of f.points) bounds.extend([p.lon, p.lat]);
-    map.fitBounds(bounds, { maxZoom: SEASON_ZOOM - 1, padding: { top: e + 42, bottom: e, left: e, right: e + 110 }, duration: 1800 });
+    map.fitBounds(bounds, { maxZoom: SEASON_ZOOM - 1, padding: { top: e + 42, bottom: e, left: e, right: e + tag }, duration: 1800 });
   }
 
   // Le globe tourne doucement tant que rien n'est choisi, jusqu'au premier geste.
