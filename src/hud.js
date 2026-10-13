@@ -13,7 +13,7 @@ const VITAL_ICONS = { health: 'sante', stamina: 'endurance', food: 'faim', water
 const TOAST_ICONS = { danger: 'alerte', success: 'succes', loot: 'sac' };
 const EASE_OUT = 'cubic-bezier(.16, 1, .3, 1)';
 // Rayon de chaque flèche de boussole, en part de la plus petite dimension de la zone du HUD : elles ne se recouvrent pas.
-const ARROW_RADIUS = { quest: 0.22, home: 0.185, bag: 0.255, horde: 0.29, survivor: 0.33 };
+const ARROW_RADIUS = { quest: 0.22, home: 0.185, bag: 0.255, car: 0.24, horde: 0.29, survivor: 0.33 };
 // Flèches vers les autres survivants : 3 au plus (spec 3.1), créées ici si la page ne les a pas.
 const SURVIVOR_ARROWS = 3;
 const ARROW_PATH = 'M16 3 26.5 28 16 21.5 5.5 28Z';
@@ -277,7 +277,7 @@ export function createHud({ $, input }) {
   // Pastille du jeu en ligne : { text, icon, tone } (textes de l'annexe A, composés par main.js), ou null : cachée.
   function onlinePill(o) {
     if (!el.online) return;
-    const key = o ? `${o.text}|${o.icon ?? ''}|${o.tone ?? ''}` : '';
+    const key = o ? `${o.text}|${o.icon ?? ''}|${o.tone ?? ''}|${o.quiet ? 1 : 0}` : '';
     if (key === st.online) return;
     st.online = key;
     el.online.classList.toggle('hidden', !o);
@@ -287,6 +287,7 @@ export function createHud({ $, input }) {
     const name = o.icon === 'bouclier' ? 'bouclier' : 'antenne';
     if (el.onlineIcon && el.onlineIcon.dataset.icon !== name) icons.setIcon(el.onlineIcon, name);
     el.online.dataset.tone = o.tone ?? 'off';
+    if (o.quiet) el.online.dataset.quiet = ''; else delete el.online.dataset.quiet;
   }
 
   // Roue des gestes : { open, enabled } ; le bouton n'existe qu'en ligne, la roue s'ouvre avec T ou ce bouton.

@@ -34,6 +34,9 @@ export const ITEMS = {
   fusil: { name: 'Fusil de chasse', gun: true, one: 'fusil de chasse', many: 'fusils de chasse' },
   balles: { name: 'Balles', ammo: true, one: 'balle', many: 'balles' },
   cartouches: { name: 'Cartouches', ammo: true, one: 'cartouche', many: 'cartouches' },
+  // Voitures et carburant (voiture.js) : un bidon verse 5 litres dans le réservoir de ta voiture, la batterie sert à réparer une voiture.
+  bidon: { name: "Bidon d'essence", fuel: true, one: 'bidon', many: 'bidons' },
+  batterie: { name: 'Batterie', one: 'batterie', many: 'batteries' },
 };
 
 // Armes : la batte de base ne s'use pas et n'est pas un objet du sac.
@@ -93,10 +96,17 @@ export const LOOT = {
 LOOT.police.push(['pistolet', 0.025, 1], ['balles', 0.35, 6]);
 LOOT.outdoor.push(['fusil', 0.02, 1], ['cartouches', 0.3, 4]);
 LOOT.house.push(['balles', 0.03, 3], ['cartouches', 0.03, 2]);
+// Carburant et batteries (voiture.js), en fin de table pour la même raison : une station-service (type `fuel`, jusqu'ici fouillée
+// comme une épicerie) donne un bidon d'essence une fois sur deux ou trois ; rarement un entrepôt ou une maison ; la batterie
+// vient d'une voiture démontée (props.js), d'un entrepôt ou d'une quincaillerie.
+LOOT.fuel = [...LOOT.convenience, ['bidon', 0.6, 2]];
+LOOT.industrial.push(['bidon', 0.08, 1], ['batterie', 0.25, 1]);
+LOOT.hardware.push(['batterie', 0.35, 1]);
+LOOT.house.push(['bidon', 0.04, 1]);
 const KIND_ALIASES = {
   apartments: 'house', residential: 'house', detached: 'house', yes: 'house', terrace: 'house', semidetached_house: 'house', dormitory: 'house',
   shop: 'retail', supermarket: 'supermarket', office: 'commercial', warehouse: 'industrial', garage: 'industrial', garages: 'industrial',
-  kindergarten: 'school', university: 'school', college: 'school', train_station: 'station', subway_entrance: 'station', fuel: 'convenience',
+  kindergarten: 'school', university: 'school', college: 'school', train_station: 'station', subway_entrance: 'station',
   townhall: 'commercial', civic: 'commercial', public: 'commercial', church: 'house',
   doctors: 'clinic', bank: 'commercial',
 };
