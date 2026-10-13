@@ -14,7 +14,7 @@ import { localDate, utcOffsetFor } from './horde.js';
 import { storeItems, chestCap, countOf, countsLabel, claimableShape } from './base.js';
 import { nearestOpen } from './collision.js';
 import { SEASON_TEXT } from './net/season.js';
-import { insideTiles } from './saison-miroir.js';
+import { insideTiles, resumeHome } from './saison-miroir.js';
 import { createMenuSheet } from './menu-sheet.js';
 import { createSalon, createTabs, frontModel, summaryOf, ctaModel, clockOf, pinsOf, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
@@ -387,7 +387,7 @@ export function createCityGame(host) {
   }
 
   // Saison : inscription (une seule fois), ville commune (la première est choisie par le premier joueur), abonnement, état.
-  // Plan { kind: 'season', level, city, state, rv, prep, first, place }, ou null (le joueur a lu pourquoi).
+  // Plan { kind: 'season', level, city, state, rv, prep, first, repost, place }, ou null (le joueur a lu pourquoi).
   async function prepareSeason(place, wanted) {
     notice = null;
     const n = net();
@@ -444,14 +444,14 @@ export function createCityGame(host) {
       return null;
     }
     const first = !join.home;
-    const home = join.home ? { lat: join.home.a / 1e6, lon: join.home.o / 1e6 } : null;
+    const { home, repost } = resumeHome(join.home, host.homeLatLon(), opened.state?.ville?.tiles, host.geoDistance);
     // Sans refuge encore : on commence où le joueur a touché la carte s'il est dans la ville (tuiles du recensement), sinon
     // au point de la ville. Chacun choisit donc son départ, la ville reste la même pour tous.
     const centre = { lat: city.place?.lat ?? 0, lon: city.place?.lon ?? 0, name: city.name, area: '' };
     const inside = !home && !!place && insideTiles(opened.state?.ville?.tiles, place.lat, place.lon);
     const spawn = home ? { ...home, name: city.name, area: '' } : inside ? place : centre;
     syncSeason();
-    return { kind: 'season', level, city, state: opened.state, rv: opened.rv, prep, first, place: spawn, join };
+    return { kind: 'season', level, city, state: opened.state, rv: opened.rv, prep, first, repost, place: spawn, join };
   }
 
   // ---------- Dans la partie : brancher la ville au monde ----------
@@ -547,7 +547,7 @@ export function createCityGame(host) {
       pendingFirst = { name: ville.name, zombies: ville.zombies0, hidden: ville.hidden0 };
       await startHome(s, plan);
       postHome(s);
-    }
+    } else if (plan.repost) postHome(s);
     host.setLoading(null);
     rt.chooseHeart();
     rt.settleEmpty();
