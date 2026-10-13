@@ -7,7 +7,8 @@
 // skills : les compétences, ordinateur et téléphone ;
 // armes : pistolet et fusil (tir, munitions, bruit), ordinateur et téléphone ;
 // trajet : trajet entre stations, ordinateur et téléphone ; trajet:desktop ou trajet:mobile : un seul ;
-// voiture : voitures et carburant (réparer, siphonner, plein, trajet de Lyon à Pérouges), ordinateur et téléphone).
+// voiture : voitures et carburant (réparer, siphonner, plein, trajet de Lyon à Pérouges), ordinateur et téléphone ;
+// ecran : l'écran de jeu allégé du téléphone en portrait, seul sur une partie neuve).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
@@ -1139,6 +1140,99 @@ async function bannerClear(page, tag, label) {
   check(!!banner && !hits.length, `${tag} : bandeau ${banner ? `${Math.round(banner.left)},${Math.round(banner.top)} → ${Math.round(banner.right)},${Math.round(banner.bottom)}` : 'absent'} disjoint de #leftcol (${left.map((b) => `#${b.id} ${Math.round(b.top)}–${Math.round(b.bottom)}`).join(', ')}), ${label}${hits.length ? ` : chevauche ${hits.map((b) => `#${b.id}`).join(', ')}` : ''}`);
 }
 
+// 8 bis. Écran allégé (retour de Gaël du 2026-10-13 : « beaucoup trop d'informations et de fenêtres »), téléphone en portrait :
+// l'état tient sur une bande de jauges, la quête sur deux lignes (compteurs et fiche au toucher), le bouton Effets cède la
+// place à la bande des conditions, la pastille du jeu en ligne se tait quand tout va bien et que personne n'est autour, l'affiche
+// d'un moment fort reste dans la colonne de gauche.
+async function screenDiet(page, tag) {
+  const frame = () => ev(page, () => {
+    const $ = (id) => document.getElementById(id);
+    const shown = (e) => { if (!e) return false; const cs = getComputedStyle(e); const r = e.getBoundingClientRect(); return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
+    const r = (id) => { const b = $(id).getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), left: Math.round(b.left), right: Math.round(b.right), height: Math.round(b.height) }; };
+    return {
+      vitals: r('vitals'), stats: shown(document.querySelector('.vital-stats')), kills: shown($('kills')), mods: shown($('mods-toggle')),
+      showMods: document.body.classList.contains('show-mods'), more: shown(document.querySelector('.cond-more')),
+      quest: r('quest'), meta: shown($('city-meta')), fiche: shown($('fiche')), open: $('quest').classList.contains('open'), expanded: $('quest').getAttribute('aria-expanded'),
+      pill: shown($('online-pill')), quietAttr: $('online-pill').hasAttribute('data-quiet'),
+    };
+  });
+  const start = await frame();
+  check(start.vitals.height <= 44 && !start.stats && !start.kills,
+    `${tag} 8 bis : état sur ${start.vitals.height} px (44 au plus), sans température ni zombies à terre tant que le corps va bien`);
+  check(!start.mods, `${tag} 8 bis : bouton Effets caché`);
+  await page.tap('#conditions');
+  await wait(300);
+  const eff = await frame();
+  check(eff.showMods && eff.more, `${tag} 8 bis : bande des conditions touchée, effets et sources ouverts`);
+  await page.tap('#conditions');
+  await wait(300);
+  const effOff = await frame();
+  check(!effOff.showMods && !effOff.more, `${tag} 8 bis : bande des conditions retouchée, effets refermés`);
+
+  // États forcés : quête de ville avec compteurs et fiche, pastille calme, affiche d'un moment fort.
+  const keep = await ev(page, () => {
+    const $ = (id) => document.getElementById(id);
+    window.__earthlife.debug.freezeHud(true);
+    const q = $('quest');
+    const keep = { cls: q.className, stage: $('quest-stage').textContent, text: $('quest-text').textContent, pill: $('online-pill').className, pillQuiet: $('online-pill').hasAttribute('data-quiet') };
+    q.classList.remove('explore', 'no-target', 'stage-2'); q.classList.add('city', 'no-timer');
+    $('quest-stage').textContent = 'Vulliens · Facile · Saison 1';
+    $('quest-text').textContent = 'Nettoie ce pâté : 4 zombies';
+    const m = $('city-meta'); m.hidden = false;
+    m.firstElementChild.textContent = 'Zombies restants 108 · Habitants sauvés 29 / 475 · Pâtés libérés 4 / 42';
+    m.lastElementChild.textContent = 'Route Vuaz des Chars · 5 zombies · 22 cachés';
+    const f = $('fiche'); f.hidden = false; $('fiche-title').textContent = 'Habitation';
+    $('fiche-lines').replaceChildren(...['Ton refuge', 'Zone q46.6213_6.7928 : 5 zombies'].map((t) => { const li = document.createElement('li'); li.textContent = t; return li; }));
+    const o = $('online-pill'); o.classList.remove('hidden'); o.dataset.tone = 'ok'; $('online-pill-text').textContent = 'En ligne · personne autour';
+    return keep;
+  });
+  await wait(300);
+  const closed = await frame();
+  check(!closed.meta && !closed.fiche && !closed.open && closed.quest.height <= 64 && closed.expanded !== 'true',
+    `${tag} 8 bis : quête de ville repliée sur ${closed.quest.height} px (64 au plus), compteurs et fiche cachés`);
+  const pillShown = await frame();
+  check(pillShown.pill, `${tag} 8 bis : pastille « En ligne » visible quand elle n'est pas calme`);
+  await ev(page, () => document.getElementById('online-pill').setAttribute('data-quiet', ''));
+  const pillQuiet = await frame();
+  check(!pillQuiet.pill, `${tag} 8 bis : pastille calme (en ligne, personne autour) cachée`);
+  await page.tap('#quest');
+  await wait(300);
+  const opened = await frame();
+  check(opened.open && opened.expanded === 'true' && opened.meta && opened.fiche && opened.quest.height > closed.quest.height,
+    `${tag} 8 bis : quête touchée, compteurs et fiche dépliés (${closed.quest.height} → ${opened.quest.height} px)`);
+  await shot(page, `${tag}-00-quete-depliee`);
+  await page.tap('#quest');
+  await wait(300);
+  const again = await frame();
+  check(!again.open && !again.meta && !again.fiche && again.quest.height === closed.quest.height, `${tag} 8 bis : quête retouchée, repliée de nouveau`);
+  await shot(page, `${tag}-00-quete-repliee`);
+
+  // Affiche d'un moment fort : dans la colonne de gauche, sous la quête, sans toucher la carte ni le sac.
+  const moment = await ev(page, () => {
+    const $ = (id) => document.getElementById(id);
+    const m = $('moment');
+    m.style.setProperty('--moment-art', 'url("assets/art/scenes/horde.webp")');
+    m.querySelector('.moment-kicker').textContent = 'Alerte'; m.querySelector('.moment-title').textContent = 'Une horde approche';
+    m.classList.remove('hidden'); m.style.animation = 'none';
+    const rect = (e) => { const b = e.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom }; };
+    const mm = rect(m), map = rect($('mapbox')), inv = rect($('inventory')), quest = rect($('quest'));
+    m.classList.add('hidden'); m.style.animation = '';
+    const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    return { box: `${Math.round(mm.left)},${Math.round(mm.top)} → ${Math.round(mm.right)},${Math.round(mm.bottom)}`, h: Math.round(mm.bottom - mm.top), hits: [['carte', map], ['sac', inv], ['quête', quest]].filter(([, b]) => hit(mm, b)).map(([n]) => n), inside: mm.left >= 0 && mm.right <= innerWidth };
+  });
+  check(moment.inside && !moment.hits.length && moment.h <= 110, `${tag} 8 bis : affiche d'un moment fort ${moment.box} (${moment.h} px, 110 au plus), ${moment.hits.length ? `chevauche ${moment.hits.join(', ')}` : 'sans chevaucher la carte, le sac ni la quête'}`);
+
+  // Remise en état.
+  await ev(page, (k) => {
+    const $ = (id) => document.getElementById(id);
+    $('quest').className = k.cls; $('quest-stage').textContent = k.stage; $('quest-text').textContent = k.text;
+    $('city-meta').hidden = true; $('fiche').hidden = true;
+    $('online-pill').className = k.pill; if (k.pillQuiet) $('online-pill').setAttribute('data-quiet', ''); else $('online-pill').removeAttribute('data-quiet');
+    $('quest').removeAttribute('aria-expanded');
+    window.__earthlife.debug.freezeHud(false);
+  }, keep);
+}
+
 async function mobile() {
   const tag = 'tel';
   const ctx = await newContext('mobile');
@@ -1146,6 +1240,7 @@ async function mobile() {
   watchErrors(page, 'tel');
   await page.goto(START);
   if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await screenDiet(page, tag);
 
   // 9. Installation au toucher.
   const claim = await install(page, 'mobile', `${tag} 9`);
@@ -1598,10 +1693,11 @@ const MAP_LAYOUTS = {
   mobile: [
     { width: 390, height: 844, lure: ['haut-droite', 96, true], none: ['haut-droite', 96, true] },
     // Hauteurs visibles sous les barres du navigateur : iPhone 12 à 15 dans Safari (390 × 664), petit Android (360 ×
-    // 640), iPhone SE (375 × 553, la carte n'a pas la place au-dessus du plus haut toast).
+    // 640), iPhone SE (375 × 553, la carte n'a pas la place au-dessus du plus haut toast quand le sac monte jusqu'à elle ;
+    // sans leurre, depuis l'écran allégé du 2026-10-13, elle tient réduite et sans boutons).
     { width: 390, height: 664, lure: ['haut-droite', 96, false, 'sans-boutons'], none: ['haut-droite', 96, true] },
-    { width: 360, height: 640, lure: ['haut-droite', 66, false, 'reduite'], none: ['haut-droite', 88, false, 'sans-boutons'] },
-    { width: 375, height: 553, lure: null, none: null },
+    { width: 360, height: 640, lure: ['haut-droite', 88, false, 'sans-boutons'], none: ['haut-droite', 88, true] },
+    { width: 375, height: 553, lure: null, none: ['haut-droite', 66, false, 'reduite'] },
     { width: 844, height: 390, lure: ['haut-droite', 128, true], none: ['haut-droite', 128, true] },
     { width: 667, height: 375, lure: null, none: ['haut-droite', 88, false], besideBag: true },
     { width: 768, height: 1024, lure: ['bas-gauche', 152, true], none: ['bas-gauche', 152, true] },
@@ -3317,6 +3413,18 @@ async function voitureScenario(device) {
   await ctx.close();
 }
 
+// L'écran de jeu allégé du téléphone (screenDiet), seul sur une partie neuve (ONLY=ecran).
+async function ecranSeul() {
+  const tag = 'tel';
+  const ctx = await newContext('mobile');
+  const page = await ctx.newPage();
+  watchErrors(page, tag);
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await screenDiet(page, tag);
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
@@ -3337,6 +3445,8 @@ try {
   } else if (only.startsWith('trajet')) {
     if (only !== 'trajet:mobile') await trajet('desktop');
     if (only !== 'trajet:desktop') await trajet('mobile');
+  } else if (only === 'ecran') {
+    await ecranSeul();
   } else if (only === 'vue') {
     await vueSeule('desktop');
     await vueSeule('mobile');
