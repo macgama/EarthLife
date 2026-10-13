@@ -147,12 +147,15 @@ test('faire le plein : le jeu dit pourquoi il ne peut pas', () => {
   assert.deepEqual(refuelCheck({ fuel: 10 }, { bidon: 3 }), { can: true, why: '', cans: 3, added: 15 });
 });
 
-test('« Partir en voiture » : pas de voiture, saison, plus d\'essence', () => {
+test('« Partir en voiture » : pas de voiture, saison hors ligne, plus d\'essence', () => {
   assert.match(driveBlock({ car: null }), /pas de voiture/);
-  assert.match(driveBlock({ season: true, car: { fuel: 30 } }), /saison/);
+  assert.match(driveBlock({ season: true, offline: true, car: { fuel: 30 } }), /jeu à plusieurs/);
   assert.match(driveBlock({ car: { fuel: 0.2 } }), /Plus d.essence/);
+  assert.match(driveBlock({ season: true, car: { fuel: 0.2 } }), /Plus d.essence/);
   assert.equal(driveBlock({ car: { fuel: 1 } }), null, 'en jeu libre, tout est permis');
   assert.equal(driveBlock({ season: false, car: { fuel: 30 } }), null);
+  assert.equal(driveBlock({ season: true, car: { fuel: 30 } }), null, 'en saison, connecté : le trajet change de ville');
+  assert.equal(driveBlock({ offline: true, car: { fuel: 30 } }), null, 'hors ligne, la partie libre n\'a pas besoin du serveur');
 });
 
 test('stationnement : sur le bas-côté droit de la route carrossable la plus proche, dans son sens', () => {

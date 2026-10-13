@@ -381,8 +381,7 @@ export function createCityGame(host) {
   // `known` : sa ligne dans l'état des lieux si elle est déjà ouverte dans ce niveau ; `own` : ta ville actuelle ; `announced` : la ville
   // annoncée du niveau (nom et point d'annonce) quand c'est elle qu'on ouvre. Rend { city, prep, home } ou null (annulé, refusé : le
   // joueur a lu pourquoi) ; { city: own } si la commune est celle où il joue déjà.
-  async function seedCity(picked, level, { announced = null, own = null, known = () => null } = {}) {
-    const n = net();
+  async function seedCity(picked, level, { announced = null, own = null, known = () => null, deferred = false } = {}) {
     // Ville annoncée : c'est elle qu'on recense, où que le joueur ait touché la carte.
     const place = announced ? { lat: announced.lat, lon: announced.lon, name: announced.name } : picked;
     if (!place) { await askCard(infoCard('Choisis ta ville', 'Touche la carte (ou cherche un lieu) : la commune que tu choisis devient ta ville pour ce niveau. Les joueurs qui la choisissent aussi la sauvent avec toi.'), 'ok'); return null; }
@@ -415,12 +414,19 @@ export function createCityGame(host) {
     if (own) lines.push(moveLine(own));
     const id = await askCard({
       title: open ? `Rejoindre ${name} ?` : `Ouvrir ${name} ?`, tone: 'warn', lines,
-      buttons: [{ id: 'start', label: own ? `Aller à ${name}` : open ? 'Rejoindre' : 'Choisir cette ville', primary: true }, { id: 'cancel', label: 'Annuler' }],
+      buttons: [{ id: 'start', label: deferred ? `Partir pour ${name}` : own ? `Aller à ${name}` : open ? 'Rejoindre' : 'Choisir cette ville', primary: true }, { id: 'cancel', label: 'Annuler' }],
     }, 'cancel');
     if (id !== 'start') return null;
+    const trip = { prep, place, name, level };
+    // En voiture, le serveur n'est appelé qu'à l'arrivée (landTrip) : un trajet interrompu ne change rien.
+    return deferred ? { trip } : sendSeed(trip);
+  }
+
+  // Le serveur ouvre la ville ou y entre (changer de ville remet la maison à zéro). Rend { city, prep, home }, ou null s'il refuse (le joueur a lu pourquoi).
+  async function sendSeed({ prep, place, name }) {
     host.setLoading('Ouverture de la ville…');
     const weights = Object.fromEntries(Object.entries(prep.weights).map(([k, v]) => [k, Math.max(0, Math.round(v))]));
-    const r = await n.seed({
+    const r = await net().seed({
       key: prep.unit.key, name, place: { lat: place.lat, lon: place.lon, name }, pop: prep.unit.population,
       src: typeof prep.unit.source === 'string' ? prep.unit.source : 'insee', approx: prep.unit.source === 'estimation' || prep.commune.approx === true,
       zl: prep.unit.level, tiles: weights, failed: prep.census.failed, mode: 'entiere',
@@ -496,7 +502,7 @@ export function createCityGame(host) {
     if (dest?.kind === 'city' && !dest.city?.key) dest = null;
     if (!dest) dest = destinationOf({ ...fresh, sel: null });
     if (dest.kind === 'city' && join.announced?.key === dest.city.key) dest = { ...dest, announced: join.announced };
-    let city = own, prep = null, first = !join.home, home = join.home;
+    let city = own, prep = null, home = join.home;
     if (dest.kind === 'none') {
       const seeded = await seedCity(place, level, { own });
       if (!seeded) { syncSeason(); return null; }
@@ -525,11 +531,19 @@ export function createCityGame(host) {
         home = r.home ?? null;
       }
     }
+    return connectSeason({ join, level, city, prep, home, touched: dest.kind === 'place' ? dest.place : place });
+  }
+
+  // Abonnement à la ville choisie et départ de la partie de saison : où commencer (ta maison, sinon le point touché s'il est dans la ville,
+  // sinon le point de la ville : chacun choisit son départ, la ville reste la même pour ceux qui la partagent). Plan { kind: 'season', level,
+  // city, state, rv, prep, first, place, join }, ou null (la ville ne s'ouvre pas : le joueur a lu pourquoi).
+  async function connectSeason({ join, level, city, prep, home, touched }) {
+    const n = net();
     // La ville et la maison peuvent avoir changé : l'inscription gardée pour le menu les suit.
     join = { ...join, city, home };
     seasonUi.enrolled = join;
     seasonUi.at = 0;
-    first = !home;
+    const first = !home;
     host.setLoading(`Connexion à ${city.name}…`);
     const handlers = {
       msg: (m) => seasonRef.rt?.applyServer(m),
@@ -547,14 +561,48 @@ export function createCityGame(host) {
       return null;
     }
     const homeAt = home ? { lat: home.a / 1e6, lon: home.o / 1e6 } : null;
-    // Sans refuge encore : on commence où le joueur a touché la carte s'il est dans la ville (tuiles du recensement), sinon
-    // au point de la ville. Chacun choisit donc son départ, la ville reste la même pour ceux qui la partagent.
     const centre = { lat: city.place?.lat ?? 0, lon: city.place?.lon ?? 0, name: city.name, area: '' };
-    const touched = dest.kind === 'place' ? dest.place : place;
     const inside = !homeAt && !!touched && insideTiles(opened.state?.ville?.tiles, touched.lat, touched.lon);
     const spawn = homeAt ? { ...homeAt, name: city.name, area: '' } : inside ? touched : centre;
     syncSeason();
     return { kind: 'season', level, city, state: opened.state, rv: opened.rv, prep, first, place: spawn, join };
+  }
+
+  // ---------- Partir en voiture en saison ----------
+
+  // Avant de partir (conduite.js, carte de conduite) : la commune du point choisi est recensée et le joueur lit ce que le changement de ville lui
+  // coûte. Rend { level, prep, place, name, arrival } ou null (annulé, refusé, c'est ta ville : le joueur a lu pourquoi). Le serveur ne bouge qu'à l'arrivée.
+  async function planTrip(place) {
+    const n = net(), enrolled = seasonUi.enrolled;
+    if (!n?.enabled || !enrolled?.level || !place) return null;
+    const level = enrolled.level, own = ownOf();
+    try { const p = await n.progress(); if (p.ok) seasonUi.progress = p; } catch { /* l'état des lieux déjà lu fait foi */ }
+    const known = (key) => seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === key) ?? null;
+    const seeded = await seedCity(place, level, { own, known, deferred: true });
+    if (!seeded) return null;
+    if (seeded.same) {
+      await askCard(infoCard('C\'est ta ville', `${own.name || 'Cette ville'} est la ville où tu joues : marche, ou touche un point d'une autre commune sur la carte de conduite.`), 'ok');
+      return null;
+    }
+    return { ...seeded.trip, arrival: { lat: place.lat, lon: place.lon, name: seeded.trip.name, area: '' } };
+  }
+
+  // Arrivée du trajet : l'ancienne ville est quittée (zombies prêtés rendus, abonnement fermé), le serveur ouvre la nouvelle ville ou y entre, puis le
+  // plan de lancement de saison habituel. null : refusé ou injoignable (une carte le dit) ; la ville du joueur n'a pas changé.
+  async function landTrip(trip) {
+    const s = host.getSession();
+    if (s?.city?.season) onMenu(s);
+    const seeded = await sendSeed(trip);
+    if (!seeded) { syncSeason(); return null; }
+    return connectSeason({ join: seasonUi.enrolled, level: trip.level, city: seeded.city, prep: seeded.prep, home: seeded.home, touched: trip.arrival });
+  }
+
+  // Villes ouvertes de ton niveau où aller (pas la tienne), pour la liste de repli de la carte de conduite : { name, lat, lon }.
+  function tripCities() {
+    const level = seasonUi.enrolled?.level, mine = ownOf()?.key;
+    return (seasonUi.progress?.levels?.[level]?.cities ?? [])
+      .filter((c) => c.key !== mine && Number.isFinite(c.lat) && Number.isFinite(c.lon) && typeof c.name === 'string' && c.name)
+      .map((c) => ({ name: c.name, area: '', lat: c.lat, lon: c.lon }));
   }
 
   // ---------- Dans la partie : brancher la ville au monde ----------
@@ -977,11 +1025,15 @@ export function createCityGame(host) {
 
   // ---------- Fin de session ----------
 
+  // Fin de la partie en cours (avant de charger la suivante). L'abonnement à la ville de saison n'est fermé que s'il est encore celui de cette
+  // partie : au menu, onMenu l'a déjà fermé, et la partie suivante (reprise, « Aller », trajet en voiture) a pu ouvrir le sien avant que
+  // celle-ci soit défaite.
   function detach(s) {
     const season = !!s?.city?.season;
+    const mine = season && seasonRef.rt === s.city;
     s?.city?.dispose(s.director);
     if (s) s.city = null;
-    if (season) {
+    if (mine) {
       seasonRef.rt = null;
       net()?.close();
     }
@@ -1000,7 +1052,7 @@ export function createCityGame(host) {
   }
 
   return {
-    initMenu, syncMenu, playLabel, placeChosen, prepareLaunch, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws,
+    initMenu, syncMenu, playLabel, placeChosen, prepareLaunch, planTrip, landTrip, tripCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws,
     questText, homeGoal, onRefugeAction, onDeath, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },

@@ -64,7 +64,9 @@ export function createDriveMap({ root, cities = [], onGo }) {
 
   function listCities() {
     listEl.textContent = '';
-    const near = cities
+    const seen = new Set();
+    const near = [...(state.cities ?? []), ...cities]
+      .filter((c) => !seen.has(c.name) && seen.add(c.name))
       .map((c) => ({ c, d: crowM(state.from, c) }))
       .filter((e) => e.d >= 300 && e.d <= rangeM(state.fuel))
       .sort((a, b) => a.d - b.d);
@@ -140,10 +142,10 @@ export function createDriveMap({ root, cities = [], onGo }) {
     map = null;
   }
 
-  // from : { lat, lon } de ta voiture ; fuel : litres dans le réservoir.
-  function open({ from, fuel }) {
+  // from : { lat, lon } de ta voiture ; fuel : litres dans le réservoir ; cities : villes de plus pour la liste de repli (villes ouvertes de la saison).
+  function open({ from, fuel, cities: extra = [] }) {
     close();
-    state = { from: { lat: from.lat, lon: from.lon }, fuel, pick: null };
+    state = { from: { lat: from.lat, lon: from.lon }, fuel, pick: null, cities: Array.isArray(extra) ? extra : [] };
     opened = true;
     root.classList.remove('hidden');
     root.dataset.map = '';

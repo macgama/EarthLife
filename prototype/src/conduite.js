@@ -20,14 +20,20 @@ const FIX_NOISE = 24, SIPHON_NOISE = 12;
 const fmtTime = (t) => String(Math.round(t * 10) / 10).replace('.', ',');
 const round = (v, d) => Math.round(v * 10 ** d) / 10 ** d;
 
-// host : { current() (la session), save (la partie vivante), saveStore { markDirty, flush }, showCard, toast, propsView, online { mark },
-//          overlay { show, progress, hide }, addLoot, lootNotes, gainSkill, craftXp, arrive(place, arrival) (lance le nouveau monde),
-//          openMap({ from, fuel }) (carte de conduite) }
+// host : { current() (la session), save (la partie vivante), saveStore { markDirty, flush }, showCard, toast, propsView, online { mark, live },
+//          overlay { show, progress, hide }, addLoot, lootNotes, gainSkill, craftXp, arrive(place, arrival, season) (lance le nouveau monde ;
+//          rend faux s'il n'a pas pu changer de ville, en saison), openMap({ from, fuel, cities }) (carte de conduite),
+//          tripCities() (villes ouvertes du niveau, pour la liste de repli de la carte, en saison) }
 export function createCarGame(host) {
   const { save } = host;
   const siphoned = goneChecker(() => save.dismantled);
   let shown = null; // { key, gy } de la voiture dessinée
 
+  // En saison, le trajet change de ville : le serveur doit répondre (driveBlock).
+  const blockOf = (s, car) => {
+    const season = !!s.city?.season;
+    return driveBlock({ season, offline: season && !host.online?.live, car });
+  };
   const local = (s, car) => s.store.proj.toLocal(car.lat, car.lon);
   const latLonOf = (s, x, z) => s.store.proj.toLatLon(x, z);
   const playerAt = (s) => latLonOf(s, s.player.x, s.player.z);
@@ -127,7 +133,7 @@ export function createCarGame(host) {
     if (!car || s.ended) return;
     const bag = s.survivor.inventory;
     const fill = refuelCheck(car, bag);
-    const block = driveBlock({ season: !!s.city?.season, car });
+    const block = blockOf(s, car);
     const lines = [
       `Essence : ${litres(car.fuel)} sur ${CAR.tankL} L`,
       `Portée : ${distanceText(rangeM(car.fuel))} à vol d’oiseau`,
@@ -149,7 +155,7 @@ export function createCarGame(host) {
         }
         openCar(s);
       } else if (id === 'drive') {
-        if (!driveBlock({ season: !!s.city?.season, car })) host.openMap({ from: { lat: car.lat, lon: car.lon }, fuel: car.fuel });
+        if (!blockOf(s, car)) host.openMap({ from: { lat: car.lat, lon: car.lon }, fuel: car.fuel, cities: s.city?.season ? host.tripCities?.() ?? [] : [] });
       }
     }, { escape: 'close' });
   }
@@ -186,16 +192,17 @@ export function createCarGame(host) {
   }
 
   // ---------- Trajet en voiture ----------
-  // out : { place: { lat, lon, name, area }, trip } choisi sur la carte. Les tuiles de l'arrivée sont demandées pendant le trajet.
+  // out : { place: { lat, lon, name, area }, trip } choisi sur la carte, plus `season` en saison (ce que la ville d'arrivée demande :
+  // ville-ecran.js planTrip). Les tuiles de l'arrivée sont demandées pendant le trajet.
   function start(s, out) {
     const car = save.car;
     if (!car || s.action || s.ended || host.current() !== s || s.refuge.inside) return;
-    if (driveBlock({ season: !!s.city?.season, car })) return;
+    if (blockOf(s, car)) return;
     const trip = tripOf(car, out.place, car.fuel);
     if (!trip.ok) { host.toast(trip.why, 3, 'danger'); return; }
     const p = s.player;
     s.action = {
-      id: 'drive', arg: { place: out.place, trip }, t: 0, time: trip.seconds, inside: true, slot: 'primary',
+      id: 'drive', arg: { place: out.place, trip, season: out.season ?? null }, t: 0, time: trip.seconds, inside: true, slot: 'primary',
       noise: 0, wait: 0, icon: 'fleche', label: 'Trajet en voiture…',
     };
     p.hidden = true;
@@ -226,12 +233,14 @@ export function createCarGame(host) {
     return true;
   }
 
-  // Descente : le nouveau monde se charge (l'écran de trajet reste), puis la voiture est garée sur la route la plus proche.
+  // Descente : le nouveau monde se charge (l'écran de trajet reste), puis la voiture est garée sur la route la plus proche. En saison, la
+  // nouvelle ville est ouverte ou rejointe à ce moment-là ; refusée, le joueur reste où il était (ni ville ni essence changées).
   async function land(s, a) {
-    const { place, trip } = a.arg;
+    const { place, trip, season } = a.arg;
     host.overlay.progress(1, 'Arrivée…');
     try {
-      await host.arrive(place, (next) => park(next, trip, place));
+      const done = await host.arrive(place, (next) => park(next, trip, place), season);
+      if (done === false && host.current() === s) s.player.hidden = !!s.refuge?.inside;
     } finally {
       host.overlay.hide();
     }

@@ -462,10 +462,31 @@ const cars = createCarGame({
   current: () => session, save, saveStore: { markDirty: () => saveStore.markDirty(), flush: (why) => saveStore.flush(why) },
   showCard: (...a) => showCard(...a), toast: (...a) => toast(...a), propsView, online, overlay: createRideOverlay(document),
   addLoot, lootNotes: (res) => lootNotes(res), gainSkill: (...a) => gainSkill(...a), craftXp,
-  arrive: (place, arrival) => arriveByCar(place, arrival), openMap: (args) => driveMap.open(args),
+  arrive: (place, arrival, season) => arriveByCar(place, arrival, season), openMap: (args) => driveMap.open(args), tripCities: () => city.tripCities(),
 });
 // Carte de conduite (#drive) : le cercle de portée, un point à toucher, « Partir ».
-const driveMap = createDriveMap({ root: $('drive'), cities: CITIES, onGo: (out) => { if (session) cars.start(session, out); } });
+const driveMap = createDriveMap({ root: $('drive'), cities: CITIES, onGo: (out) => { if (session) goDrive(session, out); } });
+
+// « Partir » sur la carte de conduite. En saison, le trajet change de ville : la commune du point est recensée et le joueur lit ce que cela lui coûte
+// avant de partir (jeu en pause) ; le serveur ne bouge qu'à l'arrivée.
+async function goDrive(s, out) {
+  if (!s.city?.season) { cars.start(s, out); return; }
+  if (starting) return;
+  starting = true;
+  s.paused = true;
+  let plan = null;
+  try {
+    plan = await city.planTrip(out.place);
+  } catch (err) {
+    console.warn('Préparation du trajet', err);
+    toast('La ville d\'arrivée n\'a pas pu être préparée', 4, 'danger');
+  } finally {
+    starting = false;
+    if (session === s) s.paused = false;
+    setLoading(null);
+  }
+  if (plan && session === s) cars.start(s, { ...out, season: plan });
+}
 // HUD, panneau du refuge (tiroir ou feuille basse) et cartes de jeu (#card).
 const hud = createHud({ $, input });
 const card = createCard($('card'));
@@ -865,15 +886,25 @@ async function launch(place, spawn, plan = { kind: 'free', place }, arrival = nu
 }
 
 // Arrivée d'un trajet en voiture : le nouveau monde du lieu choisi, comme une visite en partie libre (pas de carte « Commencer cette
-// ville » qui couperait le trajet). Si le chargement échoue, ta voiture et son essence restent où ils étaient.
-async function arriveByCar(place, arrival) {
-  if (starting) return;
+// ville » qui couperait le trajet). Si le chargement échoue, ta voiture et son essence restent où ils étaient. En saison (`season` : la
+// préparation de goDrive), le serveur ouvre la ville d'arrivée ou y entre à ce moment-là ; refusé, le jeu revient au menu, la ville du joueur
+// n'ayant pas changé (rend faux : le trajet n'a pas eu lieu).
+async function arriveByCar(place, arrival, season = null) {
+  if (starting) return false;
   starting = true;
   try {
     saveStore.flush('trajet'); // le monde suivant relit les besoins et l'équipement dans la sauvegarde
-    await launch(place, 'place', { kind: 'free', place }, arrival);
+    let plan = { kind: 'free', place };
+    if (season) {
+      plan = await city.landTrip(season);
+      if (!plan) { setLoading(null); toMenu(); return false; }
+      place = plan.place;
+    }
+    await launch(place, 'place', plan, arrival);
+    return true;
   } catch (err) {
     loadFailed(err);
+    return false;
   } finally {
     starting = false;
   }
