@@ -2487,7 +2487,9 @@ await scenario('O32', 'départ en voiture vers une autre ville pendant la saison
     check((await accWait(A, (v) => v.menu && v.block, 60000)).ok, 'V : menu affiché, bloc Compte présent');
     const T0 = Date.now();
     A.page.on('response', (r) => { if (r.status() >= 400) note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : ${r.status()} ${r.request().method()} ${new URL(r.url()).pathname}`); });
-    A.page.on('websocket', (w) => { note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : WebSocket ouvert ${new URL(w.url()).pathname}`); w.on('close', () => note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : WebSocket fermé ${new URL(w.url()).pathname}`)); });
+    A.page.on('websocket', (w) => { note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : WebSocket ouvert ${new URL(w.url()).pathname}`); w.on('close', () => note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : WebSocket fermé ${new URL(w.url()).pathname}`));
+      const frame = (way) => (e) => { const p = typeof e.payload === 'string' ? e.payload : ''; if (p.startsWith('{"t":"sv"') || p.startsWith('{"t":"err"') || p.startsWith('{"t":"bye"')) note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : ${way} ${p.slice(0, 140)}`); };
+      w.on('framesent', frame('→')); w.on('framereceived', frame('←')); });
     await click(A, '#account-signup');
     check((await accWait(A, (v) => v.panel && v.title === 'Créer un compte')).ok, 'V : panneau « Créer un compte »');
     await A.page.fill('#account-email', V.email);
@@ -2588,7 +2590,7 @@ await scenario('O32', 'départ en voiture vers une autre ville pendant la saison
       return s && s !== window.__sessionBefore && s.player && !s.action && document.getElementById('ride').classList.contains('hidden') && document.getElementById('loading').classList.contains('hidden') ? 1 : null;
     }, null, 420000);
     if (!check(!!landed, 'V : monde d\'arrivée prêt, écran du trajet fermé')) {
-      note(`V : état à l'échec ${JSON.stringify(await ev(A, () => { const e = window.__earthlife, s = e.session; return { same: s === window.__sessionBefore, action: s?.action?.id ?? null, t: s?.action ? [s.action.t, s.action.time] : null, menu: !document.getElementById('menu').classList.contains('hidden'), ride: !document.getElementById('ride').classList.contains('hidden'), loading: document.getElementById('loading').classList.contains('hidden') ? null : document.getElementById('loading').textContent.replace(/\s+/g, ' ').trim().slice(0, 120), card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null, toasts: window.__seen.toasts.map((x) => x.t).slice(-4), live: e.online.live }; }).catch((err) => String(err)))}`);
+      note(`V : état à l'échec ${JSON.stringify(await ev(A, () => { const e = window.__earthlife, s = e.session; return { same: s === window.__sessionBefore, action: s?.action?.id ?? null, t: s?.action ? [s.action.t, s.action.time] : null, menu: !document.getElementById('menu').classList.contains('hidden'), ride: !document.getElementById('ride').classList.contains('hidden'), loading: document.getElementById('loading').classList.contains('hidden') ? null : document.getElementById('loading').textContent.replace(/\s+/g, ' ').trim().slice(0, 120), card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null, cardText: document.getElementById('card').textContent.replace(/\s+/g, ' ').trim().slice(0, 160), toasts: window.__seen.toasts.map((x) => x.t).slice(-4), live: e.online.live }; }).catch((err) => String(err)))}`);
       note(`V : erreurs ${JSON.stringify(A.errors.slice(-3))}`);
       await closeCtx(A);
       return;
