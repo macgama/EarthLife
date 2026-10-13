@@ -2423,7 +2423,8 @@ await scenario('O32', 'départ en voiture vers une autre ville pendant la saison
   const { communeResponse } = await load('prototype/test/fixtures/communes/routes.mjs');
   const SERVER = `http://127.0.0.1:${srv.port}`;
   const HOME = { lat: 45.9034, lon: 5.1795, name: 'Pérouges' };           // le départ de « Autre » (même tuiles que Pérouges)
-  const DEST = { lat: 45.8995, lon: 5.175 };                               // un autre point de Pérouges, à environ 550 m (trajet de 300 m au moins) (les tuiles d'essai ne couvrent que le village)
+  // Points de Pérouges (les tuiles d'essai ne couvrent que le village) : le trajet part du joueur, tiré au hasard dans « Autre » ; on prend le plus éloigné (300 m au moins pour un trajet).
+  const DESTS = [{ lat: 45.8977, lon: 5.171 }, { lat: 45.8995, lon: 5.175 }, { lat: 45.9034, lon: 5.1795 }, { lat: 45.906, lon: 5.183 }];
   const V = { email: 'v.essai@exemple.test', pw: 'essai-voiture-quai-9' };
   const W = { email: 'w.essai@exemple.test', pw: 'essai-voiture-pont-8' };
   const mem = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => { m.set(k, String(v)); }, removeItem: (k) => { m.delete(k); } }; };
@@ -2539,10 +2540,13 @@ await scenario('O32', 'départ en voiture vers une autre ville pendant la saison
       await closeCtx(A);
       return;
     }
-    const pick = await ev(A, (pt) => {
+    const pick = await ev(A, async (pts) => {
+      const { crowM } = await import('/src/voiture.js');
+      const car = window.__earthlife.save.car;
+      const pt = pts.map((p) => ({ p, d: crowM(car, p) })).sort((a, b) => b.d - a.d)[0].p;
       const t = window.__earthlife.driveMap.choose(pt, { name: 'Pérouges' });
       return { ok: t.ok, litres: t.litres, seconds: t.seconds, go: document.getElementById('drive-go').disabled, dest: document.getElementById('drive-dest').textContent };
-    }, DEST);
+    }, DESTS);
     check(pick.ok && !pick.go, `V : Pérouges à portée (${pick.litres?.toFixed?.(2)} L, ${pick.seconds} s), « Partir » actif`);
     await shot(A, 'o32-ordi-conduite');
     await A.page.click('#drive-go');
