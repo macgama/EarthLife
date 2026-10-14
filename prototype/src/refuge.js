@@ -1169,9 +1169,9 @@ export function createRefuge({ save, rand = Math.random, consumables = DEFAULT_C
         dirty(events);
       }
     }
-    // « La nuit tombe dans 10 min », puis « La nuit tombe ».
+    // « La nuit tombe dans 10 min », puis « La nuit tombe ». Jour forcé (?time=day) : le vrai coucher du soleil n'annonce rien.
     if (prevNight === false && night) events.push({ type: 'night-soon', minutes: 0, at: now });
-    if (!night) {
+    if (!night && ctx.forcedTime !== 'day') {
       const change = nightChange(ctx);
       if (change?.toNight) {
         const minutes = Math.ceil((change.at - now) / 60000);

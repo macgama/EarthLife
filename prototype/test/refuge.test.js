@@ -1486,6 +1486,18 @@ test('« La nuit tombe dans 10 min » puis « La nuit tombe »', () => {
   assert.deepEqual(ev.map((e) => e.minutes), [10, 0]);
 });
 
+test('jour forcé (?time=day) : le vrai coucher du soleil n\'annonce pas « La nuit tombe dans 10 min »', () => {
+  const env = setup();
+  const { player, survivor } = claimNear(env, { now: lyon(1, 19, 0) });
+  const ctx = { player, survivor, isNight: false, forcedTime: 'day', now: lyon(1, 19, 25), weather: { kind: 'clear' } };
+  const ev = [];
+  for (let i = 0; i < 20 * 60; i += 10) {
+    ctx.now += 10000;
+    ev.push(...env.refuge.update(10, ctx).filter((e) => e.type === 'night-soon'));
+  }
+  assert.deepEqual(ev, []);
+});
+
 // Test transversal de la spec (9.1), avec les vrais modules : createZombieDirector (game.js), createFlowField et
 // reachableFrom (flowfield.js), sur les tuiles de Lyon. Le joueur est caché au refuge ; la horde frappe les barricades.
 test('transversal : vague de 12 zombies sur 180 s à 30 images par seconde, brèche avant 120 s, grille intacte', () => {

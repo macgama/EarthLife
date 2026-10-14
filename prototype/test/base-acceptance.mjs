@@ -3223,7 +3223,8 @@ async function voitureScenario(device) {
   const bag1 = await bagOf(page);
   check(!!sipDone && (bag1.bidon ?? 0) === (bag0.bidon ?? 0) + 1, `${tag} : siphonné : +1 bidon d'essence (${bag0.bidon ?? 0} → ${bag1.bidon ?? 0}), marque sur la voiture`);
   check(!!(await toastSeen(page, 'Siphonné', 30000)), `${tag} : notification « Siphonné… »`);
-  await wait(500);
+  // Le menu se recalcule à l'image suivante : on attend qu'il soit grisé (une pause fixe de 500 ms est trop courte si la machine rame).
+  await until(page, () => { const m = window.__earthlife.session.menu?.secondary; return m?.id === 'siphon' && m.off ? 1 : null; }, null, 10000);
   menu = await menuOf(page);
   check(menu.r === 'siphon' && menu.rOff, `${tag} : la même voiture : « ${menu.label2} » grisé`);
   await press(page, device, 'r', 'action2');
