@@ -54,11 +54,14 @@ const gameInfo = (page) => page.evaluate(() => {
   };
 });
 
-async function walk(page, seconds) {
+// Marche au moins `seconds` secondes, puis encore (40 s au plus) tant que `enough` n'est pas vrai : sous le rendu logiciel de la recette
+// la cadence varie du simple au triple, et la distance parcourue avec elle.
+async function walk(page, seconds, enough = null) {
   await page.evaluate(() => { const s = window.__earthlife.session; s.director.zombies.length = 0; s.player.health = 1e9; });
   await page.keyboard.down('KeyW');
   await page.keyboard.down('ShiftLeft');
   await page.waitForTimeout(seconds * 1000);
+  if (enough) for (let i = 0; i < 80 && !(await enough()); i++) await page.waitForTimeout(500);
   await page.keyboard.up('ShiftLeft');
   await page.keyboard.up('KeyW');
 }
@@ -96,7 +99,7 @@ async function walk(page, seconds) {
     check(info.weather.startsWith('live'), `météo réelle : ${info.weather}`);
     await page.waitForTimeout(2000);
     await page.screenshot({ path: path.join(out, 'desktop-3-jeu.png') });
-    await walk(page, 6);
+    await walk(page, 6, async () => { const now = await gameInfo(page); return Math.hypot(now.x - info.x, now.z - info.z) > 8; });
     const after = await gameInfo(page);
     check(Math.hypot(after.x - info.x, after.z - info.z) > 5, `le joueur avance (${info.x},${info.z} → ${after.x},${after.z})`);
     await page.screenshot({ path: path.join(out, 'desktop-4-marche.png') });

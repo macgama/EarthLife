@@ -162,10 +162,11 @@ export function parkingSpot(roads, x, z, maxD = 150) {
 }
 
 // ---------- Interdits ----------
-// Pourquoi « Partir en voiture » est impossible, ou null. `season` : partie de saison (une seule commune par monde).
-export function driveBlock({ season = false, car = null } = {}) {
+// Pourquoi « Partir en voiture » est impossible, ou null. `season` : partie de saison, où le trajet change de ville (le serveur doit
+// répondre à l'arrivée) ; `offline` : le jeu à plusieurs ne répond pas.
+export function driveBlock({ season = false, offline = false, car = null } = {}) {
   if (!car) return 'Tu n’as pas de voiture.';
-  if (season) return 'Pas d’autre ville pendant la saison : la commune voisine n’existe pas encore.';
+  if (season && offline) return 'Pas de connexion : changer de ville en saison demande le jeu à plusieurs.';
   if (car.fuel <= 0.5) return 'Plus d’essence : il faut un bidon.';
   return null;
 }
