@@ -2321,6 +2321,94 @@ await scenario('O30', 'ville annoncée au menu', async () => {
 });
 
 // =====================================================================================================
+// O31 : choix libre : plusieurs villes dans un même niveau : un repère par ville ouverte, toucher un repère choisit cette ville (le bouton
+// la nomme, sans demander de la choisir), toucher un autre point de la carte propose la commune de ce point
+// =====================================================================================================
+await scenario('O31', 'plusieurs villes dans un niveau', async () => {
+  const NOW = Date.now(), DAY = 86400000;
+  const city = (key, name, lat, lon, over = {}) => ({ key, name, lat, lon, population: 900, zombies: 200, zombies0: 300, saved: 100, toSave: 600, flags: 2, killed: 100, status: 'en-cours', online: 0, ...over });
+  const facile = [city('c1', 'Vulliens', 46.6, 6.8, { online: 5 }), city('c2', 'Pérouges', 45.92, 5.18, { online: 2 }), city('c3', 'Montluel', 45.85, 5.06, { status: 'nettoyee', zombies: 0, saved: 600 })];
+  const progress = {
+    ok: true, now: NOW, season: { id: 1, name: 'Saison 1', startMs: NOW - 6 * DAY, endMs: NOW + 54 * DAY, phase: 'en-cours' },
+    levels: {
+      facile: { players: 37, online: 7, seats: 100, city: facile[0], cities: facile },
+      moyen: { players: 0, online: 0, seats: 100, city: null, cities: [] },
+      difficile: { players: 0, online: 0, seats: 100, city: null, cities: [] },
+    },
+  };
+  const withCities = (ctx) => ctx.route('**/v1/season/progress', (r) => r.fulfill({
+    status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': ORIGIN, 'cache-control': 'no-store' }, body: JSON.stringify(progress),
+  }));
+  const url = `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&server=http://127.0.0.1:${srv.port}`;
+  const read = (t) => ev(t, () => {
+    const pins = [...document.querySelectorAll('.maplibregl-marker.map-pin-hit')].map((m) => ({ level: m.className.match(/map-pin-saison-(\w+)/)?.[1], title: m.title || m.getAttribute('aria-label') || '' }));
+    const front = document.querySelector('#fronts .front[data-level="facile"]');
+    return {
+      pins, count: pins.length, cta: document.getElementById('salon-cta')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      checked: [...document.querySelectorAll('#fronts .front')].filter((f) => f.getAttribute('aria-checked') === 'true').map((f) => f.dataset.level).join(),
+      others: front?.textContent?.replace(/\s+/g, ' ').trim() ?? '', cardRight: Math.round(document.querySelector('.menu-ui')?.getBoundingClientRect().right ?? 0),
+      win: [innerWidth, innerHeight], scrollW: document.documentElement.scrollWidth, innerW: innerWidth,
+      fit: (() => {
+        const top = document.querySelector('.menu-top')?.getBoundingClientRect().bottom ?? 0, sheet = document.querySelector('.sheet')?.getBoundingClientRect().top ?? innerHeight;
+        const left = document.querySelector('.menu-ui')?.getBoundingClientRect().right ?? 0;
+        return [...document.querySelectorAll('.maplibregl-marker.map-pin-hit')].map((m) => { const r = m.getBoundingClientRect(); const x = r.x + r.width / 2; return r.bottom > top && r.bottom < sheet && x > (innerWidth > 700 ? left : 0) && x < innerWidth; });
+      })(),
+    };
+  });
+  const until = async (t, pred, timeout = 40000) => {
+    const t0 = Date.now();
+    let v = null;
+    while (Date.now() - t0 < timeout) {
+      v = await read(t).catch(() => null);
+      if (v && pred(v)) return { ok: true, v };
+      await wait(300);
+    }
+    return { ok: false, v };
+  };
+  const N = await open('N4 (ordinateur, plusieurs villes)', desktop, url, { waitGame: false, before: withCities });
+  const shown = await until(N, (v) => v.count === 3);
+  check(shown.ok, `N4 : un repère par ville ouverte, trois dans « Facile » (${shown.v?.count} : ${shown.v?.pins?.map((p) => p.title).join(' | ')})`);
+  check(shown.v?.pins?.every((p) => p.level === 'facile'), `N4 : tous les repères sont ceux du niveau « Facile » (${shown.v?.pins?.map((p) => p.level).join()})`);
+  await shot(N, 'o31-ordi-plusieurs-villes');
+  // Toucher le repère de Pérouges : le niveau « Facile » est choisi et le bouton nomme cette ville, sans demander de la choisir.
+  await N.page.click('.maplibregl-marker.map-pin-hit[title*="Pérouges"]');
+  const perouges = await until(N, (v) => v.checked === 'facile' && /Rejoindre · Facile/.test(v.cta) && /Pérouges/.test(v.cta));
+  check(perouges.ok && !/Tu choisis la ville|compte requis.*Tu choisis/.test(perouges.v.cta), `N4 : repère « Pérouges » touché : « ${perouges.v?.cta} »`);
+  check(perouges.v?.scrollW <= perouges.v?.innerW, `N4 : pas de défilement horizontal (${perouges.v?.scrollW} / ${perouges.v?.innerW})`);
+  await shot(N, 'o31-ordi-ville-choisie');
+  // Toucher un autre point de la carte, hors des repères : le bouton propose la commune de ce point.
+  const spot = await ev(N, () => {
+    const box = document.getElementById('picker-map')?.getBoundingClientRect();
+    const right = document.querySelector('.menu-ui')?.getBoundingClientRect().right ?? 0;
+    if (!box) return null;
+    const pts = [...document.querySelectorAll('.maplibregl-marker')].map((m) => m.getBoundingClientRect());
+    for (const fy of [0.85, 0.15, 0.5]) for (const fx of [0.9, 0.7, 0.55]) {
+      const x = Math.round(right + (box.right - right) * fx), y = Math.round(box.top + box.height * fy);
+      if (!pts.some((r) => Math.abs(r.x + r.width / 2 - x) < 90 && Math.abs(r.y + r.height / 2 - y) < 90)) return { x, y };
+    }
+    return null;
+  });
+  check(!!spot, 'N4 : un point libre de la carte à toucher');
+  if (spot) {
+    await N.page.mouse.click(spot.x, spot.y);
+    const place = await until(N, (v) => /Tu choisis la ville/.test(v.cta));
+    check(place.ok, `N4 : un point de la carte touché : « ${place.v?.cta} »`);
+    await shot(N, 'o31-ordi-point-carte');
+  }
+  await closeCtx(N);
+
+  const P = await open('P3 (téléphone, plusieurs villes)', mobile, url, { waitGame: false, before: withCities });
+  const phone = await until(P, (v) => v.count === 3);
+  check(phone.ok && phone.v.scrollW <= phone.v.innerW, `P3 : trois repères sur téléphone, pas de défilement horizontal (${phone.v?.count}, ${phone.v?.scrollW} / ${phone.v?.innerW})`);
+  // Les trois villes de « Facile » sont cadrées d'office : à l'écran, entre l'en-tête et le panneau.
+  const strip = await until(P, (v) => v.fit.length === 3 && v.fit.every(Boolean), 20000);
+  check(strip.ok, `P3 : les trois villes de « Facile » sont à l'écran, entre l'en-tête et le panneau (${JSON.stringify(strip.v?.fit)})`);
+  await wait(1500);
+  await shot(P, 'o31-tel-plusieurs-villes');
+  await closeCtx(P);
+});
+
+// =====================================================================================================
 // O19 : toute la séance : aucune erreur de console, aucune exception, aucune violation de la politique de
 // sécurité (hors fenêtre de O12), aucune requête vers earthlife.needhelpapp.com (sauf F, voulue) ; K, L et M compris
 // (refus voulus des scénarios du compte tolérés dans leur fenêtre : netExpected)

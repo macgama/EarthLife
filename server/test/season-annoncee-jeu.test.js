@@ -68,7 +68,7 @@ async function account(n) {
   return ver.body.ses;
 }
 
-test('ville annoncée : le jeu recense la commune annoncée, le serveur la sème, les autres joueurs la rejoignent', { timeout: 120000 }, async () => {
+test('ville annoncée : le jeu recense la commune annoncée, le serveur la sème, les autres joueurs la rejoignent (proposition, pas obligation)', { timeout: 120000 }, async () => {
   const prep = await census();
   const announced = { key: prep.unit.key, name: 'Pérouges', lat: HOME.lat, lon: HOME.lon };
   const config = { ...buildConfig(new Map([['DEV', '1'], ['STORE', 'memory'], ['HOST', '127.0.0.1']])), port: await freePort() };
@@ -93,23 +93,22 @@ test('ville annoncée : le jeu recense la commune annoncée, le serveur la sème
   const weights = Object.fromEntries(Object.entries(prep.weights).map(([k, v]) => [k, Math.max(0, Math.round(v))]));
   const seed = (key) => a.seed({ key, name: 'Autre nom', place: { lat: HOME.lat, lon: HOME.lon, name: 'Autre nom' }, pop: prep.unit.population,
     src: prep.unit.source, approx: false, zl: prep.unit.level, tiles: weights, failed: prep.census.failed, mode: 'entiere' });
-  // Une autre commune n'a pas sa place dans ce monde, même bien formée.
-  const bad = await seed('c99999');
-  assert.equal(bad.ok, false);
-  assert.equal(bad.code, 'annoncee');
-  assert.equal(srv.seasons.debug().worlds.get('facile')?.city ?? null, null);
+  // Choix libre : l'annonce est une proposition, une autre commune est permise ; la commune annoncée garde, elle, son nom d'annonce.
   const r = await seed(announced.key);
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.created, true);
   assert.equal(r.city.name, 'Pérouges', 'le nom est celui de l\'annonce');
 
-  // Deuxième joueur : il rejoint la ville sans rien choisir ; l'inscription ne dit plus d'annonce (l'évolution de la saison, gardée 30 s, est essayée dans season.test.js).
+  // Deuxième joueur : l'annonce lui est proposée (sa ville n'est pas choisie), il entre dans la ville ouverte par le premier.
   const b = createSeasonNet({ server: url, session: () => b.ses });
   b.ses = await account(2);
   const j2 = await b.join('facile');
   assert.equal(j2.ok, true);
-  assert.equal(j2.city.key, announced.key);
-  assert.equal(j2.announced, undefined);
+  assert.equal(j2.city, null);
+  assert.equal(j2.announced.key, announced.key);
+  const e2 = await b.enter(announced.key);
+  assert.equal(e2.ok, true, JSON.stringify(e2));
+  assert.equal(e2.city.key, announced.key);
 
   // Départ libre : les tuiles de la ville recouvrent Pérouges, pas Paris.
   const st = await b.state();

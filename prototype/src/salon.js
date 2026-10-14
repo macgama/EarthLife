@@ -58,85 +58,163 @@ export function clockOf(season, now) {
   return { name: typeof season.name === 'string' ? season.name : 'Saison 1', elapsed, left, phase, text };
 }
 
-// Un front : le niveau et sa ville commune, tels que /v1/season/progress les donne.
-// ctx : { enrolled: niveau du joueur ou null, pick: niveau touché au menu }.
+// Villes ouvertes d'un niveau, telles que /v1/season/progress les donne (`cities`) ; un serveur d'avant le choix libre ne donne que `city`.
+const validPoint = (lat, lon) => Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+function cityRows(entry) {
+  const list = Array.isArray(entry?.cities) ? entry.cities : entry?.city ? [entry.city] : [];
+  return list.filter((c) => c && typeof c === 'object' && typeof c.key === 'string' && c.key);
+}
+const pointOf = (c) => {
+  const lat = Number(c?.lat ?? c?.place?.lat), lon = Number(c?.lon ?? c?.place?.lon);
+  return validPoint(lat, lon) ? { lat, lon } : null;
+};
+
+// Un front : le niveau et sa ville mise en avant, tels que /v1/season/progress les donne. Choix libre : un niveau a plusieurs villes ;
+// la carte montre la tienne si tu en as une, sinon la ville touchée au menu, sinon la proposition du niveau (ville annoncée, puis la plus jouée).
+// ctx : { enrolled: niveau du joueur ou null, pick: niveau touché au menu, own: sa ville { key, name, lat, lon } ou null,
+//   sel: { kind: 'city', level, key } la ville dont on a touché le repère }.
 export function frontModel(level, entry, ctx = {}) {
   const t = LEVEL_TEXT[level];
-  const c = entry?.city ?? null;
+  const rows = cityRows(entry);
   const known = !!entry;
-  // Ville annoncée par le serveur pour ce niveau, tant que personne ne l'a commencée : nom et position, rien d'autre.
-  const a = !c && typeof entry?.announced?.name === 'string' && entry.announced.name ? entry.announced : null;
-  const status = c ? (STATUS[c.status] ? c.status : 'en-cours') : a ? 'annoncee' : 'vide';
-  const zombies0 = int(c?.zombies0), zombies = int(c?.zombies);
-  const cleared = !c ? 0 : status === 'nettoyee' || zombies0 === 0 ? 1 : clamp(1 - zombies / zombies0, 0, 1);
+  const byKey = (k) => rows.find((r) => r.key === k) ?? null;
   const enrolled = ctx.enrolled ?? null;
   const mine = enrolled === level;
   const locked = !!enrolled && !mine;
-  const lat = Number((c ?? a)?.lat), lon = Number((c ?? a)?.lon);
-  const where = Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
+  const own = mine && ctx.own?.key ? ctx.own : null;
+  const sel = ctx.sel?.kind === 'city' && ctx.sel.level === level ? ctx.sel : null;
+  // Ville annoncée par le serveur pour ce niveau : proposée en premier, même quand d'autres villes sont ouvertes.
+  const ann = typeof entry?.announced?.name === 'string' && entry.announced.name && typeof entry.announced.key === 'string' ? entry.announced : null;
+  const annRow = ann ? byKey(ann.key) : null;
+  const proposal = ann ? { key: ann.key, name: ann.name } : rows[0] ? { key: rows[0].key, name: typeof rows[0].name === 'string' ? rows[0].name : '' } : null;
+  let c = null, pending = false;
+  if (own) { c = byKey(own.key); pending = !c; }                  // ta ville vient d'ouvrir : le serveur ne la liste pas encore
+  else if (sel && byKey(sel.key)) c = byKey(sel.key);
+  else c = ann ? annRow : rows[0] ?? null;                        // l'annonce passe en premier, ouverte ou non
+  // Annoncée mais pas encore ouverte : nom et position seulement.
+  const a = !c && !pending && ann ? ann : null;
+  const shown = c ?? (pending ? own : a);
+  const status = c ? (STATUS[c.status] ? c.status : 'en-cours') : pending ? 'en-cours' : a ? 'annoncee' : 'vide';
+  const zombies0 = int(c?.zombies0), zombies = int(c?.zombies);
+  const cleared = !c ? 0 : status === 'nettoyee' || zombies0 === 0 ? 1 : clamp(1 - zombies / zombies0, 0, 1);
+  const where = pointOf(shown);
+  // Toutes les villes du niveau, pour les repères de la carte (la ville annoncée non ouverte comprise).
+  // Un serveur d'avant le choix libre ne compte les survivants en ligne que par niveau : avec une seule ville, ce sont les siens.
+  const list = rows.map((r) => ({ key: r.key, name: typeof r.name === 'string' ? r.name : '', where: pointOf(r), status: STATUS[r.status] ? r.status : 'en-cours',
+    online: int(r.online ?? (rows.length === 1 ? entry?.online : 0)), own: r.key === own?.key, announced: false }));
+  if (ann && !annRow) list.push({ key: ann.key, name: ann.name, where: pointOf(ann), status: 'annoncee', online: 0, own: false, announced: true });
+  if (own && pending) list.push({ key: own.key, name: typeof own.name === 'string' ? own.name : '', where: pointOf(own), status: 'en-cours', online: 0, own: true, announced: false });
+  const totals = { cities: 0, cleaned: 0, zombies: 0, saved: 0 };
+  for (const r of rows) {
+    totals.cities++;
+    if (r.status === 'nettoyee') totals.cleaned++;
+    totals.zombies += int(r.zombies);
+    totals.saved += int(r.saved);
+  }
   return {
     level, name: t.name, pct: t.pct, rule: t.rule, known,
     status, badge: STATUS[status].label, tone: STATUS[status].tone,
-    cityName: typeof (c ?? a)?.name === 'string' ? (c ?? a).name : null, where, announced: !!a,
+    cityName: typeof shown?.name === 'string' ? shown.name : null, cityKey: shown?.key ?? null, where, announced: !!a, pending,
     cleared, clearedText: `${Math.round(cleared * 100)} %`,
     zombies, zombies0, saved: int(c?.saved), toSave: int(c?.toSave), flags: int(c?.flags),
     online: int(entry?.online), players: int(entry?.players), seats: int(entry?.seats) || 100,
+    cities: list, open: rows.length, others: Math.max(0, rows.length - (c ? 1 : 0)), proposal, totals,
     mine, locked, picked: !locked && (enrolled ? mine : ctx.pick === level),
     tag: mine ? 'Ton niveau' : !enrolled && level === DEFAULT_FRONT ? 'Pour débuter' : '',
   };
 }
 
-// Totaux de la saison, pour la bannière.
+// Totaux de la saison, pour la bannière (toutes les villes ouvertes de tous les niveaux).
 export function summaryOf(fronts) {
   const out = { online: 0, players: 0, cities: 0, cleaned: 0, zombies: 0, saved: 0 };
   for (const f of fronts) {
     out.online += f.online;
     out.players += f.players;
-    if (f.status !== 'vide' && f.status !== 'annoncee') { out.cities++; out.zombies += f.zombies; out.saved += f.saved; }
-    if (f.status === 'nettoyee') out.cleaned++;
+    out.cities += f.totals.cities;
+    out.cleaned += f.totals.cleaned;
+    out.zombies += f.totals.zombies;
+    out.saved += f.totals.saved;
   }
   return out;
 }
 
-// Bouton unique : REPRENDRE (déjà inscrit) ou REJOINDRE (niveau touché), avec une ligne qui dit où l'on va.
-// in : { fronts, enrolled, pick, signedIn, status (online.status), place (lieu de la carte ou null) }
-export function ctaModel({ fronts, enrolled = null, pick = null, signedIn = false, status = 'off', place = null, loaded = true }) {
-  const blocked = BLOCKED[status];
-  const level = enrolled ?? (FRONT_LEVELS.includes(pick) ? pick : DEFAULT_FRONT);
+// Où mène le bouton unique. sel : ce qu'on a touché au menu, { kind: 'city', level, key, name } (un repère) ou { kind: 'place', place } (un point
+// de la carte, une recherche) ; own : ta ville { key, name } ; place : le lieu retenu par la carte (repli du premier joueur).
+//  - resume : ta ville, rien touché ;  city : une ville ouverte (ou annoncée) ;  place : la commune du lieu touché, à rejoindre ou à ouvrir ;
+//  - none : rien à proposer, touche la carte.  `move` : tu quittes ta ville actuelle pour celle-ci.
+export function destinationOf({ fronts, enrolled = null, own = null, sel = null, pick = null, place = null }) {
+  const asked = sel?.kind === 'city' && FRONT_LEVELS.includes(sel.level) ? sel.level : null;
+  const level = enrolled ?? asked ?? (FRONT_LEVELS.includes(pick) ? pick : DEFAULT_FRONT);
   const f = fronts.find((x) => x.level === level) ?? fronts[0];
-  if (blocked) return { kind: 'blocked', level, label: 'Indisponible', sub: blocked, disabled: true };
+  const mine = own?.key ? { key: own.key, name: own.name ?? '' } : null;
+  if (asked === level) {
+    if (mine && mine.key === sel.key) return { kind: 'resume', level, city: mine };
+    return { kind: 'city', level, city: { key: sel.key, name: sel.name ?? '' }, move: !!mine, own: mine };
+  }
+  if (sel?.kind === 'place' && sel.place) return { kind: 'place', level, place: sel.place, move: !!mine, own: mine };
+  if (mine) return { kind: 'resume', level, city: mine };
+  if (f.proposal) return { kind: 'city', level, city: f.proposal, move: false, own: null, proposed: true };
+  if (place) return { kind: 'place', level, place, move: false, own: null, remembered: true };
+  return { kind: 'none', level };
+}
+
+// Bouton unique : REPRENDRE (ta ville), REJOINDRE (une ville du niveau, ou le niveau pour la première fois), ALLER (changer de ville),
+// avec une ligne qui dit où l'on va.
+// in : { fronts, enrolled, own, sel, pick, signedIn, status (online.status), place (lieu de la carte ou null), loaded }
+export function ctaModel({ fronts, enrolled = null, own = null, sel = null, pick = null, signedIn = false, status = 'off', place = null, loaded = true }) {
+  const blocked = BLOCKED[status];
+  const dest = destinationOf({ fronts, enrolled, own, sel, pick, place });
+  const level = dest.level;
+  const f = fronts.find((x) => x.level === level) ?? fronts[0];
+  if (blocked) return { kind: 'blocked', level, label: 'Indisponible', sub: blocked, disabled: true, dest };
   const where = [];
-  if (f.cityName) where.push(f.cityName);
-  if (f.announced) where.push('ville annoncée');
-  if (f.cityName && f.online) where.push(`${plural(f.online, 'survivant en ligne', 'survivants en ligne')}`);
-  if (enrolled) {
-    return { kind: 'resume', level, label: `Reprendre · ${f.name}`, sub: where.join(' · ') || 'Ta ville de la saison', disabled: false };
+  const row = dest.city ? f.cities.find((r) => r.key === dest.city.key) ?? null : null;
+  const online = row ? row.online : 0;
+  if (dest.kind === 'resume' || dest.kind === 'city') {
+    const name = dest.city.name || row?.name || '';
+    if (name) where.push(name);
+    if (row?.announced) where.push('ville annoncée');
+    if (online) where.push(plural(online, 'survivant en ligne', 'survivants en ligne'));
   }
-  // Sans état des lieux lu, on ne sait pas si la ville du niveau existe : rien n'est dit de la ville.
-  if (loaded && !f.cityName) where.push(place ? `Tu choisis la ville : ${place.name}` : 'Sois le premier : touche la carte pour choisir la ville');
+  if (dest.kind === 'place' && (loaded || !dest.remembered)) where.push(`Tu choisis la ville : ${dest.place.name}`);
+  // Sans état des lieux lu, on ne sait pas si le niveau a des villes : rien n'est dit de la ville.
+  if (dest.kind === 'none' && loaded) where.push('Sois le premier : touche la carte pour choisir la ville');
+  if (dest.move && dest.own?.name) where.push(dest.kind === 'place' ? `tu quittes ${dest.own.name} si c'est une autre commune` : `tu quittes ${dest.own.name}`);
   if (!signedIn) where.push('compte requis');
-  return { kind: 'join', level, label: `Rejoindre · ${f.name}`, sub: where.join(' · '), disabled: false };
+  const verb = dest.kind === 'resume' ? 'Reprendre' : dest.move ? 'Aller' : 'Rejoindre';
+  const kind = dest.kind === 'resume' ? 'resume' : dest.move ? 'move' : 'join';
+  return { kind, level, label: `${verb} · ${f.name}`, sub: where.join(' · ') || (kind === 'resume' ? 'Ta ville de la saison' : ''), disabled: false, dest };
 }
 
-// Repères du niveau sur la carte du menu : seulement les villes dont le serveur donne la position.
+// Repères du niveau sur la carte du menu : une ville ouverte (ou annoncée) par repère, seulement celles dont le serveur donne la position.
 export function pinsOf(fronts) {
-  return fronts.filter((f) => f.where && f.status !== 'vide').map((f) => ({
-    level: f.level, lat: f.where.lat, lon: f.where.lon, tone: f.tone,
-    label: `${f.name} · ${f.cityName}`, tag: f.online ? `${f.name} · ${f.online} en ligne` : f.name,
-  }));
+  const out = [];
+  for (const f of fronts) {
+    for (const c of f.cities) {
+      if (!c.where) continue;
+      const tone = c.status === 'annoncee' ? 'idle' : STATUS[c.status].tone;
+      out.push({
+        level: f.level, key: c.key, lat: c.where.lat, lon: c.where.lon, tone, own: c.own,
+        label: `${f.name} · ${c.name}`, tag: `${c.own ? 'Ta ville · ' : ''}${c.name}${c.online ? ` · ${c.online} en ligne` : ''}`,
+      });
+    }
+  }
+  return out;
 }
 
-// Cadrage de la carte du menu sur ces repères : la ville du niveau touché, ou toutes les villes ensemble ; null s'il n'y a rien à montrer
-// (aucun repère, ou niveau sans ville : la carte ne bouge pas).
-export function framingOf(pins, level = null) {
+// Cadrage de la carte du menu sur ces repères : une ville (level et key), les villes d'un niveau, ou toutes ensemble ; null s'il n'y a rien à
+// montrer (aucun repère, ou niveau sans ville : la carte ne bouge pas).
+export function framingOf(pins, level = null, key = null) {
   const list = Array.isArray(pins) ? pins : [];
+  const pts = (l) => l.map((p) => ({ level: p.level, key: p.key, lat: p.lat, lon: p.lon }));
+  const frame = (l) => (l.length === 1 ? { kind: 'city', level: l[0].level, key: l[0].key, lat: l[0].lat, lon: l[0].lon } : { kind: 'all', points: pts(l) });
   if (level) {
-    const one = list.find((p) => p.level === level);
-    return one ? { kind: 'city', level, lat: one.lat, lon: one.lon } : null;
+    const mine = list.filter((p) => p.level === level);
+    const one = key ? mine.find((p) => p.key === key) : null;
+    if (one) return frame([one]);
+    return mine.length ? frame(mine) : null;
   }
-  if (!list.length) return null;
-  if (list.length === 1) return { kind: 'city', level: list[0].level, lat: list[0].lat, lon: list[0].lon };
-  return { kind: 'all', points: list.map((p) => ({ level: p.level, lat: p.lat, lon: p.lon })) };
+  return list.length ? frame(list) : null;
 }
 
 // ---------- DOM ----------
@@ -151,6 +229,7 @@ export function createSalon({ doc, storage = null, host = {} } = {}) {
   let picked = null;
   try { const v = storage?.getItem(PICK_KEY); picked = FRONT_LEVELS.includes(v) ? v : null; } catch { picked = null; }
   const cards = new Map();
+  let dest = null;                                    // où mène le bouton (destinationOf), mis à jour à chaque affichage
 
   function build() {
     if (!list || cards.size) return;
@@ -198,11 +277,13 @@ export function createSalon({ doc, storage = null, host = {} } = {}) {
     setAttr(c.b, 'aria-disabled', String(f.locked));
     setText(c.city, !loaded ? (model.failed ? 'État des lieux indisponible' : 'Lecture de l\'état des lieux…') : f.cityName ?? 'Ville à choisir');
     c.city.classList.toggle('empty', !f.cityName);
-    const pct = loaded && f.cityName && !f.announced ? Math.round(f.cleared * 100) : 0;
+    const pct = loaded && f.cityName && !f.announced && !f.pending ? Math.round(f.cleared * 100) : 0;
     if (c.bar.style.getPropertyValue('--p') !== `${pct}%`) c.bar.style.setProperty('--p', `${pct}%`);
-    setText(c.zombies, !loaded ? '' : f.announced ? 'Ville annoncée, la même pour tous : elle démarre dès qu\'un joueur entre.' : f.cityName ? `${groupDigits(f.zombies)} zombie${f.zombies > 1 ? 's' : ''} restant${f.zombies > 1 ? 's' : ''} (${f.clearedText} éliminés)` : 'Le premier joueur la choisit pour tout le niveau.');
-    setText(c.saved, loaded && f.cityName && !f.announced ? `${groupDigits(f.saved)} / ${groupDigits(f.toSave)} habitants sauvés` : '');
-    setText(c.online, loaded ? `${plural(f.online, 'survivant en ligne', 'survivants en ligne')} · ${groupDigits(f.players)} inscrit${f.players > 1 ? 's' : ''}` : '');
+    const stats = loaded && f.cityName && !f.announced && !f.pending;
+    setText(c.zombies, !loaded ? '' : f.announced ? 'Ville annoncée : proposée en premier, elle démarre dès qu\'un joueur entre.' : f.pending ? 'Ta ville vient d\'ouvrir : les chiffres arrivent.'
+      : f.cityName ? `${groupDigits(f.zombies)} zombie${f.zombies > 1 ? 's' : ''} restant${f.zombies > 1 ? 's' : ''} (${f.clearedText} éliminés)` : 'Touche la carte pour choisir ta ville.');
+    setText(c.saved, stats ? `${groupDigits(f.saved)} / ${groupDigits(f.toSave)} habitants sauvés` : '');
+    setText(c.online, loaded ? `${plural(f.online, 'survivant en ligne', 'survivants en ligne')} · ${groupDigits(f.players)} inscrit${f.players > 1 ? 's' : ''}${f.open > 1 ? ` · ${f.open} villes` : ''}` : '');
     c.b.querySelector('.front-dot').dataset.live = f.online > 0 ? '1' : '0';
     c.b.title = f.locked ? 'Ton niveau est déjà choisi pour la saison : il ne change plus.' : f.rule;
   }
@@ -219,7 +300,7 @@ export function createSalon({ doc, storage = null, host = {} } = {}) {
     const s = model.summary;
     const stats = {
       'stat-online': model.loaded ? groupDigits(s.online) : '–',
-      'stat-cleaned': model.loaded ? `${s.cleaned} / ${FRONT_LEVELS.length}` : '–',
+      'stat-cleaned': model.loaded ? `${s.cleaned} / ${Math.max(s.cities, FRONT_LEVELS.length)}` : '–',
       'stat-zombies': model.loaded ? groupDigits(s.zombies) : '–',
     };
     for (const [id, text] of Object.entries(stats)) setText($(id), text);
@@ -234,6 +315,7 @@ export function createSalon({ doc, storage = null, host = {} } = {}) {
       cta.disabled = !!model.cta.disabled;
       cta.dataset.level = model.cta.level;
       cta.dataset.kind = model.cta.kind;
+      dest = model.cta.dest ?? null;
     }
     const count = $('tab-count');
     if (count) { const n = model.loaded ? s.online : 0; setText(count, n ? String(n) : ''); count.hidden = !n; }
@@ -242,7 +324,7 @@ export function createSalon({ doc, storage = null, host = {} } = {}) {
   $('salon-cta')?.addEventListener('click', () => {
     const cta = $('salon-cta');
     if (!cta || cta.disabled) return;
-    host.onLaunch?.(cta.dataset.level);
+    host.onLaunch?.(cta.dataset.level, dest);
   });
   if (list) build();
   return { render, pick: () => picked, setPick(level) { picked = FRONT_LEVELS.includes(level) ? level : null; }, cards };
