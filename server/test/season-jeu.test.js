@@ -89,7 +89,7 @@ async function account(n) {
 }
 
 // Un joueur : compte, connexion en ligne, lien de saison, copie de la ville et runtime.
-async function player(n, { seedFirst = false } = {}) {
+async function player(n, { seedFirst = false, enterKey = null } = {}) {
   T(`joueur ${n} : compte`);
   const ses = await account(n);
   T(`joueur ${n} : connexion`);
@@ -111,6 +111,12 @@ async function player(n, { seedFirst = false } = {}) {
   T(`joueur ${n} : inscrit`);
   let prep = null, city = joined.city;
   const communes = createCommuneCache(p.storage);
+  if (!city && enterKey) {
+    // Choix libre : la ville d'un autre joueur se rejoint par son repère (enter), sans recensement.
+    const r = await net.enter(enterKey);
+    assert.ok(r.ok, JSON.stringify(r));
+    city = r.city;
+  }
   if (!city) {
     assert.ok(seedFirst, 'ville absente');
     prep = await prepareCity({ client: p.client, communes, template: TEMPLATE }, HOME);
@@ -158,7 +164,7 @@ async function player(n, { seedFirst = false } = {}) {
   return p;
 }
 
-const serverVille = () => srv.seasons.debug().worlds.get('facile').city.ville;
+const serverVille = () => srv.seasons.debug().levelCities('facile')[0].city.ville;
 const rowsOf = (v) => JSON.stringify(Object.fromEntries(Object.entries(v.tiles).map(([k, t]) => [k, t.b ? Object.fromEntries(Object.entries(t.b).sort()) : null])));
 // Laisse passer les messages du serveur (gestes groupés toutes les 250 ms, rangées toutes les 250 ms, compteurs toutes les secondes).
 async function settle(...ps) {
@@ -188,7 +194,7 @@ test('deux joueurs, la même ville : tuiles placées une fois, mêmes rangées, 
     assert.ok(a.rt.pos.size > 0, 'positions des pâtés connues du premier joueur');
     assert.equal(rowsOf(a.ville), rowsOf(sv), 'la copie du premier joueur est celle du serveur');
 
-    const b = await player(2);
+    const b = await player(2, { enterKey: a.city.key });
     ps.push(b);
     await b.rt.ensureAround(0, 0, { wait: true });
     await settle(a, b);
