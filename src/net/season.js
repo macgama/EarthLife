@@ -179,7 +179,11 @@ export function createSeasonNet({
 
   // Abonnement puis état : les messages arrivés entre les deux sont rejoués s'ils sont plus récents que l'état.
   async function start() {
-    const r = await subscribe();
+    let r = await subscribe();
+    // Quand le serveur déplace le joueur (seed ou enter, par HTTP), il pousse `no` « commune » à son ancien siège s'il y est encore. Sur
+    // l'autre liaison, ce message peut arriver après notre nouvelle demande et passer pour sa réponse alors que la vraie, `in`, suit :
+    // une seule reprise (le `in` en route la satisfait ; un vrai refus se répète et reste dit).
+    if (!r.ok && r.why === 'commune') r = await subscribe();
     if (!r.ok) return r;
     const st = await call('state');
     if (!st.ok) return { ok: false, why: st.code ?? 'base', status: st.status };
