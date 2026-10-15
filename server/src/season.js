@@ -1,9 +1,11 @@
-// Saisons de « Sauver sa ville » (conception validée par Gaël, lot 1) : pour chaque monde (saison + niveau), UNE ville
+// Saisons de « Sauver sa ville » (conception validée par Gaël, lot 1) : pour chaque monde (saison + niveau + commune), UNE ville
 // commune, tenue ici par les mêmes règles que le jeu seul (quartier.js, module pur importé tel quel) ; les joueurs
 // envoient des gestes, le serveur les applique, rend les rangées et les compteurs à tous.
 //  - Démarrage : la Saison 1 est créée au premier démarrage (début maintenant, fin dans 60 jours), puis relue.
-//  - Inscription (HTTP, compte obligatoire) : un niveau par compte et par saison ; le premier inscrit d'un monde choisit
-//    la commune (graine : poids de recensement, startVille refait la ville ici) ; les suivants la rejoignent.
+//  - Inscription (HTTP, compte obligatoire) : un niveau par compte et par saison ; chaque joueur choisit la ville où il joue
+//    dans son niveau (« choix libre », 13 octobre) : `seed` ouvre une commune que personne n'a encore prise (graine : poids de
+//    recensement, startVille refait la ville ici), `enter` rejoint une ville déjà ouverte ; ceux qui ont la même ville jouent
+//    ensemble. Changer de ville est permis : la maison du joueur repart à zéro, le reste de son compte ne bouge pas.
 //  - Tuiles : le serveur n'a pas de carte ; le jeu envoie les pâtés d'une tuile découpée (clé, appartenance, poids,
 //    voisins) et le serveur lance placeTile lui-même : la conservation tient par construction. Le premier découpage
 //    d'une tuile fait foi ; les autres joueurs lisent les rangées du serveur.
@@ -13,7 +15,7 @@
 //    inscrit y a joué dans les dernières 24 h.
 //  - Rangement : ville, tuiles et voisinages en pièces JSON dans la base, écrites toutes les 15 s si elles ont changé.
 // Limites connues de la première version (écrites dans la conception) : mode « ville entière » seulement, pas de
-// partition par monde de la présence, des traces et des refuges, une seule commune par monde, pas de file d'attente.
+// partition par monde de la présence, des traces et des refuges, pas de file d'attente.
 import { createHash } from 'node:crypto';
 import { cleanText } from '../../prototype/src/limits.js';
 import { isNightAt, nightKey } from '../../prototype/src/horde.js';
@@ -41,12 +43,13 @@ export const SEASON_RULES = {
   flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
   initRetryMs: 5000, playedMs: DAY, enrolCacheMs: 60000,
   rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000,
-  body: { join: 1024, state: 1024, home: 1024, seed: 24576, tile: 131072, adj: 32768 },
+  citiesMax: 30,                                         // villes ouvertes au plus par niveau (choix libre)
+  body: { join: 1024, state: 1024, home: 1024, enter: 1024, seed: 24576, tile: 131072, adj: 32768 },
   // [capacité, jetons par seconde] par compte et par route.
-  rate: { join: [12, 0.2], state: [6, 0.05], seed: [3, 0.02], tile: [30, 0.5], adj: [30, 0.5], home: [6, 0.05] },
+  rate: { join: [12, 0.2], state: [6, 0.05], seed: [3, 0.02], enter: [6, 0.05], tile: [30, 0.5], adj: [30, 0.5], home: [6, 0.05] },
   // Par adresse, avant toute lecture du corps : [capacité, jetons par seconde] ; l'adresse illisible partage un seau dix fois plus large.
   ipRate: [40, 8],
-  // Villes annoncées par niveau (season-cities.js) ; vide : la ville d'un niveau est celle de son premier joueur.
+  // Villes annoncées par niveau (season-cities.js) : proposées en premier au menu, sans être imposées ; vide : rien n'est proposé.
   announced: ANNOUNCED_CITIES,
 };
 
@@ -69,12 +72,13 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   const R = { ...SEASON_RULES, ...rules, body: { ...SEASON_RULES.body, ...rules.body }, rate: { ...SEASON_RULES.rate, ...rules.rate } };
   const announced = readAnnounced(R.announced);
   let season = null, ready = false, initing = null, lastInit = -Infinity;
-  const worlds = new Map();            // niveau → monde
+  const worlds = new Map();            // 'niveau/commune' → monde (une ville)
+  const levelLoad = new Map();         // niveau → { done, loading } : toutes les villes du niveau lues en base
   const subs = new Map();              // session de la salle → abonné
   const limits = new Map();            // compte → { route: seau }
   const ipLimits = new Map();          // adresse → seau
   const enrol = new Map();             // compte → { player, at }
-  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, errors: 0, integrity: 0, idleReleased: 0 };
+  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, moves: 0, errors: 0, integrity: 0, idleReleased: 0 };
   let lastFlush = now(), lastNight = now(), lastCheck = now(), lastProgress = { at: -Infinity, body: null }, flushing = null;
 
   // ---------- Saison ----------
@@ -108,14 +112,20 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
 
   // ---------- Mondes et villes ----------
 
-  function worldOf(level) {
-    let w = worlds.get(level);
+  // Un monde par ville : `id` est celui du niveau (colonne `world` de la base), la commune distingue les villes d'un niveau.
+  function worldOf(level, commune) {
+    const k = `${level}/${commune}`;
+    let w = worlds.get(k);
     if (!w) {
-      w = { id: `${season.id}.${level}`, level, city: null, subs: new Set(), loaded: false, loading: null, ended: false };
-      worlds.set(level, w);
+      w = { id: `${season.id}.${level}`, level, commune, city: null, subs: new Set(), loaded: false, loading: null, ended: false };
+      worlds.set(k, w);
     }
     return w;
   }
+  const levelWorlds = (level) => [...worlds.values()].filter((w) => w.level === level);
+  const levelCities = (level) => levelWorlds(level).filter((w) => w.city);
+  // Joueurs assis au niveau, toutes villes confondues : les 100 places sont celles du niveau.
+  const levelUsed = (level) => levelWorlds(level).reduce((n, w) => n + w.subs.size, 0);
 
   function makeCity({ key, place, ville, playedAt = 0 }) {
     const city = {
@@ -134,29 +144,59 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   async function load(w) {
     if (w.loaded) return;
     w.loading ??= (async () => {
-      const docs = await store.seasonDocs(w.id);
-      const meta = docs.find((d) => d.part === 'meta');
-      if (meta) {
-        const m = JSON.parse(meta.data);
-        const ville = { ...m.ville, tiles: {} };
-        for (const d of docs) if (d.commune === meta.commune && d.part.startsWith('t:')) ville.tiles[d.part.slice(2)] = JSON.parse(d.data);
-        const city = makeCity({ key: meta.commune, place: m.place, ville, playedAt: m.playedAt ?? 0 });
-        city.dirty.meta = false;
-        city.revs.set('meta', meta.rev);
-        for (const d of docs) if (d.commune === meta.commune && d.part.startsWith('t:')) city.revs.set(d.part, d.rev);
-        const adj = docs.find((d) => d.commune === meta.commune && d.part === 'adj');
-        if (adj) {
-          const a = JSON.parse(adj.data);
-          city.revs.set('adj', adj.rev);
-          for (const [i, j] of a.e ?? []) addEdge(city, a.k[i], a.k[j]);
-        }
-        w.city = city;
-        const chk = checkVille(city.ville);
-        if (!chk.ok) { stats.integrity++; log('erreur', { type: 'saison-conservation', monde: w.id, n: chk.errors.length }); }
-      }
-      w.loaded = true;
+      hydrate(w, await store.seasonDocs(w.id, w.commune));
     })().finally(() => { w.loading = null; });
     await w.loading;
+  }
+
+  // Toutes les villes ouvertes d'un niveau, une seule lecture : le menu les liste (progress) et les repères en dépendent.
+  async function loadLevel(level) {
+    let st = levelLoad.get(level);
+    if (!st) levelLoad.set(level, (st = { done: false, loading: null }));
+    if (st.done) return;
+    st.loading ??= (async () => {
+      const docs = await store.seasonDocs(`${season.id}.${level}`);
+      const by = new Map();
+      for (const d of docs) {
+        if (!by.has(d.commune)) by.set(d.commune, []);
+        by.get(d.commune).push(d);
+      }
+      for (const [commune, list] of by) {
+        if (!SEASON_COMMUNE.test(commune)) continue;
+        const w = worldOf(level, commune);
+        if (w.loaded) continue;
+        if (w.loading) { await w.loading; continue; }
+        // Une ville abîmée ne prive pas le menu des autres : elle reste à relire (load) quand un joueur la demande.
+        try { hydrate(w, list); } catch (err) { stats.errors++; log('erreur', { type: 'saison-lecture', monde: w.id, err: err?.name }); }
+      }
+      st.done = true;
+    })().finally(() => { st.loading = null; });
+    await st.loading;
+  }
+
+  // Remplit un monde depuis ses pièces rangées (celles de sa commune seulement).
+  function hydrate(w, docs) {
+    const mine = docs.filter((d) => d.commune === w.commune);
+    const meta = mine.find((d) => d.part === 'meta');
+    if (meta) {
+      const m = JSON.parse(meta.data);
+      const ville = { ...m.ville, tiles: {} };
+      for (const d of mine) if (d.part.startsWith('t:')) ville.tiles[d.part.slice(2)] = JSON.parse(d.data);
+      const city = makeCity({ key: meta.commune, place: m.place, ville, playedAt: m.playedAt ?? 0 });
+      city.dirty.meta = false;
+      city.revs.set('meta', meta.rev);
+      for (const d of mine) if (d.part.startsWith('t:')) city.revs.set(d.part, d.rev);
+      const adj = mine.find((d) => d.part === 'adj');
+      if (adj) {
+        const a = JSON.parse(adj.data);
+        city.revs.set('adj', adj.rev);
+        for (const [i, j] of a.e ?? []) addEdge(city, a.k[i], a.k[j]);
+      }
+      w.city = city;
+      const chk = checkVille(city.ville);
+      if (!chk.ok) { stats.integrity++; log('erreur', { type: 'saison-conservation', monde: w.id, n: chk.errors.length }); }
+    }
+    w.loaded = true;
   }
 
   function addEdge(city, a, b) {
@@ -510,9 +550,12 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (name === 'join') return join(acc, body, phase);
     const p = await playerOf(acc);
     if (!p) return refuse(403, 'inscription');
-    const w = worldOf(p.level);
+    if (name === 'seed') return seed(acc, p, body, phase);
+    if (name === 'enter') return enter(acc, p, body, phase);
+    // Les autres routes parlent de la ville où le joueur joue (celle qu'il a choisie).
+    if (!p.commune) return refuse(409, 'vide');
+    const w = worldOf(p.level, p.commune);
     await load(w);
-    if (name === 'seed') return seed(acc, p, w, body, phase);
     if (!w.city) return refuse(409, 'vide');
     if (name === 'state') return state(w);
     if (phase !== 'en-cours') return refuse(409, phase === 'terminee' ? 'fin' : 'avenir');
@@ -540,32 +583,65 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       return refuse(409, 'niveau', { level: p.level });
     }
     enrol.set(acc, { player: p, at: now() });
-    const w = worldOf(p.level);
-    await load(w);
-    const city = w.city;
-    if (city && p.commune !== city.key) {
-      p.commune = city.key;
-      await store.seasonPlayerSet(acc, season.id, { commune: city.key, seenMs: now() });
-    }
-    return { status: 200, body: { ok: true, now: now(), season: seasonView(), level: p.level, world: w.id, city: cityView(city),
+    // Sa ville : celle qu'il a choisie (et qui existe encore), sinon rien, il choisit.
+    const w = p.commune ? worldOf(p.level, p.commune) : null;
+    if (w) await load(w);
+    const city = w?.city ?? null;
+    return { status: 200, body: { ok: true, now: now(), season: seasonView(), level: p.level, world: `${season.id}.${p.level}`, city: cityView(city),
       ...(city ? {} : announcedOf(p.level)),
-      home: p.homeKey ? { key: p.homeKey, a: p.homeLat, o: p.homeLon } : null, seats: { used: w.subs.size, max: R.seats } } };
+      home: homeView(p), seats: { used: levelUsed(p.level), max: R.seats } } };
+  }
+  const homeView = (p) => (p.homeKey ? { key: p.homeKey, a: p.homeLat, o: p.homeLon } : null);
+
+  // Le joueur joue dans la ville de ce monde. Un autre choix que sa ville actuelle remet sa maison à zéro (une nouvelle lui est tirée
+  // dans la nouvelle ville) et le sort de l'ancienne : ses sièges s'y ferment (`no` « commune »).
+  async function moveTo(acc, p, w) {
+    const key = w.city.key;
+    const moved = p.commune !== key;
+    if (moved) {
+      for (const sub of [...subs.values()]) {
+        if (sub.accountId !== acc || sub.w === w) continue;
+        const s = sub.s;
+        detach(s);
+        no(s, 'commune');
+      }
+      p.commune = key;
+      p.homeKey = null;
+      p.homeLat = null;
+      p.homeLon = null;
+      await store.seasonPlayerSet(acc, season.id, { commune: key, homeKey: null, homeLat: null, homeLon: null, seenMs: now() });
+      stats.moves++;
+    }
+    return { status: 200, body: { ok: true, created: false, moved, city: cityView(w.city), home: homeView(p) } };
   }
 
-  async function seed(acc, p, w, b, phase) {
+  // Entrer dans une ville déjà ouverte du niveau du joueur (repère touché au menu).
+  async function enter(acc, p, b, phase) {
+    if (phase !== 'en-cours') return refuse(409, phase === 'terminee' ? 'fin' : 'avenir');
+    if (typeof b.key !== 'string' || !SEASON_COMMUNE.test(b.key)) return refuse(400, 'requete');
+    const w = worldOf(p.level, b.key);
+    await load(w);
+    if (!w.city) return refuse(409, 'inconnue');
+    return moveTo(acc, p, w);
+  }
+
+  // Ouvre la commune choisie dans le niveau du joueur, ou y entre si elle est déjà ouverte (deux joueurs qui la choisissent en même
+  // temps jouent ensemble : le second reçoit `created: false`).
+  async function seed(acc, p, b, phase) {
     if (phase !== 'en-cours') return refuse(409, phase === 'terminee' ? 'fin' : 'avenir');
     const place = b.place;
     if (!isObj(place) || !finite(place.lat, 90) || !finite(place.lon, 180) || typeof b.key !== 'string' || !SEASON_COMMUNE.test(b.key)) {
       return refuse(400, 'requete');
     }
-    if (w.city) {
-      return w.city.key === b.key ? { status: 200, body: { ok: true, created: false, city: cityView(w.city) } }
-        : refuse(409, 'autre-commune', { city: cityView(w.city) });
-    }
+    const w = worldOf(p.level, b.key);
+    await load(w);
+    if (w.city) return moveTo(acc, p, w);
     if (b.mode !== undefined && b.mode !== 'entiere') return refuse(409, 'mode');
-    // Ville annoncée pour ce niveau : seule sa commune peut être posée (une autre n'a pas sa place dans ce monde).
-    const ann = announced[p.level] ?? null;
-    if (ann && b.key !== ann.key) return refuse(409, 'annoncee', announcedOf(p.level));
+    await loadLevel(p.level);
+    if (w.city) return moveTo(acc, p, w);
+    if (levelCities(p.level).length >= R.citiesMax) return refuse(409, 'villes-max', { max: R.citiesMax });
+    // La ville annoncée du niveau garde son nom et son point (le même pour tous), quel que soit le lieu touché au menu.
+    const ann = announced[p.level]?.key === b.key ? announced[p.level] : null;
     const tiles = {};
     if (!isObj(b.tiles) || Object.keys(b.tiles).length > QUARTIER.maxTiles) return refuse(400, 'requete');
     for (const [k, v] of Object.entries(b.tiles)) {
@@ -586,11 +662,10 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     w.city = makeCity({ key: b.key, place: ann ? { lat: ann.lat, lon: ann.lon, name } : { lat: place.lat, lon: place.lon, name: cleanText(place.name, 80) || name },
       ville, playedAt: now() });
     for (const tk of Object.keys(ville.tiles)) w.city.dirty.tiles.add(tk);
-    p.commune = b.key;
-    await store.seasonPlayerSet(acc, season.id, { commune: b.key, seenMs: now() });
     stats.seeds++;
-    log('saison', { graine: w.id, habitants: ville.population, zombies: ville.zombies0 });
-    return { status: 200, body: { ok: true, created: true, city: cityView(w.city) } };
+    log('saison', { graine: `${w.id}/${b.key}`, habitants: ville.population, zombies: ville.zombies0 });
+    const r = await moveTo(acc, p, w);
+    return { status: r.status, body: { ...r.body, created: true } };
   }
 
   function state(w) {
@@ -703,7 +778,15 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return a ? { announced: { key: a.key, name: a.name, ...coords(a) } } : {};
   };
 
-  // Évolution de la saison (écran du menu) : publique, gardée 30 s.
+  // Une ville telle que le menu la montre (repère sur la carte, carte du niveau).
+  function cityRow(w) {
+    const city = w.city, v = city.ville;
+    return { key: city.key, name: city.name, ...coords(city.place), population: v.population, zombies: zombiesLeft(v), zombies0: v.zombies0, saved: v.saved,
+      toSave: v.hidden0, flags: v.flags, killed: v.killed[0] + v.killed[1] + v.killed[2], status: cityStatus(v), startMs: v.start, online: w.subs.size };
+  }
+
+  // Évolution de la saison (écran du menu) : publique, gardée 30 s. Par niveau : `cities` (toutes les villes ouvertes, la ville annoncée
+  // d'abord, puis les plus jouées) et `city`, la première (mise en avant, lue par les anciens jeux).
   async function progress() {
     if (!(await init())) return refuse(503, 'base');
     const t = now();
@@ -712,14 +795,14 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       const counts = await store.seasonCounts(season.id);
       const levels = {};
       for (const level of LEVELS) {
-        const w = worldOf(level);
-        await load(w);
-        const city = w.city, v = city?.ville;
+        await loadLevel(level);
+        const annKey = announced[level]?.key ?? null;
+        const cities = levelCities(level).map(cityRow)
+          .sort((a, b) => (b.key === annKey) - (a.key === annKey) || b.online - a.online || a.startMs - b.startMs || (a.key < b.key ? -1 : 1));
         levels[level] = {
-          players: counts[level] ?? 0, online: w.subs.size, seats: R.seats,
-          city: city ? { key: city.key, name: city.name, ...coords(city.place), population: v.population, zombies: zombiesLeft(v), zombies0: v.zombies0, saved: v.saved,
-            toSave: v.hidden0, flags: v.flags, killed: v.killed[0] + v.killed[1] + v.killed[2], status: cityStatus(v), startMs: v.start } : null,
-          ...(city ? {} : announcedOf(level)),
+          players: counts[level] ?? 0, online: levelUsed(level), seats: R.seats,
+          city: cities[0] ?? null, cities, citiesMax: R.citiesMax,
+          ...announcedOf(level),
         };
       }
       lastProgress = { at: t, body: { ok: true, now: t, season: seasonView(), levels } };
@@ -763,14 +846,16 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const p = await playerOf(s.accountId);
     if (s.state === 'closed') return undefined;
     if (!p) return no(s, 'inscription');
-    const w = worldOf(p.level);
+    // On s'assied dans la ville choisie par le joueur (sa commune), pas dans une autre du niveau.
+    if (!p.commune || p.commune !== msg.c) return no(s, 'commune');
+    const w = worldOf(p.level, p.commune);
     await load(w);
     if (s.state === 'closed') return undefined;
     if (!w.city || w.city.key !== msg.c) return no(s, 'commune');
     const old = subs.get(s);
     if (old && old.w === w) return send(s, { t: 'sv', o: 'in', rv: w.city.rv });
     detach(s);
-    if (w.subs.size >= R.seats) return send(s, { t: 'sv', o: 'full', used: w.subs.size, max: R.seats });
+    if (levelUsed(w.level) >= R.seats) return send(s, { t: 'sv', o: 'full', used: levelUsed(w.level), max: R.seats });
     const sub = { s, w, accountId: s.accountId, leases: new Map(), holdAt: 0, kills: 0, kills0: p.kills ?? 0, dirtyKills: false, bucket: createBucket(20, 6, now),
       killBucket: createBucket(R.killBurst, R.killPerSec, now) };
     subs.set(s, sub);
@@ -845,6 +930,6 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       return out;
     },
     // Pour les essais.
-    debug() { return { season, ready, worlds, subs, stats }; },
+    debug() { return { season, ready, worlds, subs, stats, worldOf, levelCities }; },
   };
 }

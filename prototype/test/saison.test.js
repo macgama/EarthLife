@@ -147,6 +147,28 @@ test('abonnement : état lu après `in`, messages arrivés entre les deux rejou�
   assert.equal(t.net.subscribed, false);
 });
 
+test('abonnement : le « commune » poussé pour l\'ancien siège ne passe pas pour la réponse ; un vrai refus reste dit', async () => {
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  // Le serveur a déplacé le joueur (HTTP) et fermé son ancien siège : ce `no` arrive après notre demande, la vraie réponse `in` suit.
+  const t = makeNet({ responses: [reply(200, { ok: true, rv: 5, ville: { key: 'c2' }, lent: {} })] });
+  const p = t.net.open('c2');
+  t.online.emit('sv', { t: 'sv', o: 'no', why: 'commune' });
+  await flush();
+  assert.equal(t.online.sent.filter((m) => m.o === 'in').length, 2, 'une seule reprise');
+  t.online.emit('sv', { t: 'sv', o: 'in', rv: 4 });
+  const r = await p;
+  assert.equal(r.ok, true);
+  assert.equal(r.rv, 5);
+  // Un vrai refus se répète : la raison est dite après la reprise.
+  const bad = makeNet();
+  const q = bad.net.open('c2');
+  bad.online.emit('sv', { t: 'sv', o: 'no', why: 'commune' });
+  await flush();
+  bad.online.emit('sv', { t: 'sv', o: 'no', why: 'commune' });
+  assert.deepEqual(await q, { ok: false, why: 'commune' });
+  assert.equal(bad.online.sent.filter((m) => m.o === 'in').length, 2);
+});
+
 test('abonnement refusé ou muet : raison en clair', async () => {
   const no = makeNet();
   const p1 = no.net.open('c1');

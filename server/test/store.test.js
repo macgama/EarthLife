@@ -555,6 +555,16 @@ for (const B of BACKENDS) {
       assert.deepEqual(docs.map((d) => [d.part, d.rev]), [['meta', 2], ['t:14/8500/5800', 1]]);
       assert.equal(JSON.parse(docs[0].data).nom, 'Pérouges – lieu-dit « Le Bourg » ☀');
       assert.deepEqual(await s.seasonDocs('1.moyen'), []);
+      // Plusieurs villes dans un niveau (choix libre) : les pièces sont rangées par commune, lisibles ensemble ou une commune seule.
+      await s.seasonDocPut({ world: '1.facile', commune: 'c99999', part: 'meta', rev: 1, data: '{}', nowMs: T0 });
+      assert.equal((await s.seasonDocs('1.facile')).length, 3);
+      assert.deepEqual((await s.seasonDocs('1.facile', 'c99999')).map((d) => [d.commune, d.part]), [['c99999', 'meta']]);
+      assert.deepEqual((await s.seasonDocs('1.facile', 'c01283')).map((d) => d.part).sort(), ['meta', 't:14/8500/5800']);
+      assert.deepEqual(await s.seasonDocs('1.facile', 'c00000'), []);
+      // Changer de ville : la commune change, la maison repasse à vide.
+      await s.seasonPlayerSet(id(61), 1, { commune: 'c99999', homeKey: null, homeLat: null, homeLon: null });
+      const moved = await s.seasonPlayer(id(61), 1);
+      assert.deepEqual([moved.commune, moved.homeKey, moved.homeLat, moved.homeLon, moved.kills], ['c99999', null, null, null, 7]);
       await s.eraseAccount(id(61));
       assert.equal(await s.seasonPlayer(id(61), 1), null);
       assert.deepEqual(await s.seasonCounts(1), { moyen: 1 });

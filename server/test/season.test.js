@@ -38,7 +38,7 @@ function rig({ t = T0, rules = {} } = {}) {
     return { status: r.status, body: r.raw !== undefined ? JSON.parse(r.raw) : r.body };
   };
   // Un joueur : compte, session, connexion à la salle (messages du serveur relus par parseServer).
-  w.player = async (n, { level = 'facile', join = true } = {}) => {
+  w.player = async (n, { level = 'facile', join = true, enter = null } = {}) => {
     const email = `joueur${n}@exemple.test`;
     const acc = await accounts.handle('/v1/account/code', JSON.stringify({ v: 1, email, why: 'signup' }), { ip: '' });
     assert.equal(acc.status, 200);
@@ -61,6 +61,8 @@ function rig({ t = T0, rules = {} } = {}) {
     p.send = async (msg) => { await room.receive(p.s, JSON.stringify({ t: 'sv', ...msg })); };
     p.ev = (...e) => p.send({ o: 'ev', e });
     if (join) assert.equal((await p.call('/v1/season/join', { level })).status, 200);
+    // Choix libre : un joueur qui n'ouvre pas de ville entre dans celle qui existe déjà (par son repère).
+    if (enter) assert.equal((await p.call('/v1/season/enter', { key: enter })).status, 200);
     return p;
   };
   w.tick = (ms = 250) => { clock.t += ms; room.tick(); };
@@ -87,7 +89,7 @@ async function seeded(w, { tiles = [TA, TB], n = 6 } = {}) {
   a.inbox.length = 0;
   return a;
 }
-const cityOf = (w) => w.seasons.debug().worlds.get('facile').city;
+const cityOf = (w, level = 'facile', commune = SEED.key) => w.seasons.debug().worldOf(level, commune).city;
 
 test('saison : créée au premier démarrage (début maintenant, fin dans 60 jours), relue ensuite', async () => {
   const w = rig();
@@ -122,7 +124,7 @@ test('inscription : compte obligatoire, un niveau par compte et par saison', asy
   assert.equal(await w.store.seasonCounts(1).then((c) => c.moyen), 1);
 });
 
-test('graine : le premier fait foi, une autre commune est refusée, ville conservée', async () => {
+test('graine : le premier ouvre la ville, un autre joueur la rejoint (même graine ou enter) ou en ouvre une autre', async () => {
   const w = rig();
   const a = await w.player(1), b = await w.player(2);
   assert.equal((await a.call('/v1/season/state', {})).body.code, 'vide');
@@ -130,23 +132,71 @@ test('graine : le premier fait foi, une autre commune est refusée, ville conser
   assert.equal(r.status, 200);
   assert.equal(r.body.created, true);
   assert.equal(r.body.city.population, 600);
+  assert.equal(r.body.home, null);
   const v = cityOf(w).ville;
   assert.equal(v.zombies0, 120);
   assert.equal(v.hidden0, 480);
   assert.equal(v.me, null);
   assert.ok(checkVille(v).ok, checkVille(v).errors.join());
-  assert.deepEqual(await b.call('/v1/season/seed', SEED).then((x) => x.body.created), false);
-  const diff = await b.call('/v1/season/seed', { ...SEED, key: 'c99999' });
-  assert.equal(diff.status, 409);
-  assert.equal(diff.body.code, 'autre-commune');
-  assert.equal(diff.body.city.key, 'c01283');
-  assert.equal((await b.call('/v1/season/seed', { ...SEED, pop: 1 })).body.created, false);
+  // Le niveau ne dit pas la ville à b : il la choisit (choix libre) ; sans choix, ni état ni abonnement.
+  const j0 = await b.call('/v1/season/join', {});
+  assert.equal(j0.body.city, null);
+  assert.equal((await b.call('/v1/season/state', {})).body.code, 'vide');
+  await b.send({ o: 'in', c: SEED.key });
+  assert.equal(b.sv('no').at(-1).why, 'commune');
+  // b rejoint la ville de a par `seed` (même commune : pas recréée, population ignorée) ou par `enter`.
+  const again = await b.call('/v1/season/seed', { ...SEED, pop: 1 });
+  assert.deepEqual([again.body.created, again.body.moved, again.body.city.key], [false, true, 'c01283']);
   const j = await b.call('/v1/season/join', {});
   assert.equal(j.body.city.key, 'c01283');
   assert.equal(j.body.city.place.name, 'Pérouges');
   const st = await b.call('/v1/season/state', {});
   assert.equal(st.body.ville.key, 'c01283');
   assert.deepEqual(Object.keys(st.body.ville.tiles).sort(), [TA, TB]);
+  const c = await w.player(3);
+  const e = await c.call('/v1/season/enter', { key: SEED.key });
+  assert.deepEqual([e.status, e.body.created, e.body.moved, e.body.city.key], [200, false, true, 'c01283']);
+  assert.equal((await c.call('/v1/season/enter', { key: SEED.key })).body.moved, false, 'déjà dans cette ville : rien ne change');
+  // Une commune encore fermée dans le niveau : enter refuse, seed l'ouvre (un autre joueur, une autre ville du même niveau).
+  const ghost = await c.call('/v1/season/enter', { key: 'c99999' });
+  assert.deepEqual([ghost.status, ghost.body.code], [409, 'inconnue']);
+  assert.equal((await c.call('/v1/season/enter', { key: '../x' })).status, 400);
+  const d = await w.player(4);
+  const other = await d.call('/v1/season/seed', { ...SEED, key: 'c99999', name: 'Ailleurs', place: { lat: 46.1, lon: 5.4, name: 'Ailleurs' } });
+  assert.deepEqual([other.status, other.body.created, other.body.city.key, other.body.city.name], [200, true, 'c99999', 'Ailleurs']);
+  assert.equal(cityOf(w, 'facile', 'c99999').ville.key, 'c99999');
+  assert.equal(cityOf(w).ville.key, 'c01283', 'la première ville est intacte');
+});
+
+test('choix libre : changer de ville remet la maison à zéro, ferme le siège de l\'ancienne ville, une ville par joueur', async () => {
+  const w = rig();
+  const a = await seeded(w);
+  const b = await w.player(2);
+  await b.call('/v1/season/seed', { ...SEED, key: 'c99999', name: 'Ailleurs', place: { lat: 46.1, lon: 5.4, name: 'Ailleurs' } });
+  // a est assis dans Pérouges avec une maison ; b est dans Ailleurs.
+  await a.send({ o: 'in', c: SEED.key });
+  const [k] = redBlock(w);
+  assert.equal((await a.call('/v1/season/home', { key: k, a: 45900000, o: 5200000 })).status, 200);
+  assert.equal(w.seasons.debug().worldOf('facile', SEED.key).subs.size, 1);
+  await b.send({ o: 'in', c: 'c99999' });
+  assert.equal(b.sv('in').length, 1);
+  // a part pour Ailleurs : maison à zéro, siège fermé (`no` « commune »), un siège de plus dans Ailleurs après son `in`.
+  const mv = await a.call('/v1/season/enter', { key: 'c99999' });
+  assert.deepEqual([mv.body.moved, mv.body.city.key, mv.body.home], [true, 'c99999', null]);
+  assert.equal(a.sv('no').at(-1).why, 'commune');
+  assert.equal(w.seasons.debug().worldOf('facile', SEED.key).subs.size, 0);
+  const j = await a.call('/v1/season/join', {});
+  assert.deepEqual([j.body.city.key, j.body.home], ['c99999', null]);
+  // Une fois dans la nouvelle ville, ses gestes y vont ; l'ancienne ne le voit plus.
+  await a.send({ o: 'in', c: 'c99999' });
+  assert.equal(a.sv('in').length, 2);
+  assert.equal(w.seasons.debug().worldOf('facile', 'c99999').subs.size, 2);
+  await a.send({ o: 'in', c: SEED.key });
+  assert.equal(a.sv('no').at(-1).why, 'commune', 'sa ville est Ailleurs : pas de siège dans l\'autre');
+  // Retour à Pérouges : permis, avec une nouvelle maison (rien n'a été gardé).
+  const back = await a.call('/v1/season/enter', { key: SEED.key });
+  assert.deepEqual([back.body.moved, back.body.home], [true, null]);
+  assert.equal(w.seasons.debug().worldOf('facile', 'c99999').subs.size, 1);
 });
 
 test('graine : entrées refusées (mode, tuile, population, session)', async () => {
@@ -218,12 +268,12 @@ test('voisinages : arêtes entre pâtés connus et proches, d\'un joueur assis s
 
 test('abonnement : in, in répété, place en monde plein, anonyme et non inscrit refusés', async () => {
   const w = rig({ rules: { seats: 2 } });
-  const a = await seeded(w), b = await w.player(2), c = await w.player(3);
+  const a = await seeded(w), b = await w.player(2, { enter: SEED.key }), c = await w.player(3, { enter: SEED.key });
   await a.send({ o: 'in', c: 'c01283' });
   assert.equal(a.sv('in').length, 1);
   await a.send({ o: 'in', c: 'c01283' });
   assert.equal(a.sv('in').length, 2);
-  assert.equal(cityOf(w) && w.seasons.debug().worlds.get('facile').subs.size, 1);
+  assert.equal(w.seasons.debug().worldOf('facile', SEED.key).subs.size, 1);
   await b.send({ o: 'in', c: 'c01283' });
   await c.send({ o: 'in', c: 'c01283' });
   assert.equal(c.sv('full').length, 1);
@@ -255,7 +305,7 @@ function redBlock(w, { not = [] } = {}) {
 
 test('gestes : bail, abattu, retour ; deux joueurs voient les mêmes rangées et compteurs', async () => {
   const w = rig();
-  const a = await seeded(w), b = await w.player(2);
+  const a = await seeded(w), b = await w.player(2, { enter: SEED.key });
   await a.send({ o: 'in', c: 'c01283' });
   await b.send({ o: 'in', c: 'c01283' });
   const [k, row] = redBlock(w);
@@ -291,7 +341,7 @@ test('gestes : bail, abattu, retour ; deux joueurs voient les mêmes rangées et
 
 test('baux : rendus à la déconnexion et après 15 s de silence ; plus d\'abattu ensuite', async () => {
   const w = rig();
-  const a = await seeded(w), b = await w.player(2);
+  const a = await seeded(w), b = await w.player(2, { enter: SEED.key });
   await a.send({ o: 'in', c: 'c01283' });
   await b.send({ o: 'in', c: 'c01283' });
   const [k, row] = redBlock(w);
@@ -317,7 +367,7 @@ test('baux : rendus à la déconnexion et après 15 s de silence ; plus d\'abatt
 
 test('prêts partagés : `ls` à tous les abonnés, total dans l\'état, plafond par joueur', async () => {
   const w = rig({ rules: { leaseMax: 3 } });
-  const a = await seeded(w), b = await w.player(2);
+  const a = await seeded(w), b = await w.player(2, { enter: SEED.key });
   await a.send({ o: 'in', c: 'c01283' });
   await b.send({ o: 'in', c: 'c01283' });
   const [k] = redBlock(w);
@@ -329,7 +379,7 @@ test('prêts partagés : `ls` à tous les abonnés, total dans l\'état, plafond
     assert.equal(ls.l[k], 2, 'chaque abonné apprend le total prêté');
   }
   // L'état rendu au troisième joueur porte aussi ces prêts.
-  const c = await w.player(3);
+  const c = await w.player(3, { enter: SEED.key });
   const st = await c.call('/v1/season/state', {});
   assert.equal(st.body.lent[k], 2);
   // Plafond : a tient déjà 2, il n'obtient qu'un zombie de plus, quel que soit le pâté.
@@ -376,6 +426,7 @@ test('tuile : une clé tenue par une autre tuile n\'est pas reprise, découpes e
   const w = rig();
   const a = await w.player(1), b = await w.player(2);
   await a.call('/v1/season/seed', SEED);
+  await b.call('/v1/season/enter', { key: SEED.key });
   assert.equal((await a.call('/v1/season/tile', { t: TA, pates: pates(2, 0) })).body.code, 'abonnement');
   await a.send({ o: 'in', c: SEED.key });
   assert.equal((await a.call('/v1/season/tile', { t: TA, pates: pates(3, 0), nb: chain(3), l: false })).body.ok, true);
@@ -395,7 +446,7 @@ test('tuile : une clé tenue par une autre tuile n\'est pas reprise, découpes e
 
 test('abus : prêts rendus après 10 min sans abattu, abattus au débit du jeu, réserve du cœur fermée, deny en morceaux valides', async () => {
   const w = rig({ rules: { killBurst: 4, killPerSec: 0.001 } });
-  const a = await seeded(w), b = await w.player(2);
+  const a = await seeded(w), b = await w.player(2, { enter: SEED.key });
   await a.send({ o: 'in', c: SEED.key });
   await b.send({ o: 'in', c: SEED.key });
   const [k] = redBlock(w);
@@ -433,7 +484,7 @@ test('abus : prêts rendus après 10 min sans abattu, abattus au débit du jeu, 
 
 test('gestes sans effet : ni jeu enregistré, ni rangée diffusée ou écrite', async () => {
   const w = rig();
-  const a = await seeded(w), b = await w.player(2);
+  const a = await seeded(w), b = await w.player(2, { enter: SEED.key });
   await a.send({ o: 'in', c: SEED.key });
   await b.send({ o: 'in', c: SEED.key });
   const [k] = redBlock(w);
@@ -570,7 +621,8 @@ test('rangement : écriture par pièces, relecture à l\'identique, voisinages c
   assert.deepEqual(state.ville.tiles, JSON.parse(JSON.stringify(cityOf(w).ville.tiles)));
   assert.equal(state.ville.killed[0], 1);
   assert.ok(checkVille(state.ville).ok);
-  const loaded = again.debug().worlds.get('facile').city;
+  await again.handle('/v1/season/join', JSON.stringify({ ses: a.ses }));
+  const loaded = again.debug().worldOf('facile', SEED.key).city;
   assert.equal(loaded.pairs, cityOf(w).pairs);
   assert.equal(loaded.pateTile.size, 12);
   const j = await again.handle('/v1/season/join', JSON.stringify({ ses: a.ses }));
@@ -674,7 +726,7 @@ test('évolution de la saison : l\'épingle de la ville est arrondie à 3 décim
   const c = (await w.seasons.progress()).body.levels.facile.city;
   assert.equal(c.lat, 45.903);
   assert.equal(c.lon, 5.18);
-  assert.deepEqual(Object.keys((await w.seasons.progress()).body.levels.moyen), ['players', 'online', 'seats', 'city']);
+  assert.deepEqual(Object.keys((await w.seasons.progress()).body.levels.moyen), ['players', 'online', 'seats', 'city', 'cities', 'citiesMax']);
 });
 
 // ---------- Ville annoncée (season-cities.js) : une ville fixée par niveau, avant le premier joueur ----------
@@ -708,40 +760,42 @@ test('ville annoncée : l\'inscription et l\'évolution de la saison la disent a
   assert.deepEqual(p.facile.announced, { key: 'c01283', name: 'Pérouges', lat: 45.9, lon: 5.2 });
   assert.deepEqual(p.moyen.announced, { key: 'c69123', name: 'Lyon', lat: 45.76, lon: 4.836 });
   assert.equal(p.facile.city, null);
+  assert.deepEqual(p.facile.cities, []);
   assert.equal(p.difficile.announced, undefined);                                 // pas annoncé : rien de plus qu'avant
-  assert.deepEqual(Object.keys(p.difficile), ['players', 'online', 'seats', 'city']);
+  assert.deepEqual(Object.keys(p.difficile), ['players', 'online', 'seats', 'city', 'cities', 'citiesMax']);
 });
 
-test('ville annoncée : seule sa commune peut être semée, le nom et le point sont ceux de l\'annonce', async () => {
+test('ville annoncée : une proposition (toute autre commune reste permise), la commune annoncée garde le nom et le point de l\'annonce', async () => {
   const w = rig({ rules: { announced: ANN } });
-  const a = await w.player(1);                                                    // facile : Pérouges
-  const bad = await a.call('/v1/season/seed', { ...SEED, key: 'c99999', name: 'Ailleurs', place: { lat: 48.8, lon: 2.3, name: 'Ailleurs' } });
-  assert.equal(bad.status, 409);
-  assert.equal(bad.body.code, 'annoncee');
-  assert.equal(bad.body.announced.name, 'Pérouges');
-  assert.equal(cityOf(w), null);
-  const r = await a.call('/v1/season/seed', { ...SEED, name: 'Nom du client', place: { lat: 46.5, lon: 6.5, name: 'Ailleurs' } });
+  const a = await w.player(1);                                                    // facile : Pérouges est proposée
+  const other = await a.call('/v1/season/seed', { ...SEED, key: 'c99999', name: 'Ailleurs', place: { lat: 48.8, lon: 2.3, name: 'Ailleurs' } });
+  assert.equal(other.status, 200);
+  assert.equal(other.body.city.name, 'Ailleurs', 'une autre commune garde son nom et son point');
+  assert.equal(cityOf(w, 'facile', 'c99999').place.lat, 48.8);
+  const b = await w.player(2);
+  const r = await b.call('/v1/season/seed', { ...SEED, name: 'Nom du client', place: { lat: 46.5, lon: 6.5, name: 'Ailleurs' } });
   assert.equal(r.body.created, true);
   assert.equal(r.body.city.name, 'Pérouges');
   assert.equal(cityOf(w).place.lat, 45.9);
   assert.equal(cityOf(w).place.lon, 5.2);
-  // La ville existe : l'annonce n'est plus dite (inscription et évolution), et le niveau garde sa ville.
-  const j = await a.call('/v1/season/join', {});
-  assert.equal(j.body.announced, undefined);
-  assert.equal(j.body.city.key, 'c01283');
-  assert.equal((await w.seasons.progress()).body.levels.facile.announced, undefined);
-  // Un autre joueur du niveau rejoint la même ville, sans rien choisir.
-  const b = await w.player(2);
-  assert.equal((await b.call('/v1/season/join', {})).body.city.key, 'c01283');
+  // L'annonce reste dite à qui n'a pas de ville (inscription) et dans l'évolution de la saison, où la ville annoncée passe d'abord.
+  const c = await w.player(3);
+  const jc = await c.call('/v1/season/join', {});
+  assert.equal(jc.body.city, null);
+  assert.equal(jc.body.announced.key, 'c01283');
+  assert.equal((await b.call('/v1/season/join', {})).body.announced, undefined, 'qui a sa ville n\'a pas besoin de proposition');
+  const p = (await w.seasons.progress()).body.levels.facile;
+  assert.deepEqual(p.cities.map((x) => x.key), ['c01283', 'c99999']);
+  assert.equal(p.city.key, 'c01283');
+  assert.equal(p.announced.key, 'c01283');
 });
 
-test('ville annoncée : une ville déjà posée dans le niveau l\'emporte sur l\'annonce (saison en cours inchangée)', async () => {
+test('ville annoncée : serveur redémarré avec une autre annonce, les villes déjà ouvertes restent et l\'annonce s\'y ajoute', async () => {
   const w = rig();                                                                // saison sans annonce : premier arrivé
   const a = await seeded(w);
   w.clock.t += 16000;
   w.room.tick();
   await w.seasons.flush();
-  // Serveur redémarré avec une annonce pour un autre lieu : la ville déjà là est gardée, l'annonce n'est pas dite.
   const again = createSeasons({ store: w.store, now: () => w.clock.t, rules: { announced: { facile: { key: 'c69123', name: 'Lyon', lat: 45.76, lon: 4.83 } } } });
   await again.init();
   const j = await again.handle('/v1/season/join', JSON.stringify({ ses: a.ses }));
@@ -749,8 +803,86 @@ test('ville annoncée : une ville déjà posée dans le niveau l\'emporte sur l\
   assert.equal(j.body.announced, undefined);
   const p = (await again.progress()).body.levels.facile;
   assert.equal(p.city.key, 'c01283');
-  assert.equal(p.announced, undefined);
-  // Et la graine d'une autre commune reste refusée comme avant (une ville existe : « autre-commune »).
-  const r = await again.handle('/v1/season/seed', JSON.stringify({ ses: a.ses, ...SEED, key: 'c69123' }));
-  assert.equal(r.body.code, 'autre-commune');
+  assert.deepEqual(p.cities.map((x) => x.key), ['c01283']);
+  assert.equal(p.announced.key, 'c69123');
+  // Une autre commune est permise (choix libre) : elle s'ouvre à côté.
+  const r = await again.handle('/v1/season/seed', JSON.stringify({ ses: a.ses, ...SEED, key: 'c69123', name: 'Lyon', place: { lat: 45.76, lon: 4.83, name: 'Lyon' } }));
+  assert.deepEqual([r.body.created, r.body.city.key], [true, 'c69123']);
+});
+
+// ---------- Choix libre : plusieurs villes par niveau ----------
+
+const OTHER = { ...SEED, key: 'c99999', name: 'Ailleurs', place: { lat: 46.1, lon: 5.4, name: 'Ailleurs' }, pop: 300 };
+
+test('choix libre : l\'évolution de la saison liste toutes les villes du niveau (plus jouées d\'abord), la ville mise en avant est la première', async () => {
+  const w = rig();
+  await seeded(w);
+  const b = await w.player(2);
+  assert.equal((await b.call('/v1/season/seed', OTHER)).body.created, true);
+  await b.send({ o: 'in', c: 'c99999' });
+  const p = (await w.seasons.progress()).body.levels.facile;
+  assert.deepEqual(p.cities.map((x) => [x.key, x.online]), [['c99999', 1], ['c01283', 0]]);
+  assert.equal(p.city.key, 'c99999');
+  assert.equal(p.online, 1);
+  assert.equal(p.cities[0].population, 300);
+  assert.equal(p.cities[0].lat, 46.1);
+  assert.equal((await w.seasons.progress()).body.levels.moyen.cities.length, 0);
+  // Une ville d'un autre niveau n'est pas une ville de celui-ci : enter refuse, la ville existe pourtant ailleurs.
+  const m = await w.player(3, { level: 'moyen' });
+  assert.equal((await m.call('/v1/season/enter', { key: SEED.key })).body.code, 'inconnue');
+  assert.equal((await m.call('/v1/season/seed', SEED)).body.created, true, 'la même commune s\'ouvre une seconde fois dans un autre niveau');
+  assert.notEqual(cityOf(w, 'moyen'), cityOf(w, 'facile'));
+});
+
+test('choix libre : les 100 places sont celles du niveau, toutes villes confondues', async () => {
+  const w = rig({ rules: { seats: 2 } });
+  const a = await seeded(w), b = await w.player(2);
+  await b.call('/v1/season/seed', OTHER);
+  const c = await w.player(3, { enter: SEED.key });
+  await a.send({ o: 'in', c: SEED.key });
+  await b.send({ o: 'in', c: 'c99999' });
+  await c.send({ o: 'in', c: SEED.key });
+  assert.deepEqual(c.sv('full').map((m) => [m.used, m.max]), [[2, 2]], 'Pérouges a un seul joueur, mais le niveau est plein');
+  const j = await c.call('/v1/season/join', {});
+  assert.deepEqual(j.body.seats, { used: 2, max: 2 });
+  // Une place libérée dans une autre ville du niveau suffit.
+  await b.send({ o: 'out' });
+  await c.send({ o: 'in', c: SEED.key });
+  assert.equal(c.sv('in').length, 1);
+});
+
+test('choix libre : au plus `citiesMax` villes par niveau, les villes ouvertes restent rejoignables', async () => {
+  const w = rig({ rules: { citiesMax: 2, rate: { seed: [20, 1], enter: [20, 1] } } });
+  const a = await w.player(1);
+  assert.equal((await a.call('/v1/season/seed', SEED)).body.created, true);
+  assert.equal((await a.call('/v1/season/seed', OTHER)).body.created, true);
+  const full = await a.call('/v1/season/seed', { ...SEED, key: 'c77777', name: 'Trop' });
+  assert.deepEqual([full.status, full.body.code, full.body.max], [409, 'villes-max', 2]);
+  const b = await w.player(2, { level: 'moyen' });
+  assert.equal((await b.call('/v1/season/seed', { ...SEED, key: 'c77777' })).body.created, true, 'le plafond est par niveau');
+  assert.equal((await a.call('/v1/season/enter', { key: SEED.key })).status, 200, 'une ville ouverte se rejoint toujours');
+  assert.equal((await a.call('/v1/season/seed', SEED)).body.created, false);
+});
+
+test('choix libre : serveur redémarré, toutes les villes du niveau reviennent (progress) et chacun retrouve la sienne', async () => {
+  const w = rig();
+  const a = await seeded(w), b = await w.player(2);
+  await b.call('/v1/season/seed', OTHER);
+  w.clock.t += 16000;
+  w.room.tick();
+  await w.seasons.flush();
+  const again = createSeasons({ store: w.store, now: () => w.clock.t });
+  await again.init();
+  const p = (await again.progress()).body.levels.facile;
+  assert.deepEqual(p.cities.map((x) => x.key).sort(), ['c01283', 'c99999']);
+  assert.equal(again.debug().levelCities('facile').length, 2);
+  const jb = await again.handle('/v1/season/join', JSON.stringify({ ses: b.ses }));
+  assert.equal(jb.body.city.key, 'c99999');
+  const ja = await again.handle('/v1/season/join', JSON.stringify({ ses: a.ses }));
+  assert.equal(ja.body.city.key, 'c01283');
+  // Une ville jamais lue depuis le redémarrage s'ouvre à la demande (sans passer par progress).
+  const third = createSeasons({ store: w.store, now: () => w.clock.t });
+  await third.init();
+  const st = await third.handle('/v1/season/state', JSON.stringify({ ses: b.ses }));
+  assert.equal(JSON.parse(st.raw).ville.key, 'c99999');
 });

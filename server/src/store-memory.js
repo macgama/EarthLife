@@ -80,7 +80,7 @@
 //   seasonJoin({ accountId, season, level, nowMs }) → { ok: true, player } | { ok: false, player }   (le premier niveau gagne)
 //   seasonPlayerSet(accountId, season, patch)                    patch : commune, homeKey, homeLat, homeLon, seenMs, kills
 //   seasonCounts(season) → { [niveau]: inscrits }
-//   seasonDocs(world) → [{ commune, part, rev, data }], seasonDocPut({ world, commune, part, rev, data, nowMs })
+//   seasonDocs(world, commune?) → [{ commune, part, rev, data }] (une seule commune si donnée), seasonDocPut({ world, commune, part, rev, data, nowMs })
 //                                                               compare-et-écrit : écrit si rev = base (toujours si
 //                                                               force) ; crée (rev 1) si base = 0 et aucune ligne
 // Player = { id, tokenHash, name: [a, p, n], nameDay, nameChanges, createdOn, seenOn, hiddenUntil, bannedUntil }
@@ -542,9 +542,9 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       for (const p of seasonPlayers.values()) if (p.season === season) out[p.level] = (out[p.level] ?? 0) + 1;
       return out;
     },
-    async seasonDocs(world) {
+    async seasonDocs(world, commune = null) {
       guard();
-      return [...seasonDocs.values()].filter((d) => d.world === world).map((d) => ({ commune: d.commune, part: d.part, rev: d.rev, data: d.data }));
+      return [...seasonDocs.values()].filter((d) => d.world === world && (commune === null || d.commune === commune)).map((d) => ({ commune: d.commune, part: d.part, rev: d.rev, data: d.data }));
     },
     async seasonDocPut({ world, commune, part, rev, data }) {
       guard();

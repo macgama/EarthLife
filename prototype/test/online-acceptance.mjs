@@ -36,6 +36,7 @@
 //   comme au lancement (porte du refuge, sinon départ de la session) ; la variante après 90 m de marche le note.
 import http from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -2318,6 +2319,312 @@ await scenario('O30', 'ville annoncée au menu', async () => {
   check(cta.v?.scrollW <= cta.v?.innerW, `N3 : pas de défilement horizontal (${cta.v?.scrollW} / ${cta.v?.innerW})`);
   await shot(N, 'o30-ordi-ville-annoncee');
   await closeCtx(N);
+});
+
+// =====================================================================================================
+// O31 : choix libre : plusieurs villes dans un même niveau : un repère par ville ouverte, toucher un repère choisit cette ville (le bouton
+// la nomme, sans demander de la choisir), toucher un autre point de la carte propose la commune de ce point
+// =====================================================================================================
+await scenario('O31', 'plusieurs villes dans un niveau', async () => {
+  const NOW = Date.now(), DAY = 86400000;
+  const city = (key, name, lat, lon, over = {}) => ({ key, name, lat, lon, population: 900, zombies: 200, zombies0: 300, saved: 100, toSave: 600, flags: 2, killed: 100, status: 'en-cours', online: 0, ...over });
+  const facile = [city('c1', 'Vulliens', 46.6, 6.8, { online: 5 }), city('c2', 'Pérouges', 45.92, 5.18, { online: 2 }), city('c3', 'Montluel', 45.85, 5.06, { status: 'nettoyee', zombies: 0, saved: 600 })];
+  const progress = {
+    ok: true, now: NOW, season: { id: 1, name: 'Saison 1', startMs: NOW - 6 * DAY, endMs: NOW + 54 * DAY, phase: 'en-cours' },
+    levels: {
+      facile: { players: 37, online: 7, seats: 100, city: facile[0], cities: facile },
+      moyen: { players: 0, online: 0, seats: 100, city: null, cities: [] },
+      difficile: { players: 0, online: 0, seats: 100, city: null, cities: [] },
+    },
+  };
+  const withCities = (ctx) => ctx.route('**/v1/season/progress', (r) => r.fulfill({
+    status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': ORIGIN, 'cache-control': 'no-store' }, body: JSON.stringify(progress),
+  }));
+  const url = `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&server=http://127.0.0.1:${srv.port}`;
+  const read = (t) => ev(t, () => {
+    const pins = [...document.querySelectorAll('.maplibregl-marker.map-pin-hit')].map((m) => ({ level: m.className.match(/map-pin-saison-(\w+)/)?.[1], title: m.title || m.getAttribute('aria-label') || '' }));
+    const front = document.querySelector('#fronts .front[data-level="facile"]');
+    return {
+      pins, count: pins.length, cta: document.getElementById('salon-cta')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      checked: [...document.querySelectorAll('#fronts .front')].filter((f) => f.getAttribute('aria-checked') === 'true').map((f) => f.dataset.level).join(),
+      others: front?.textContent?.replace(/\s+/g, ' ').trim() ?? '', cardRight: Math.round(document.querySelector('.menu-ui')?.getBoundingClientRect().right ?? 0),
+      win: [innerWidth, innerHeight], scrollW: document.documentElement.scrollWidth, innerW: innerWidth,
+      fit: (() => {
+        const top = document.querySelector('.menu-top')?.getBoundingClientRect().bottom ?? 0, sheet = document.querySelector('.sheet')?.getBoundingClientRect().top ?? innerHeight;
+        const left = document.querySelector('.menu-ui')?.getBoundingClientRect().right ?? 0;
+        return [...document.querySelectorAll('.maplibregl-marker.map-pin-hit')].map((m) => { const r = m.getBoundingClientRect(); const x = r.x + r.width / 2; return r.bottom > top && r.bottom < sheet && x > (innerWidth > 700 ? left : 0) && x < innerWidth; });
+      })(),
+    };
+  });
+  const until = async (t, pred, timeout = 40000) => {
+    const t0 = Date.now();
+    let v = null;
+    while (Date.now() - t0 < timeout) {
+      v = await read(t).catch(() => null);
+      if (v && pred(v)) return { ok: true, v };
+      await wait(300);
+    }
+    return { ok: false, v };
+  };
+  const N = await open('N4 (ordinateur, plusieurs villes)', desktop, url, { waitGame: false, before: withCities });
+  const shown = await until(N, (v) => v.count === 3);
+  check(shown.ok, `N4 : un repère par ville ouverte, trois dans « Facile » (${shown.v?.count} : ${shown.v?.pins?.map((p) => p.title).join(' | ')})`);
+  check(shown.v?.pins?.every((p) => p.level === 'facile'), `N4 : tous les repères sont ceux du niveau « Facile » (${shown.v?.pins?.map((p) => p.level).join()})`);
+  await shot(N, 'o31-ordi-plusieurs-villes');
+  // Toucher le repère de Pérouges : le niveau « Facile » est choisi et le bouton nomme cette ville, sans demander de la choisir.
+  await N.page.click('.maplibregl-marker.map-pin-hit[title*="Pérouges"]');
+  const perouges = await until(N, (v) => v.checked === 'facile' && /Rejoindre · Facile/.test(v.cta) && /Pérouges/.test(v.cta));
+  check(perouges.ok && !/Tu choisis la ville|compte requis.*Tu choisis/.test(perouges.v.cta), `N4 : repère « Pérouges » touché : « ${perouges.v?.cta} »`);
+  check(perouges.v?.scrollW <= perouges.v?.innerW, `N4 : pas de défilement horizontal (${perouges.v?.scrollW} / ${perouges.v?.innerW})`);
+  await shot(N, 'o31-ordi-ville-choisie');
+  // Toucher un autre point de la carte, hors des repères : le bouton propose la commune de ce point.
+  const spot = await ev(N, () => {
+    const box = document.getElementById('picker-map')?.getBoundingClientRect();
+    const right = document.querySelector('.menu-ui')?.getBoundingClientRect().right ?? 0;
+    if (!box) return null;
+    const pts = [...document.querySelectorAll('.maplibregl-marker')].map((m) => m.getBoundingClientRect());
+    for (const fy of [0.85, 0.15, 0.5]) for (const fx of [0.9, 0.7, 0.55]) {
+      const x = Math.round(right + (box.right - right) * fx), y = Math.round(box.top + box.height * fy);
+      if (!pts.some((r) => Math.abs(r.x + r.width / 2 - x) < 90 && Math.abs(r.y + r.height / 2 - y) < 90)) return { x, y };
+    }
+    return null;
+  });
+  check(!!spot, 'N4 : un point libre de la carte à toucher');
+  if (spot) {
+    await N.page.mouse.click(spot.x, spot.y);
+    const place = await until(N, (v) => /Tu choisis la ville/.test(v.cta));
+    check(place.ok, `N4 : un point de la carte touché : « ${place.v?.cta} »`);
+    await shot(N, 'o31-ordi-point-carte');
+  }
+  await closeCtx(N);
+
+  const P = await open('P3 (téléphone, plusieurs villes)', mobile, url, { waitGame: false, before: withCities });
+  const phone = await until(P, (v) => v.count === 3);
+  check(phone.ok && phone.v.scrollW <= phone.v.innerW, `P3 : trois repères sur téléphone, pas de défilement horizontal (${phone.v?.count}, ${phone.v?.scrollW} / ${phone.v?.innerW})`);
+  // Les trois villes de « Facile » sont cadrées d'office : à l'écran, entre l'en-tête et le panneau.
+  const strip = await until(P, (v) => v.fit.length === 3 && v.fit.every(Boolean), 20000);
+  check(strip.ok, `P3 : les trois villes de « Facile » sont à l'écran, entre l'en-tête et le panneau (${JSON.stringify(strip.v?.fit)})`);
+  await wait(1500);
+  await shot(P, 'o31-tel-plusieurs-villes');
+  await closeCtx(P);
+});
+
+// =====================================================================================================
+// O32 : partir en voiture vers une autre ville pendant la saison (PR « Voyager en voiture ») : un joueur connecté joue sa ville de
+// « Facile » (Pérouges), reçoit une voiture (mode debug), choisit sur la carte de conduite une commune voisine (Bourg-Saint-Christophe),
+// lit la carte de confirmation, le trajet est comprimé, il arrive dans l'autre ville : le serveur l'y a inscrit, l'essence est décomptée,
+// la voiture est garée à côté de lui, sa maison est nouvelle.
+// =====================================================================================================
+await scenario('O32', 'départ en voiture vers une autre ville pendant la saison', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { createOnline } = await load('prototype/src/online.js');
+  const { createSeasonNet } = await load('prototype/src/net/season.js');
+  const { prepareCity, createResilientBlocks, inlineBlocksWorker } = await load('prototype/src/ville-jeu.js');
+  const { findCommune, findNeighbours, createCommuneCache } = await load('prototype/src/commune.js');
+  const { communeResponse } = await load('prototype/test/fixtures/communes/routes.mjs');
+  const SERVER = `http://127.0.0.1:${srv.port}`;
+  const HOME = { lat: 45.9034, lon: 5.1795, name: 'Pérouges' };           // le départ de « Autre » (même tuiles que Pérouges)
+  // Points de Pérouges (les tuiles d'essai ne couvrent que le village) : le trajet part du joueur, tiré au hasard dans « Autre » ; on prend le plus éloigné (300 m au moins pour un trajet).
+  const DESTS = [{ lat: 45.8977, lon: 5.171 }, { lat: 45.8995, lon: 5.175 }, { lat: 45.9034, lon: 5.1795 }, { lat: 45.906, lon: 5.183 }];
+  const V = { email: 'v.essai@exemple.test', pw: 'essai-voiture-quai-9' };
+  const W = { email: 'w.essai@exemple.test', pw: 'essai-voiture-pont-8' };
+  const mem = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => { m.set(k, String(v)); }, removeItem: (k) => { m.delete(k); } }; };
+  const post = async (route, body) => {
+    const r = await fetch(`${SERVER}${route}`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
+    return { status: r.status, body: await r.json() };
+  };
+  const fixtureBytes = (x, y) => { try { return new Uint8Array(readFileSync(path.join(root, 'test/fixtures/blocs', `14-${x}-${y}.mvt`))); } catch { return null; } };
+  const fetchJson = async (u) => { const r = communeResponse(u); if (!r || r.status !== 200) throw new Error(`HTTP ${r?.status ?? 'refusé'}`); return structuredClone(r.body); };
+  const blocks = () => {
+    const cache = new Map();
+    const jobs = {
+      fetchBytes: async (u) => { const m = u.match(/\/14\/(\d+)\/(\d+)\.pbf/); const b = fixtureBytes(+m[1], +m[2]); if (!b) throw new Error('tuile absente'); return { bytes: b, cached: true }; },
+      cache: { get: async (k) => cache.get(k) ?? null, put: async (k, v) => { cache.set(k, v); } }, pause: async () => {}, retryDelay: () => 0,
+      communes: {
+        findCommune: (place, o) => findCommune(place, { ...o, fetchJson, nominatim: async () => { throw new Error('pas de Nominatim'); } }),
+        findNeighbours: (c, o) => findNeighbours(c, { ...o, fetchJson }),
+      },
+    };
+    return createResilientBlocks({ makeWorker: () => inlineBlocksWorker(jobs), makeInline: () => inlineBlocksWorker(jobs) });
+  };
+  // W, joueur de Node : un compte, la ville « Autre » ouverte avec le recensement de Pérouges (clé sans rapport avec celle de la vraie Pérouges).
+  await post('/v1/account/code', { v: 1, email: W.email, why: 'signup' });
+  const ver = await post('/v1/account/verify', { v: 1, email: W.email, code: srv.mailbox.lastCode(W.email), password: W.pw, tok: null, age: true });
+  check(ver.status === 200 && !!ver.body.ses, `W : compte créé (${ver.status})`);
+  class OriginWs extends WebSocket { constructor(u) { super(u, { headers: { Origin: ORIGIN } }); } }
+  const wOnline = createOnline({ server: SERVER, storage: mem(), WebSocketImpl: OriginWs, session: () => ver.body.ses });
+  wOnline.start();
+  wOnline.choose(true);
+  for (let i = 0; i < 100 && !wOnline.live; i++) await wait(50);
+  const wNet = createSeasonNet({ server: SERVER, session: () => ver.body.ses, online: wOnline });
+  let realKey = null;
+  try {
+    check(wOnline.live, 'W : en ligne');
+    check((await wNet.join('facile')).ok, 'W : inscrit en « Facile »');
+    const prep = await prepareCity({ client: blocks(), communes: createCommuneCache(mem()), template: 'https://tiles.example/planet/20260927/{z}/{x}/{y}.pbf' }, HOME);
+    check(prep.ok, `W : recensement de Pérouges (${prep.ok ? prep.unit.name : prep.reason})`);
+    realKey = prep.unit.key;
+    const weights = Object.fromEntries(Object.entries(prep.weights).map(([k, v]) => [k, Math.max(0, Math.round(v))]));
+    const seeded = await wNet.seed({ key: 'c99999', name: 'Autre', place: { lat: HOME.lat, lon: HOME.lon, name: 'Autre' }, pop: prep.unit.population,
+      src: prep.unit.source, approx: false, zl: prep.unit.level, tiles: weights, failed: prep.census.failed, mode: 'entiere' });
+    check(seeded.ok, `W : la ville « Autre » est ouverte (${seeded.ok ? 'oui' : JSON.stringify(seeded)})`);
+    const cities = () => srv.seasons.debug().levelCities('facile').map((w) => ({ key: w.commune, subs: w.subs.size }));
+    // Les abonnements arrivent un instant après la partie : sondés jusqu'à ce que le prédicat soit vrai (ou 15 s).
+    const citiesWhen = async (pred, timeout = 15000) => { const end = Date.now() + timeout; for (;;) { const c = cities(); if (pred(c) || Date.now() > end) return c; await wait(200); } };
+    note(`villes ouvertes au départ : ${JSON.stringify(cities())}`);
+
+    // V, joueur du navigateur : compte, « Autre » choisie sur la carte du menu.
+    const url = `${ORIGIN}/index.html?lat=${HOME.lat}&lon=${HOME.lon}&time=day&debug=1&menu=libre&server=${SERVER}`;
+    const A = await open('V (ordinateur, voiture en saison)', desktop, url, { waitGame: false, before: async (ctx) => {
+      await ctx.addInitScript(acctProbe);
+      // Tuiles qu'aucun fichier d'essai ne couvre : tuile vide (comme aux essais de la voiture), sans erreur 404 en console.
+      await ctx.route(/tiles\.openfreemap\.org\/.*\/\d+\/\d+\/\d+\.pbf$/, (route) => {
+        const m = new URL(route.request().url()).pathname.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
+        if (existsSync(path.join(root, 'test/fixtures/tiles', `${m[1]}-${m[2]}-${m[3]}.mvt`))) return route.fallback();
+        return route.fulfill({ status: 200, body: Buffer.alloc(0), contentType: 'application/vnd.mapbox-vector-tile', headers: { 'access-control-allow-origin': '*' } });
+      });
+    } });
+    check((await accWait(A, (v) => v.menu && v.block, 60000)).ok, 'V : menu affiché, bloc Compte présent');
+    const T0 = Date.now();
+    A.page.on('response', (r) => { if (r.status() >= 400) note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : ${r.status()} ${r.request().method()} ${new URL(r.url()).pathname}`); });
+    A.page.on('websocket', (w) => { note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : WebSocket ouvert ${new URL(w.url()).pathname}`); w.on('close', () => note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : WebSocket fermé ${new URL(w.url()).pathname}`));
+      const frame = (way) => (e) => { const p = typeof e.payload === 'string' ? e.payload : ''; if (p.startsWith('{"t":"sv"') || p.startsWith('{"t":"err"') || p.startsWith('{"t":"bye"')) note(`[+${Math.round((Date.now() - T0) / 1000)} s] V : ${way} ${p.slice(0, 140)}`); };
+      w.on('framesent', frame('→')); w.on('framereceived', frame('←')); });
+    await click(A, '#account-signup');
+    check((await accWait(A, (v) => v.panel && v.title === 'Créer un compte')).ok, 'V : panneau « Créer un compte »');
+    await A.page.fill('#account-email', V.email);
+    await A.page.check('#account-age');
+    await click(A, '#account-form-email .account-submit');
+    check((await accWait(A, (v) => v.panel && v.title === 'Saisis le code' && v.state === 'code')).ok, 'V : étape du code');
+    let code = null;
+    for (let i = 0; i < 75 && !code; i++) { code = srv.mailbox.lastCode(V.email); if (!code) await wait(200); }
+    await A.page.fill('#account-code', code ?? '');
+    await A.page.fill('#account-new-password', V.pw);
+    await click(A, '#account-code-submit');
+    check((await accWait(A, (v) => !v.panel && v.state === 'in')).ok, 'V : connecté');
+    // L'onglet « À plusieurs » est imposé par l'adresse (menu=saison) : le menu le reprend à chaque mise à jour, ce que « menu=libre » du compte ne laisse pas.
+    await A.page.goto(url.replace('menu=libre', 'menu=saison'));
+    check((await accWait(A, (v) => v.menu && v.state === 'in', 60000)).ok, 'V : menu rechargé sur « À plusieurs », toujours connecté');
+    const pin = await until(A, () => !!document.querySelector('.maplibregl-marker.map-pin-hit[title*="Autre"]'), null, 40000);
+    check(!!pin, 'V : le repère « Autre » est sur la carte du menu');
+    // Le repère est au centre de la carte, peut-être sous le panneau du menu : le toucher se fait sur l'élément.
+    await ev(A, () => document.querySelector('.maplibregl-marker.map-pin-hit[title*="Autre"]').click());
+    const cta = await until(A, () => { const l = document.getElementById('salon-cta-label')?.textContent ?? ''; const sub = document.getElementById('salon-cta')?.textContent ?? ''; return /Rejoindre · Facile/.test(l) && /Autre/.test(sub) ? sub.replace(/\s+/g, ' ').trim() : null; }, null, 20000);
+    check(!!cta, `V : bouton « ${cta} »`);
+    await click(A, '#salon-cta');
+    // Cartes sur le chemin : le niveau (« Rejoindre »), jusqu'à la partie lancée.
+    let cardSeen = null;
+    for (let i = 0; i < 120 && !(await ev(A, () => !!window.__earthlife?.session?.player)); i++) {
+      const c = await ev(A, () => ({ title: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null, btn: document.querySelector('#card:not(.hidden) [data-card-btn][class*="primary"]')?.dataset.cardBtn ?? null }));
+      if (c.title && c.title !== cardSeen) { cardSeen = c.title; note(`V : carte « ${c.title} »`); }
+      if (c.btn) await A.page.click(`#card [data-card-btn="${c.btn}"]`).catch(() => {});
+      await wait(1000);
+    }
+    check(!!(await started(A)), 'V : partie de saison lancée dans « Autre »');
+    const first = await ev(A, () => { const s = window.__earthlife.session; return { season: !!s.city?.season, name: s.city?.ville?.name ?? s.city?.name ?? null }; });
+    check(first.season, `V : ville de saison « ${first.name} »`);
+    const inAutre = await citiesWhen((c) => c.find((x) => x.key === 'c99999')?.subs === 1);
+    check(inAutre.find((c) => c.key === 'c99999')?.subs === 1, `serveur : V est dans « Autre » (${JSON.stringify(inAutre)})`);
+
+    // La voiture (mode debug), la carte de conduite, un point de Pérouges (le trajet en saison demande le jeu à plusieurs : en ligne d'abord).
+    check(!!(await until(A, () => window.__earthlife.online?.live === true, null, 60000)), 'V : en ligne');
+    await calm(A);
+    check(await exitRefuge(A), 'V : sorti du refuge (il démarre chez lui, la voiture se prend dehors)');
+    await ev(A, async () => {
+      const { CAR } = await import('/src/voiture.js');
+      const el = window.__earthlife, s = el.session;
+      const ll = s.store.proj.toLatLon(s.player.x, s.player.z);
+      el.save.car = { lat: ll.lat, lon: ll.lon, yaw: 0, fuel: 21, wear: 100, from: 'essai-o32', tint: CAR.tint };
+      window.__sessionBefore = s;
+    });
+    // La carte de la voiture refuse le départ tant que la liaison en ligne est coupée (« Pas de connexion… ») : sous swiftshader elle se coupe et se rétablit
+    // pendant le lancement ; l'essai rouvre la carte quand elle est revenue (au plus cinq fois).
+    let btnDrive = false, carCard = null;
+    for (let i = 0; i < 5 && !btnDrive; i++) {
+      await until(A, () => window.__earthlife.online?.live === true, null, 60000);
+      await ev(A, () => window.__earthlife.cars.openCar(window.__earthlife.session));
+      carCard = await until(A, () => (document.querySelector('#card .rp-card-title')?.textContent === 'Ta voiture' ? 1 : null), null, 15000);
+      btnDrive = !!(await until(A, () => !!document.querySelector('#card [data-card-btn="drive"]'), null, 3000));
+      if (!btnDrive) { note(`V : carte sans « Partir en voiture » (essai ${i + 1}) : ${await ev(A, () => document.getElementById('card').textContent.replace(/\s+/g, ' ').trim().slice(0, 160))}`); await A.page.click('#card [data-card-btn="close"]').catch(() => {}); await wait(2000); }
+    }
+    check(!!carCard, 'V : carte « Ta voiture »');
+    if (!check(btnDrive, 'V : bouton « Partir en voiture »')) { await closeCtx(A); return; }
+    await A.page.click('#card [data-card-btn="drive"]');
+    const driveOpen = await until(A, () => (!document.getElementById('drive').classList.contains('hidden') ? 1 : null), null, 15000);
+    if (!check(!!driveOpen, 'V : carte de conduite ouverte')) {
+      note(`erreurs de la page : ${JSON.stringify(A.errors.slice(-4))}`);
+      note(`carte : ${JSON.stringify(await ev(A, () => ({ card: document.querySelector('#card:not(.hidden)')?.textContent.replace(/\s+/g, ' ').trim().slice(0, 200) ?? null, toasts: window.__seen.toasts.map((x) => x.t).slice(-3) })))}`);
+      await shot(A, 'o32-ordi-conduite-fermee');
+      await closeCtx(A);
+      return;
+    }
+    const pick = await ev(A, async (pts) => {
+      const { crowM } = await import('/src/voiture.js');
+      const car = window.__earthlife.save.car;
+      const pt = pts.map((p) => ({ p, d: crowM(car, p) })).sort((a, b) => b.d - a.d)[0].p;
+      const t = window.__earthlife.driveMap.choose(pt, { name: 'Pérouges' });
+      return { ok: t.ok, litres: t.litres, seconds: t.seconds, go: document.getElementById('drive-go').disabled, dest: document.getElementById('drive-dest').textContent };
+    }, DESTS);
+    check(pick.ok && !pick.go, `V : Pérouges à portée (${pick.litres?.toFixed?.(2)} L, ${pick.seconds} s), « Partir » actif`);
+    await shot(A, 'o32-ordi-conduite');
+    await A.page.click('#drive-go');
+
+    // Carte de confirmation : ce que le changement de ville coûte ; rien ne bouge chez le serveur avant l'arrivée.
+    const conf = await until(A, () => {
+      const t = document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? '';
+      return /^(Ouvrir|Rejoindre) /.test(t) ? { title: t, text: document.getElementById('card').textContent.replace(/\s+/g, ' ').trim(), btn: document.querySelector('#card [data-card-btn="start"]')?.textContent.trim() ?? null } : null;
+    }, null, 120000);
+    check(!!conf && /Tu quittes Autre/.test(conf.text) && conf.btn === 'Partir pour Pérouges', `V : carte « ${conf?.title} », bouton « ${conf?.btn} »`);
+    check(cities().length === 1 && cities()[0].subs === 1, `serveur : rien n'a bougé avant le départ (${JSON.stringify(cities())})`);
+    await shot(A, 'o32-ordi-confirmation');
+    await until(A, () => window.__earthlife.online?.live === true, null, 60000); // « Partir » se refuse tant que la liaison est coupée (voir plus haut)
+    await A.page.click('#card [data-card-btn="start"]');
+    const driving = await until(A, () => (window.__earthlife.session.action?.id === 'drive' ? { time: window.__earthlife.session.action.time, shown: !document.getElementById('ride').classList.contains('hidden'), to: document.getElementById('ride-to').textContent } : null), null, 30000);
+    if (!driving) note(`V : pas de trajet : ${JSON.stringify(await ev(A, () => { const e = window.__earthlife, s = e.session; return { toasts: window.__seen.toasts.map((x) => x.t).slice(-4), action: s.action?.id ?? null, inside: s.refuge?.inside ?? null, ended: s.ended, hold: s.holdStep, paused: s.paused, live: e.online.live, loading: document.getElementById('loading').classList.contains('hidden') ? null : document.getElementById('loading').textContent.replace(/\s+/g, ' ').trim().slice(0, 80), card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null, fuel: e.save.car?.fuel }; }))}`);
+    check(!!driving && driving.shown && driving.to === 'Pérouges', `V : trajet vers « ${driving?.to} » (${driving?.time} s de jeu), écran du trajet affiché`);
+    check(cities().length === 1 && cities()[0].subs === 1, `serveur : toujours rien pendant le trajet (${JSON.stringify(cities())})`);
+    // Le jeu va bien plus lentement que la montre sans carte graphique : on avance le trajet jusqu'à une seconde de l'arrivée.
+    await ev(A, () => { const a = window.__earthlife.session.action; if (a?.id === 'drive') a.t = a.time - 1; });
+    const landed = await until(A, () => {
+      const s = window.__earthlife.session;
+      return s && s !== window.__sessionBefore && s.player && !s.action && document.getElementById('ride').classList.contains('hidden') && document.getElementById('loading').classList.contains('hidden') ? 1 : null;
+    }, null, 420000);
+    if (!check(!!landed, 'V : monde d\'arrivée prêt, écran du trajet fermé')) {
+      note(`V : état à l'échec ${JSON.stringify(await ev(A, () => { const e = window.__earthlife, s = e.session; return { same: s === window.__sessionBefore, action: s?.action?.id ?? null, t: s?.action ? [s.action.t, s.action.time] : null, menu: !document.getElementById('menu').classList.contains('hidden'), ride: !document.getElementById('ride').classList.contains('hidden'), loading: document.getElementById('loading').classList.contains('hidden') ? null : document.getElementById('loading').textContent.replace(/\s+/g, ' ').trim().slice(0, 120), card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null, cardText: document.getElementById('card').textContent.replace(/\s+/g, ' ').trim().slice(0, 160), toasts: window.__seen.toasts.map((x) => x.t).slice(-4), live: e.online.live }; }).catch((err) => String(err)))}`);
+      note(`V : erreurs ${JSON.stringify(A.errors.slice(-3))}`);
+      await closeCtx(A);
+      return;
+    }
+    await wait(1000);
+    const there = await ev(A, () => {
+      const { session: s, save } = window.__earthlife, p = s.player;
+      const at = s.store.proj.toLocal(save.car.lat, save.car.lon);
+      return { season: !!s.city?.season, name: s.city?.ville?.name ?? s.city?.name ?? null, car: { ...save.car }, gap: Math.hypot(at.x - p.x, at.z - p.z), inside: !!s.refuge?.inside, base: !!save.base };
+    });
+    check(there.season, `V : à l'arrivée, ville de saison « ${there.name} »`);
+    check(Math.abs(there.car.fuel - (21 - pick.litres)) < 0.06, `V : essence décomptée : ${there.car.fuel} L (21 − ${pick.litres.toFixed(2)})`);
+    check(there.gap <= 40, `V : la voiture est garée à ${there.gap.toFixed(1)} m du joueur (au bord de la route la plus proche)`);
+    const now = await citiesWhen((c) => c.length === 2 && c.find((x) => x.key === realKey)?.subs === 1);
+    const mine = now.find((c) => c.key === realKey), other = now.find((c) => c.key === 'c99999');
+    check(now.length === 2 && mine?.subs === 1 && other?.subs === 0, `serveur : deux villes, V dans Pérouges et plus personne dans « Autre » (${JSON.stringify(now)})`);
+    // Une maison est tirée dans la nouvelle ville (les nouveaux arrivants commencent chez eux) : refuge pris, joueur à sa porte.
+    // Le tirage de la maison passe par la liaison en ligne, que le lancement d'une partie referme et rouvre : s'il tombe dans ce creux, le jeu le dit
+    // (« trouve un refuge toi-même ») et le joueur reste dehors ; c'est le même repli qu'au premier lancement, noté sans compter comme un échec.
+    if (there.base && there.inside) check(true, 'V : une nouvelle maison dans la nouvelle ville (refuge pris, joueur chez lui)');
+    else gap(`V : pas de maison tirée à l'arrivée (refuge ${there.base ? 'oui' : 'non'}, joueur ${there.inside ? 'dedans' : 'dehors'}) : tirage tombé dans le creux de la liaison`);
+    await shot(A, 'o32-ordi-arrivee');
+    // La liste de repli de la carte de conduite montre l'autre ville ouverte.
+    await ev(A, () => window.__earthlife.cars.openCar(window.__earthlife.session));
+    await until(A, () => (document.querySelector('#card .rp-card-title')?.textContent === 'Ta voiture' ? 1 : null), null, 15000);
+    await A.page.click('#card [data-card-btn="drive"]');
+    await until(A, () => (!document.getElementById('drive').classList.contains('hidden') ? 1 : null), null, 15000);
+    const list = await ev(A, () => [...document.querySelectorAll('#drive-list button')].map((b) => b.textContent.replace(/\s+/g, ' ').trim()));
+    const extra = await ev(A, () => (window.__earthlife.driveMap.state()?.cities ?? []).map((c) => c.name));
+    check(list.some((l) => /^Autre/.test(l)) || extra.includes('Autre'), `V : carte de conduite : villes ouvertes du niveau ${JSON.stringify(extra)}, liste de repli ${JSON.stringify(list)}`);
+    await closeCtx(A);
+  } finally {
+    try { wNet.close(); wOnline.bye(); } catch { /* déjà fermé */ }
+  }
 });
 
 // =====================================================================================================
