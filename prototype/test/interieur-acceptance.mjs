@@ -93,8 +93,9 @@ const started = async (page) => !!(await until(page, () => !!window.__earthlife?
 const clearZombies = (page) => ev(page, () => { window.__earthlife.session.director.zombies.length = 0; });
 const debug = (page, name, ...args) => ev(page, ([n, a]) => window.__earthlife.debug[n](...a), [name, args]);
 const interior = (page) => debug(page, 'interior');
-async function press(page, device, key, id) {
-  if (device === 'mobile') await page.tap(`#${id}`);
+// `soft` : sous swiftshader l'action peut finir entre la lecture de l'état et le toucher, le bouton a alors disparu : on n'attend pas 30 s.
+async function press(page, device, key, id, { soft = false } = {}) {
+  if (device === 'mobile') await page.tap(`#${id}`, soft ? { timeout: 2000 } : {}).catch((e) => { if (!soft) throw e; });
   else await page.keyboard.press(key);
 }
 const toastSeen = (page, start, timeout = 10000) => until(page, (t) => window.__seen.toasts.find((x) => x.startsWith(t)) ?? null, start, timeout);
@@ -154,10 +155,13 @@ async function searchRoom(page, device, slot, tag, { keepZombies = false } = {})
   let done = false;
   while (Date.now() - start < 240000 && !done) {
     if (!keepZombies) await clearZombies(page);
-    done = await ev(page, (sl) => window.__earthlife.debug.interior()?.rooms.find((r) => r.slot === sl)?.done ?? false, slot);
+    const st = await ev(page, (sl) => ({
+      done: window.__earthlife.debug.interior()?.rooms.find((r) => r.slot === sl)?.done ?? false,
+      idle: window.__earthlife.session.action === null,
+    }), slot);
+    done = !!st?.done;
     if (!done) {
-      const idle = await ev(page, () => window.__earthlife.session.action === null);
-      if (idle && !done) await press(page, device, 'KeyE', 'search');
+      if (st?.idle) await press(page, device, 'KeyE', 'search', { soft: true });
       await wait(250);
     }
   }
