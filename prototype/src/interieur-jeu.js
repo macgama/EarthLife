@@ -141,8 +141,8 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
     onClose?.(s, it);
   }
 
-  // Chaque image : sortie détectée, vue animée.
-  function update(s, dt, { time = 0, reduceMotion = false } = {}) {
+  // Chaque image : sortie détectée, vue animée (le noir suit le joueur et la lumière du jour).
+  function update(s, dt, { time = 0, reduceMotion = false, daylight = 0 } = {}) {
     const it = s.interior;
     if (it && s.player) {
       const p = s.player;
@@ -156,7 +156,7 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
       } else if (outsideBuilding(it.plan, p.x, p.z)) close(s);
       if (s.interior === it) unstick(s, it.plan);
     }
-    view.update(dt, { time, reduceMotion });
+    view.update(dt, { time, reduceMotion, daylight, entered: !!it?.entered, player: it && s.player ? { x: s.player.x, z: s.player.z, yaw: s.player.yaw } : null });
   }
 
   // ---------- Actions ----------
