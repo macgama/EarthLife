@@ -55,11 +55,11 @@ const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 
 // Emplacement d'un objet : image si elle existe, sinon icône au trait, dans un cadre teinté selon la famille.
 // `count` (facultatif) : pastille de quantité. `size` : côté en pixels. Le texte accessible est porté par la ligne voisine.
-export function itemSlot(key, { size = 44, count = null } = {}) {
+export function itemSlot(key, { size = 44, count = null, lazy = true } = {}) {
   const kind = kindOf(key);
   const url = itemArtUrl(key);
   const inner = url
-    ? `<img src="${esc(url)}" alt="" width="${size}" height="${size}" loading="lazy" decoding="async" draggable="false">`
+    ? `<img src="${esc(url)}" alt="" width="${size}" height="${size}" loading="${lazy ? 'lazy' : 'eager'}" decoding="async" draggable="false">`
     : icon(ITEM_ICON[key] ?? 'sac', { size: Math.round(size * 0.5) });
   const badge = count && count > 1 ? `<b class="art-count">${esc(count)}</b>` : '';
   return `<span class="art art-${kind}${url ? '' : ' art-line'}" data-item="${esc(key)}" style="--art-size:${size}px" aria-hidden="true">${inner}${badge}</span>`;
