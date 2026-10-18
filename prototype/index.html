@@ -717,6 +717,7 @@ body:not(.touch) #inventory { display: grid; gap: var(--sp-1); padding: var(--sp
 .chip[data-use="warm"] { --chip-color: var(--c-heat); }
 .chip[data-use="lure"] { --chip-color: var(--c-accent); }
 .chip[data-use="shoot"] { --chip-color: var(--c-danger); }
+.chip[data-use="craft"] { --chip-color: var(--c-accent); }
 .chip-icon { display: inline-flex; color: var(--chip-color); }
 .chip-icon .icon { width: 18px; height: 18px; }
 /* Puce avec l'image de l'objet qu'elle utiliserait (src/hud.js) : l'image remplace l'icône. */
@@ -1044,6 +1045,9 @@ body.touch #controls { display: block; }
   #hud { grid-template-columns: minmax(0, calc(50vw - 50px - var(--hud-l))) 1fr 224px; }
   body.touch #inventory { display: grid; grid-template-columns: repeat(2, var(--btn-item)); right: var(--hud-r); bottom: calc(var(--hud-b) + 114px); }
   body.touch #inventory:has(#use-lure:not(.hidden)) { grid-template-columns: repeat(3, var(--btn-item)); }
+  /* La puce Fabriquer (5e, absente sans ingrédients) se pose à gauche de Courir : la grille, déjà 2 × 2, couvrirait les jauges en
+     prenant une 3e rangée. */
+  body.touch #use-craft { position: fixed; right: calc(var(--hud-r) + 106px + var(--btn-run) + var(--sp-2)); bottom: calc(var(--hud-b) + 18px + (var(--btn-run) - var(--btn-item)) / 2); }
 }
 /* Ordinateur, panneau du refuge ouvert (tiroir de 420 px à droite) : le HUD se range à sa gauche. */
 @media (min-width: 1024px) and (min-height: 501px) {
@@ -1524,6 +1528,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <dt><kbd>R</kbd></dt><dd>En faire ton refuge, déménager, poser un piège, dormir</dd>
         <dt><kbd>1</kbd> à <kbd>4</kbd></dt><dd>Manger, boire, te soigner, te réchauffer</dd>
         <dt><kbd>5</kbd></dt><dd>Lancer un leurre</dd>
+        <dt><kbd>V</kbd></dt><dd>Fabriquer dehors (recettes sans établi, avec ce que tu portes)</dd>
         <dt><kbd>F</kbd></dt><dd>Tirer (pistolet ou fusil du sac, sur le zombie le plus proche devant toi)</dd>
         <dt><kbd>Tab</kbd><kbd>B</kbd></dt><dd>Onglet suivant, replier le panneau du refuge</dd>
         <dt><kbd>Échap</kbd></dt><dd>Fermer une carte, la carte des environs ou le panneau, sortir du refuge</dd>
@@ -1755,6 +1760,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <button class="chip" data-use="heal" id="use-heal" aria-label="Soigner"><span class="chip-icon" data-icon="soigner"></span><span class="chip-name">Soigner</span><span class="chip-count num">0</span><kbd class="chip-key">3</kbd></button>
     <button class="chip" data-use="warm" id="use-warm" aria-label="Chauffer"><span class="chip-icon" data-icon="chauffer"></span><span class="chip-name">Chauffer</span><span class="chip-count num">0</span><kbd class="chip-key">4</kbd></button>
     <button class="chip hidden" data-use="lure" id="use-lure" aria-label="Leurre"><span class="chip-icon" data-icon="leurre"></span><span class="chip-name">Leurre</span><span class="chip-count num">0</span><kbd class="chip-key">5</kbd></button>
+    <button class="chip hidden" data-use="craft" id="use-craft" aria-label="Fabriquer"><span class="chip-icon" data-icon="marteau"></span><span class="chip-name">Fabriquer</span><span class="chip-count num">0</span><kbd class="chip-key">V</kbd></button>
     <button class="chip hidden" data-use="shoot" id="use-shoot" aria-label="Tirer"><span class="chip-icon" data-icon="tirer"></span><span class="chip-name">Tirer</span><span class="chip-count num">0</span><kbd class="chip-key">F</kbd></button>
   </div>
   <div id="topbuttons">

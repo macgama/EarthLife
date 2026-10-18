@@ -24,7 +24,7 @@ export const ITEM_KEYS = [
   'conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette',
   'bois', 'clous', 'ferraille', 'tissu', 'ruban',
   'planche', 'plaque', 'piege', 'leurre',
-  'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee',
+  'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee', 'sac_ecolier', 'sac_renforce',
   'pistolet', 'fusil', 'balles', 'cartouches',
   'bidon', 'batterie',
 ];
@@ -47,8 +47,8 @@ const MAX_COUNT = 999;
 export const MAX_ROOMS = 40;
 const MAX_STAT = 1e9;
 const BAG_CAP = 30;
-// Sacs portés et leur place (survival.ITEMS, equip: 'bag') ; sans sac de randonnée, BAG_CAP.
-const PACKS = { sac_randonnee: 45 };
+// Sacs portés et leur place (survival.ITEMS, equip: 'bag') ; sans sac porté, BAG_CAP.
+const PACKS = { sac_ecolier: 36, sac_randonnee: 45, sac_renforce: 60 };
 const ID_MAX = 40;
 // Identifiants de fouille et de démontage, clés de nuit : b45.75718_4.83049, b12,4,0,1, c457561_48311, 2026-10-01…
 // Seuls ces caractères y apparaissent ; un guillemet ou un caractère de contrôle prendrait 2 à 6 octets une fois
