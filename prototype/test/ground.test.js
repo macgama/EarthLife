@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { groundPlan, drawGround, roadStyle, PAL } from '../src/chunks.js';
+import { groundPlan, drawGround, roadStyle, PAL, DETAIL_FAMILIES } from '../src/chunks.js';
 import { featuresFromBytes } from '../src/tiles.js';
 import { createWorldStore, addFeatures, useProceduralWorld } from '../src/world.js';
 import { featuresAround } from '../src/props.js';
@@ -324,6 +324,21 @@ test('sol : aucune couleur du sol à moins de 12/255 des deux clés du shader (p
   }
   // Les cinq valeurs du guide (§ 9.1) ne changent pas.
   assert.deepEqual([PAL.ground, PAL.sidewalk, PAL.asphalt, PAL.major, PAL.line], ['#c8c2b3', '#b3ad9f', '#4d525b', '#464b55', '#e8e1c8']);
+});
+
+test('sol : le détail des sols naturels ne touche que sa famille de couleurs (herbe, bois, champs, sable, terre, marais, enrobé)', () => {
+  const lin = (h) => [1, 3, 5].map((i) => { const c = parseInt(h.slice(i, i + 2), 16) / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+  const dist = (a, b) => Math.max(...lin(PAL[a]).map((v, i) => Math.abs(v - lin(PAL[b])[i])));
+  const named = new Set(Object.values(DETAIL_FAMILIES).flat());
+  for (const [family, names] of Object.entries(DETAIL_FAMILIES)) {
+    const key = names[0];
+    for (const name of names) assert.ok(dist(key, name) <= 0.04, `${name} trop loin de la clé ${key} (${dist(key, name).toFixed(3)})`);
+    // Aucune autre couleur du sol ne tombe sur la clé : ni les autres familles, ni les couleurs sans détail, ni les clés des pavés.
+    for (const other of Object.keys(PAL)) {
+      if (names.includes(other)) continue;
+      assert.ok(dist(key, other) > 0.04, `${other} (${named.has(other) ? 'autre famille' : 'sans détail'}) à ${dist(key, other).toFixed(3)} de la clé ${family}`);
+    }
+  }
 });
 
 // ---------- Corrections du sol (Midtown, Lyon) : chaussées mesurées, trottoirs cartographiés, passages, tirets ----------

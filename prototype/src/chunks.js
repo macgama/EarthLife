@@ -8,6 +8,8 @@ import { buildingFloor } from './terrain.js';
 import { chunkFeatures, chunkReady, buildPatch, insideRings } from './world.js';
 import { tilesForRect, tileKey } from './tiles.js';
 import { propsForChunk, featuresAround, nearestProp, PROP_KINDS, PROP_REACH } from './props.js';
+import { floreForChunk } from './flore.js';
+import { makeBruitTexture } from './bruit.js';
 import { buildingsGeometry, buildingMaterial, treesInstanced, followTreeWeather } from './scene.js';
 import { groundGeometry } from './markings.js';
 import { SETTING_INDEX, SIDEWALK, carriageway, markBoxes } from './roadway.js';
@@ -1035,6 +1037,12 @@ export function drawGround(ctx, f, x0, z0, size, px, plan = groundPlan(f, x0, z0
 // couverte par la bande (filtre boîte sur les coordonnées travers et long), nulle sous un tablier de pont pour ceux
 // d'une voie du dessous. Le plan du sol sort un alpha de 1 : mélange actif (CustomBlending) sans quitter la liste
 // des objets opaques.
+// Familles de sols qui reçoivent le même détail dans le shader (premier nom : couleur de la clé). Une couleur d'une famille est
+// à moins de 0,04 de la clé (espace linéaire) ; aucune autre couleur du sol n'y est (test du sol).
+export const DETAIL_FAMILIES = {
+  grass: ['grass'], wood: ['wood'], farm: ['farmland'], sand: ['sand'], wet: ['wetland', 'cemetery'],
+  dust: ['ground', 'rock', 'quarry', 'railway'], tar: ['asphalt', 'major', 'villageRoad', 'gutter'],
+};
 const groundKeys = {
   uPaveKey: { value: new THREE.Color(PAL.pave) },
   uWalkKey: { value: new THREE.Color(PAL.sidewalk) },
@@ -1042,21 +1050,45 @@ const groundKeys = {
   uWaterKey: { value: new THREE.Color(PAL.water) },
   uWaterShade: { value: new THREE.Color(PAL.water).multiplyScalar(0.62) },
   uBridgeColor: { value: new THREE.Color(PAL.bridge) },
+  // Détail des sols naturels et de l'enrobé (herbe, bois, champs, sable, terre, marais, route) : une clé par famille de sol.
+  // Les familles proches (terre, roche, carrière, voies ferrées ; enrobé, grande voirie) partagent une clé.
+  uGrassKey: { value: new THREE.Color(PAL.grass) },
+  uWoodKey: { value: new THREE.Color(PAL.wood) },
+  uFarmKey: { value: new THREE.Color(PAL.farmland) },
+  uSandKey: { value: new THREE.Color(PAL.sand) },
+  uDustKey: { value: new THREE.Color(PAL.ground) },
+  uWetKey: { value: new THREE.Color(PAL.wetland) },
+  uTarKey: { value: new THREE.Color(PAL.asphalt) },
+  uNoise: { value: null }, // texture de bruit (bruit.js), faite au premier morceau
 };
+// Détail du sol, choisi à la création du gestionnaire de morceaux et compilé dans le shader (rien n'est calculé pour un
+// détail absent) : 'fin' (tout), 'simple' (sans la seconde lecture du bruit ni le grain le plus fin : appareil peu
+// puissant), 'plat' (couleurs de la texture seules : rendu logiciel, sans carte graphique).
+export const GROUND_DETAILS = ['fin', 'simple', 'plat'];
+let groundDetailMode = 'fin';
 
 function groundShader(shader) {
   Object.assign(shader.uniforms, groundKeys);
+  const defines = groundDetailMode === 'plat' ? '' : groundDetailMode === 'simple' ? '#define GROUND_DETAIL\n' : '#define GROUND_DETAIL\n#define GROUND_FINE\n';
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nvarying vec2 vGroundXZ;\nattribute vec4 aMark;\nattribute vec2 aMarkInfo;\nvarying vec4 vMark;\nvarying vec2 vMarkInfo;')
     .replace('#include <project_vertex>', '#include <project_vertex>\n  vGroundXZ = (modelMatrix * vec4(transformed, 1.0)).xz;\n  vMark = aMark;\n  vMarkInfo = aMarkInfo;');
   shader.fragmentShader = shader.fragmentShader
     .replace('#include <common>', `#include <common>
-uniform vec3 uPaveKey;
+${defines}uniform vec3 uPaveKey;
 uniform vec3 uWalkKey;
 uniform vec3 uLineColor;
 uniform vec3 uWaterKey;
 uniform vec3 uWaterShade;
 uniform vec3 uBridgeColor;
+uniform vec3 uGrassKey;
+uniform vec3 uWoodKey;
+uniform vec3 uFarmKey;
+uniform vec3 uSandKey;
+uniform vec3 uDustKey;
+uniform vec3 uWetKey;
+uniform vec3 uTarKey;
+uniform sampler2D uNoise;
 varying vec2 vGroundXZ;
 varying vec4 vMark;
 varying vec2 vMarkInfo;
@@ -1073,6 +1105,84 @@ float groundJoints(vec2 q, vec2 fw, float jw) {
   vec2 l = 1.0 - smoothstep(vec2(jw * 0.5) - fw, vec2(jw * 0.5) + fw, d);
   return mix(max(l.x, l.y), jw * (2.0 - jw), smoothstep(0.2, 0.45, max(fw.x, fw.y)));
 }
+#ifdef GROUND_DETAIL
+#ifdef GROUND_FINE
+#define G_FINE 1.0
+#else
+#define G_FINE 0.0
+#endif
+// Part de la couleur du sol c qui est celle de la clé k (écart maximal entre lo et hi, espace linéaire).
+float gKey(vec3 c, vec3 k, float lo, float hi) {
+  vec3 d = abs(c - k);
+  return 1.0 - smoothstep(lo, hi, max(d.x, max(d.y, d.z)));
+}
+// Détail des sols naturels et de l'enrobé, en coordonnées du monde. Les bruits viennent de deux lectures de la texture de
+// bruit (bruit.js) faites une fois par pixel : nA à l'échelle du terrain (cases de 16, 8, 4 et 2 m dans les canaux r, g, b, a),
+// nB à celle du brin d'herbe (1 m, 50, 25 et 12 cm). Les mipmaps effacent seuls les motifs plus fins que le pixel ; le grain
+// le plus fin (b et a de nB) ne sert qu'avec GROUND_FINE (G_FINE). Les couleurs des familles viennent de la texture du morceau.
+vec3 groundDetail(vec3 col, vec3 c, vec2 xz, vec4 nA, vec4 nB, float gw) {
+  float w = gKey(c, uGrassKey, 0.02, 0.04);
+  if (w > 0.001) {
+    // Pré : plaques de 16 m plus chaudes ou plus froides, bosses de 4 m, brins clairs et sombres, fleurs en bouquets.
+    vec3 hue = mix(vec3(0.9, 0.98, 1.0), vec3(1.09, 1.03, 0.84), smoothstep(0.35, 0.65, nA.r));
+    float lum = 0.86 + 0.34 * nA.b + 0.1 * (nB.r - 0.5);
+    float blade = (smoothstep(0.58, 0.7, nB.g) * 0.14 - smoothstep(0.42, 0.3, nB.b) * 0.13) * G_FINE;
+    vec3 g = col * hue * (lum + blade);
+    float bloom = smoothstep(0.9, 0.94, nB.a) * smoothstep(0.58, 0.68, nA.g) * G_FINE;
+    vec3 flower = nB.r > 0.56 ? vec3(0.9, 0.62, 0.04) : nB.r > 0.46 ? vec3(0.62, 0.2, 0.36) : vec3(0.86, 0.86, 0.8);
+    g = mix(g, flower, bloom);
+    col = mix(col, g, w);
+  }
+  w = gKey(c, uWoodKey, 0.02, 0.04);
+  if (w > 0.001) {
+    // Sous-bois : taches de lumière de 8 m, feuilles mortes.
+    vec3 hue = mix(vec3(0.95, 0.9, 0.74), vec3(0.88, 1.04, 0.88), smoothstep(0.3, 0.7, nA.b));
+    vec3 g = col * hue * (0.78 + 0.3 * nA.g + 0.1 * nA.b);
+    g = mix(g, vec3(0.2, 0.11, 0.05), smoothstep(0.6, 0.8, nB.g) * 0.28 * G_FINE);
+    col = mix(col, g, w);
+  }
+  w = gKey(c, uFarmKey, 0.02, 0.04);
+  if (w > 0.001) {
+    // Champs : parcelles de 34 m aux contours un peu tordus, teintes de blé, de jeune pousse et de terre, rangs de culture.
+    vec2 q = vec2(xz.x * 0.8 - xz.y * 0.6, xz.x * 0.6 + xz.y * 0.8) + 12.0 * (nA.rg - 0.5) * 2.0;
+    vec2 cell = floor(q / 34.0);
+    float h = groundHash(cell + 5.0);
+    vec3 plot = h < 0.28 ? vec3(1.08, 1.02, 0.66) : h < 0.56 ? vec3(0.8, 1.0, 0.72) : h < 0.8 ? vec3(0.96, 0.8, 0.64) : vec3(1.0, 1.0, 0.88);
+    float ang = groundHash(cell + 9.0) * 3.14;
+    float row = 0.5 + 0.5 * sin(dot(xz, vec2(cos(ang), sin(ang))) * 5.7);
+    float amp = (h >= 0.56 && h < 0.8) ? 0.14 : 0.07;
+    col = mix(col, col * plot * (1.0 - amp * row) * (0.9 + 0.2 * nA.b), w);
+  }
+  w = gKey(c, uSandKey, 0.02, 0.04);
+  if (w > 0.001) {
+    // Sable : rides larges et grain.
+    float rip = sin((xz.x * 0.8 + xz.y * 0.5 + 8.0 * nA.g) * 2.6);
+    col = mix(col, col * (0.97 + 0.035 * rip + (nB.g - 0.5) * 0.08 * G_FINE) * (0.92 + 0.16 * nA.a), w);
+  }
+  w = gKey(c, uDustKey, 0.012, 0.03);
+  if (w > 0.001) {
+    // Terre, roche, ballast, sol nu.
+    col = mix(col, col * (0.9 + 0.2 * nA.b + (nB.r - 0.5) * 0.1 + (nB.b - 0.5) * 0.06 * G_FINE), w);
+  }
+  w = gKey(c, uWetKey, 0.02, 0.04);
+  if (w > 0.001) {
+    // Marais et cimetières : creux plus sombres, brins couchés.
+    float st = 0.5 + 0.5 * sin(xz.x * 3.2 + 6.0 * nA.a);
+    col = mix(col, col * vec3(0.92, 0.98, 0.95) * (0.8 + 0.36 * nA.b) * (1.0 - 0.06 * st), w);
+  }
+  w = gKey(c, uTarKey, 0.015, 0.04);
+  if (w > 0.001) {
+    // Enrobé : zones de 4 m plus ou moins usées, plaques de réparation, fissures (courbes de niveau d'un bruit, dans les
+    // zones usées) et grain de gravillon.
+    float repair = smoothstep(0.62, 0.7, nA.a);
+    float lum = 0.96 + 0.3 * (nA.b - 0.5) - 0.08 * repair + 0.14 * (nB.r - 0.5);
+    float worn = smoothstep(0.45, 0.6, nA.r);
+    float crack = (1.0 - smoothstep(0.0, max(gw * 1.6, 0.002), abs(nA.g - 0.5))) * worn;
+    col = mix(col, col * (lum + (nB.b - 0.5) * 0.14 * G_FINE - 0.22 * crack), w);
+  }
+  return col;
+}
+#endif
 // Part d'un pixel de largeur w (en mètres), centré à x, couverte par la bande [-h, h].
 float markCover(float x, float h, float w) {
   w = max(w, 1e-4);
@@ -1082,6 +1192,17 @@ float markCover(float x, float h, float w) {
 #ifdef USE_MAP
   {
     vec2 fw = fwidth(vGroundXZ);
+#ifdef GROUND_DETAIL
+    // Bruits du sol (deux lectures par pixel, hors des branches : les dérivées des mipmaps restent définies).
+    vec4 nA = texture2D(uNoise, vGroundXZ * (1.0 / 64.0));
+#ifdef GROUND_FINE
+    vec4 nB = texture2D(uNoise, vec2(vGroundXZ.x * 0.8 - vGroundXZ.y * 0.6, vGroundXZ.x * 0.6 + vGroundXZ.y * 0.8) * 0.25 + (nA.rg - 0.5) * 0.9);
+#else
+    // Détail simple : pas de seconde lecture, le grain fin se passe de bruit.
+    const vec4 nB = vec4(0.5);
+#endif
+    float gw = fwidth(nA.g);
+#endif
     // Taille du pixel le long des coordonnées de la bande (hors des branches : dérivées toujours définies).
     vec2 mw = vec2(length(vec2(dFdx(vMark.x), dFdy(vMark.x))), length(vec2(dFdx(vMark.y), dFdy(vMark.y))));
     float shade = 1.0;
@@ -1112,15 +1233,20 @@ float markCover(float x, float h, float w) {
       vec3 dw = abs(sampledDiffuseColor.rgb - uWalkKey);
       float onPave = 1.0 - smoothstep(0.022, 0.035, max(dp.x, max(dp.y, dp.z)));
       float onWalk = 1.0 - smoothstep(0.022, 0.035, max(dw.x, max(dw.y, dw.z)));
-      if (onPave > 0.0) {
-        // Pavés de 0,5 m en quinconce, joints de 6 cm (x 0,88).
-        vec2 q = vGroundXZ * 2.0;
-        q.x += 0.5 * mod(floor(q.y), 2.0);
-        shade = 1.0 - 0.12 * onPave * groundJoints(q, fw * 2.0, 0.12);
-      } else if (onWalk > 0.0) {
-        // Dalles de 1 m, joints de 4 cm (x 0,93).
-        shade = 1.0 - 0.07 * onWalk * groundJoints(vGroundXZ, fw, 0.04);
+      if (onPave > 0.0 || onWalk > 0.0) {
+        // Pavés de 0,5 m en quinconce, joints de 6 cm (x 0,88) ; sinon dalles de 1 m, joints de 4 cm (x 0,93). Chaque pavé
+        // ou dalle a une clarté un peu à lui. Un seul calcul des joints pour les deux : un processeur graphique sans
+        // vrai saut (rendu logiciel) fait toutes les branches.
+        bool pave = onPave > 0.0;
+        float on = pave ? onPave : onWalk;
+        vec2 q = pave ? vGroundXZ * 2.0 : vGroundXZ;
+        q.x += pave ? 0.5 * mod(floor(q.y), 2.0) : 0.0;
+        shade = 1.0 - (pave ? 0.12 : 0.07) * on * groundJoints(q, pave ? fw * 2.0 : fw, pave ? 0.12 : 0.04);
+        shade *= 1.0 + (pave ? 0.08 : 0.06) * on * (groundHash(floor(q) + (pave ? 7.0 : 3.0)) - 0.5);
       }
+#ifdef GROUND_DETAIL
+      else diffuseColor.rgb = groundDetail(diffuseColor.rgb, sampledDiffuseColor.rgb, vGroundXZ, nA, nB, gw);
+#endif
     }
     // Grain de 25 cm ancré dans le monde (peinture usée comme l'enrobé).
     float grain = groundHash(floor(vGroundXZ * 4.0)) - 0.5;
@@ -1129,7 +1255,7 @@ float markCover(float x, float h, float w) {
   }
 #endif`);
 }
-const groundProgram = () => 'earthlife-sol-marques';
+const groundProgram = () => `earthlife-sol-marques-${groundDetailMode}`;
 
 const spotOf = (t) => ({ x: t.x, z: t.z, s: t.s, dark: t.dark });
 
@@ -1214,21 +1340,19 @@ export function treeSpots(f, patch, cx, cz, size, proj) {
 
 // propsView (props-view.js) : décor dessiné en instances globales. Sans lui (ancien chemin), seuls les arbres sont
 // dessinés, un groupe par morceau. isGone(id) : objet démonté il y a moins de 72 h (save.dismantled).
-export function createChunkManager({ scene, store, grid, lowPower = false, anisotropy = 4, proj = store.proj, propsView = null, isGone = () => false }) {
+// groundDetail : détail du sol (GROUND_DETAILS) ; par défaut 'simple' sur un appareil peu puissant, sinon 'fin'.
+export function createChunkManager({ scene, store, grid, lowPower = false, groundDetail = lowPower ? 'simple' : 'fin', anisotropy = 4, proj = store.proj, propsView = null, floreView = null, isGone = () => false }) {
   const size = store.chunkSize;
+  groundDetailMode = GROUND_DETAILS.includes(groundDetail) ? groundDetail : 'fin';
+  groundKeys.uNoise.value ??= makeBruitTexture();
   const px = lowPower ? 512 : 768; // 8 px/m sur téléphone, 12 px/m sur ordinateur (5.12)
   const views = new Map();
   const pending = new Set(); // morceaux construits dont le décor attend une tuile voisine
   const gone = new Set(); // démontés : vus par isGone au calcul du décor, ou signalés par markGone
   const hidden = (id) => gone.has(id) || isGone(id);
   // Arbres du décor teintés par la météo comme ceux de l'ancien chemin (neige, pluie).
-  const treeMats = (name) => {
-    const m = propsView?.group?.getObjectByName?.(name)?.material;
-    return m ? [m] : [];
-  };
-  const untint = propsView
-    ? followTreeWeather({ crowns: [...treeMats('couronnes'), ...treeMats('couronnes-sombres')], trunks: treeMats('troncs') })
-    : null;
+  const untint = propsView ? followTreeWeather(propsView.treeMaterials()) : null;
+  const untintFlore = floreView ? followTreeWeather(floreView.treeMaterials()) : null;
   // Plans du sol déjà calculés : le sol ne dépend que des voies, aires et eaux des seaux voisins, qui ne font que
   // grandir ; la signature (leurs tailles) dit si une tuile arrivée depuis l'a changé. Les plus anciens sortent.
   const plans = new Map();
@@ -1362,6 +1486,13 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     for (const p of v.props) if (!gone.has(p.id) && isGone(p.id)) gone.add(p.id);
     if (propsView) propsView.setChunk(key, v.props.filter((p) => !gone.has(p.id)), d.cars.filter((p) => gone.has(p.id)));
     else showTrees(v);
+    if (floreView) {
+      // Buissons, rochers et touffes : pas d'identifiant mémorisé, pas de collision ; posés sur le relief comme les arbres.
+      const flore = floreForChunk(near, patch, v.cx, v.cz, size, proj, { lowPower });
+      if (relief) for (const kind in flore) for (const it of flore[kind]) seatProp(it, ground);
+      floreView.setChunk(key, flore);
+      v.flore = true;
+    }
   }
 
   // Ancien chemin (sans propsView) : un groupe d'arbres par morceau, refait quand un arbre est abattu.
@@ -1384,6 +1515,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     v.geo?.dispose();
     v.trees?.userData.instanced.forEach((m) => m.dispose());
     if (propsView && v.props) propsView.dropChunk(key);
+    if (floreView && v.flore) floreView.dropChunk(key);
     pending.delete(key);
     views.delete(key);
   }
@@ -1513,6 +1645,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, aniso
     gone.clear();
     plans.clear();
     untint?.();
+    untintFlore?.();
     grid.chunks.clear();
     scene.remove(root);
     base.geometry.dispose();

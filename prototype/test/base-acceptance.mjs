@@ -38,7 +38,9 @@ const server = http.createServer(async (req, res) => {
   } catch { res.writeHead(404).end(); }
 });
 await new Promise((resolve) => server.listen(Number(process.env.PORT ?? 0), '127.0.0.1', resolve));
-const START = `http://127.0.0.1:${server.address().port}/index.html?lat=45.7578&lon=4.832&autostart=1&time=day&debug=1&menu=libre`;
+// sol=fin : tout le détail du sol, comme avec une carte graphique (sans le paramètre, le rendu logiciel de Chromium
+// garde le sol plat, chunks.js GROUND_DETAILS) ; une erreur du shader se lirait dans la console (scénario 8).
+const START = `http://127.0.0.1:${server.address().port}/index.html?lat=45.7578&lon=4.832&autostart=1&time=day&debug=1&menu=libre&sol=fin`;
 
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const failures = [];

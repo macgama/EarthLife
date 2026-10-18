@@ -6,12 +6,13 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PROP_KINDS } from './props.js';
+import { ESPECES, ESPECE_NAMES } from './flore-geo.js';
 
+// Arbres : une réserve d'instances par espèce (feuillage) et une pour les troncs partagés ; `tree` est leur total de troncs.
 export const PROP_CAPACITY = { tree: 4096, car: 512, bench: 256 };
 
 // Couleurs (monde un peu désaturé et froid, guide « Survie tactique » § 9).
 const COLORS = {
-  crown: 0x55904f, crownDark: 0x3e7445, trunk: 0x6e5641,
   tyre: 0x24282c, glass: 0x333d4a, lamp: 0xffb060, wood: 0x8b6a4a, iron: 0x3a3f46,
 };
 const LAMP_GLOW = 'vec3(1.0, 0.55, 0.12) * 1.6';
@@ -103,16 +104,16 @@ export function addCarLamps(material) {
 }
 
 // Suivi de la plage d'instances modifiée depuis le dernier envoi au GPU (évite de renvoyer 4 096 matrices).
-function tracker(attr) {
+export function tracker(attr) {
   const t = { attr, lo: Infinity, hi: -1 };
   attr.onUpload(() => { t.lo = Infinity; t.hi = -1; });
   return t;
 }
-function touch(t, slot) {
+export function touch(t, slot) {
   if (slot < t.lo) t.lo = slot;
   if (slot > t.hi) t.hi = slot;
 }
-function flush(t) {
+export function flush(t) {
   if (t.hi < 0) return;
   const n = t.attr.itemSize;
   t.attr.clearUpdateRanges();
@@ -127,8 +128,15 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   const motionQuery = reduceMotion === null ? globalThis.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null : null;
   const reduced = () => (reduceMotion === null ? !!motionQuery?.matches : !!reduceMotion);
 
-  const crownGeo = new THREE.ConeGeometry(1.8, 4.5, 7);
-  crownGeo.translate(0, 4.4, 0);
+  // Arbres : le feuillage de chaque espèce (couleur de base du matériau, suivie par la météo ; variation par instance)
+  // et un tronc partagé, étiré selon l'espèce.
+  const species = ESPECE_NAMES.map((name) => {
+    const spec = ESPECES[name];
+    return {
+      name, spec, geo: spec.build(lowPower),
+      mat: new THREE.MeshLambertMaterial({ color: spec.color, flatShading: true, vertexColors: true, side: spec.doubleSide ? THREE.DoubleSide : THREE.FrontSide }),
+    };
+  });
   const trunkGeo = new THREE.CylinderGeometry(0.25, 0.3, 2.6, 6);
   trunkGeo.translate(0, 1.3, 0);
   const bodyGeo = carBodyGeometry();
@@ -138,15 +146,16 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   const cabinGeo = carCabinGeometry();
   const benchGeo = benchGeometry();
   const stainGeo = stainGeometry();
-  const geometries = [crownGeo, trunkGeo, bodyGeo, cabinGeo, benchGeo, stainGeo];
+  const geometries = [...species.map((e) => e.geo), trunkGeo, bodyGeo, cabinGeo, benchGeo, stainGeo];
+  const trunkMat = new THREE.MeshLambertMaterial({ color: 0xffffff }); // la couleur vient de chaque instance
   const materials = [
-    new THREE.MeshLambertMaterial({ color: COLORS.crown, flatShading: true }),
-    new THREE.MeshLambertMaterial({ color: COLORS.crownDark, flatShading: true }),
-    new THREE.MeshLambertMaterial({ color: COLORS.trunk }),
+    ...species.map((e) => e.mat),
+    trunkMat,
     addCarLamps(new THREE.MeshLambertMaterial({ vertexColors: true })),
     new THREE.MeshLambertMaterial({ vertexColors: true }),
     new THREE.MeshLambertMaterial({ vertexColors: true }),
   ];
+  const [carMat, cabinMat, benchMat] = materials.slice(-3);
 
   function pool(name, geo, mat, cap, { shadow = false, colored = false } = {}) {
     const mesh = new THREE.InstancedMesh(geo, mat, cap);
@@ -167,18 +176,17 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   }
 
   // Sur un appareil peu puissant, seules les couronnes portent des ombres.
-  const crowns = pool('couronnes', crownGeo, materials[0], PROP_CAPACITY.tree, { shadow: true });
-  const darkCrowns = pool('couronnes-sombres', crownGeo, materials[1], PROP_CAPACITY.tree, { shadow: true });
-  const trunks = pool('troncs', trunkGeo, materials[2], PROP_CAPACITY.tree, { shadow: !lowPower });
-  const bodies = pool('carrosseries', bodyGeo, materials[3], PROP_CAPACITY.car, { shadow: !lowPower, colored: true });
-  const cabins = pool('habitacles', cabinGeo, materials[4], PROP_CAPACITY.car, { shadow: !lowPower, colored: true });
-  const benches = pool('bancs', benchGeo, materials[5], PROP_CAPACITY.bench, { shadow: !lowPower });
-  const pools = [crowns, darkCrowns, trunks, bodies, cabins, benches];
+  const crownPools = new Map(species.map((e) => [e.name, pool(`arbres-${e.name}`, e.geo, e.mat, e.spec.cap, { shadow: true, colored: true })]));
+  const trunks = pool('troncs', trunkGeo, trunkMat, PROP_CAPACITY.tree, { shadow: !lowPower, colored: true });
+  const bodies = pool('carrosseries', bodyGeo, carMat, PROP_CAPACITY.car, { shadow: !lowPower, colored: true });
+  const cabins = pool('habitacles', cabinGeo, cabinMat, PROP_CAPACITY.car, { shadow: !lowPower, colored: true });
+  const benches = pool('bancs', benchGeo, benchMat, PROP_CAPACITY.bench, { shadow: !lowPower });
+  const pools = [...crownPools.values(), trunks, bodies, cabins, benches];
   const glow = tracker(glowAttr);
   bodies.trackers.push(glow);
 
   // Taches d'huile : hors de `pools` (ni démontables, ni comptées par scaleOf), rattachées au groupe à la première.
-  const stainMesh = new THREE.InstancedMesh(stainGeo, materials[5], PROP_CAPACITY.car);
+  const stainMesh = new THREE.InstancedMesh(stainGeo, benchMat, PROP_CAPACITY.car);
   stainMesh.name = 'taches';
   stainMesh.count = 0;
   stainMesh.visible = false;
@@ -196,8 +204,20 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
   const _up = new THREE.Vector3(0, 1, 0), _c = new THREE.Color(), _e = new THREE.Euler(0, 0, 0, 'YXZ');
 
+  // Teinte propre à chaque arbre : clarté et nuance tirées de `p.v`, forêt dense un peu plus sombre ; le tronc prend la
+  // couleur de son espèce.
+  function treeTint(p, trunk, out) {
+    const v = p.v ?? 0.5;
+    if (trunk) return out.setHex((ESPECES[p.sp]?.trunk ?? ESPECES.feuillu.trunk)[2]).multiplyScalar(0.88 + 0.24 * v);
+    const h = (v * 13.7) % 1, k = (0.86 + 0.28 * v) * (p.dark ? 0.88 : 1);
+    return out.setRGB(k * (0.94 + 0.12 * h), k, k * (1.06 - 0.12 * h));
+  }
+
   function poolsFor(p) {
-    if (p.kind === 'tree') return [trunks, p.dark ? darkCrowns : crowns];
+    if (p.kind === 'tree') {
+      const sp = crownPools.has(p.sp) ? p.sp : 'feuillu';
+      return ESPECES[sp].trunk ? [crownPools.get(sp), trunks] : [crownPools.get(sp)];
+    }
     if (p.kind === 'car') return [bodies, cabins];
     if (p.kind === 'bench') return [benches];
     return null;
@@ -210,7 +230,11 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
     // Relief : p.gy (hauteur du sol au pied), p.pitch et p.roll (voitures et bancs, selon la pente) posés par chunks.js.
     if (p.pitch || p.roll) _q.setFromEuler(_e.set(p.pitch ?? 0, p.yaw ?? 0, p.roll ?? 0));
     else _q.setFromAxisAngle(_up, p.yaw ?? 0);
-    _m.compose(_p.set(p.x, p.gy ?? 0, p.z), _q, _s.set(s, s, s));
+    if (pl === trunks) {
+      // Tronc partagé : plus fin et plus court pour un conifère, plus long et clair pour un bouleau.
+      const [w, h] = (ESPECES[p.sp]?.trunk ?? ESPECES.feuillu.trunk);
+      _m.compose(_p.set(p.x, p.gy ?? 0, p.z), _q, _s.set(s * w, s * h, s * w));
+    } else _m.compose(_p.set(p.x, p.gy ?? 0, p.z), _q, _s.set(s, s, s));
     pl.mesh.setMatrixAt(slot, _m);
     touch(pl.trackers[0], slot);
   }
@@ -222,7 +246,7 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
     pl.slots.set(p.id, slot);
     writeMatrix(pl, slot);
     if (pl.mesh.instanceColor) {
-      pl.mesh.setColorAt(slot, _c.setHex(p.color ?? 0x8a9096));
+      pl.mesh.setColorAt(slot, p.kind === 'tree' ? treeTint(p, pl === trunks, _c) : _c.setHex(p.color ?? 0x8a9096));
       touch(pl.trackers[1], slot);
     }
     if (pl === bodies) {
@@ -397,7 +421,7 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
 
   function stats() {
     return {
-      trees: trunks.count, cars: bodies.count, benches: benches.count,
+      trees: [...crownPools.values()].reduce((n, pl) => n + pl.count, 0), cars: bodies.count, benches: benches.count,
       drawCalls: pools.filter((pl) => pl.mesh.visible && pl.count > 0).length + (stainMesh.parent && stains.count > 0 ? 1 : 0),
       chunks: chunks.size, dropped,
     };
@@ -420,5 +444,8 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
     stainChunks.clear();
   }
 
-  return { setChunk, dropChunk, setGone, alarm, update, dispose, stats, scaleOf, stains: stainList, group };
+  // Matériaux d'arbres que la météo teinte (neige sur les feuillages, pluie sur tout) : voir scene.js, followTreeWeather.
+  const treeMaterials = () => ({ crowns: species.map((e) => e.mat), trunks: [trunkMat] });
+
+  return { setChunk, dropChunk, setGone, alarm, update, dispose, stats, scaleOf, stains: stainList, treeMaterials, group };
 }
