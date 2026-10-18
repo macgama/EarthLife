@@ -1757,3 +1757,10 @@ test('partie neuve : compétences à zéro ; une partie qui en a n\'est pas « v
   assert.deepEqual(again.save.profile.skills.season, { id: '1', combat: 0, fouille: 0, fabrication: 40, course: 0, tir: 0 });
   assert.deepEqual(again.fixes, []);
 });
+
+test('where.in : le bâtiment où le joueur a quitté la partie survit à la lecture, et seulement s\'il est lisible', () => {
+  const inside = (v) => check((s) => { s.where = { lat: 45.7571, lon: 4.8305, at: NOW, inside: false, in: v }; }).save.where;
+  assert.deepEqual(inside('b45.75718_4.83049'), { lat: 45.7571, lon: 4.8305, at: NOW, inside: false, in: 'b45.75718_4.83049' });
+  // Absent, vide, trop long ou d'un autre type : le champ n'existe pas (une ancienne sauvegarde n'en a jamais eu).
+  for (const bad of [undefined, null, '', 'x'.repeat(81), 12, {}, ['b1']]) assert.deepEqual(inside(bad), { lat: 45.7571, lon: 4.8305, at: NOW, inside: false });
+});

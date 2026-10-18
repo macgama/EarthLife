@@ -600,6 +600,8 @@ export function validateSave(raw, now = Date.now(), { itemKeys = ITEM_KEYS } = {
   if (raw.where !== null && raw.where !== undefined) {
     if (c.position(raw.where)) {
       where = { lat: raw.where.lat, lon: raw.where.lon, at: c.time(raw.where.at, 'where.at'), inside: c.bool(raw.where.inside, 'where.inside') };
+      // `in` : le bâtiment (autre que le refuge) où le joueur se trouvait à l'écriture, pour reprendre dedans ; absent sinon.
+      if (typeof raw.where.in === 'string' && raw.where.in.length > 0 && raw.where.in.length <= 80) where.in = raw.where.in;
     } else c.fix('where', 'position illisible → null');
   }
 
