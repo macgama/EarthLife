@@ -724,7 +724,7 @@ function watchDispose(group) {
   return () => [seen.size, done.size];
 }
 
-test('vue du décor : construite, remplie, vidée et libérée sous node, 6 appels de dessin au plus', () => {
+test('vue du décor : construite, remplie, vidée et libérée sous node, 10 appels de dessin au plus', () => {
   const scene = new THREE.Scene();
   const store = lyonStore();
   const gone = new Set();
@@ -742,17 +742,18 @@ test('vue du décor : construite, remplie, vidée et libérée sous node, 6 appe
   assert.equal(s.trees, total('trees'));
   assert.equal(s.cars, total('cars'));
   assert.equal(s.benches, total('benches'));
-  assert.ok(s.drawCalls <= 6 && s.drawCalls >= 4, `${s.drawCalls} appels de dessin`);
+  assert.ok(s.drawCalls <= 10 && s.drawCalls >= 4, `${s.drawCalls} appels de dessin`);
   const meshes = view.group.children;
-  assert.equal(meshes.length, 6);
+  // Feuillus, conifères, bouleaux, palmiers, troncs partagés, voitures (carrosserie et habitacle), bancs.
+  assert.equal(meshes.length, 8);
   assert.ok(meshes.every((m) => m.isInstancedMesh));
-  assert.deepEqual(meshes.map((m) => m.instanceMatrix.count), [4096, 4096, 4096, 512, 512, 256]);
+  assert.deepEqual(meshes.map((m) => m.instanceMatrix.count), [3072, 3072, 1536, 1024, 4096, 512, 512, 256]);
   assert.deepEqual(PROP_CAPACITY, { tree: 4096, car: 512, bench: 256 });
-  // Mémoire des instances sous 1 Mo.
-  const bytes = meshes.reduce((n, m) => n + m.instanceMatrix.array.byteLength + (m.instanceColor?.array.byteLength ?? 0), 0) + meshes[3].geometry.getAttribute('aGlow').array.byteLength;
-  assert.ok(bytes < 1024 * 1024, `${bytes} octets`);
+  // Mémoire des instances sous 1,2 Mo (teinte propre à chaque arbre comprise).
+  const bytes = meshes.reduce((n, m) => n + m.instanceMatrix.array.byteLength + (m.instanceColor?.array.byteLength ?? 0), 0) + meshes[5].geometry.getAttribute('aGlow').array.byteLength;
+  assert.ok(bytes < 1.2 * 1024 * 1024, `${bytes} octets`);
   // Basse consommation : seules les couronnes portent des ombres.
-  assert.deepEqual(meshes.map((m) => m.castShadow), [true, true, false, false, false, false]);
+  assert.deepEqual(meshes.map((m) => m.castShadow), [true, true, true, true, false, false, false, false]);
 
   // Retirer un morceau : les instances restantes sont intactes (la dernière a pris la place libérée).
   const [firstKey, firstProps] = all[0];
@@ -764,7 +765,7 @@ test('vue du décor : construite, remplie, vidée et libérée sous node, 6 appe
     for (const p of flat(props)) assert.ok(Math.abs(view.scaleOf(p.id) - p.s) < 1e-6, `${p.id} intact`);
   }
   for (const p of flat(firstProps)) assert.equal(view.scaleOf(p.id), null);
-  const bodies = meshes[3];
+  const bodies = meshes[5];
   const m = new THREE.Matrix4(), pos = new THREE.Vector3();
   const car = all[1][1].cars[0] ?? all.find(([, p]) => p.cars.length)[1].cars[0];
   for (let i = 0; i < bodies.count; i++) {

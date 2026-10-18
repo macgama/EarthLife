@@ -8,6 +8,7 @@
 import { countsLabel } from './survival.js';
 import { chunkFeatures } from './world.js';
 import { carriageway, boxesClose } from './roadway.js';
+import { especeArbre } from './climat.js';
 
 export const PROP_KINDS = {
   tree:  { verb: 'Abattre',  noun: "l'arbre",   time: 4,   timeAxe: 1.5, noise: 16, reach: 1.6 },
@@ -32,6 +33,10 @@ const CELLS = {
   tree: { step: 6e-5, prefix: 't', salt: 0x51ed270b },
   car: { step: 1e-4, prefix: 'c', salt: 0x2c1b3c6d },
   bench: { step: 1e-4, prefix: 'k', salt: 0x297a2d39 },
+  // Petits décors sans collision (flore.js) : buissons, rochers, touffes d'herbe.
+  buisson: { step: 9e-5, prefix: 'fb', salt: 0x3a8d11c5 },
+  rocher: { step: 8e-5, prefix: 'fr', salt: 0x6b2f90a3 },
+  touffe: { step: 3.2e-5, prefix: 'fh', salt: 0x1c7e45d9 },
 };
 const KEEP = { wood: 0.81, park: 0.17, car: 0.3, bench: 0.12, benchPark: 0.5 };
 const CAR_ROAD = 6; // une route carrossable doit passer à moins de 6 m
@@ -314,7 +319,9 @@ function trees(ctx, patch, x0, z0, size, proj) {
     if (blocked(ctx, x, z, 1) || onAny(ctx.others, x, z, 2) || onAny(ctx.rails, x, z, 2) || onAny(ctx.walk, x, z, 0.5)) return;
     if (!patchFree(patch, x, z)) return;
     const s = 0.7 + rand() * 0.55, yaw = rand() * TAU;
-    cands.push({ keep, prop: { id: cellId('tree', ilat, ilon), kind: 'tree', x, z, yaw, s, dark: dense } });
+    // Espèce et variation de teinte : tirages ajoutés après les précédents, qui gardent leur valeur (donc leurs identifiants).
+    const sp = especeArbre(ilat * CELLS.tree.step, dense, rand()), v = rand();
+    cands.push({ keep, prop: { id: cellId('tree', ilat, ilon), kind: 'tree', x, z, yaw, s, dark: dense, sp, v } });
   });
   return pick(cands, CAPS.tree);
 }
@@ -523,6 +530,9 @@ function benchOffRoad(ctx, patch, b) {
   if (blocked(ctx, x, z, 0.8) || onAny(ctx.rails, x, z, 0.8) || !patchFree(patch, x, z)) return null;
   return x === b.x && z === b.z ? b : { ...b, x, z };
 }
+
+// Outils de placement partagés avec flore.js (mêmes cellules, mêmes garde-fous que les arbres).
+export const PLACEMENT = { gather, sortFeatures, eachCell, cellId, blocked, onAny, patchFree, near, inOrNear, TAU };
 
 // ---------- API ----------
 
