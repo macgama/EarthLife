@@ -246,6 +246,21 @@ test('bornes : sac, coffre, sac au sol et caisse orpheline', () => {
   assert.deepEqual(keys.save.survivor.bag, { eau: 1, pomme: 2 });
 });
 
+test('bornes : sac porté (36, 45 ou 60 places) et excédent', () => {
+  const pack = (key, bag) => check((s) => { s.survivor.pack = key; s.survivor.bag = bag; }).save.survivor;
+  const total = (bag) => Object.values(bag).reduce((a, b) => a + b, 0);
+  for (const [key, cap] of [['sac_ecolier', 36], ['sac_randonnee', 45], ['sac_renforce', 60]]) {
+    const sv = pack(key, { eau: cap + 4 });
+    assert.equal(sv.pack, key);
+    assert.equal(total(sv.bag), cap, `${key} : ${cap} places`);
+  }
+  assert.equal(pack('sac_inconnu', { eau: 40 }).pack, null);
+  assert.equal(total(pack('sac_inconnu', { eau: 40 }).bag), 30, 'sac inconnu : 30 places');
+  // Les trois sacs sont des objets connus (coffre, sac laissé à terre).
+  const stored = check((s) => { s.base.chest = { sac_ecolier: 1, sac_renforce: 1 }; }).save.base.chest;
+  assert.deepEqual(stored, { sac_ecolier: 1, sac_renforce: 1 });
+});
+
 test('bornes : arme et vêtement', () => {
   const w = (weapon) => check((s) => { s.survivor.weapon = weapon; }).save.survivor.weapon;
   assert.deepEqual(w({ key: 'sabre', uses: 3 }), { key: 'batte', uses: null });

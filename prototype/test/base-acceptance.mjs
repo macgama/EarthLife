@@ -8,7 +8,8 @@
 // armes : pistolet et fusil (tir, munitions, bruit), ordinateur et téléphone ;
 // trajet : trajet entre stations, ordinateur et téléphone ; trajet:desktop ou trajet:mobile : un seul ;
 // voiture : voitures et carburant (réparer, siphonner, plein, trajet de Lyon à Pérouges), ordinateur et téléphone ;
-// ecran : l'écran de jeu allégé du téléphone en portrait, seul sur une partie neuve).
+// ecran : l'écran de jeu allégé du téléphone en portrait, seul sur une partie neuve ;
+// fabrication : fabriquer dehors (bouton, carte, durée, bruit, interruption) et les sacs de 36 et 60 places).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
@@ -3426,6 +3427,131 @@ async function ecranSeul() {
   await ctx.close();
 }
 
+// ---------- Fabriquer dehors et sacs ----------
+
+// Le bouton « Fabriquer » de l'écran de jeu : caché sans de quoi fabriquer, il apparaît avec les ingrédients dans le sac.
+// La carte liste les recettes sans établi (9) ; une fabrication dehors dure la recette, fait du bruit, s'interrompt si l'on
+// frappe, prend ses ingrédients au sac seul et y dépose le produit ; un sac fabriqué se porte et change la place du sac.
+// Au refuge, le bouton est caché et le sac renforcé (60 places) demande l'établi.
+const craftChip = (page) => ev(page, () => {
+  const c = document.getElementById('use-craft');
+  return { hidden: c.classList.contains('hidden'), count: c.querySelector('.chip-count').textContent, label: c.getAttribute('aria-label') };
+});
+const bagNow = (page) => ev(page, () => ({ ...window.__earthlife.session.survivor.inventory }));
+async function openCraftCard(page, device) {
+  if (device === 'mobile') await page.tap('#use-craft'); else await page.keyboard.press('KeyV');
+  return until(page, () => {
+    const c = document.querySelector('#card .rp-card');
+    if (!c || document.getElementById('card').hidden) return null;
+    return {
+      title: c.querySelector('.rp-card-title')?.textContent,
+      lines: [...c.querySelectorAll('.rp-card-line')].map((li) => li.textContent.replace(/\s+/g, ' ').trim()),
+      buttons: [...c.querySelectorAll('.rp-cbtn-line')].map((b) => [b.dataset.cardBtn, b.textContent.trim()]),
+    };
+  }, null, 10000);
+}
+const closeCard = async (page, device) => {
+  await hit(page, device, '#card [data-card-btn="close"]');
+  await until(page, () => document.getElementById('card').hidden || null, null, 5000);
+};
+const craftMul = (page) => ev(page, () => window.__earthlife.session.craftMul * window.__earthlife.session.actionMul);
+async function craftOutside(page, device, key, shotName = null) {
+  await clearZombies(page);
+  const card = await openCraftCard(page, device);
+  if (shotName) { await wait(600); await shot(page, shotName); }
+  const sel = `#card [data-card-btn="craft:${key}"]`;
+  if (!card || !(await ev(page, (q) => !!document.querySelector(q), sel))) return { card, action: null, mul: 1 };
+  // La durée suit le niveau de Fabrication, mis à jour au pas de jeu qui ouvre la carte : lue une fois la carte ouverte.
+  const mul = await craftMul(page);
+  await hit(page, device, sel);
+  const action = await until(page, () => { const a = window.__earthlife.session.action; return a ? { id: a.id, field: a.field, time: a.time, noise: a.noise } : null; }, null, 8000);
+  return { card, action, mul };
+}
+async function fabricationScenario(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 20`;
+  const name = tag.replace(' ', '-');
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+
+  let chip = await craftChip(page);
+  check(chip.hidden, `${tag} : bouton « Fabriquer » caché sans ingrédients`);
+
+  // Deux tissus : un bandage. Le bouton apparaît, avec 1 recette possible.
+  await debug(page, 'give', { tissu: 2 });
+  await until(page, () => !document.getElementById('use-craft').classList.contains('hidden'), null, 5000);
+  chip = await craftChip(page);
+  check(!chip.hidden && chip.count === '1' && /1 recette possible/.test(chip.label), `${tag} : bouton visible, ${chip.count} recette (« ${chip.label} »)`);
+  await debug(page, 'give', { ruban: 1 });
+  await until(page, () => document.querySelector('#use-craft .chip-count').textContent === '2', null, 5000);
+
+  // La carte : 9 recettes sans établi, celles que le sac permet d'abord ; rien qui demande l'établi.
+  let { card, action, mul } = await craftOutside(page, device, 'bandage', `${name}-carte-fabriquer`);
+  check(card?.title === 'Fabriquer', `${tag} : carte « ${card?.title} »`);
+  check(card?.lines.length === 9, `${tag} : ${card?.lines.length} recettes listées (les 9 sans établi)`);
+  const refugeOnly = (card?.lines ?? []).filter((l) => /Plaque|Hache|Établi|Sirène|Récupérateur|Sac renforcé/.test(l));
+  check(refugeOnly.length === 0, `${tag} : aucune recette d'établi dans la carte${refugeOnly.length ? ` (${refugeOnly.join(' | ')})` : ''}`);
+  check(card?.buttons.map(([id]) => id).join() === 'craft:bandage,craft:sac_ecolier', `${tag} : boutons ${card?.buttons.map(([id]) => id).join()}`);
+  check(card?.buttons[0]?.[1] === 'Fabriquer · 3 s' && card?.buttons[1]?.[1] === 'Fabriquer · 8 s', `${tag} : durées « ${card?.buttons.map(([, t]) => t).join(' » « ')} »`);
+
+  // Un bandage : 3 s de recette, bruit de 4 m (coudre), action « dehors ».
+  check(action?.id === 'craft' && action.field === true && Math.abs(action.time - 3) < 0.01 && action.noise === 4,
+    `${tag} : bandage en ${action?.time} s, dehors (field ${action?.field}), bruit ${action?.noise} m`);
+  await shot(page, `${name}-fabrication-en-cours`);
+  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 120000);
+  let bag = await bagNow(page);
+  check(bag.bandage === 1 && bag.tissu === undefined && bag.ruban === 1, `${tag} : 1 bandage au sac, 2 tissus pris (${JSON.stringify(bag)})`);
+  check(!!(await toastSeen(page, 'Fabriqué : 1 bandage', 5000)), `${tag} : notification « Fabriqué : 1 bandage »`);
+
+  // Frapper interrompt : rien n'est pris.
+  await debug(page, 'give', { bois: 2, clous: 1 });
+  ({ action, mul } = await craftOutside(page, device, 'planches'));
+  check(action?.id === 'craft' && action.noise === 12 && Math.abs(action.time - 4 * mul) < 0.02, `${tag} : planches en ${action?.time} s (4 s × ${round(mul, 2)}), bruit ${action?.noise} m (marteler)`);
+  if (device === 'mobile') await page.tap('#attack'); else await page.keyboard.press('Space');
+  const stopped = await until(page, () => (window.__earthlife.session.action ? null : 1), null, 5000);
+  bag = await bagNow(page);
+  check(!!stopped && bag.bois === 2 && bag.clous === 1 && bag.planche === undefined, `${tag} : coup donné, fabrication interrompue, ingrédients intacts (${JSON.stringify(bag)})`);
+
+  // Un sac d'écolier : porté d'office, 36 places au HUD.
+  await clearZombies(page);
+  await debug(page, 'give', { tissu: 2 });
+  ({ action, mul } = await craftOutside(page, device, 'sac_ecolier'));
+  check(action?.id === 'craft' && Math.abs(action.time - 8 * mul) < 0.02, `${tag} : sac d'écolier en ${action?.time} s (8 s × ${round(mul, 2)})`);
+  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 120000);
+  await until(page, () => /\/36$/.test(document.getElementById('bag-count').textContent.trim()) || null, null, 5000);
+  const worn = await ev(page, () => ({ pack: window.__earthlife.session.survivor.pack, bag: document.getElementById('bag-count').textContent.trim(), inv: window.__earthlife.session.survivor.inventory.sac_ecolier ?? 0 }));
+  check(worn.pack === 'sac_ecolier' && /\/36$/.test(worn.bag) && worn.inv === 0, `${tag} : sac d'écolier porté, « ${worn.bag} »`);
+  check(!!(await toastSeen(page, "Sac d'écolier équipé", 5000)), `${tag} : notification « Sac d'écolier équipé »`);
+  await shot(page, `${name}-sac-ecolier`);
+
+  // Sac plein : fabriquer reste possible, les ingrédients libèrent leur place (3 objets pris, 1 produit).
+  await ev(page, () => { window.__earthlife.session.survivor.inventory = { ferraille: 33, bois: 2, clous: 1 }; });
+  const full = await openCraftCard(page, device);
+  const plank = full?.lines.find((l) => l.startsWith('Planches'));
+  const plankBtn = full?.buttons.some(([id]) => id === 'craft:planches');
+  check(!!plankBtn && !/Sac plein/.test(plank ?? ''), `${tag} : sac de 36 plein (36/36), planches possibles : « ${plank} »`);
+  await closeCard(page, device);
+  await ev(page, () => { window.__earthlife.session.survivor.inventory = { eau: 1, conserve: 1 }; });
+
+  // Au refuge : le bouton est caché, et le sac renforcé demande l'établi.
+  const claim = await install(page, device, tag);
+  if (!check(!!claim, `${tag} : refuge installé`)) { await shot(page, `${name}-echec`); await ctx.close(); return; }
+  await debug(page, 'give', { tissu: 2 });
+  check(await enterRefuge(page, device), `${tag} : entré au refuge`);
+  await wait(300);
+  const hiddenIn = await until(page, () => document.getElementById('use-craft').classList.contains('hidden') || null, null, 5000);
+  check(!!hiddenIn, `${tag} : bouton « Fabriquer » caché dans le refuge`);
+  await hit(page, device, '#rp-tab-craft');
+  const reinforced = await ev(page, () => [...document.querySelectorAll('#refuge-panel .rp-recipe')].find((li) => li.textContent.includes('Sac renforcé'))?.textContent.replace(/\s+/g, ' ').trim() ?? null);
+  check(/Sac renforcé/.test(reinforced ?? '') && /Il faut un établi/.test(reinforced ?? '') && /60 places/.test(reinforced ?? ''), `${tag} : au refuge « ${reinforced} »`);
+  await shot(page, `${name}-refuge-sac-renforce`);
+  await leave(page, device);
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
@@ -3443,6 +3569,9 @@ try {
   } else if (only === 'voiture') {
     await voitureScenario('desktop');
     await voitureScenario('mobile');
+  } else if (only === 'fabrication') {
+    await fabricationScenario('desktop');
+    await fabricationScenario('mobile');
   } else if (only.startsWith('trajet')) {
     if (only !== 'trajet:mobile') await trajet('desktop');
     if (only !== 'trajet:desktop') await trajet('mobile');
@@ -3467,6 +3596,8 @@ try {
     if (!only) await trajet('mobile');
     await voitureScenario(only === 'mobile' ? 'mobile' : 'desktop');
     if (!only) await voitureScenario('mobile');
+    await fabricationScenario(only === 'mobile' ? 'mobile' : 'desktop');
+    if (!only) await fabricationScenario('mobile');
   }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {

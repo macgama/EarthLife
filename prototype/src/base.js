@@ -58,7 +58,7 @@ const WORDS = {
   soda: ['soda', 'sodas'], bandage: ['bandage', 'bandages'], medicaments: ['médicament', 'médicaments'],
   chaufferette: ['chaufferette', 'chaufferettes'], manteau: ['manteau', 'manteaux'], poncho: ['poncho', 'ponchos'],
   batte_cloutee: ['batte cloutée', 'battes cloutées'], hache: ['hache', 'haches'],
-  sac_randonnee: ['sac de randonnée', 'sacs de randonnée'],
+  sac_ecolier: ["sac d'écolier", "sacs d'écolier"], sac_randonnee: ['sac de randonnée', 'sacs de randonnée'], sac_renforce: ['sac renforcé', 'sacs renforcés'],
   pistolet: ['pistolet', 'pistolets'], fusil: ['fusil de chasse', 'fusils de chasse'], balles: ['balle', 'balles'], cartouches: ['cartouche', 'cartouches'],
 };
 
