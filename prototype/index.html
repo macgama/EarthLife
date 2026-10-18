@@ -918,60 +918,80 @@ body.touch #controls { display: block; }
   /* Bandeau de horde sous la quête et l'état ; le bandeau d'objectif passe dessous. */
   #horde-banner { grid-column: 1 / -1; grid-row: 3; font-size: 14px; }
 }
-/* Téléphone en portrait : barre du haut de 44 px (conditions, Effets, Menu) ; l'état en une bande pleine largeur (cinq
-   jauges côte à côte, température et zombies dessous) ; puis la quête et la pastille en ligne à gauche, la carte à droite.
-   Chaque élément porte sa marge du haut : une rangée vide ne laisse aucun vide. Le bandeau de horde s'insère entre l'état
-   et la quête (rien ne se recouvre) ; le bandeau d'objectif passe un instant sous la quête. */
+/* Téléphone en portrait : l'écran se lit en icônes (retour de Gaël du 2026-10-18 : « les boutons et menus prennent trop de
+   place »). Une seule barre en haut : les cinq jauges et le menu. Dessous, des puces d'une icône : la météo (icône et
+   température) et l'objectif (drapeau et distance) ; un toucher les ouvre en fiche par-dessus le jeu (lieu et effets ;
+   texte de la quête, compteurs, fiche du bâtiment). À droite, la carte, ses boutons − et + à sa gauche. Courir et Frapper
+   n'ont plus de texte. Le bandeau de horde s'insère entre la barre et les puces (rien ne se recouvre) ; le bandeau
+   d'objectif passe un instant sous les puces. Chaque élément porte sa marge du haut : une rangée vide ne laisse aucun vide. */
 @media (max-width: 759px) and (orientation: portrait), (max-width: 759px) and (min-height: 501px) {
-  #hud { grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: var(--touch) auto auto auto auto 1fr; gap: 0 var(--sp-2); }
-  #leftcol { display: contents; }
-  #conditions { grid-column: 1; grid-row: 1; height: var(--touch); margin: 0; }
+  #hud { --btn-item: 44px; --btn-run: 56px; --btn-attack: 76px; --mm-col: 0px; --card-w: calc(100vw - var(--hud-l) - var(--hud-r)); grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(var(--touch), auto) auto auto 1fr; gap: 0 var(--sp-2); }
+  #leftcol { display: flex; flex-flow: row wrap; align-content: flex-start; align-items: flex-start; gap: 6px; grid-column: 1; grid-row: 3; position: relative; z-index: 2; margin-top: 6px; }
   #topbuttons { position: static; grid-column: 2; grid-row: 1; justify-self: end; }
-  #vitals { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px var(--sp-3); margin-top: 6px; padding: 6px var(--sp-3); }
+  /* La barre des jauges court jusqu'au menu : sa marge de droite laisse la place des boutons (un seul d'ordinaire ; Refuge
+     et Non sauvegardé s'y ajoutent à l'occasion). */
+  #vitals { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-content: center; gap: 0 var(--sp-3); box-sizing: border-box; min-height: var(--touch); margin: 0 calc(var(--touch) + var(--sp-2)) 0 0; padding: 6px var(--sp-3); }
+  #hud:has(#save-warn:not(.hidden)) #vitals, #hud:has(#refuge-open:not(.hidden)) #vitals { margin-right: calc(2 * var(--touch) + 6px + var(--sp-2)); }
+  #hud:has(#save-warn:not(.hidden)):has(#refuge-open:not(.hidden)) #vitals { margin-right: calc(3 * var(--touch) + 12px + var(--sp-2)); }
   .vital { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'ico' 'bar'; row-gap: 3px; height: auto; }
   .vital-icon { justify-self: start; }
   .vital + .vital { margin-top: 0; }
   .vital-stats, .gear-row { grid-column: 1 / -1; }
-  #horde-banner { position: static; grid-column: 1 / -1; grid-row: 3; width: auto; max-width: none; margin: 6px 0 0; padding: 6px var(--sp-3); font-size: 14px; }
-  #quest { grid-column: 1; grid-row: 4; margin-top: 6px; }
-  #online-pill { grid-column: 1; grid-row: 5; margin-top: 6px; }
-  /* Écran allégé (retour de Gaël du 2026-10-13 : « beaucoup trop d'informations et de fenêtres »). Toujours visibles :
-     les cinq jauges, une ligne d'objectif avec sa distance, la carte, le sac et les boutons. Le reste s'ouvre d'un toucher :
-     la quête déplie ses compteurs et la fiche du bâtiment, la bande des conditions ouvre les effets (le bouton Effets
-     disparaît). Température et zombies à terre ne s'affichent que si le corps souffre ; la pastille du jeu en ligne se tait
+  #horde-banner { position: static; grid-column: 1 / -1; grid-row: 2; width: auto; max-width: none; margin: 6px 0 0; padding: 6px var(--sp-3); font-size: 14px; }
+  /* Toujours visibles : les cinq jauges, deux puces, la carte, le sac et les boutons. Le reste s'ouvre d'un toucher.
+     Température du corps et zombies à terre ne s'affichent que si le corps souffre ; la pastille du jeu en ligne se tait
      tant que personne n'est autour et que tout va bien. */
   .vital-stats { display: none; margin-top: 4px; padding-top: 4px; }
   #vitals:has(#body.cold, #body.hot, #body.low) .vital-stats { display: flex; }
   #kills { display: none; }
-  #conditions { pointer-events: auto; cursor: pointer; }
-  #conditions::after { content: ''; order: 4; flex: none; width: 6px; height: 6px; margin: -3px 2px 0 4px; border-right: 2px solid var(--c-text-3); border-bottom: 2px solid var(--c-text-3); transform: rotate(45deg); transition: transform var(--t-fast) var(--ease-std); }
-  body.show-mods #conditions::after { margin-top: 3px; transform: rotate(-135deg); }
   #mods-toggle { display: none; }
-  #quest { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--sp-2); pointer-events: auto; cursor: pointer; }
+  /* Puce de la météo : icône et température. Ouverte (body.show-mods), elle devient la fiche du lieu : nom, météo, vent,
+     heure, sources des données et effets. */
+  #conditions { flex: none; height: 40px; padding: 0 10px; pointer-events: auto; cursor: pointer; }
+  #conditions .place { display: none; }
+  #weather-line > :not(.wx-temp) { display: none; }
+  body.show-mods #conditions { position: absolute; top: 0; left: 0; z-index: 5; flex-wrap: wrap; width: var(--card-w); height: auto; padding: 8px 10px; background: var(--hud-mark), var(--c-panel-solid); box-shadow: var(--sh-2); white-space: normal; }
+  body.show-mods #conditions .place { display: block; order: 0; flex: 1 0 100%; }
+  body.show-mods #conditions .place::before { content: none; }
+  body.show-mods #conditions .cond-wx { order: 1; flex: 1 0 100%; overflow: visible; }
+  body.show-mods #weather-line { flex-wrap: wrap; }
+  body.show-mods #weather-line > :not(.wx-temp) { display: inline-flex; }
+  body.show-mods #weather-line .wx-time .icon, body.show-mods #weather-line .wx-forced { display: none; }
+  body.show-mods #conditions .cond-more { order: 2; flex: 1 0 100%; position: static; margin: 6px 0 0; padding: 6px 0 0; border: 0; border-top: 1px solid var(--c-line); border-radius: 0; background: none; box-shadow: none; }
+  /* Puce de l'objectif : drapeau et distance (chrono s'il y en a un). Ouverte, la fiche de la quête : étape, texte,
+     compteurs, pâté et fiche du bâtiment. */
+  #quest { flex: none; display: flex; align-items: center; gap: var(--sp-2); height: 40px; padding: 0 10px; pointer-events: auto; cursor: pointer; }
+  #quest:not(.open) :is(.stage, .quest-pips, #quest-text, #city-meta, #fiche) { display: none; }
+  #quest:not(.open) .quest-head::after { content: none; }
+  #quest:not(.open) .quest-val:not(.quest-timer-val) > [data-icon="cible"] { display: none; }
+  #quest .meta { margin: 0; gap: var(--sp-3); }
+  #quest.open { position: absolute; top: 0; left: 0; z-index: 5; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 var(--sp-2); width: var(--card-w); height: auto; padding: 8px 10px; background: var(--c-panel-solid); box-shadow: var(--sh-2); }
   #quest .quest-head { grid-column: 1; grid-row: 1; }
-  #quest .meta { grid-column: 2; grid-row: 1; margin: 0; }
-  #quest:not(.open) .quest-val:not(.quest-timer-val) { display: none; }
   #quest.open .meta { grid-column: 1 / -1; grid-row: 6; margin-top: 4px; }
   #quest-text { grid-column: 1 / -1; grid-row: 2; margin-top: 2px; -webkit-line-clamp: 2; }
   #quest #city-meta, #quest #fiche { grid-column: 1 / -1; }
-  #quest:not(.open) :is(#city-meta, #fiche) { display: none; }
   #quest.open #quest-text { -webkit-line-clamp: 4; }
   #quest .quest-head::after { content: ''; flex: none; width: 6px; height: 6px; margin: -3px 2px 0 auto; border-right: 2px solid var(--c-text-3); border-bottom: 2px solid var(--c-text-3); transform: rotate(45deg); transition: transform var(--t-fast) var(--ease-std); }
   #quest.open .quest-head::after { margin-top: 3px; transform: rotate(-135deg); }
+  #online-pill { flex: 0 1 auto; margin: 0; }
   #online-pill[data-quiet] { display: none; }
-  /* Affiche d'un moment fort : plus petite (3 : 1), à gauche sous la quête (et le bandeau de horde), hors de la colonne de
-     la carte et au-dessus de la tête du joueur. */
-  #moment { top: calc(var(--hud-t, 12px) + 190px); left: var(--hud-l); width: calc(100vw - var(--hud-l) - var(--hud-r) - 106px); transform: none; }
+  /* Affiche d'un moment fort : plus petite (3 : 1), à gauche sous les puces (et le bandeau de horde), hors de la colonne
+     de la carte et au-dessus de la tête du joueur. */
+  #moment { top: calc(var(--hud-t, 12px) + 150px); left: var(--hud-l); width: calc(100vw - var(--hud-l) - var(--hud-r) - var(--mm-col) - var(--sp-2)); transform: none; }
   #moment.show { animation-name: moment-in-left; }
   @media (prefers-reduced-motion: reduce) { #moment.show { animation-name: moment-fade; } }
   .moment-art { aspect-ratio: 3 / 1; }
   .moment-text { padding-top: 18px; }
   .moment-title { font-size: var(--fs-md); }
-  body:not(.touch) #inventory { grid-column: 2; grid-row: 6; }
+  body:not(.touch) #inventory { grid-column: 2; grid-row: 4; }
   body:not(.touch) .chip-name { display: none; }
-  /* Bandeau « Objectif mis à jour » : sous la quête, à gauche de la colonne de la carte (la quête repliée est plus courte, il
-     remonte jusqu'aux boutons − et +). */
-  #objective, body.touch #objective { grid-column: 1; grid-row: 6; top: 6px; right: auto; margin: 0; max-width: calc(100vw - var(--hud-l) - var(--hud-r) - var(--mm-size) - var(--sp-2)); }
+  /* Bandeau « Objectif mis à jour » : sous les puces, à gauche de la colonne de la carte. */
+  #objective, body.touch #objective { grid-column: 1; grid-row: 4; top: 6px; right: auto; margin: 0; max-width: calc(100vw - var(--hud-l) - var(--hud-r) - var(--mm-col) - var(--sp-2)); }
+  /* Courir et Frapper : l'icône seule (le nom reste dans aria-label), un peu plus petits. */
+  .round-label { display: none; }
+  #run { right: calc(var(--hud-r) + 98px); }
+  #run .icon { width: 28px; height: 28px; }
+  #hud > #gesture-toggle { right: calc(var(--hud-r) + 104px); }
   /* Fouiller et toast : centrés dans la place laissée à gauche de la colonne du sac. */
   #search, #action2, #toast { left: var(--hud-l); right: calc(var(--hud-r) + var(--btn-item) + var(--sp-2)); max-width: calc(100vw - var(--hud-l) - var(--hud-r) - var(--btn-item) - var(--sp-2)); }
   #search, #action2 { bottom: calc(var(--hud-b) + 136px); min-height: 48px; font-size: 14px; }
@@ -982,7 +1002,7 @@ body.touch #controls { display: block; }
   /* Carte agrandie : le bandeau de horde passe au-dessus d'elle, sur sa bande du haut (le loin, devant), pas sur le joueur. */
   #hud.map-big #horde-banner { position: absolute; grid-column: 1 / -1; grid-row: 1 / -1; top: calc(var(--touch) + var(--sp-2)); left: 0; right: 0; width: max-content; max-width: 100%; margin: 0 auto; z-index: 4; }
   /* Feuille du refuge ouverte (60 % de l'écran) : seules l'alerte de horde, l'action en cours et le toast restent ; la quête
-     et la pastille se replient (la feuille a ses Missions). Le toast prend la place de la quête, sous le bandeau de horde. */
+     et la pastille se replient (la feuille a ses Missions). Le toast prend la place des puces, sous le bandeau de horde. */
   body.panel-open:not(.panel-folded) #quest, body.panel-open:not(.panel-folded) #online-pill { display: none; }
   body.panel-open:not(.panel-folded) #search, body.panel-open:not(.panel-folded) #action2 { bottom: calc(60vh + var(--sp-1)); bottom: calc(60dvh + var(--sp-1)); }
   body.panel-open:not(.panel-folded) #toast, body.panel-open:not(.panel-folded) #hud.two-actions #toast { grid-column: 1 / -1; grid-row: 4; top: 6px; bottom: auto; left: 0; right: 0; width: max-content; max-width: 100%; margin: 0 auto; background: var(--c-panel-solid); }
@@ -1093,15 +1113,17 @@ body.touch #controls { display: block; }
    feuille ou le tiroir prend le bas ou la droite. */
 @media (min-width: 1024px) and (max-width: 1199px) and (min-height: 501px) { body.panel-open #mapbox { display: none; } }
 @media (max-width: 759px), (max-height: 500px) and (orientation: landscape) { body.panel-open #mapbox { display: none; } }
-/* Téléphone en portrait, coin haut-droite : colonne de droite, sous la bande de l'état, à côté de la quête ; boutons − et +
-   dessous. Le bandeau de horde est dans la grille : la carte descend avec lui. Le garde-fou de minimap.js retire les boutons,
-   réduit ou masque la carte quand le sac (leurre compris) monte jusqu'à elle. */
+/* Téléphone en portrait, coin haut-droite : colonne de droite, sous la barre du haut, à côté des puces ; boutons − et +
+   à gauche de la carte, l'un sur l'autre. Le bandeau de horde est dans la grille : la carte descend avec lui. Le garde-fou
+   de minimap.js retire les boutons, réduit ou masque la carte quand le sac (leurre compris) monte jusqu'à elle, ou quand
+   une fiche ouverte (quête, conditions) la recouvre. */
 @media (max-width: 759px) and (orientation: portrait), (max-width: 759px) and (min-height: 501px) {
-  #hud.map-tr { --mm-size: 96px; }
-  #hud.map-tr #mapbox { position: static; grid-column: 2; grid-row: 4 / 7; margin-top: 6px; justify-self: end; align-self: start; align-items: flex-end; }
-  #hud.map-tr .zoom-btns { order: 2; }
+  #hud.map-tr { --mm-size: 96px; --mm-col: calc(var(--mm-size) + 46px); }
+  #hud.map-tr #mapbox { position: static; grid-column: 2; grid-row: 3 / 5; margin-top: 6px; justify-self: end; align-self: start; flex-direction: row; align-items: flex-start; gap: 6px; }
+  #hud.map-tr .zoom-btns { flex-direction: column; gap: 4px; }
+  #hud.map-tr .zoom-btns .small { width: 40px; min-width: 40px; height: calc((var(--mm-size) - 4px) / 2); }
 }
-@media (max-width: 379px) { #hud.map-tr { --mm-size: 88px; } }
+@media (max-width: 379px) { #hud.map-tr { --mm-size: 88px; --mm-col: calc(88px + 46px); } }
 /* Tablette en portrait (760 à 1023 px), feuille du refuge ouverte (56 % de l'écran, panels.js) : le HUD du haut reste, la
    carte s'efface, l'action en cours et le toast se posent juste au-dessus de la feuille. */
 @media (min-width: 760px) and (max-width: 1023px) and (orientation: portrait) {
