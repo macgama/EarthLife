@@ -4,7 +4,7 @@ import {
   WHY, cleanFound, keysOf, freeRoom, take, leave, takeAll, equip, equipCheck, itemInfo, gearOf, maxMove, selectSlot, fitSel, stepSel,
   findView, findHtml, movedText, leftText, FINDS_CSS,
 } from '../src/trouvailles.js';
-import { ITEMS, createSurvivor, bagUsed, bagCapacity, BAG_BASE } from '../src/survival.js';
+import { ITEMS, createSurvivor, bagUsed, bagCapacity, BAG_BASE, PACK_SWAP_FULL } from '../src/survival.js';
 
 const find = (ground, over = {}) => ({ title: 'Pharmacie', sub: '', notes: [], ground: cleanFound(ground), ...over });
 const survivor = (inventory = {}) => Object.assign(createSurvivor(), { inventory });
@@ -125,6 +125,33 @@ test('equip : un sac de randonnée porté agrandit le sac, sa place n\'est pas p
   assert.equal(equip(s, f.ground, 'sac_randonnee', 'ground').ok, true);
   assert.equal(bagCapacity(s), 45);
   assert.equal(take(s, f.ground, 'conserve').moved, 3);
+});
+
+test('equip : trois sacs (36, 45, 60), le plus grand est « Mieux », le plus petit demande de la place', () => {
+  const s = survivor();
+  const f = find({ sac_ecolier: 1, sac_randonnee: 1, sac_renforce: 1 });
+  const up = (k) => findView(s, f, { side: 'ground', key: k, n: 1 }).ground.find((x) => x.key === k).up;
+  assert.deepEqual(['sac_ecolier', 'sac_randonnee', 'sac_renforce'].map(up), [true, true, true]);
+  assert.equal(equip(s, f.ground, 'sac_renforce', 'ground').ok, true);
+  assert.equal(bagCapacity(s), 60);
+  assert.deepEqual(['sac_ecolier', 'sac_randonnee'].map(up), [false, false]);
+  // 40 objets dans le sac : le sac d'écolier (36) ne tient pas, rien ne bouge
+  fill(s, 40);
+  const check = equipCheck(s, f.ground, 'sac_ecolier', 'ground');
+  assert.deepEqual([check.ok, check.why], [false, PACK_SWAP_FULL]);
+  const refused = equip(s, f.ground, 'sac_ecolier', 'ground');
+  assert.deepEqual([refused.ok, refused.why, refused.back], [false, PACK_SWAP_FULL, null]);
+  assert.equal(s.pack, 'sac_renforce');
+  assert.equal(f.ground.sac_ecolier, 1);
+  assert.equal(f.ground.sac_renforce, undefined);
+  // la fenêtre grise le bouton avec le motif ; en laissant 4 objets, l'échange passe et le grand sac retourne parmi les objets trouvés
+  const v = findView(s, f, { side: 'ground', key: 'sac_ecolier', n: 1 });
+  assert.deepEqual([v.detail.equip.enabled, v.detail.equip.why], [false, PACK_SWAP_FULL]);
+  leave(s, f.ground, 'bois', 4);
+  const swapped = equip(s, f.ground, 'sac_ecolier', 'ground');
+  assert.deepEqual([swapped.ok, swapped.back], [true, 'sac_renforce']);
+  assert.equal(bagCapacity(s), 36);
+  assert.equal(f.ground.sac_renforce, 1);
 });
 
 test('equip : refus avec motif', () => {

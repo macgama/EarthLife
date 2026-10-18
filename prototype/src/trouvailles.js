@@ -2,7 +2,7 @@
 // porte et ce que l'on laisse sur place (le butin à côté des sacs, comme dans World of Warcraft). Trois parties : les règles des
 // transferts et la vue (pures, testées sous node), la page HTML (pure, textes échappés) et le contrôleur du DOM. Classes en tv-.
 // Chaque transfert s'applique tout de suite au sac du survivant : fermer ne valide rien, il laisse le reste sur place.
-import { ITEMS, WEAPONS, FIREARMS, BAG_BASE, bagCapacity, bagUsed, wornKey, discardedBy, equipFrom, betterThanWorn, addCount, takeCount, itemLabel, countsLabel, countsTotal } from './survival.js';
+import { ITEMS, WEAPONS, FIREARMS, BAG_BASE, bagCapacity, bagUsed, wornKey, discardedBy, equipFrom, betterThanWorn, packSwapRefusal, addCount, takeCount, itemLabel, countsLabel, countsTotal } from './survival.js';
 import { icon } from './icons.js';
 import { itemSlot, injectArtStyle } from './art.js';
 import { esc } from './panels.js';
@@ -82,6 +82,9 @@ function equipPlan(s, ground, key, side) {
   if (!((from?.[key] ?? 0) > 0)) return { ok: false, why: side === 'ground' ? WHY.none : WHY.nothing };
   const worn = wornKey(s, item.equip);
   if (key === worn) return { ok: false, why: WHY.worn };
+  // Un sac plus petit que le sien ne se porte pas tant que le sac ne tient pas dedans (comme au refuge).
+  const refused = packSwapRefusal(s, key);
+  if (refused) return { ok: false, why: refused };
   const discarded = discardedBy(s, key);
   const back = !discarded && worn && ITEMS[worn] ? worn : null;
   return { ok: true, why: '', from, back, discarded };
@@ -97,7 +100,7 @@ export function equipCheck(s, ground, key, side) {
 export function equip(s, ground, key, side) {
   const p = equipPlan(s, ground, key, side);
   if (!p.ok) return { ok: false, why: p.why, back: null, discarded: null };
-  equipFrom(s, key, p.from);
+  if (!equipFrom(s, key, p.from)) return { ok: false, why: WHY.notGear, back: null, discarded: null };
   return { ok: true, why: '', back: p.back, discarded: p.discarded };
 }
 

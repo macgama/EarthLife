@@ -11,7 +11,7 @@ export const ART = {
     'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee', 'pistolet', 'fusil', 'balles', 'cartouches',
   ]),
   // Objets dont l'image n'est pas encore livrée (accord de Gaël pour les crédits Artlist) : ils gardent l'icône au trait.
-  pending: new Set(['bidon', 'batterie']),
+  pending: new Set(['bidon', 'batterie', 'sac_ecolier', 'sac_renforce']),
   scenes: new Set(['horde', 'metro', 'tram', 'train', 'refuge', 'coop', 'victoire', 'terre', 'mort', 'facile', 'moyen', 'difficile']),
 };
 
@@ -24,7 +24,7 @@ export const ITEM_KIND = {
   conserve: 'food', barre: 'food', eau: 'water', soda: 'water', bandage: 'heal', medicaments: 'heal', chaufferette: 'warm',
   bois: 'mat', clous: 'mat', ferraille: 'mat', tissu: 'mat', ruban: 'mat', planche: 'mat', plaque: 'mat',
   piege: 'tool', leurre: 'tool', batte: 'tool', batte_cloutee: 'tool', hache: 'tool',
-  manteau: 'wear', poncho: 'wear', sac_randonnee: 'pack',
+  manteau: 'wear', poncho: 'wear', sac_ecolier: 'pack', sac_randonnee: 'pack', sac_renforce: 'pack',
   pistolet: 'gun', fusil: 'gun', balles: 'ammo', cartouches: 'ammo',
   bidon: 'fuel', batterie: 'mat',
 };
@@ -34,7 +34,7 @@ export const ITEM_ICON = {
   conserve: 'manger', barre: 'manger', eau: 'boire', soda: 'boire', bandage: 'soigner', medicaments: 'soigner', chaufferette: 'chauffer',
   bois: 'hache', clous: 'marteau', ferraille: 'cle', tissu: 'manteau', ruban: 'cle', planche: 'marteau', plaque: 'marteau',
   piege: 'piege', leurre: 'leurre', batte: 'frapper', batte_cloutee: 'frapper', hache: 'hache',
-  manteau: 'manteau', poncho: 'manteau', sac_randonnee: 'sac',
+  manteau: 'manteau', poncho: 'manteau', sac_ecolier: 'sac', sac_randonnee: 'sac', sac_renforce: 'sac',
   pistolet: 'tirer', fusil: 'tirer', balles: 'cible', cartouches: 'cible',
   bidon: 'bidon', batterie: 'batterie',
 };

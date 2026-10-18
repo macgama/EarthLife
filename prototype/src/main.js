@@ -12,7 +12,7 @@ import { createChunkManager, VIEW_RADIUS } from './chunks.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
   offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, bagCapacity, wornKey,
-  removePack, packSurplus, PACK_REMOVE_FULL,
+  removePack, packSurplus, packSwapRefusal, PACK_REMOVE_FULL,
 } from './survival.js';
 import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
 import { createCharacters } from './characters.js';
@@ -35,7 +35,7 @@ import { createRefuge, clockLabel, durationLabel, TAKEN_TEXT } from './refuge.js
 import { FICHE, ficheOf } from './fiche.js';
 import { kindLabel, countsLabel, countOf, chestCap, moveItems, depositAll, prepareBag, storeItems, refugeWarmth, TIMES } from './base.js';
 import { frontVector, nextNightChange, nightKey, utcOffsetFor, clockTargets, HORDE } from './horde.js';
-import { craft, canCraft, craftTime, RECIPES, recipeRows, rollPlan, PLAN_FOUND_TEXT } from './crafting.js';
+import { craft, canCraft, craftTime, craftNoise, fieldReady, RECIPES, recipeRows, rollPlan, PLAN_FOUND_TEXT } from './crafting.js';
 import { ambushCount, ambushSpots, ambushText } from './embuscade.js';
 import { rollRoomLoot, roomAmbushCount, ambushSpotsIn, roomTitle, clearPlanCache } from './interieur.js';
 import { buildingResume, savedLine } from './reprise-batiment.js';
@@ -1751,10 +1751,15 @@ function startAction(s, a) {
     return;
   }
   if (a.id === 'craft') {
-    // Fabrication au refuge : la durée de la recette, allongée par la fatigue ; le coût n'est pris qu'à la fin.
-    const can = canCraft(a.arg, craftCtx(s), s.survivor);
+    // Fabrication au refuge, ou dehors avec le sac seul (`field`) : la durée de la recette, allongée par la fatigue ; le coût
+    // n'est pris qu'à la fin. Dehors, elle s'interrompt si l'on bouge ou frappe, et fait un peu de bruit.
+    const field = !!a.field;
+    const can = canCraft(a.arg, field ? fieldCtx(s) : craftCtx(s), s.survivor);
     if (!can.ok) { toast(can.why, 2.5); return; }
-    s.action = { ...base, time: craftTime(a.arg) * s.actionMul * s.craftMul, label: `Fabrication : ${RECIPES[a.arg].name}…`, icon: actionIcon(a) };
+    s.action = {
+      ...base, time: craftTime(a.arg) * s.actionMul * s.craftMul, label: `Fabrication : ${RECIPES[a.arg].name}…`, icon: actionIcon(a),
+      field, noise: field ? craftNoise(a.arg) : 0,
+    };
     return;
   }
   const c = r.check(a.id, a.arg, refugeCtx(s, a.id === 'claim' || a.id === 'move' ? claimCtx(s, a.arg) : {}));
@@ -1786,8 +1791,8 @@ function finishAction(s, a) {
 
 // Fabrication terminée : le coût est pris maintenant (le stock a pu changer pendant l'attente), le produit va au coffre.
 function finishCraft(s, a) {
-  if (!s.refuge.base) return;
-  const res = craft(a.arg, craftCtx(s), s.survivor);
+  if (!a.field && !s.refuge.base) return;
+  const res = craft(a.arg, a.field ? fieldCtx(s) : craftCtx(s), s.survivor);
   toast(res.msg, 2.5, res.ok ? 'success' : '');
   if (res.ok) {
     gainSkill(s, 'fabrication', craftXp(craftTime(a.arg)));
@@ -1986,10 +1991,33 @@ function leftText(left) {
 
 // Objets du sac (touches 1 à 4 et puces) ; le leurre (5) se lance.
 function useItem(s, use) {
+  if (use === 'craft') { openFieldCraft(s); return; }
   if (use === 'lure') { throwLure(s); return; }
   if (use === 'shoot') { shootFirearm(s); return; }
   const used = useBest(s.survivor, use, s.player);
   toast(used ? `${ITEMS[used].name} utilisé` : 'Rien dans ton sac pour ça', 1.5, used ? 'success' : '');
+}
+
+// Fabriquer dehors (bouton « Fabriquer », touche V) : carte des recettes sans établi, celles que le sac permet d'abord.
+// Un bouton lance la fabrication (chronométrée, interrompue si l'on bouge) ; la carte met le jeu en pause tant qu'elle est ouverte.
+function openFieldCraft(s) {
+  if (s.refuge.inside) return;
+  if (s.action) { toast('Une action est déjà en cours', 1.5); return; }
+  const rows = recipeRows(fieldCtx(s), s.survivor);
+  const secs = (r) => secondsText(r.time * s.actionMul * s.craftMul);
+  const lines = [...rows.filter((r) => r.ok), ...rows.filter((r) => !r.ok)].map((r) => ({
+    text: r.name,
+    sub: r.ok ? `${r.desc} · ${r.cost}` : r.why,
+    off: !r.ok,
+    button: r.ok ? { id: `craft:${r.key}`, label: `Fabriquer · ${secs(r)} s` } : null,
+  }));
+  showCard({
+    title: 'Fabriquer', scroll: true, lines,
+    buttons: [{ id: 'close', label: 'Fermer' }],
+  }, (id) => {
+    const key = /^craft:(\w+)$/.exec(id)?.[1];
+    if (key && session === s && !s.action && !s.ended) startAction(s, { id: 'craft', arg: key, slot: 'primary', field: true });
+  }, { escape: 'close' });
 }
 
 // Leurre : 12 m devant le joueur (au dernier point libre si un mur coupe la ligne), ou 15 m devant la porte
@@ -2106,8 +2134,9 @@ function pickBag(s) {
   const at = s.store.proj.toLocal(d.lat, d.lon);
   if (Math.hypot(at.x - p.x, at.z - p.z) > 1.5) return;
   let moved = 0;
-  // Le sac de randonnée perdu se porte d'abord : sa place sert au reste du contenu.
-  const packKey = Object.keys(d.bag).find((k) => ITEMS[k]?.equip === 'bag' && d.bag[k] > 0);
+  // Le plus grand sac perdu se porte d'abord : sa place sert au reste du contenu.
+  const packKey = Object.keys(d.bag).filter((k) => ITEMS[k]?.equip === 'bag' && d.bag[k] > 0)
+    .sort((a, b) => ITEMS[b].capacity - ITEMS[a].capacity)[0];
   if (packKey && equipFrom(s.survivor, packKey, d.bag)) moved += 1;
   for (const k of Object.keys(d.bag)) moved += moveItems(d.bag, s.survivor.inventory, k, d.bag[k], bagCapacity(s.survivor));
   if (!countOf(d.bag)) save.dropBag = null;
@@ -2239,6 +2268,12 @@ function craftCtx(s) {
   return { chest: b.chest, bag: s.survivor.inventory, upgrades: b.upgrades, plans: save.profile.plans, chestCap: chestCap(b), perk: b.perk };
 }
 
+// Fabrication dehors : ni coffre ni aménagement, ingrédients et produit passent par le sac (crafting.js, `field`).
+function fieldCtx(s) {
+  const sv = s.survivor;
+  return { field: true, bag: sv.inventory, bagCap: bagCapacity(sv), upgrades: [], plans: save.profile.plans };
+}
+
 // Vue du panneau (RefugeView, 7.4) : défense, fabrication, coffre, pied et carnet.
 function refugeView(s) {
   const r = s.refuge, b = r.base, sv = s.survivor;
@@ -2363,8 +2398,9 @@ function onPanelAction(action, arg) {
       break;
     }
     case 'unpack': {
+      const packName = ITEMS[sv.pack]?.name ?? 'Sac';
       const res = removePack(sv, b.chest, chestCap(b));
-      toast(res.ok ? `${ITEMS.sac_randonnee.name} enlevé · au coffre : ${countsLabel(res.moved)}` : res.why, 3, res.ok ? 'loot' : '');
+      toast(res.ok ? `${packName} enlevé · au coffre : ${countsLabel(res.moved)}` : res.why, 3, res.ok ? 'loot' : '');
       if (res.ok) saveStore.markDirty();
       break;
     }
@@ -2392,6 +2428,8 @@ function equipItem(s, key) {
   const sv = s.survivor, b = s.refuge.base;
   const from = (b?.chest?.[key] ?? 0) > 0 ? b.chest : sv.inventory;
   const lost = discardedBy(sv, key);
+  const refused = packSwapRefusal(sv, key);
+  if (refused) { toast(refused, 2.5); return; }
   if (!ITEMS[key] || !equipFrom(sv, key, from)) return;
   toast(`${ITEMS[key].name} ${FEMININE_ITEMS.has(key) ? 'équipée' : 'équipé'}${lost ? `. ${discardText(lost)}` : ''}`, 3, 'success');
   saveStore.markDirty();
@@ -2589,6 +2627,8 @@ function hudInfo(s) {
     // Ville de secours : le refuge n'y est pas, pas de ligne.
     baseLine: r.base && s.store.source === 'tiles' ? r.statusLine({ player: p }) : '',
     refugeButton: r.inside && !!r.base && !panel.isOpen(),
+    // Bouton « Fabriquer » : dehors, quand le sac contient de quoi faire au moins une recette sans établi.
+    craftN: r.inside || asleep(s) ? 0 : fieldReady(s.survivor.inventory),
     saveWarn: otherTab(),
     // Pastille du jeu en ligne (null : jeu en ligne inactif) et roue des gestes.
     online: onlineOn ? onlinePill(s) : null,
