@@ -184,3 +184,16 @@ export function insideTiles(tiles, lat, lon) {
   const x = Math.floor(((lon + 180) / 360) * n), y = Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n);
   return Object.hasOwn(tiles, `${z}/${x}/${y}`);
 }
+
+// Départ d'une partie de saison qui reprend : la maison gardée par le serveur (`server` : { a, o } en millionièmes de degré) et le refuge de la
+// sauvegarde de cet appareil (`base` : { lat, lon }). Quand le refuge est dans la ville mais ailleurs que la maison du serveur (envoi manqué,
+// sauvegarde plus ancienne ou venue d'un autre appareil), on rejoint le refuge : sinon la partie s'ouvre autour de la maison du serveur, loin
+// du refuge (« Expédition »), et il n'y a plus de refuge où entrer. `distance` rend des mètres. Rend { home: { lat, lon } | null,
+// repost } ; `repost` : la maison est à renvoyer au serveur.
+export function resumeHome(server, base, tiles, distance, near = 30) {
+  const sv = server ? { lat: server.a / 1e6, lon: server.o / 1e6 } : null;
+  if (!sv) return { home: null, repost: false };
+  const mine = base && Number.isFinite(base.lat) && Number.isFinite(base.lon) && insideTiles(tiles, base.lat, base.lon) ? base : null;
+  if (mine && distance(mine, sv) > near) return { home: { lat: mine.lat, lon: mine.lon }, repost: true };
+  return { home: sv, repost: false };
+}

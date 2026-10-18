@@ -1,7 +1,7 @@
 // Acceptation de l'intérieur des bâtiments (« Plan 3D »), hors ligne : vraies tuiles de Lyon et météo enregistrées
 // (test/fixtures/offline-routes.mjs), crochets ?debug=1 avec ?interieur=1 (les essais gardent sinon la fouille de façade).
 //   node test/interieur-acceptance.mjs [dossier-des-captures]        (browser-shots/interieur par défaut)
-// Variables : ROUTES, PLAYWRIGHT_MODULE, PORT, ONLY (desktop ou mobile).
+// Variables : ROUTES, PLAYWRIGHT_MODULE, PORT, ONLY (desktop, mobile ou reprise).
 // Déroulé : « Entrer » à la porte, l'intérieur s'ouvre ; fouille de deux pièces, chacune avec son butin et sa durée ; une embuscade
 // sort par la porte de la pièce voisine ; ressortir défait l'intérieur ; après un rechargement, les deux pièces restent
 // fouillées ; mesure du temps de construction d'un plan. Sans carte graphique (swiftshader) le jeu va jusqu'à trois fois
@@ -105,7 +105,7 @@ const toastSeen = (page, start, timeout = 10000) => until(page, (t) => window.__
 const TOAST_WAIT = 45000;
 
 // Bâtiment le plus proche qui a un intérieur (au moins 3 pièces, pas trop grand, jamais fouillé), avec le pas de sa porte libre.
-const pickBuilding = (page) => ev(page, async () => {
+const pickBuilding = (page, skip = []) => ev(page, async (skipIds) => {
   const col = await import('/src/collision.js');
   const int = await import('/src/interieur.js');
   const { session: s, save } = window.__earthlife;
@@ -113,14 +113,14 @@ const pickBuilding = (page) => ev(page, async () => {
   const list = s.store.buildings.map((b, i) => ({ b, i, d: Math.hypot(b.cx - p.x, b.cz - p.z) })).sort((a, b) => a.d - b.d);
   for (const { b, i, d } of list) {
     if (d > 400) break;
-    if (save.searched[b.id] || b.area > 300) continue;
+    if (save.searched[b.id] || b.area > 300 || skipIds.includes(b.id)) continue;
     const plan = int.planFor(b), door = int.doorPoint(b);
     if (!plan || !door || plan.total < 3) continue;
     if (!col.isFree(s.grid, door.ox, door.oz) || col.buildingNear(s.grid, door.ox, door.oz, 1.6) !== i) continue;
     return { i, id: b.id, ox: door.ox, oz: door.oz, total: plan.total, area: Math.round(b.area), loot: b.loot };
   }
   return null;
-});
+}, skip);
 
 // Place le joueur à portée du meuble à fouiller d'une pièce (point où il tient, avec les sondes du jeu).
 const standNear = (page, room) => ev(page, async (r) => {
@@ -297,6 +297,95 @@ async function scenario(device) {
   await ctx.close();
 }
 
+// Sauvegarde à la sortie d'un bâtiment et reprise dans le bâtiment où l'on a quitté : un refuge (installé par l'API du jeu, la fouille
+// de l'installation est couverte ailleurs), un autre bâtiment dont on franchit la porte ; retour au menu puis « Jouer » (même page), puis
+// rechargement : la partie reprend dedans. Ressortir sauvegarde avec un avis court ; quitté dehors, on repart de la porte du refuge.
+async function resumeScenario() {
+  const tag = 'reprise';
+  const ctx = await newContext('desktop');
+  const page = await ctx.newPage();
+  watchErrors(page, tag);
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie démarrée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  // Le refuge : un bâtiment voisin, revendiqué par l'API des règles du refuge (porte atteignable depuis le pas de la porte).
+  const home = await pickBuilding(page);
+  if (!check(!!home, `${tag} : un bâtiment pour le refuge`)) { await ctx.close(); return; }
+  await debug(page, 'teleport', home.ox, home.oz);
+  const claimed = await ev(page, (idx) => {
+    const { session: s, save, saveStore } = window.__earthlife;
+    const b = { ...s.store.buildings[idx], index: idx };
+    const res = s.refuge.claim(b, { player: s.player, survivor: s.survivor, weather: s.weather, mods: s.mods, now: Date.now(), bagCap: 99, searched: true, chasersNear: 0, place: { name: 'Essai', area: '' } });
+    if (!res.ok) return { ok: false, msg: res.msg ?? res.why ?? null };
+    s.home = true;
+    saveStore.flush('essai');
+    return { ok: true, id: save.base?.id };
+  }, home.i);
+  if (!check(claimed?.ok && claimed.id === home.id, `${tag} : refuge installé ${JSON.stringify(claimed)}`)) { await ctx.close(); return; }
+  // Un autre bâtiment avec intérieur : on y entre.
+  const spot = await pickBuilding(page, [home.id]);
+  if (!check(!!spot, `${tag} : un second bâtiment avec intérieur`)) { await ctx.close(); return; }
+  await debug(page, 'teleport', spot.ox, spot.oz);
+  await until(page, () => (window.__label('search')?.startsWith('Entrer') ? true : null), null, 20000);
+  await press(page, 'desktop', 'KeyE', 'search');
+  await until(page, () => window.__earthlife.session.interior?.plan ? true : null, null, 10000);
+  const info0 = await interior(page);
+  await ev(page, (e) => { const p = window.__earthlife.session.player; Object.assign(p, { x: e.ix, z: e.iz, vx: 0, vz: 0 }); }, info0.entry);
+  check(!!(await until(page, () => window.__earthlife.debug.interior()?.entered || null, null, 10000)), `${tag} : le joueur est entré dans ${spot.id}`);
+  // Un pas de plus à l'intérieur, pour que le point de reprise ne soit pas celui de la porte.
+  const inner = await ev(page, (e) => {
+    const s = window.__earthlife.session, p = s.player;
+    Object.assign(p, { x: e.ix - e.nx * 1.5, z: e.iz - e.nz * 1.5, vx: 0, vz: 0 });
+    return s.store.proj.toLatLon(p.x, p.z);
+  }, info0.entry);
+  await wait(500);
+  // Retour au menu : sauvegarde, et la ligne le dit.
+  await ev(page, () => document.getElementById('quit')?.click());
+  const line = await until(page, () => { const e = document.getElementById('save-ok'); return e && !e.hidden ? e.textContent.trim() : null; }, null, 10000);
+  check(/^Partie sauvegardée à \d{1,2} h \d{2}\./.test(line ?? ''), `${tag} : ligne du menu « ${line} »`);
+  const playLabel = await ev(page, () => document.getElementById('play-label')?.textContent.trim());
+  check(playLabel === 'Reprendre ma partie', `${tag} : le bouton du menu dit « ${playLabel} » (pas la porte du refuge)`);
+  const kept = await ev(page, () => window.__earthlife.save.where);
+  check(kept?.in === spot.id && kept.inside === false, `${tag} : la sauvegarde garde le bâtiment (${JSON.stringify(kept)})`);
+  // Jouer de nouveau (même page) : on reste dans le bâtiment.
+  await ev(page, () => document.getElementById('play')?.click());
+  const same = await until(page, () => {
+    const s = window.__earthlife.session, i = window.__earthlife.debug.interior();
+    return s && i && !s.paused && document.getElementById('menu').classList.contains('hidden') ? { id: i.id, entered: i.entered, ...s.store.proj.toLatLon(s.player.x, s.player.z) } : null;
+  }, null, 60000);
+  // Le monde se recentre sur le refuge au retour (l'autre départ était la carte) : la comparaison se fait en latitude et longitude.
+  const gap = same ? Math.hypot((same.lat - inner.lat) * 111000, (same.lon - inner.lon) * 78000) : Infinity;
+  check(same?.id === spot.id && gap < 1.5, `${tag} : retour du menu dans ${same?.id}, à ${round(gap)} m d'où l'on était`);
+  await shot(page, 'reprise-01-menu-puis-jouer');
+  // Rechargement de la page : la partie reprend dans le bâtiment.
+  await ev(page, () => window.__earthlife.saveStore.flush('essai'));
+  await until(page, () => !window.__earthlife.saveStore.dirty, null, 15000);
+  await page.reload();
+  check(await started(page), `${tag} : partie reprise après le rechargement`);
+  const reload = await until(page, () => { const i = window.__earthlife.debug.interior(); return i ? { id: i.id, entered: i.entered } : null; }, null, 30000);
+  if (!reload) note(`${tag} : sauvegarde relue ${JSON.stringify(await ev(page, () => window.__earthlife.save.where))}, intérieur ${JSON.stringify(await ev(page, () => window.__earthlife.session.interior?.b?.id ?? null))}`);
+  const here = await ev(page, () => { const p = window.__earthlife.session.player; return { x: p.x, z: p.z, inside: window.__earthlife.refuge.inside }; });
+  check(reload?.id === spot.id && !here.inside, `${tag} : après le rechargement, dans ${reload?.id} (entré : ${reload?.entered})`);
+  await shot(page, 'reprise-02-apres-rechargement');
+  // Ressortir : la partie est sauvegardée, avec un avis court, et le bâtiment n'est plus gardé.
+  await clearZombies(page);
+  const again = await interior(page);
+  if (!again) { await ctx.close(); return; }
+  await ev(page, (en) => { const p = window.__earthlife.session.player; Object.assign(p, { x: en.x + en.nx * 1.6, z: en.z + en.nz * 1.6, vx: 0, vz: 0 }); }, again.entry);
+  const notice = await toastSeen(page, 'Partie sauvegardée', 20000);
+  check(!!notice, `${tag} : avis « ${notice} » en ressortant`);
+  const out = await until(page, () => (window.__earthlife.session.interior === null && window.__earthlife.save.where && window.__earthlife.save.where.in === undefined ? true : null), null, 20000);
+  check(!!out, `${tag} : ressorti, le bâtiment n'est plus gardé dans la sauvegarde`);
+  // Quitté dehors : on repart de la porte du refuge, pas d'un bâtiment.
+  await until(page, () => !window.__earthlife.saveStore.dirty, null, 15000);
+  await page.reload();
+  check(await started(page), `${tag} : partie reprise après le second rechargement`);
+  await wait(1000);
+  const outside = await ev(page, () => ({ interior: window.__earthlife.debug.interior()?.id ?? null, inside: window.__earthlife.refuge.inside }));
+  check(outside.interior === null, `${tag} : quitté dehors, aucun intérieur rouvert (${JSON.stringify(outside)})`);
+  await ctx.close();
+}
+
 // Temps de construction d'un plan (hors rendu) sur les bâtiments voisins : médiane et 90e centile, pièces et meubles.
 async function buildTimes() {
   const ctx = await newContext('desktop');
@@ -326,8 +415,9 @@ async function buildTimes() {
 }
 
 try {
-  if (only !== 'mobile') await scenario('desktop');
-  if (only !== 'desktop') await scenario('mobile');
+  if (only !== 'mobile' && only !== 'reprise') await scenario('desktop');
+  if (only !== 'desktop' && only !== 'reprise') await scenario('mobile');
+  if (!only || only === 'reprise') await resumeScenario();
   if (!only) await buildTimes();
   check(pageErrors.length === 0, `aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {

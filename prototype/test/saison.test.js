@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createSeasonNet, SEASON_NET } from '../src/net/season.js';
 import {
-  soloOps, seasonOps, applyRows, applyTile, adoptTiles, applyCounts, applyLent, resync, insideTiles,
+  soloOps, seasonOps, applyRows, applyTile, adoptTiles, applyCounts, applyLent, resync, insideTiles, resumeHome,
 } from '../src/saison-miroir.js';
 import { prepareCity, beginCity, createCityRuntime, createResilientBlocks, inlineBlocksWorker } from '../src/ville-jeu.js';
 import { findCommune, findNeighbours, createCommuneCache } from '../src/commune.js';
@@ -502,4 +502,29 @@ test('insideTiles : un point est dans la ville s\'il tombe dans une tuile du rec
   assert.equal(insideTiles(tiles, NaN, 5.2), false);
   assert.equal(insideTiles(tiles, 45.9, 'x'), false);
   assert.equal(insideTiles(tiles, 89, 5.2), false, 'pôle : hors du Web Mercator');
+});
+
+test('resumeHome : la maison du serveur, sauf un refuge de la sauvegarde ailleurs dans la ville (alors c\'est lui qu\'on rejoint)', () => {
+  const lon2x = (lon, z) => Math.floor(((lon + 180) / 360) * 2 ** z);
+  const lat2y = (lat, z) => Math.floor(((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * 2 ** z);
+  const x = lon2x(5.2, 14), y = lat2y(45.9, 14);
+  const tiles = { [`14/${x}/${y}`]: { b: null }, [`14/${x + 1}/${y}`]: { b: null } };
+  const metres = (a, b) => Math.hypot((a.lat - b.lat) * 111_000, (a.lon - b.lon) * 111_000 * Math.cos((a.lat * Math.PI) / 180));
+  const server = { a: 45_900_000, o: 5_200_000 };
+  const same = { lat: 45.9, lon: 5.2 };
+  const farInside = { lat: 45.9, lon: 5.2 + 0.0219 };        // 1,7 km plus loin, dans la tuile voisine
+  const outside = { lat: 45.9, lon: 5.2 + 0.05 };            // hors des tuiles : ancienne partie ailleurs
+  // Refuge de la sauvegarde = maison du serveur (à quelques mètres près), ou pas de refuge : rien ne change.
+  assert.deepEqual(resumeHome(server, same, tiles, metres), { home: same, repost: false });
+  assert.deepEqual(resumeHome(server, { lat: 45.90001, lon: 5.2 }, tiles, metres), { home: same, repost: false }, '10 m d\'écart : la même maison');
+  assert.deepEqual(resumeHome(server, null, tiles, metres), { home: same, repost: false });
+  // Refuge ailleurs dans la ville : la partie s'ouvre à son refuge et la maison est renvoyée au serveur.
+  assert.deepEqual(resumeHome(server, farInside, tiles, metres), { home: farInside, repost: true });
+  // Refuge hors de la ville (partie libre d'avant) : la maison du serveur reste le départ, sans envoi.
+  assert.deepEqual(resumeHome(server, outside, tiles, metres), { home: same, repost: false });
+  // Le serveur n'a pas de maison : première arrivée, la maison est tirée (pas de reprise du refuge de la sauvegarde).
+  assert.deepEqual(resumeHome(null, farInside, tiles, metres), { home: null, repost: false });
+  // Refuge illisible : ignoré.
+  assert.deepEqual(resumeHome(server, { lat: NaN, lon: 5.2 }, tiles, metres), { home: same, repost: false });
+  assert.deepEqual(resumeHome(server, farInside, null, metres), { home: same, repost: false }, 'sans tuiles : on ne sait pas si le refuge est dans la ville');
 });
