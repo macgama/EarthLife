@@ -14,7 +14,7 @@ import { localDate, utcOffsetFor } from './horde.js';
 import { storeItems, chestCap, countOf, countsLabel, claimableShape } from './base.js';
 import { nearestOpen } from './collision.js';
 import { SEASON_TEXT } from './net/season.js';
-import { insideTiles } from './saison-miroir.js';
+import { insideTiles, resumeHome } from './saison-miroir.js';
 import { createMenuSheet } from './menu-sheet.js';
 import { createSalon, createTabs, frontModel, summaryOf, ctaModel, destinationOf, clockOf, pinsOf, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
@@ -457,7 +457,7 @@ export function createCityGame(host) {
   }
 
   // Saison : inscription (une seule fois), choix de la ville (la tienne, celle d'un repère, celle d'un lieu touché ou la proposition du
-  // niveau), abonnement, état. Plan { kind: 'season', level, city, state, rv, prep, first, place }, ou null (le joueur a lu pourquoi).
+  // niveau), abonnement, état. Plan { kind: 'season', level, city, state, rv, prep, first, repost, place }, ou null (le joueur a lu pourquoi).
   // `asked` : où le menu a dit d'aller (destinationOf) ; sans lui (reprise après un rechargement), ta ville ou la proposition du niveau.
   async function prepareSeason(place, wanted, asked = null) {
     notice = null;
@@ -536,7 +536,7 @@ export function createCityGame(host) {
 
   // Abonnement à la ville choisie et départ de la partie de saison : où commencer (ta maison, sinon le point touché s'il est dans la ville,
   // sinon le point de la ville : chacun choisit son départ, la ville reste la même pour ceux qui la partagent). Plan { kind: 'season', level,
-  // city, state, rv, prep, first, place, join }, ou null (la ville ne s'ouvre pas : le joueur a lu pourquoi).
+  // city, state, rv, prep, first, repost, place, join }, ou null (la ville ne s'ouvre pas : le joueur a lu pourquoi).
   async function connectSeason({ join, level, city, prep, home, touched }) {
     const n = net();
     // La ville et la maison peuvent avoir changé : l'inscription gardée pour le menu les suit.
@@ -560,12 +560,12 @@ export function createCityGame(host) {
       await askCard(infoCard('Saison', opened.why === 'complet' ? `${seasonText('complet')}` : seasonText(opened.why)), 'ok');
       return null;
     }
-    const homeAt = home ? { lat: home.a / 1e6, lon: home.o / 1e6 } : null;
+    const { home: homeAt, repost } = resumeHome(home, host.homeLatLon(), opened.state?.ville?.tiles, host.geoDistance);
     const centre = { lat: city.place?.lat ?? 0, lon: city.place?.lon ?? 0, name: city.name, area: '' };
     const inside = !homeAt && !!touched && insideTiles(opened.state?.ville?.tiles, touched.lat, touched.lon);
     const spawn = homeAt ? { ...homeAt, name: city.name, area: '' } : inside ? touched : centre;
     syncSeason();
-    return { kind: 'season', level, city, state: opened.state, rv: opened.rv, prep, first, place: spawn, join };
+    return { kind: 'season', level, city, state: opened.state, rv: opened.rv, prep, first, repost, place: spawn, join };
   }
 
   // ---------- Partir en voiture en saison ----------
@@ -698,7 +698,7 @@ export function createCityGame(host) {
       pendingFirst = { name: ville.name, zombies: ville.zombies0, hidden: ville.hidden0 };
       await startHome(s, plan);
       await postHome(s);
-    }
+    } else if (plan.repost) await postHome(s);
     host.setLoading(null);
     rt.chooseHeart();
     rt.settleEmpty();
