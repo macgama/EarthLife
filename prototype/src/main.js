@@ -43,6 +43,7 @@ import { createInteriorView } from './interieur-view.js';
 import { CAMERA as INTERIOR_CAMERA, alignedYaw, approachAngle } from './interieur-lumiere.js';
 import { createInteriorGame } from './interieur-jeu.js';
 import { PROP_KINDS, PROP_TEXTS, rollPropLoot, propTime, propLabel, propLootText, goneChecker } from './props.js';
+import { createFinds, leftText as findsLeftText } from './trouvailles.js';
 import { createPropsView } from './props-view.js';
 import { createFloreView } from './flore-view.js';
 import { createBaseView } from './base-view.js';
@@ -101,6 +102,9 @@ const reliefRequested = () => params.get('relief') === '1';
 // Intérieur des bâtiments (« Plan 3D », interieur.js) : en jeu normal ; les essais (?debug=1) gardent la fouille depuis la façade
 // (leurs scénarios la supposent), sauf avec ?interieur=1 ; ?interieur=0 le coupe partout.
 const INTERIOR_ON = params.get('interieur') === '1' || (params.get('interieur') !== '0' && !DEBUG);
+// Fenêtre « Trouvé » (trouvailles.js) après une fouille ou un démontage : en jeu normal ; les essais (?debug=1) ramassent tout seuls
+// comme avant (leurs scénarios le supposent), sauf avec ?trouve=1 ; ?trouve=0 la coupe partout.
+const FINDS_ON = params.get('trouve') === '1' || (params.get('trouve') !== '0' && !DEBUG);
 // Vue des intérieurs : « bullet » (défaut) = caméra de dessus et noir, on ne voit que ce que la lampe éclaire ; ?interieurvue=decor garde
 // la caméra et la visibilité d'avant, seuls les sols, murs, meubles et lampes changent de style.
 const INTERIOR_DARK = params.get('interieurvue') !== 'decor';
@@ -541,6 +545,9 @@ async function goDrive(s, out) {
 const hud = createHud({ $, input });
 const card = createCard($('card'));
 let cardInfo = null; // { blocking, escape, onButton } de la carte affichée
+// Fenêtre « Trouvé » : le jeu y est en pause ; les notifications qui arrivent pendant qu'elle est ouverte attendent sa fermeture.
+const finds = createFinds($('finds'), { onChange: () => saveStore.markDirty() });
+let findsToasts = [];
 const panel = createRefugePanel(document.body, { onAction: (action, arg) => onPanelAction(action, arg), onStats: () => showStats() });
 // Téléphone, en portrait ou à l'horizontale : panneau ouvert, « Sortir » et « Dormir » sont en pied de panneau.
 const phoneLayout = window.matchMedia('(max-width: 759px), (max-height: 500px) and (orientation: landscape)');
@@ -644,6 +651,7 @@ function saveNow(why) {
 }
 function toMenu() {
   hideCard();
+  closeFinds();
   panel.close();
   minimap.close();
   $('hud').classList.add('hidden');
@@ -1145,6 +1153,7 @@ function disposeSession() {
   clearPlanCache();
   othersView?.clear();
   panel.close();
+  closeFinds();
   baseView.setLure(null);
   tirView.clear();
   session.chunks.dispose();
@@ -1275,7 +1284,7 @@ renderer.setAnimationLoop(() => {
   }
   if (s.player && onlineOn) onlineInput(s, inp);
   // Une carte qui attend une réponse (mort, livraison, missions, déménagement, absence) met le jeu en pause.
-  const blocked = card.isOpen() && !!cardInfo?.blocking;
+  const blocked = (card.isOpen() && !!cardInfo?.blocking) || finds.isOpen();
   if (!s.paused && !s.holdStep && !s.ended && s.player && !blocked) {
     const t0 = performance.now();
     step(s, inp, dt);
@@ -1318,14 +1327,15 @@ renderer.setAnimationLoop(() => {
 // Tab (onglet suivant), B (replier, ou rouvrir le panneau au refuge), C (agrandir ou réduire la carte des environs).
 function handleUiKeys(s, inp) {
   if (inp.escape) {
-    if (card.isOpen() && cardInfo?.blocking) pressCard(cardInfo.escape);
+    if (finds.isOpen()) finds.close();
+    else if (card.isOpen() && cardInfo?.blocking) pressCard(cardInfo.escape);
     else if (card.isOpen()) hideCard();
     else if (minimap.isOpen()) minimap.close();
     else if (panel.isOpen()) panel.close();
     else if (s.refuge.inside && !s.action && !s.ended && !s.paused) runRefuge(s, { id: 'exit', arg: null });
   }
   // Une carte de jeu qui attend une réponse garde la main : la carte des environs ne s'ouvre pas par-dessus.
-  if (inp.map && !(card.isOpen() && cardInfo?.blocking)) minimap.toggle();
+  if (inp.map && !(card.isOpen() && cardInfo?.blocking) && !finds.isOpen()) minimap.toggle();
   if (inp.tab) panel.nextTab();
   if (inp.fold) {
     if (panel.isOpen()) panel.toggleFold();
@@ -1807,23 +1817,52 @@ function finishCraft(s, a) {
   }
 }
 
+// Butin d'une fouille ou d'un démontage. En jeu normal, la fenêtre « Trouvé » (trouvailles.js) laisse choisir ce qui entre dans le sac,
+// ce qui s'équipe et ce qui reste sur place ; le jeu y est en pause et les notifications attendent sa fermeture. Renvoie false quand
+// elle n'a pas servi (essais, rien trouvé) : l'appelant ramasse alors comme avant (`pickLoot`).
+function openFinds(s, { title, found, kicker = '', sub = '' }) {
+  if (!FINDS_ON || !countOf(found)) return false;
+  return finds.open(s, {
+    title, found, kicker, sub,
+    onClose: (left) => {
+      if (session !== s) return;
+      const text = findsLeftText(left);
+      if (text) toast(text, 3);
+      for (const t of findsToasts.splice(0)) toast(...t);
+    },
+  });
+}
+
+// Fermeture sans rien dire (retour au menu, changement de monde) : les notifications en attente sont abandonnées.
+function closeFinds() {
+  finds.close({ silent: true });
+  findsToasts = [];
+}
+
+// Ramassage tout seul : tout ce qui tient entre dans le sac, le meilleur équipement est porté d'office, le surplus reste sur place.
+function pickLoot(s, title, found, suffix = '') {
+  const res = addLoot(s.survivor, found);
+  const got = { ...res.stored };
+  for (const k of res.equipped) got[k] = (got[k] ?? 0) + 1;
+  toast(`${title} : ${countsLabel(got) || 'rien'}${suffix}`, 3, 'loot', got);
+  lootNotes(res);
+}
+
 // Fouille terminée : plan de l'établi (vraies rues), butin au sac dans la limite de sa place.
 function finishSearch(s, a) {
   const b = s.store.buildings[a.arg];
   if (!b) return;
   markSearched(s, b);
-  ambush(s, b);
   // Fouillé par un autre survivant depuis moins de 6 h : chances × 0,35, 1 objet au plus par ligne (3.2). Sa
   // fouille ne compte pas comme la sienne : isSearched ne change pas.
   const tiles = s.store.source === 'tiles';
   const other = tiles ? online.searchedByOther(b.id) : null;
   const found = rollLoot(b.loot, lootRand, { ...(other ? REDUCED_LOOT : null), draws: city.lootDraws(s) });
+  // La fenêtre « Trouvé » s'ouvre d'abord : l'embuscade, le plan et le niveau gagné qui suivent attendent sa fermeture (toast).
+  const windowed = openFinds(s, { title: a.title, found, sub: other ? 'Un autre survivant est déjà passé : il restait peu de choses' : '' });
+  ambush(s, b);
   if (tiles && rollPlan(b.loot, save.profile)) toast(PLAN_FOUND_TEXT, 4, 'success');
-  const res = addLoot(s.survivor, found);
-  const got = { ...res.stored };
-  for (const k of res.equipped) got[k] = (got[k] ?? 0) + 1;
-  toast(`${a.title} : ${countsLabel(got) || 'rien'}${other ? ' · il restait peu de choses' : ''}`, 3, 'loot', got);
-  lootNotes(res);
+  if (!windowed) pickLoot(s, a.title, found, other ? ' · il restait peu de choses' : '');
   gainSkill(s, 'fouille', GAIN.search); // après le butin : le niveau gagné passe derrière la notification du butin
   if (tiles) online.mark('s', b.id);
   claimHint(s, b, a.arg);
@@ -1839,16 +1878,13 @@ function finishRoom(s, a) {
   const { b, plan } = it;
   const after = interior.mark(s, b, plan, room.slot);
   interiorView.setDone(a.arg, true);
-  ambushRoom(s, plan, a.arg);
   const tiles = s.store.source === 'tiles';
   const other = tiles ? online.searchedByOther(b.id) : null;
   const found = rollRoomLoot(plan, a.arg, lootRand, { ...(other ? REDUCED_LOOT : null), draws: city.lootDraws(s) });
+  const windowed = openFinds(s, { title: roomTitle(plan, a.arg), found, sub: other ? 'Un autre survivant est déjà passé : il restait peu de choses' : '' });
+  ambushRoom(s, plan, a.arg);
   if (tiles && after.whole && rollPlan(b.loot, save.profile)) toast(PLAN_FOUND_TEXT, 4, 'success');
-  const res = addLoot(s.survivor, found);
-  const got = { ...res.stored };
-  for (const k of res.equipped) got[k] = (got[k] ?? 0) + 1;
-  toast(`${roomTitle(plan, a.arg)} : ${countsLabel(got) || 'rien'}${other ? ' · il restait peu de choses' : ''}`, 3, 'loot', got);
-  lootNotes(res);
+  if (!windowed) pickLoot(s, roomTitle(plan, a.arg), found, other ? ' · il restait peu de choses' : '');
   if (after.whole) {
     if (tiles) online.mark('s', b.id);
     toast('Bâtiment fouillé : toutes les pièces', 2.5, 'success');
@@ -1935,9 +1971,11 @@ function finishProp(s, a) {
   s.chunks.markGone(prop.id);
   if (s.store.source === 'tiles') online.mark('g', prop.id);
   const loot = rollPropLoot(prop.kind, { axe: a.axe });
-  const res = addLoot(s.survivor, loot);
-  toast(propLootText(prop.kind, loot), 3, 'loot');
-  lootNotes(res);
+  if (!openFinds(s, { title: PROP_TEXTS[prop.kind]?.done ?? 'Démonté', kicker: 'Démontage', found: loot })) {
+    const res = addLoot(s.survivor, loot);
+    toast(propLootText(prop.kind, loot), 3, 'loot');
+    lootNotes(res);
+  }
   // Abattre un arbre à la hache l'use comme un coup.
   if (a.axe) {
     const key = s.survivor.weapon?.key;
@@ -2532,8 +2570,11 @@ function onDeath(s) {
 function showCard(spec, onButton = null, { escape = null } = {}) {
   const info = { blocking: !(spec.autoHideMs > 0), escape, onButton };
   cardInfo = info;
-  // Une carte qui attend une réponse passe devant la carte des environs : elle se referme.
-  if (info.blocking) minimap.close();
+  // Une carte qui attend une réponse passe devant la carte des environs et devant la fenêtre « Trouvé » : elles se referment.
+  if (info.blocking) {
+    minimap.close();
+    finds.close();
+  }
   card.show(spec, (id, value) => {
     if (cardInfo === info) cardInfo = null;
     onButton?.(id, value);
@@ -2555,7 +2596,9 @@ function pressCard(id) {
 
 // Notification du HUD (seulement en partie).
 function toast(text, seconds = 2, kind = '', counts = null) {
-  if (session) hud.toast(text, seconds, kind, counts ? Object.keys(counts).filter((k) => counts[k] > 0) : null);
+  if (!session) return;
+  if (finds.isOpen()) { findsToasts.push([text, seconds, kind, counts]); return; }
+  hud.toast(text, seconds, kind, counts ? Object.keys(counts).filter((k) => counts[k] > 0) : null);
 }
 
 // Ce que le HUD affiche en plus de l'état du joueur : boutons d'action, flèches, bandeau, ligne du refuge.
@@ -3598,7 +3641,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail } : {}),
+  saveStore, picker, renderer, finds, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.
