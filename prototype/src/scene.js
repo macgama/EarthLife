@@ -200,6 +200,16 @@ const FACADE_VERTEX = `
   vSty = vec4(aStyle.xyz, cor);
   vFacM = vec4(aFacade.y, aFacade.w, dw, dh);`;
 
+// Seuil clair au pied de la porte et lampe de porche (allumée la nuit), communs aux deux variantes : la porte se lit de loin.
+// Variables attendues : facU, facY, facDoor, dw, dh, facFw, facCol, facadeGlow, uNight.
+const DOOR_SILL = `
+            float doorSill = facBox(vec2(facU - facDoor, facY - 0.06), vec2(dw * 0.5 + 0.35, 0.06), facFw);
+            facCol = mix(facCol, ${glsl('#cdc7ba')}, doorSill);`;
+const DOOR_LAMP = `
+            float doorLamp = facBox(vec2(facU - facDoor, facY - dh - 0.3), vec2(0.16, 0.1), facFw) * step(dw, 3.0);
+            facCol = mix(facCol, ${glsl('#f1dca4')}, doorLamp);
+            facadeGlow = max(facadeGlow, doorLamp * uNight);`;
+
 // Fonctions du shader des façades (déclarées une fois, avant main).
 const FACADE_LIB = `${FACADE_VARYINGS}
 // Rectangle adouci sur un pixel (pas de scintillement sans anticrénelage) : p relatif au centre, h demi-taille.
@@ -250,7 +260,7 @@ const FACADES = `
         }
         float hasDoor = step(0.0, facDoor) * step(0.6, dw);
         // Fragment près de la porte (marge de deux pixels au moins) : seul cas où la porte est dessinée.
-        bool nearDoor = hasDoor > 0.5 && abs(facU - facDoor) < dw * 0.5 + 0.1 + 2.0 * facFw.x && facY < dh + 0.1 + 2.0 * facFw.y;
+        bool nearDoor = hasDoor > 0.5 && abs(facU - facDoor) < dw * 0.5 + 0.4 + 2.0 * facFw.x && facY < dh + 0.5 + 2.0 * facFw.y;
         float shopTop = min(facRdc, 4.2);
         if (facShop > 0.5 && facY < shopTop) {
           // Vitrine sur toute l'arête sauf deux trumeaux, meneaux, bandeau d'enseigne de la famille du commerce.
@@ -275,6 +285,7 @@ const FACADES = `
           if (nearDoor) {
             float dOut = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5, dh * 0.5), facFw);
             float dIn = facBox(vec2(facU - facDoor, facY - dh * 0.5 - 0.04), vec2(dw * 0.5 - 0.08, dh * 0.5 - 0.08), facFw);
+            facCol = mix(facCol, ${glsl('#cdc7ba')}, facBox(vec2(facU - facDoor, facY - 0.06), vec2(dw * 0.5 + 0.35, 0.06), facFw));
             facCol = mix(facCol, mix(${glsl('#2a2e33')}, vitCol, dIn), dOut);
           }
         } else {
@@ -336,9 +347,9 @@ const FACADES = `
             else if (facUse > 7.5 && facUse < 9.5) d = ${glsl('#7b8084')} * (1.0 - 0.18 * facBox(vec2(0.0, facY - 0.5 * floor(facY / 0.5 + 0.5)), vec2(1e3, 0.03), facFw));
             else if (facUse > 9.5) d = ${glsl('#5e4b3b')};
             float dOut = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5 + 0.08, dh * 0.5 + 0.04), facFw);
-            float dIn = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5, dh * 0.5), facFw);
+            float dIn = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5, dh * 0.5), facFw);${DOOR_SILL}
             facCol = mix(facCol, ${glsl('#2a2e33')}, dOut);
-            facCol = mix(facCol, d, dIn);
+            facCol = mix(facCol, d, dIn);${DOOR_LAMP}
           }
         }
       }
@@ -348,19 +359,21 @@ const FACADES = `
   if (facadeN.y > 0.5) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.94, 0.97), uSnow * 0.85);
   diffuseColor.rgb *= mix(vec3(1.0), vec3(0.78, 0.82, 0.88), uWet);`;
 
-// Variante allégée pour les téléphones (lowPower) : soubassement, corniche, mur mitoyen et une fenêtre par travée et
-// par niveau (vitrine simple au rez-de-chaussée des commerces), sans porte, volets, encadrements, meneaux, enseigne,
-// stores rayés ni hangar. Même entrée et mêmes sorties que FACADES.
+// Variante allégée pour les téléphones (lowPower) : soubassement, corniche, mur mitoyen, une fenêtre par travée et
+// par niveau (vitrine simple au rez-de-chaussée des commerces) et la porte (cadre, vantail, seuil, lampe), sans volets,
+// encadrements, meneaux, enseigne, stores rayés ni hangar. Même entrée et mêmes sorties que FACADES.
 const FACADES_LITE = `
   vec3 facadeN = normalize(cross(dFdx(vCutWorld), dFdy(vCutWorld)));
+  vec2 facFw = max(fwidth(vec2(vFacU, vCutWorld.y - vFloor)), vec2(0.002));
   float facKind = vFacK.x;
   if (facKind > -0.5 && facKind < 2.5 && vFacM.x > 0.5) {
-    float facY = vCutWorld.y - vFloor, facH = vSty.z, cor = vSty.w;
+    float facU = vFacU, facY = vCutWorld.y - vFloor, facH = vSty.z, cor = vSty.w;
+    float facDoor = vFacM.y, dw = vFacM.z, dh = vFacM.w;
     float shade = (facY < 0.45 ? 0.82 : 1.0) * (facKind > 1.5 ? 0.94 : 1.0) * (facY > facH - cor ? 0.85 : 1.0);
     vec3 facCol = diffuseColor.rgb * shade;
     float bw = vFacB;
+    float hasDoor = step(0.0, facDoor) * step(0.6, dw);
     if (facKind < 1.5 && bw > 0.0 && facY < facH - cor) {
-      vec2 facFw = max(fwidth(vec2(vFacU, facY)), vec2(0.002));
       float rdc = vSty.x, fl = vSty.y;
       float up = fl > 0.0 && facY >= rdc ? 1.0 : 0.0;
       float k = up > 0.5 ? floor((facY - rdc) / fl) : -1.0;
@@ -371,12 +384,24 @@ const FACADES_LITE = `
       if (up < 0.5 && wide < 0.5 && abs(vFacK.w - 1.0) < 0.5) { s = 1.2; h = 1.5; }
       h = min(h, lh - s - 0.25);
       float bi = floor(vFacU / bw);
+      float ww = mix(vFacP.y, bw - 0.3, wide);
       vec2 wp = vec2(vFacU - (bi + 0.5) * bw, ly - s - h * 0.5);
-      float win = facBox(wp, vec2(mix(vFacP.y, bw - 0.3, wide) * 0.5, h * 0.5), facFw) * step(0.4, h);
+      // Pas de fenêtre dans la travée de la porte, au rez-de-chaussée (sauf vitrine continue).
+      float keep = 1.0 - (1.0 - up) * (1.0 - wide) * hasDoor * step(abs((bi + 0.5) * bw - facDoor), (dw + ww) * 0.5 + 0.3);
+      float win = facBox(wp, vec2(ww * 0.5, h * 0.5), facFw) * step(0.4, h) * keep;
       float lit = step(1.0 - vFacR.w, facHash(vec3(bi + 0.37 * vFacK.z, k, vFacM.x * 1.7)));
       facCol = mix(facCol, mix(${glsl('#2f3843')}, ${glsl('#1c2129')}, uNight), win);
       facadeGlow = win * lit * uNight;
       facadeSky = win * 0.35;
+    }
+    // Porte : cadre sombre, vantail dans le ton du type (vitré pour un commerce), seuil clair, lampe la nuit ; dessinée près d'elle seulement.
+    if (facKind < 1.5 && hasDoor > 0.5 && facY < facH - cor && abs(facU - facDoor) < dw * 0.5 + 0.4 + 2.0 * facFw.x && facY < dh + 0.5 + 2.0 * facFw.y) {
+      vec3 d = vFacK.w < 0.5 ? (vFacR.y > 2.5 ? (vFacR.y > 3.5 ? ${glsl('#5f6f63')} : ${glsl('#a39a84')}) : ${glsl('#6b4f3a')}) : ${glsl('#4a3f36')};
+      d = mix(d, ${glsl('#3a4652')}, vFacK.y);
+      float dOut = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5 + 0.08, dh * 0.5 + 0.04), facFw);
+      float dIn = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5, dh * 0.5), facFw);${DOOR_SILL}
+      facCol = mix(facCol, ${glsl('#2a2e33')}, dOut);
+      facCol = mix(facCol, d, dIn);${DOOR_LAMP}
     }
     diffuseColor.rgb = facCol;
   }
