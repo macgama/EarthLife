@@ -450,6 +450,12 @@ test('matériau des bâtiments : variante légère sur téléphone, clé de prog
   const a = shader(full), b = shader(lite);
   for (const s of [a, b]) assert.ok(s.vertexShader.includes('attribute vec4 aFacade') && s.vertexShader.includes('attribute vec4 aStyle'));
   assert.ok(b.fragmentShader.length < a.fragmentShader.length, 'variante légère plus courte');
+  // La porte est dessinée dans les deux variantes (la légère l'a perdue une fois : sur téléphone, plus aucune porte à l'écran),
+  // avec la fenêtre du rez-de-chaussée retirée de sa travée.
+  for (const s of [a, b]) {
+    for (const part of ['doorSill', 'doorLamp', 'vFacM.y', 'dh * 0.5']) assert.ok(s.fragmentShader.includes(part), `porte absente (${part})`);
+  }
+  assert.ok(b.fragmentShader.includes('keep'), 'pas de fenêtre dans la travée de la porte (variante légère)');
   // Tour : code de type 11 (rythme et vitrage propres).
   const tower = { id: 't', rings: [rect(0, 0, 30, 20)], area: 600, height: 30, minHeight: 0, use: 'tower', region: 'monde', shop: null, edges: [1, 1, 1, 1], door: null };
   const sty = buildingsGeometry([tower]).getAttribute('aStyle').array;
