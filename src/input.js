@@ -76,7 +76,7 @@ export function createInput(canvas, ui) {
       if (dir) { zoomHeld.set(e.code, { dir, t: performance.now() }); state.cameraZoomDelta += dir * ZOOM_STEP.wheel; }
     }
     if (panelTab) state.tab = true;
-    const uses = { Digit1: 'eat', Digit2: 'drink', Digit3: 'heal', Digit4: 'warm', Digit5: 'lure', KeyF: 'shoot' };
+    const uses = { Digit1: 'eat', Digit2: 'drink', Digit3: 'heal', Digit4: 'warm', Digit5: 'lure', KeyF: 'shoot', KeyV: 'craft' };
     if (uses[e.code]) state.use = uses[e.code];
   };
   const up = (e) => { keys.delete(e.code); zoomHeld.delete(e.code); };

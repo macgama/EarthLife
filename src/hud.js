@@ -400,6 +400,17 @@ export function createHud({ $, input }) {
       }
       st.counts.shoot = shootN;
     }
+    // Fabriquer : dehors, la puce n'apparaît que si le sac permet une recette sans établi ; son compteur donne combien.
+    const craftN = info.craftN ?? 0;
+    if (craftN !== st.counts.craft) {
+      const chip = $('use-craft');
+      if (chip) {
+        chip.classList.toggle('hidden', craftN <= 0);
+        setText(chip.querySelector('.chip-count'), String(craftN));
+        chip.setAttribute('aria-label', `Fabriquer, ${craftN} ${craftN > 1 ? 'recettes possibles' : 'recette possible'}`);
+      }
+      st.counts.craft = craftN;
+    }
     const used = bagUsed(sv);
     const cap = bagCapacity(sv);
     setText(el.bagCount, `Sac ${used}/${cap}`);
