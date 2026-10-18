@@ -1118,12 +1118,12 @@ body.touch #controls { display: block; }
    de minimap.js retire les boutons, réduit ou masque la carte quand le sac (leurre compris) monte jusqu'à elle, ou quand
    une fiche ouverte (quête, conditions) la recouvre. */
 @media (max-width: 759px) and (orientation: portrait), (max-width: 759px) and (min-height: 501px) {
-  #hud.map-tr { --mm-size: 96px; --mm-col: calc(var(--mm-size) + 46px); }
+  #hud.map-tr { --mm-size: 96px; --mm-col: calc(var(--mm-size) + 50px); }
   #hud.map-tr #mapbox { position: static; grid-column: 2; grid-row: 3 / 5; margin-top: 6px; justify-self: end; align-self: start; flex-direction: row; align-items: flex-start; gap: 6px; }
   #hud.map-tr .zoom-btns { flex-direction: column; gap: 4px; }
-  #hud.map-tr .zoom-btns .small { width: 40px; min-width: 40px; height: calc((var(--mm-size) - 4px) / 2); }
+  #hud.map-tr .zoom-btns .small { width: var(--touch); min-width: var(--touch); height: calc((var(--mm-size) - 4px) / 2); }
 }
-@media (max-width: 379px) { #hud.map-tr { --mm-size: 88px; --mm-col: calc(88px + 46px); } }
+@media (max-width: 379px) { #hud.map-tr { --mm-size: 88px; --mm-col: calc(88px + 50px); } }
 /* Tablette en portrait (760 à 1023 px), feuille du refuge ouverte (56 % de l'écran, panels.js) : le HUD du haut reste, la
    carte s'efface, l'action en cours et le toast se posent juste au-dessus de la feuille. */
 @media (min-width: 760px) and (max-width: 1023px) and (orientation: portrait) {
