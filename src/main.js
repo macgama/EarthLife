@@ -37,7 +37,8 @@ import { kindLabel, countsLabel, countOf, chestCap, moveItems, depositAll, prepa
 import { frontVector, nextNightChange, nightKey, utcOffsetFor, clockTargets, HORDE } from './horde.js';
 import { craft, canCraft, craftTime, RECIPES, recipeRows, rollPlan, PLAN_FOUND_TEXT } from './crafting.js';
 import { ambushCount, ambushSpots, ambushText } from './embuscade.js';
-import { rollRoomLoot, roomAmbushCount, ambushSpotsIn, roomTitle } from './interieur.js';
+import { rollRoomLoot, roomAmbushCount, ambushSpotsIn, roomTitle, clearPlanCache } from './interieur.js';
+import { buildingResume, savedLine } from './reprise-batiment.js';
 import { createInteriorView } from './interieur-view.js';
 import { CAMERA as INTERIOR_CAMERA, alignedYaw, approachAngle } from './interieur-lumiere.js';
 import { createInteriorGame } from './interieur-jeu.js';
@@ -88,6 +89,10 @@ if (window.matchMedia('(pointer: coarse)').matches) document.body.classList.add(
 
 // ---------- Menu : choix du lieu de départ sur la carte du monde ----------
 const params = new URLSearchParams(location.search);
+// Sauvegarde : heure de celle du retour au menu (null : rien d'écrit), pour la ligne « Partie sauvegardée » ; avis de la dernière sortie d'un
+// bâtiment. Déclarés avant tout appel : syncMenu (donc renderSaveLine) tourne dès le chargement.
+let savedAt = null;
+let savedToastAt = -Infinity;
 const DEBUG = params.get('debug') === '1';
 // Relief réel (altitude des tuiles AWS Terrain Tiles) : pas activé par défaut, ?relief=1 dans l'adresse. Sans lui, ou
 // si l'altitude n'arrive pas, le jeu est plat exactement comme avant.
@@ -327,12 +332,15 @@ function updatePlayLabel(place) {
   const home = homeLatLon();
   const d = home && place ? geoDistance(home, place) : null;
   const base = d === null ? 'Jouer ici' : d <= HOME_RADIUS ? 'Rentrer au refuge' : 'Partir en expédition ici';
-  const label = city ? city.playLabel(base, place) : base;
+  let label = city ? city.playLabel(base, place) : base;
+  // Quitté dans un autre bâtiment que le refuge : le bouton ne promet pas la porte du refuge.
+  if (label === 'Rentrer au refuge' && resumesInside(d)) label = 'Reprendre ma partie';
   const span = $('play-label');
   if (span && span.textContent !== label) {
     span.textContent = label;
     icons.setIcon($('play-icon'), label === 'Rentrer au refuge' ? 'refuge' : 'jouer');
   }
+  renderSavedLine(place);
   const note = $('save-move');
   if (!note) return;
   const how = 'en jeu, fouille un autre bâtiment puis «\u00a0Déménager ici\u00a0».';
@@ -370,11 +378,30 @@ function renderSaveLine() {
   crate.textContent = !n ? '' : b ? `Caisse de ${n} objet${n > 1 ? 's' : ''} devant ton ancien refuge, à ${distanceText(geoDistance(b, oc))} du nouveau.`
     : `Caisse de ${n} objet${n > 1 ? 's' : ''} là où était ton refuge.`;
   crate.hidden = !n;
+  renderSavedLine();
   const note = $('save-note');
   const text = saveStore.readOnly || saveStore.reason ? [saveStore.reason ?? '', otherTab() ? otherPageLine() : ''].filter(Boolean).join(' ') : '';
   note.textContent = text;
   note.hidden = !text;
   $('save-take').hidden = !otherTab();
+}
+
+// « Partie sauvegardée à 14 h 55. » au retour au menu ; avec « Tu reprends dans le bâtiment où tu as quitté » quand la partie y reprendra
+// (refuge à 1 500 m ou moins du lieu choisi, comme « Rentrer au refuge »).
+function renderSavedLine(place) {
+  const el = $('save-ok');
+  if (!el) return;
+  // Appelée de renderSaveLine, parfois avant que le sélecteur de lieu existe.
+  if (place === undefined) { try { place = picker.getPlace(); } catch { place = null; } }
+  const home = homeLatLon();
+  const d = home && place ? geoDistance(home, place) : null;
+  el.textContent = savedAt ? savedLine(savedAt, resumesInside(d)) : '';
+  el.hidden = !savedAt;
+}
+
+// La partie reprendra dans le bâtiment où l'on a quitté : `d` = distance du refuge au lieu choisi (null : pas de refuge ou de lieu).
+function resumesInside(d) {
+  return !!save.where?.in && !save.where.inside && d !== null && d <= HOME_RADIUS;
 }
 
 // ---------- Rendu ----------
@@ -455,6 +482,8 @@ const interior = createInteriorGame({
       claimHint(s, it.b, it.index);
     }
   },
+  // Sortie à pied d'un bâtiment : la partie est sauvegardée, avec un avis discret.
+  onExit: (s) => { if (session === s) saveNow('sortie'); },
 });
 // Trajets entre stations : bouton devant une station, carte des destinations, trajet chronométré, arrivée sur le quai.
 const ride = createRideGame({
@@ -587,6 +616,15 @@ else if (resumeAfterTakeOver?.season) startGame(picker.getPlace() ?? null, { sea
 else if (resumeAfterTakeOver && picker.getPlace()) startGame(picker.getPlace());
 else picker.show();
 
+// Sauvegarde à la sortie d'un bâtiment : un avis court (« Partie sauvegardée »), une fois toutes les 8 s au plus ; rien si la page ne peut
+// pas écrire (partie ouverte ailleurs : la carte l'explique).
+function saveNow(why) {
+  const r = saveStore.flush(why);
+  if (r?.ok && performance.now() - savedToastAt > 8000) {
+    savedToastAt = performance.now();
+    toast('Partie sauvegardée', 1.6);
+  }
+}
 function toMenu() {
   hideCard();
   panel.close();
@@ -596,7 +634,8 @@ function toMenu() {
   if (session) {
     session.paused = true;
     if (session.action) cancelAction(session);
-    saveStore.flush('menu');
+    const saved = saveStore.flush('menu');
+    savedAt = saved?.ok ? Date.now() : null;
   }
   // Saison : les zombies empruntés à la ville commune lui sont rendus, l'abonnement se ferme.
   city.onMenu(session);
@@ -780,7 +819,10 @@ async function launch(place, spawn, plan = { kind: 'free', place }, arrival = nu
       // retirés, sauf pendant une vague (elle continue).
       cancelAction(old);
       const door = old.home ? old.refuge.openingsWorld()[0] : null;
-      await placePlayer(old, door ? { x: door.ax, z: door.az } : old.start, { keepZombies: !!old.refuge.wave });
+      // Revenu du menu dans un autre bâtiment que le refuge : on y reste, l'intérieur rouvert, au lieu de repartir de la porte du refuge.
+      const stay = door && !old.refuge.inside && old.interior?.entered ? { id: old.interior.b.id, x: old.player.x, z: old.player.z } : null;
+      if (stay) await resumeInside(old, stay, { x: door.ax, z: door.az }, { keepZombies: !!old.refuge.wave });
+      else await placePlayer(old, door ? { x: door.ax, z: door.az } : old.start, { keepZombies: !!old.refuge.wave });
       old.player.hidden = old.refuge.inside;
       if (old.refuge.inside) openPanel(old);
     }
@@ -852,6 +894,10 @@ async function launch(place, spawn, plan = { kind: 'free', place }, arrival = nu
   // Au refuge : départ à la porte (dedans si on l'avait quitté dedans).
   const door = s.home ? s.refuge.openingsWorld()[0] : null;
   if (door) await placePlayer(s, { x: door.ax, z: door.az });
+  // Quitté dans un autre bâtiment que le refuge : la partie reprend dedans (sauf réveil après une mort ou retour demandé au refuge).
+  const back = door && !s.ended && spawn !== 'refuge' && !s.refuge.inside
+    ? buildingResume(save.where, (la, lo) => s.store.proj.toLocal(la, lo), { x: door.ax, z: door.az }) : null;
+  if (back) await resumeInside(s, back, { x: door.ax, z: door.az });
   s.player.hidden = s.refuge.inside;
   // Arrivée en voiture : elle est garée au bord de la route la plus proche, le moteur s'entend (conduite.js).
   if (arrival) arrival(s);
@@ -925,6 +971,16 @@ async function placePlayer(s, spot, { keepZombies = false } = {}) {
   Object.assign(s.player, { x: spot.x, z: spot.z, vx: 0, vz: 0 });
 }
 
+// Reprise dans un bâtiment (sauvegarde ou retour du menu) : le monde autour du point, l'intérieur rouvert, le joueur posé où il était.
+// Sans plan (intérieurs coupés, bâtiment devenu le refuge ou introuvable) : repli au point `fallback` (la porte du refuge).
+async function resumeInside(s, at, fallback, { keepZombies = false } = {}) {
+  await placePlayer(s, { x: at.x, z: at.z }, { keepZombies });
+  const index = s.store.buildings.findIndex((b) => b.id === at.id);
+  if (index >= 0 && interior.open(s, index)) return true;
+  await placePlayer(s, fallback, { keepZombies });
+  return false;
+}
+
 // Personnage repris de la sauvegarde : besoins, sac (le même objet que save.survivor.bag), arme et vêtement.
 // Mort pas encore réveillée (santé 0) : il se réveillera au lancement.
 function restoreCharacter(s) {
@@ -979,7 +1035,10 @@ function copyLive(sv) {
     bag: v.inventory, weapon: { ...v.weapon }, clothing: v.clothing ?? null, pack: v.pack ?? null,
   });
   const ll = playerLatLon(s);
-  sv.where = { lat: ll.lat, lon: ll.lon, at: Date.now(), inside: !!s.refuge?.inside };
+  const where = { lat: ll.lat, lon: ll.lon, at: Date.now(), inside: !!s.refuge?.inside };
+  // Dans un autre bâtiment que le refuge (intérieur ouvert, joueur entré) : la reprise se fait dedans (reprise-batiment.js).
+  if (s.interior?.entered && !where.inside) where.in = s.interior.b.id;
+  sv.where = where;
 }
 
 // Premier lancement de la page : récupération hors ligne de la fatigue, message de la sauvegarde.
@@ -1065,6 +1124,8 @@ function disposeSession() {
   cars.abort(session);
   cars.drop();
   interior.close(session, { instant: true });
+  // Les plans gardés sont dans le repère de ce monde : le suivant (autre origine) reprendrait des coordonnées périmées.
+  clearPlanCache();
   othersView?.clear();
   panel.close();
   baseView.setLure(null);
@@ -1301,6 +1362,16 @@ const edgeCapFor = capMemo((base, pitch, aspect) => edgeCap(base, pitch, aspect,
 // Une image de jeu, dans l'ordre de la spec (7.3).
 function step(s, inp, dt) {
   const p = s.player, r = s.refuge, sv = s.survivor;
+  // Position gardée dans la sauvegarde (reprise au bâtiment où l'on a quitté) : une écriture si le joueur a bougé d'au moins 3 m, au plus
+  // toutes les 20 s de jeu. Sans cela, la page fermée en arrière-plan garderait un lieu périmé.
+  s.posAt = (s.posAt ?? 0) + dt;
+  if (s.posAt >= 20) {
+    s.posAt = 0;
+    if (!s.posSaved || Math.hypot(p.x - s.posSaved.x, p.z - s.posSaved.z) >= 3) {
+      s.posSaved = { x: p.x, z: p.z };
+      saveStore.markDirty();
+    }
+  }
   // 1. Caméra. Dehors, le glissé vertical part du tangage vu (le plancher quand la caméra recule) : pas de course à vide
   // sous le plancher. Au refuge, le tangage voulu est fixé (1,1).
   // Dans un intérieur, la caméra se met d'aplomb sur le plan (quart de tour le plus proche) et ne se manie plus ; à la sortie, elle
@@ -2051,6 +2122,7 @@ function runRefuge(s, a) {
     if (res.msg) toast(res.msg, 3, 'loot');
   } else if (a.id === 'exit') {
     panel.close();
+    saveNow('sortie');
   } else if (a.id === 'orphan') {
     toast(res.msg, 3, 'loot');
   } else if (a.id === 'siren') {

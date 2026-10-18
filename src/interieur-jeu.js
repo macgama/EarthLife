@@ -13,8 +13,9 @@ import { groundAt, lineFree, isFree, canLeave, nearestFit } from './collision.js
 const IDLE_CLOSE = 5;
 const FAR_CLOSE = 8;
 
-// host : { view (interieur-view.js), enabled, save, maxAge (ms), searchTime (s), onClose(s, it), radius (m, rayon du joueur) }
-export function createInteriorGame({ view, enabled, save, maxAge, searchTime, onClose = null, radius = 0.4 }) {
+// host : { view (interieur-view.js), enabled, save, maxAge (ms), searchTime (s), onClose(s, it), onExit(s, it) (le joueur est ressorti
+// à pied), radius (m, rayon du joueur) }
+export function createInteriorGame({ view, enabled, save, maxAge, searchTime, onClose = null, onExit = null, radius = 0.4 }) {
   const now = () => Date.now();
 
   // L'ouverture et la fermeture changent les règles de collision sous les pieds du joueur : la grille d'origine (cases de 1 m, rayon
@@ -153,7 +154,7 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
           const door = doorPoint(it.b);
           if (it.idle > IDLE_CLOSE || (door && Math.hypot(p.x - door.x, p.z - door.z) > FAR_CLOSE)) close(s);
         }
-      } else if (outsideBuilding(it.plan, p.x, p.z)) close(s);
+      } else if (outsideBuilding(it.plan, p.x, p.z)) { close(s); onExit?.(s, it); }
       if (s.interior === it) unstick(s, it.plan);
     }
     view.update(dt, { time, reduceMotion, daylight, entered: !!it?.entered, player: it && s.player ? { x: s.player.x, z: s.player.z, yaw: s.player.yaw } : null });
