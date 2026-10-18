@@ -38,8 +38,31 @@ export function bruitOctets(size = BRUIT_TAILLE, seed = 0x51ed) {
   return data;
 }
 
+// Les octets de l'image, fabriqués une fois (le shader du sol et le placement des décors lisent le même bruit).
+let octets = null;
+const bruit = () => (octets ??= bruitOctets());
+
+// Valeur de la lecture texture2D(uNoise, (x, z) / 64) du shader (filtrage bilinéaire, image répétée) pour le canal `canal`
+// (0 à 3), de 0 à 1 : le placement des décors retrouve ainsi les mêmes motifs que le sol dessiné.
+export function bruitEn(canal, x, z) {
+  const data = bruit(), n = BRUIT_TAILLE;
+  const u = (x / 64) * n - 0.5, v = (z / 64) * n - 0.5;
+  const i = Math.floor(u), j = Math.floor(v), fx = u - i, fy = v - j;
+  const at = (a, b) => data[((((b % n) + n) % n) * n + (((a % n) + n) % n)) * 4 + canal];
+  const top = at(i, j) + (at(i + 1, j) - at(i, j)) * fx, bot = at(i, j + 1) + (at(i + 1, j + 1) - at(i, j + 1)) * fx;
+  return (top + (bot - top) * fy) / 255;
+}
+
+// Parcelle de champ du sol dessiné en (x, z) (chunks.js, groundDetail : cases de 34 m d'une grille tournée, aux contours
+// tordus par les deux premiers bruits) : indices (i, j) de la case, et coordonnées (qx, qy) dans la grille tournée.
+export const PARCELLE = 34;
+export function parcelle(x, z) {
+  const qx = x * 0.8 - z * 0.6 + 24 * (bruitEn(0, x, z) - 0.5), qy = x * 0.6 + z * 0.8 + 24 * (bruitEn(1, x, z) - 0.5);
+  return { i: Math.floor(qx / PARCELLE), j: Math.floor(qy / PARCELLE), qx, qy };
+}
+
 export function makeBruitTexture() {
-  const tex = new THREE.DataTexture(bruitOctets(), BRUIT_TAILLE, BRUIT_TAILLE, THREE.RGBAFormat, THREE.UnsignedByteType);
+  const tex = new THREE.DataTexture(bruit(), BRUIT_TAILLE, BRUIT_TAILLE, THREE.RGBAFormat, THREE.UnsignedByteType);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.magFilter = THREE.LinearFilter;
   tex.minFilter = THREE.LinearMipmapLinearFilter;

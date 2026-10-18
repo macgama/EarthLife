@@ -1,6 +1,7 @@
-// Rendu des petits décors de la nature (buissons, rochers, touffes d'herbe) : trois InstancedMesh globaux de capacité
-// fixe, comme le décor démontable (props-view.js). Un morceau remplace ses instances d'un coup ; retirer un morceau
-// remet à sa place les dernières instances. Rien ne se démonte et rien ne gêne le joueur : pas de collision.
+// Rendu des petits décors de la nature (buissons, rochers, touffes d'herbe, haies, balles de paille) : un InstancedMesh
+// global de capacité fixe par type, comme le décor démontable (props-view.js). Un morceau remplace ses instances d'un
+// coup ; retirer un morceau remet à sa place les dernières instances. Rien ne se démonte et rien ne gêne le joueur : pas
+// de collision.
 import * as THREE from 'three';
 import { PETITS } from './flore-geo.js';
 import { tracker, touch, flush } from './props-view.js';
@@ -14,7 +15,7 @@ export function createFloreView(scene, { lowPower = false } = {}) {
 
   const pools = new Map(KINDS.map((kind) => {
     const spec = PETITS[kind];
-    const geo = spec.build();
+    const geo = spec.build(lowPower);
     const mat = new THREE.MeshLambertMaterial({ color: spec.color, flatShading: true, vertexColors: true, side: spec.doubleSide ? THREE.DoubleSide : THREE.FrontSide });
     const mesh = new THREE.InstancedMesh(geo, mat, spec.cap);
     mesh.name = `flore-${kind}`;
@@ -37,7 +38,7 @@ export function createFloreView(scene, { lowPower = false } = {}) {
   // Clarté et nuance propres à chaque pied (tirage `v`).
   function tint(kind, v, out) {
     const h = (v * 11.3) % 1;
-    if (kind === 'rocher') {
+    if (kind === 'rocher' || kind === 'balle') {
       const k = 0.82 + 0.34 * v;
       return out.setRGB(k * (0.97 + 0.08 * h), k, k * (1.03 - 0.06 * h));
     }
@@ -87,7 +88,7 @@ export function createFloreView(scene, { lowPower = false } = {}) {
     chunks.delete(key);
   }
 
-  // flore : { buisson: [], rocher: [], touffe: [] } (sortie de floreForChunk).
+  // flore : { buisson: [], rocher: [], touffe: [], haie: [], balle: [] } (sortie de floreForChunk).
   function setChunk(key, flore) {
     dropNow(key);
     const owned = [];
@@ -111,11 +112,12 @@ export function createFloreView(scene, { lowPower = false } = {}) {
 
   const stats = () => ({
     buissons: pools.get('buisson').count, rochers: pools.get('rocher').count, touffes: pools.get('touffe').count,
+    haies: pools.get('haie').count, balles: pools.get('balle').count,
     drawCalls: [...pools.values()].filter((pl) => pl.count > 0).length, chunks: chunks.size, dropped,
   });
 
   // Matériaux que la météo teinte : neige sur les feuillages et l'herbe, pluie sur tout (scene.js, followTreeWeather).
-  const treeMaterials = () => ({ crowns: [pools.get('buisson').mat, pools.get('touffe').mat], trunks: [pools.get('rocher').mat] });
+  const treeMaterials = () => ({ crowns: [pools.get('buisson').mat, pools.get('touffe').mat, pools.get('haie').mat], trunks: [pools.get('rocher').mat, pools.get('balle').mat] });
 
   function dispose() {
     scene.remove(group);

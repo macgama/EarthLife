@@ -185,9 +185,28 @@ export function touffeGeometry() {
   return merged(parts);
 }
 
-// Couleur de base des petits décors (suivie par la météo comme celle des arbres).
+// Haie : deux masses allongées bout à bout, 3 m de long le long de X, 1,3 m de haut, posées sur le sol (une seule masse
+// quand `sobre`). Chaque pièce s'enchaîne avec la suivante le long d'un bord de champ (flore.js).
+export function haieGeometry(sobre = false) {
+  return merged(sobre
+    ? [blob(0.7, 0, 0.6, 0, { sx: 2.15, sy: 0.95, sz: 0.85, seed: 31, lo: 0.58 })]
+    : [blob(0.7, -0.75, 0.6, 0, { sx: 1.5, sy: 0.95, sz: 0.85, seed: 31, lo: 0.58 }), blob(0.68, 0.75, 0.64, 0.05, { sx: 1.5, sy: 1, sz: 0.85, seed: 32, lo: 0.58 })]);
+}
+
+// Balle de paille ronde couchée le long de X : 1,2 m de long, 1,24 m de diamètre.
+export function balleGeometry(sobre = false) {
+  const g = ready(new THREE.CylinderGeometry(0.62, 0.62, 1.2, sobre ? 6 : 8, 1));
+  g.rotateZ(Math.PI / 2);
+  g.translate(0, 0.62, 0);
+  return merged([paint(g, (_x, y) => { const k = shade(0.72, 1.1, y / 1.24); return [k, k, k * 0.97]; })]);
+}
+
+// Couleur de base des petits décors (suivie par la météo comme celle des arbres). build(sobre) : forme allégée quand
+// `sobre` est vrai (appareil peu puissant).
 export const PETITS = {
   buisson: { color: 0x4f8a48, build: buissonGeometry, cap: 2048, doubleSide: false },
   rocher: { color: 0x9b968d, build: rocherGeometry, cap: 512, doubleSide: false },
   touffe: { color: 0x8fc36a, build: touffeGeometry, cap: 4096, doubleSide: true },
+  haie: { color: 0x4c8745, build: haieGeometry, cap: 2000, doubleSide: false },
+  balle: { color: 0xd3b766, build: balleGeometry, cap: 256, doubleSide: false },
 };

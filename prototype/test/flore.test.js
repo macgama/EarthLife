@@ -7,7 +7,8 @@ import { propsForChunk } from '../src/props.js';
 import { floreForChunk, FLORE_CAPS, FLORE_CAPS_SOBRE } from '../src/flore.js';
 import { createFloreView } from '../src/flore-view.js';
 import { ESPECES, PETITS } from '../src/flore-geo.js';
-import { bruitOctets } from '../src/bruit.js';
+import { readFileSync } from 'node:fs';
+import { bruitOctets, bruitEn, parcelle } from '../src/bruit.js';
 import { createWorldStore, addFeatures, buildPatch, chunkFeatures } from '../src/world.js';
 
 const LYON = { lat: 45.7578, lon: 4.832 };
@@ -86,7 +87,7 @@ test('flore : reproductible, plafonnée, jamais dans une maison, sur la route ni
   assert.ok(a.touffe.length > 40, `${a.touffe.length} touffes`);
   assert.ok(a.touffe.length <= FLORE_CAPS.touffe && a.buisson.length <= FLORE_CAPS.buisson && a.rocher.length <= FLORE_CAPS.rocher);
   const ids = new Set();
-  for (const kind of ['buisson', 'rocher', 'touffe']) {
+  for (const kind of Object.keys(FLORE_CAPS)) {
     for (const it of a[kind]) {
       assert.ok(!ids.has(it.id), `identifiant en double ${it.id}`);
       ids.add(it.id);
@@ -120,10 +121,160 @@ test('flore : les rochers vont aux terrains rocheux, les buissons aux bois, rien
   assert.ok(bb.buisson.length > m.buisson.length);
 });
 
+// Losange de 84 m de diagonale : quatre bords obliques de 59 m (le champ ou le pré le plus simple qui ne soit pas aligné).
+const losange = (cls, sub) => ({ rings: [[{ x: 32, z: -10 }, { x: 74, z: 32 }, { x: 32, z: 74 }, { x: -10, z: 32 }]], cls, sub, bounds: { minX: -10, minZ: -10, maxX: 74, maxZ: 74 } });
+const ORIGINES = [LYON, { lat: 45.7578, lon: 4.8321 }, { lat: 45.7581, lon: 4.8317 }, { lat: 47.2, lon: -1.55 }, { lat: 43.3, lon: 5.4 }];
+
+test('haies : le long des bords obliques des champs et des prés, reproductibles, plafonnées, pas sur la route', () => {
+  let total = 0;
+  for (const origin of ORIGINES) {
+    const c = chunk([losange('grass', 'meadow')], { origin, buildings: [house], roads: [road] });
+    const a = floreForChunk(c.f, c.patch, 0, 0, 64, c.store.proj), b = floreForChunk(c.f, c.patch, 0, 0, 64, c.store.proj);
+    assert.deepEqual(a.haie, b.haie);
+    assert.ok(a.haie.length <= FLORE_CAPS.haie);
+    const ids = new Set();
+    for (const h of a.haie) {
+      total++;
+      assert.ok(!ids.has(h.id), `identifiant en double ${h.id}`);
+      ids.add(h.id);
+      assert.match(h.id, /^fq-?\d+_-?\d+$/);
+      assert.equal(h.kind, 'haie');
+      assert.ok(h.x >= 0 && h.x < 64 && h.z >= 0 && h.z < 64, 'dans le morceau');
+      assert.ok(Math.abs(Math.abs(h.x - 32) + Math.abs(h.z - 32) - 42) < 0.01, `sur un bord du losange (${h.x}, ${h.z})`);
+      assert.ok(Math.abs(Math.cos(h.yaw)) > 0.65 && Math.abs(Math.sin(h.yaw)) > 0.65, 'orientée le long du bord');
+      assert.ok(!(h.x > 5 && h.x < 20 && h.z > 5 && h.z < 20), 'pas dans la maison');
+      assert.ok(Math.abs(h.z - 32) > 3.5, 'pas sur la route');
+      assert.ok(h.s >= 1 && h.s < 1.31 && h.v >= 0 && h.v < 1);
+    }
+    // Un parc, une forêt ou un jardin en losange ne sont pas bordés.
+    for (const [cls, sub] of [['grass', 'park'], ['wood', 'forest'], ['grass', 'garden']]) {
+      const o = chunk([losange(cls, sub)], { origin });
+      assert.equal(floreForChunk(o.f, o.patch, 0, 0, 64, o.store.proj).haie.length, 0, `${cls}:${sub}`);
+    }
+  }
+  assert.ok(total >= 6, `${total} pièces de haie autour d'un pré, sur ${ORIGINES.length} origines`);
+  // Un champ cultivé est bordé aussi, en plus des limites de ses parcelles.
+  let champ = 0;
+  for (const origin of ORIGINES) {
+    const m = chunk([losange('farmland', 'farmland')], { origin });
+    champ += floreForChunk(m.f, m.patch, 0, 0, 64, m.store.proj).haie.length;
+  }
+  assert.ok(champ >= 6, `${champ} pièces de haie dans et autour d'un champ`);
+});
+
+// Contour de 24 sommets (bords de 7,9 m) autour de (32, 32), de rayon 30 m : les champs d'une carte vectorielle ont ce genre
+// de contour souple, fait de bords courts.
+const rond = (cls, sub) => ({ rings: [Array.from({ length: 24 }, (_, i) => ({ x: 32 + 30 * Math.cos((i / 24) * TAU), z: 32 + 30 * Math.sin((i / 24) * TAU) }))], cls, sub, bounds: { minX: 2, minZ: 2, maxX: 62, maxZ: 62 } });
+const TAU = Math.PI * 2;
+
+test('haies : suivent aussi un contour souple de bords courts, par tronçons, sans doublon à moins de 1,5 m', () => {
+  let total = 0;
+  for (const origin of ORIGINES) {
+    const c = chunk([rond('grass', 'meadow')], { origin });
+    const h = floreForChunk(c.f, c.patch, 0, 0, 64, c.store.proj).haie;
+    total += h.length;
+    for (const it of h) {
+      const r = Math.hypot(it.x - 32, it.z - 32);
+      assert.ok(r > 29.6 && r < 30.01, `sur le contour (rayon ${r})`);
+    }
+    for (let i = 0; i < h.length; i++) for (let j = i + 1; j < h.length; j++) assert.ok(Math.hypot(h[i].x - h[j].x, h[i].z - h[j].z) > 0.9, 'pièces distinctes');
+    // Moins que le tour complet (188 m, soit 72 pièces) : il y a des passages.
+    assert.ok(h.length < 72);
+  }
+  assert.ok(total >= 12, `${total} pièces autour des contours souples`);
+});
+
+test('haies : jamais le long d\'un bord long aligné sur un axe (coupe de tuile), ni hors des champs et prés', () => {
+  for (const origin of ORIGINES) {
+    const sq = chunk([area('grass', 'meadow', 0, 0, 64, 64), area('grass', 'meadow', 64, 0, 128, 64)], { origin });
+    assert.equal(floreForChunk(sq.f, sq.patch, 0, 0, 64, sq.store.proj).haie.length, 0, 'carré aligné');
+    for (const [cls, sub] of [['farmland', 'orchard'], ['farmland', 'vineyard'], ['sand', 'beach']]) {
+      const o = chunk([losange(cls, sub)], { origin });
+      assert.equal(floreForChunk(o.f, o.patch, 0, 0, 64, o.store.proj).haie.length, 0, `${cls}:${sub}`);
+    }
+  }
+  // Pas de haie dans un bois qui recouvre le champ.
+  for (const origin of ORIGINES) {
+    const o = chunk([losange('farmland', 'farmland'), area('wood', 'forest', 0, 0, 64, 64)], { origin });
+    assert.equal(floreForChunk(o.f, o.patch, 0, 0, 64, o.store.proj).haie.length, 0, 'sous un bois');
+  }
+});
+
+test('haies de parcelles : sur les limites des parcelles du sol dessiné, dans les champs cultivés seulement', () => {
+  let total = 0;
+  for (const origin of ORIGINES) {
+    // Champ aligné sur les axes : aucune haie de contour, seulement celles des parcelles.
+    const c = chunk([area('farmland', 'farmland', 0, 0, 64, 64)], { origin, buildings: [house], roads: [road] });
+    const a = floreForChunk(c.f, c.patch, 0, 0, 64, c.store.proj), b = floreForChunk(c.f, c.patch, 0, 0, 64, c.store.proj);
+    assert.deepEqual(a.haie, b.haie);
+    assert.ok(a.haie.length <= FLORE_CAPS.haie);
+    const ids = new Set();
+    for (const h of a.haie) {
+      total++;
+      assert.ok(!ids.has(h.id));
+      ids.add(h.id);
+      assert.ok(h.x >= 0 && h.x < 64 && h.z >= 0 && h.z < 64);
+      assert.ok(!(h.x > 5 && h.x < 20 && h.z > 5 && h.z < 20) && Math.abs(h.z - 32) > 3.5);
+      // Deux parcelles différentes à moins de 1,2 m de la pièce, de part et d'autre de la limite.
+      const vues = new Set();
+      for (let k = 0; k < 16; k++) { const p = parcelle(h.x + 1.2 * Math.cos((k / 16) * TAU), h.z + 1.2 * Math.sin((k / 16) * TAU)); vues.add(`${p.i}_${p.j}`); }
+      assert.ok(vues.size >= 2, `limite de parcelle en (${h.x}, ${h.z})`);
+      // Orientée le long de la limite : la parcelle ne change pas de part et d'autre de l'axe de la pièce, sur 1,2 m.
+      const ax = Math.cos(h.yaw), az = -Math.sin(h.yaw);
+      const p0 = parcelle(h.x - 1.2 * az, h.z + 1.2 * ax), p1 = parcelle(h.x + 1.2 * az, h.z - 1.2 * ax);
+      assert.ok(p0.i !== p1.i || p0.j !== p1.j, 'un côté de la pièce et l\'autre sont deux parcelles');
+    }
+    // Ni dans un pré, ni dans un verger.
+    for (const [cls, sub] of [['grass', 'meadow'], ['farmland', 'orchard']]) {
+      const o = chunk([area(cls, sub, 0, 0, 64, 64)], { origin });
+      assert.equal(floreForChunk(o.f, o.patch, 0, 0, 64, o.store.proj).haie.length, 0, `${cls}:${sub}`);
+    }
+  }
+  assert.ok(total >= 20, `${total} pièces de haie le long des parcelles`);
+});
+
+test('parcelles : le placement lit le même sol que le shader (mêmes constantes et mêmes bruits)', () => {
+  const shader = readFileSync(new URL('../src/chunks.js', import.meta.url), 'utf8');
+  assert.ok(shader.includes('vec2(xz.x * 0.8 - xz.y * 0.6, xz.x * 0.6 + xz.y * 0.8) + 12.0 * (nA.rg - 0.5) * 2.0'), 'grille tournée et tordue');
+  assert.ok(shader.includes('floor(q / 34.0)'), 'cases de 34 m');
+  assert.ok(shader.includes('texture2D(uNoise, vGroundXZ * (1.0 / 64.0))'), 'lecture du bruit à 64 m');
+  // Lecture bilinéaire : au centre d'un texel, la valeur de l'image ; entre deux, la moyenne.
+  const o = bruitOctets();
+  const centre = (t) => ((t + 0.5) / 256) * 64;
+  assert.ok(Math.abs(bruitEn(2, centre(10), centre(20)) - o[(20 * 256 + 10) * 4 + 2] / 255) < 1e-6, 'centre d\'un texel');
+  assert.ok(Math.abs(bruitEn(0, centre(10) + 0.125, centre(5)) - (o[(5 * 256 + 10) * 4] + o[(5 * 256 + 11) * 4]) / 2 / 255) < 1e-6, 'moyenne de deux texels voisins');
+  // Image répétée tous les 64 m, dans les deux sens.
+  assert.ok(Math.abs(bruitEn(1, 13.7, -9.1) - bruitEn(1, 13.7 + 64, -9.1 + 128)) < 1e-9);
+  const p = parcelle(5, 7);
+  assert.equal(p.i, Math.floor(p.qx / 34));
+});
+
+test('balles de paille : dans les champs cultivés seulement, éparses, jamais sur la route ni dans une maison', () => {
+  let total = 0;
+  for (const origin of ORIGINES) {
+    const c = chunk([area('farmland', 'farmland', 0, 0, 64, 64)], { origin, buildings: [house], roads: [road] });
+    const a = floreForChunk(c.f, c.patch, 0, 0, 64, c.store.proj);
+    assert.ok(a.balle.length <= FLORE_CAPS.balle);
+    for (const it of a.balle) {
+      total++;
+      assert.equal(it.kind, 'balle');
+      assert.match(it.id, /^fo-?\d+_-?\d+$/);
+      assert.ok(it.x >= 0 && it.x < 64 && it.z >= 0 && it.z < 64);
+      assert.ok(!(it.x > 5 && it.x < 20 && it.z > 5 && it.z < 20) && Math.abs(it.z - 32) > 3.5);
+      assert.ok(it.s >= 0.9 && it.s < 1.31);
+    }
+    for (const [cls, sub] of [['grass', 'meadow'], ['wood', 'forest'], ['farmland', 'orchard'], ['sand', 'beach']]) {
+      const o = chunk([area(cls, sub, 0, 0, 64, 64)], { origin });
+      assert.equal(floreForChunk(o.f, o.patch, 0, 0, 64, o.store.proj).balle.length, 0, `${cls}:${sub}`);
+    }
+  }
+  assert.ok(total >= 3 && total <= ORIGINES.length * FLORE_CAPS.balle, `${total} balles`);
+});
+
 test('flore : sobre sur un appareil peu puissant, sans rien d\'autre de changé', () => {
   const { store, patch, f } = chunk([area('grass', 'meadow', 0, 0, 64, 64), area('wood', 'forest', 32, 0, 64, 64)]);
   const full = floreForChunk(f, patch, 0, 0, 64, store.proj), low = floreForChunk(f, patch, 0, 0, 64, store.proj, { lowPower: true });
-  for (const kind of ['buisson', 'rocher', 'touffe']) {
+  for (const kind of Object.keys(FLORE_CAPS)) {
     assert.ok(low[kind].length <= FLORE_CAPS_SOBRE[kind]);
     assert.ok(low[kind].length <= full[kind].length);
     // Les pièces gardées sont les mêmes (les mieux tirées d'abord) : aucune n'apparaît en plus.
@@ -133,8 +284,9 @@ test('flore : sobre sur un appareil peu puissant, sans rien d\'autre de changé'
 
 test('flore : sans aire ni morceau voisin, rien et pas d\'erreur', () => {
   const { store, patch, f } = chunk([]);
-  assert.deepEqual(floreForChunk(f, patch, 0, 0, 64, store.proj), { buisson: [], rocher: [], touffe: [] });
-  assert.deepEqual(floreForChunk(null, patch, 0, 0, 64, store.proj), { buisson: [], rocher: [], touffe: [] });
+  const vide = { buisson: [], rocher: [], touffe: [], haie: [], balle: [] };
+  assert.deepEqual(floreForChunk(f, patch, 0, 0, 64, store.proj), vide);
+  assert.deepEqual(floreForChunk(null, patch, 0, 0, 64, store.proj), vide);
 });
 
 test('formes : peu de triangles par instance, couleurs par sommet, matériaux à double face pour les lames', () => {
@@ -152,7 +304,11 @@ test('formes : peu de triangles par instance, couleurs par sommet, matériaux à
   for (const [name, e] of Object.entries(PETITS)) {
     const g = e.build();
     assert.ok(tris(g) >= 7 && tris(g) <= 60, `${name} : ${tris(g)} triangles`);
+    const light = e.build(true);
+    assert.ok(tris(light) <= tris(g), `${name} : version sobre`);
+    if (name === 'haie' || name === 'balle') assert.ok(tris(light) < tris(g), `${name} : version sobre plus légère`);
     g.dispose();
+    light.dispose();
   }
   assert.equal(ESPECES.palmier.doubleSide && PETITS.touffe.doubleSide, true);
   assert.equal(ESPECES.palmier.trunk, null, 'le palmier porte son tronc');
@@ -193,7 +349,7 @@ test('vue de la flore : construite, remplie, remplacée sans doublon, vidée et 
   const scene = new THREE.Scene();
   const view = createFloreView(scene, { lowPower: true });
   assert.equal(scene.children.length, 1);
-  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, drawCalls: 0, chunks: 0, dropped: 0 });
+  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, haies: 0, balles: 0, drawCalls: 0, chunks: 0, dropped: 0 });
   const { store, patch, f } = chunk([area('wood', 'forest', 0, 0, 64, 64)]);
   const flore = floreForChunk(f, patch, 0, 0, 64, store.proj);
   view.setChunk('a', flore);
@@ -210,16 +366,16 @@ test('vue de la flore : construite, remplie, remplacée sans doublon, vidée et 
   view.dropChunk('b');
   assert.equal(view.stats().touffes, flore.touffe.length, 'le morceau a ne bouge pas quand b part');
   view.dropChunk('a');
-  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, drawCalls: 0, chunks: 0, dropped: 0 });
-  // Ombres : seules les masses (buissons, rochers) en portent, et pas sur appareil peu puissant.
-  assert.deepEqual(view.group.children.map((m) => m.castShadow), [false, false, false]);
+  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, haies: 0, balles: 0, drawCalls: 0, chunks: 0, dropped: 0 });
+  // Ombres : seules les masses (buissons, rochers, haies, balles) en portent, et pas sur appareil peu puissant.
+  assert.deepEqual(view.group.children.map((m) => m.castShadow), [false, false, false, false, false]);
   const full = createFloreView(new THREE.Scene(), {});
-  assert.deepEqual(full.group.children.map((m) => m.castShadow), [true, true, false]);
+  assert.deepEqual(full.group.children.map((m) => m.castShadow), [true, true, false, true, true]);
   full.dispose();
   // Matériaux suivis par la météo.
   const tm = view.treeMaterials();
-  assert.equal(tm.crowns.length, 2);
-  assert.equal(tm.trunks.length, 1);
+  assert.equal(tm.crowns.length, 3);
+  assert.equal(tm.trunks.length, 2);
   view.dispose();
   assert.equal(scene.children.length, 0);
 });
