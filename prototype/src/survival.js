@@ -275,7 +275,7 @@ export function weaponDamage(s) {
 
 // Un objet trouvé ou fabriqué s'équipe tout seul : une arme si elle frappe plus fort, un vêtement si l'emplacement est vide,
 // un sac s'il est plus grand que celui que l'on porte.
-function betterThanWorn(s, key) {
+export function betterThanWorn(s, key) {
   const item = ITEMS[key];
   if (item?.equip === 'weapon') return item.damage > weaponDamage(s);
   if (item?.equip === 'clothing') return !s.clothing;
