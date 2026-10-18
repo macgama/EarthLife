@@ -1741,10 +1741,10 @@ const MAP_LAYOUTS = {
     { width: 390, height: 844, lure: ['haut-droite', 96, true], none: ['haut-droite', 96, true] },
     // Hauteurs visibles sous les barres du navigateur : iPhone 12 à 15 dans Safari (390 × 664), petit Android (360 ×
     // 640), iPhone SE (375 × 553, la carte n'a pas la place au-dessus du plus haut toast quand le sac monte jusqu'à elle ;
-    // depuis l'écran en icônes du 2026-10-18, plus haute dans l'écran, elle tient : réduite et sans boutons avec le leurre,
-    // pleine sans).
-    { width: 390, height: 664, lure: ['haut-droite', 96, false, 'sans-boutons'], none: ['haut-droite', 96, true] },
-    { width: 360, height: 640, lure: ['haut-droite', 88, false, 'sans-boutons'], none: ['haut-droite', 88, true] },
+    // depuis l'écran en icônes du 2026-10-18, plus haute dans l'écran, la carte garde ses boutons à 640 et 664 px de haut,
+    // même avec le leurre, et sur 375 × 553 elle tient : réduite et sans boutons avec le leurre, pleine sans).
+    { width: 390, height: 664, lure: ['haut-droite', 96, true], none: ['haut-droite', 96, true] },
+    { width: 360, height: 640, lure: ['haut-droite', 88, true], none: ['haut-droite', 88, true] },
     { width: 375, height: 553, lure: ['haut-droite', 66, false, 'reduite'], none: ['haut-droite', 88, true] },
     { width: 844, height: 390, lure: ['haut-droite', 128, true], none: ['haut-droite', 128, true] },
     { width: 667, height: 375, lure: null, none: ['haut-droite', 88, false], besideBag: true },
