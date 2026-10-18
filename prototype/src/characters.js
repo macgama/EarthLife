@@ -553,6 +553,9 @@ export function createCharacters({ lowPower = false } = {}) {
       pos.set(x, zy + (z.dead ? -sink : (walking ? Math.abs(Math.sin(st.phase)) * 0.08 * Math.max(0.35, zPace) : 0)), zz);
       const sq = calm ? 0 : st.squash / 0.12;
       scl.set(look.scale[0] * (1 + 0.12 * sq), look.scale[1] * (1 - 0.12 * sq) * (walking || z.dead ? 1 : 1 + Math.sin(t * 2 + z.id) * 0.01), look.scale[2] * (1 + 0.12 * sq));
+      // Intérieur dans le noir (interieur-ombre.js) : un zombie que la lampe n'éclaire pas n'est pas dessiné (ni son ombre de contact).
+      const unseen = !!s.sightAt && s.sightAt(z.x, z.z) < 0.15;
+      if (unseen) scl.set(0, 0, 0);
       m4.compose(pos, quat, scl);
       zombies.setMatrixAt(i, m4);
 
@@ -564,7 +567,7 @@ export function createCharacters({ lowPower = false } = {}) {
       tint.setHex((ZOMBIE_TYPES[z.type] ?? ZOMBIE_TYPES.errant).color);
       if (z.dead) tint.lerp(DEAD_TINT, Math.min(1, z.dead / 0.4));
       za.aLook.setXYZW(i, tint.r, tint.g, tint.b, z.dead ? 0 : z.state === 'chase' || z.state === 'horde' ? 2 : 1);
-      writeBlob(i + 1, x, zz, z.dead ? Math.max(0, 0.5 * look.scale[0] * (1 - sink)) : 0.5 * look.scale[0], zy, grid);
+      writeBlob(i + 1, x, zz, unseen ? 0 : z.dead ? Math.max(0, 0.5 * look.scale[0] * (1 - sink)) : 0.5 * look.scale[0], zy, grid);
     }
     zombies.count = list.length;
     zombies.visible = list.length > 0;

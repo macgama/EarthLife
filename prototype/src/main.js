@@ -39,6 +39,7 @@ import { craft, canCraft, craftTime, RECIPES, recipeRows, rollPlan, PLAN_FOUND_T
 import { ambushCount, ambushSpots, ambushText } from './embuscade.js';
 import { rollRoomLoot, roomAmbushCount, ambushSpotsIn, roomTitle } from './interieur.js';
 import { createInteriorView } from './interieur-view.js';
+import { CAMERA as INTERIOR_CAMERA, alignedYaw, approachAngle } from './interieur-lumiere.js';
 import { createInteriorGame } from './interieur-jeu.js';
 import { PROP_KINDS, PROP_TEXTS, rollPropLoot, propTime, propLabel, propLootText, goneChecker } from './props.js';
 import { createPropsView } from './props-view.js';
@@ -94,6 +95,9 @@ const reliefRequested = () => params.get('relief') === '1';
 // Intérieur des bâtiments (« Plan 3D », interieur.js) : en jeu normal ; les essais (?debug=1) gardent la fouille depuis la façade
 // (leurs scénarios la supposent), sauf avec ?interieur=1 ; ?interieur=0 le coupe partout.
 const INTERIOR_ON = params.get('interieur') === '1' || (params.get('interieur') !== '0' && !DEBUG);
+// Vue des intérieurs : « bullet » (défaut) = caméra de dessus et noir, on ne voit que ce que la lampe éclaire ; ?interieurvue=decor garde
+// la caméra et la visibilité d'avant, seuls les sols, murs, meubles et lampes changent de style.
+const INTERIOR_DARK = params.get('interieurvue') !== 'decor';
 // Un paramètre inconnu (?weather=foo) laisserait la liste vide : on ne garde que les valeurs proposées.
 const setOption = (select, value) => { if (value && [...select.options].some((o) => o.value === value)) select.value = value; };
 setOption($('weather-mode'), params.get('weather'));
@@ -441,7 +445,7 @@ const baseView = createBaseView(scene);
 // Tir : l'arme en main, l'éclair et la trace de la balle (un jeu par page).
 const tirView = createTirView(scene);
 // Intérieur des bâtiments : la vue (maillages créés à « Entrer », défaits à la sortie) et ses règles dans la partie.
-const interiorView = createInteriorView(scene);
+const interiorView = createInteriorView(scene, { dark: INTERIOR_DARK });
 const interior = createInteriorGame({
   view: interiorView, enabled: INTERIOR_ON, save, maxAge: LIMITS.searchedMs, searchTime: SEARCH_TIME,
   // Sortie : le conseil du refuge qui attendait la fin de la fouille (« Déménager ici ») se dit dehors, devant la porte.
@@ -1299,8 +1303,21 @@ function step(s, inp, dt) {
   const p = s.player, r = s.refuge, sv = s.survivor;
   // 1. Caméra. Dehors, le glissé vertical part du tangage vu (le plancher quand la caméra recule) : pas de course à vide
   // sous le plancher. Au refuge, le tangage voulu est fixé (1,1).
-  s.cameraYaw += inp.cameraYawDelta;
-  if (inp.cameraPitchDelta) {
+  // Dans un intérieur, la caméra se met d'aplomb sur le plan (quart de tour le plus proche) et ne se manie plus ; à la sortie, elle
+  // retrouve le cap d'avant l'entrée, sauf si le joueur l'a tourné entre-temps.
+  const topDown = INTERIOR_DARK && !!s.interior?.entered && !r.inside;
+  if (topDown) {
+    s.yawBefore ??= s.cameraYaw;
+    const aim = alignedYaw(s.interior.plan.frame, s.cameraYaw);
+    s.cameraYaw = Math.abs(aim - s.cameraYaw) < 0.004 ? aim : approachAngle(s.cameraYaw, aim, 1 - Math.exp(-dt / 0.14));
+  } else if (s.yawBefore !== undefined && !inp.cameraYawDelta) {
+    s.cameraYaw = approachAngle(s.cameraYaw, s.yawBefore, 1 - Math.exp(-dt / 0.22));
+    if (Math.abs(Math.atan2(Math.sin(s.yawBefore - s.cameraYaw), Math.cos(s.yawBefore - s.cameraYaw))) < 0.01) { s.cameraYaw = s.yawBefore; s.yawBefore = undefined; }
+  } else {
+    s.yawBefore = undefined;
+    s.cameraYaw += inp.cameraYawDelta;
+  }
+  if (inp.cameraPitchDelta && !topDown) {
     const floor = r.inside ? CAM.minPitch : Math.max(CAM.minPitch, pitchFloor(s.cameraDist, lowPower));
     s.cameraPitch = Math.min(CAM.maxPitch, Math.max(floor, Math.max(s.cameraPitch, floor) + inp.cameraPitchDelta));
   }
@@ -1358,7 +1375,8 @@ function step(s, inp, dt) {
     if (run > 0 && run <= MAX_STEP_M) gainSkill(s, 'course', run * GAIN.runPerM);
   }
   // Intérieur ouvert : sortie détectée, toit effacé ou rendu, lueur du meuble à fouiller.
-  interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches });
+  interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches, daylight: atmosphere.state.daylight });
+  atmosphere.setIndoor(!!s.interior?.entered); // ni pluie, ni neige, ni cône de lampe de nuit sous un toit
   // 7. Boutons E et R.
   updateActions(s, inp, dt, before);
   updateFiche(s, dt);
@@ -2535,7 +2553,13 @@ function syncScene(s, dt) {
   s.cameraDist = smoothZoom(s.cameraDist, goal, dt, characters.reduceMotion.matches);
   s.camPitchEff = Math.max(pitchWant, pitchFloor(s.cameraDist, lowPower));
   s.viewRadius = viewRadius(goal, viewAspect, lowPower); // sur la distance visée : on construit avant d'y être
-  const d = s.cameraDist, pitch = s.camPitchEff;
+  // Intérieur : la caméra se redresse (de dessus) et se rapproche un peu, en douceur ; elle ne touche ni au zoom voulu ni au tangage gardé.
+  const topWant = INTERIOR_DARK && !!s.interior?.entered && !home ? 1 : 0, reduce = characters.reduceMotion.matches;
+  const ik = s.interiorK ?? 0;
+  s.interiorK = reduce ? topWant : topWant > ik ? Math.min(1, ik + dt / INTERIOR_CAMERA.ease) : Math.max(0, ik - dt / INTERIOR_CAMERA.ease);
+  const ie = s.interiorK * s.interiorK * (3 - 2 * s.interiorK);
+  const d = s.cameraDist * (1 - INTERIOR_CAMERA.shrink * ie), pitch = s.camPitchEff + (INTERIOR_CAMERA.pitch - s.camPitchEff) * ie;
+  s.camView = { dist: d, pitch };
   // Relief : la caméra suit la hauteur du sol sous le point visé, lissée (τ = 0,2 s : pas de sautillement sur les arêtes des
   // triangles du sol), et reste à 2 m au moins au-dessus du sol à sa verticale. Sans relief, tout est à y = 0 comme avant.
   const relief = !!s.grid.terrain?.enabled;
@@ -2545,13 +2569,16 @@ function syncScene(s, dt) {
     s.groundY = !Number.isFinite(s.groundY) || Math.abs(g - s.groundY) > 6 ? g : s.groundY + (g - s.groundY) * (1 - Math.exp(-dt / 0.2));
   }
   const gy = s.groundY;
+  // Intérieur, écran en portrait : la caméra vise un peu devant le joueur, qui descend sous le bandeau du haut et laisse de la place à son cône.
+  const lead = viewAspect < 1 ? INTERIOR_CAMERA.lead * ie * d : 0;
+  const ax = at.x + Math.sin(s.cameraYaw) * lead, az = at.z + Math.cos(s.cameraYaw) * lead;
   camera.position.set(
-    at.x - Math.sin(s.cameraYaw) * Math.cos(pitch) * d,
+    ax - Math.sin(s.cameraYaw) * Math.cos(pitch) * d,
     gy + 1.6 + Math.sin(pitch) * d,
-    at.z - Math.cos(s.cameraYaw) * Math.cos(pitch) * d,
+    az - Math.cos(s.cameraYaw) * Math.cos(pitch) * d,
   );
   if (relief) camera.position.y = Math.max(camera.position.y, groundAt(s.grid, camera.position.x, camera.position.z) + 2);
-  camera.lookAt(at.x, gy + 1.6, at.z);
+  camera.lookAt(ax, gy + 1.6, az);
   cutaway.player.value.set(at.x, gy + 1.2, at.z);
   cutaway.camera.value.copy(camera.position);
   // Brouillard : même voile autour du joueur à toute distance, ramené devant le premier sol non construit visible. Le
@@ -2567,6 +2594,7 @@ function syncScene(s, dt) {
   // Joueur et zombies : marche, coups, éclairs, ombres de contact ; puis petite secousse de caméra
   // quand un coup porte ou qu'un zombie mord (aucune en mouvement réduit). Au refuge, le joueur est caché.
   for (const m of playerMeshes) m.visible = !p.hidden;
+  s.sightAt = INTERIOR_DARK && s.interior?.entered ? interiorView.shadow.lightAtWorld : null; // zombies dans le noir : cachés
   characters.sync(s, dt, camera, atmosphere.state.daylight);
   tirView.update(dt, p, s.grid?.terrain?.enabled ? s.grid : null);
   camera.position.add(characters.shake);
@@ -3351,6 +3379,9 @@ const debug = DEBUG ? {
     return {
       id: b.id, index: it.index, entered: it.entered, buildMs: it.buildMs, total: plan.total, room: interior.roomAtPlayer(s), rooms,
       entry: { x: plan.entry.ox, z: plan.entry.oz, ix: plan.entry.ix, iz: plan.entry.iz, nx: plan.entry.nx, nz: plan.entry.nz }, status: interior.status(s, b, plan),
+      // Vue de dessus et noir : ouverture de la caméra (0 à 1), tangage et distance vus, noir ouvert, éclairement au joueur et à 6 m derrière lui.
+      top: { k: s.interiorK ?? 0, pitch: s.camView?.pitch ?? null, dist: s.camView?.dist ?? null, yaw: s.cameraYaw, dark: interiorView.shadow.active,
+        lit: interiorView.shadow.lightAtWorld(s.player.x, s.player.z), behind: interiorView.shadow.lightAtWorld(s.player.x - Math.sin(s.player.yaw) * 6, s.player.z - Math.cos(s.player.yaw) * 6) },
     };
   },
   spawnLog: () => session?.refuge.spawnLog.slice() ?? [],
