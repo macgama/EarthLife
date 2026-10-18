@@ -184,7 +184,8 @@ function cardButton(b, extra = '') {
   return `<button type="button" class="rp-cbtn${b.primary ? ' rp-cbtn-primary' : ''}${extra}" data-card-btn="${esc(b.id)}">${esc(b.label)}</button>`;
 }
 
-// HTML d'une carte (#card). spec = { title, lines, score?, buttons, autoHideMs?, tone?, art? } ; art : nom d'une scène de
+// HTML d'une carte (#card). spec = { title, lines, score?, buttons, autoHideMs?, tone?, art?, scroll? } ; une ligne objet :
+// { text, sub?, off?, button? } (sub : second texte en petit, off : ligne estompée, scroll : carte qui défile si l'écran est bas) ; art : nom d'une scène de
 // art.js, montrée en bandeau en haut de la carte (rien si l'image n'est pas livrée).
 // tone : 'success' (livraison, vague repoussée), 'danger' (mort, échec), 'warn' ; sinon accent orange.
 export function cardHtml(spec = {}) {
@@ -192,7 +193,8 @@ export function cardHtml(spec = {}) {
   const ico = CARD_ICONS[tone];
   const lines = (spec.lines ?? []).filter((l) => l !== null && l !== undefined && l !== '').map((l) => {
     if (typeof l === 'object') {
-      return `<li class="rp-card-line rp-card-choice"><span>${esc(l.text)}</span>${l.button ? cardButton(l.button, ' rp-cbtn-line') : ''}</li>`;
+      const sub = l.sub ? `<small class="rp-card-sub">${esc(l.sub)}</small>` : '';
+      return `<li class="rp-card-line rp-card-choice${l.off ? ' rp-card-off' : ''}"><span>${esc(l.text)}${sub}</span>${l.button ? cardButton(l.button, ' rp-cbtn-line') : ''}</li>`;
     }
     return `<li class="rp-card-line">${esc(l)}</li>`;
   }).join('');
@@ -206,7 +208,7 @@ export function cardHtml(spec = {}) {
   const buttons = (spec.buttons ?? []).map((b) => cardButton(b)).join('');
   const stats = cardStats(spec.stats) + cardSkills(spec.skills);
   const art = spec.art && sceneUrl(spec.art);
-  return `<div class="rp-card rp-tone-${tone}${stats ? ' rp-card-scroll' : ''}${art ? ' rp-card-pictured' : ''}">`
+  return `<div class="rp-card rp-tone-${tone}${stats || spec.scroll ? ' rp-card-scroll' : ''}${art ? ' rp-card-pictured' : ''}">`
     + `${art ? `<div class="rp-card-art" style="background-image:url(&quot;${esc(art)}&quot;)" role="presentation"></div>` : ''}`
     + `<div class="rp-card-head">${ico ? `<span class="rp-card-icon">${icon(ico, { size: 32 })}</span>` : ''}<h2 class="rp-card-title" id="rp-card-title">${esc(spec.title ?? '')}</h2></div>`
     + `${lines ? `<ul class="rp-card-lines">${lines}</ul>` : ''}${stats}${score}${cardField(spec.field)}${cardLink(spec.link)}`
@@ -829,6 +831,8 @@ body.panel-open #controls { display: none !important; }
 .rp-card-line:first-child { border-top: 0; }
 .rp-card-choice { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2, 8px) var(--sp-3, 12px); }
 .rp-card-choice > span { flex: 1 1 200px; min-width: 0; }
+.rp-card-sub { display: block; margin-top: 2px; color: ${T.text2}; font: var(--fw-regular, 400) var(--fs-xs, 12px) / var(--lh-snug, 1.3) ${T.textFont}; }
+.rp-card-off > span { opacity: .6; }
 .rp-card-score { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1, 4px) var(--sp-2, 8px); margin: var(--sp-4, 16px) 0 0; padding-top: var(--sp-3, 12px); border-top: 1px solid ${T.line}; }
 .rp-card-score-num { color: ${T.accent}; font: var(--fw-bold, 700) var(--fs-3xl, 34px) / 1 ${T.textFont}; font-variant-numeric: tabular-nums; }
 .rp-card-score-unit { color: ${T.text2}; font: var(--fw-semibold, 600) var(--fs-2xs, 11px) / 1 ${T.display}; letter-spacing: var(--ls-label, .12em); text-transform: uppercase; }

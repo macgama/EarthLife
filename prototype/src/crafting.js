@@ -4,6 +4,7 @@
 import { ITEMS, equipOrStoreInfo, discardText, itemLabel, countsLabel, lootKind, addCount, takeCount, countsTotal } from './survival.js';
 
 const PLAN_WHY = "Il faut le plan de l'établi (quincailleries, entrepôts)";
+const FIELD_WHY = 'À faire au refuge';
 
 // Clé de recette → { name, time, desc, needs, makes, upgrade, requires, plan } (tableau 3.3).
 // `time` : secondes de fabrication (temps de jeu, allongé par la fatigue comme les autres actions du refuge) ;
@@ -15,7 +16,9 @@ export const RECIPES = {
   batte_cloutee: { name: 'Batte cloutée', time: 8, desc: 'Arme : 75 dégâts, 60 coups', needs: { bois: 1, clous: 3 }, makes: { batte_cloutee: 1 }, upgrade: null, requires: null, plan: null },
   bandage: { name: 'Bandage', time: 3, desc: 'Donne 1 bandage (+15 PV)', needs: { tissu: 2 }, makes: { bandage: 1 }, upgrade: null, requires: null, plan: null },
   manteau: { name: 'Manteau chaud', time: 12, desc: 'Vêtement : +12 °C ressentis par temps froid', needs: { tissu: 4, ruban: 1 }, makes: { manteau: 1 }, upgrade: null, requires: null, plan: null },
+  sac_ecolier: { name: "Sac d'écolier", time: 8, desc: 'Équipement : sac de 36 places au lieu de 30', needs: { tissu: 2, ruban: 1 }, makes: { sac_ecolier: 1 }, upgrade: null, requires: null, plan: null },
   sac_randonnee: { name: 'Sac de randonnée', time: 12, desc: 'Équipement : sac de 45 places au lieu de 30', needs: { tissu: 3, ruban: 2 }, makes: { sac_randonnee: 1 }, upgrade: null, requires: null, plan: null },
+  sac_renforce: { name: 'Sac renforcé', time: 20, desc: 'Équipement : sac de 60 places au lieu de 30', needs: { tissu: 6, ruban: 3, ferraille: 2 }, makes: { sac_renforce: 1 }, upgrade: null, requires: 'etabli', plan: null },
   poncho: { name: 'Poncho', time: 8, desc: 'Vêtement : mouillure ×0,25, +4 °C', needs: { tissu: 2, ruban: 2 }, makes: { poncho: 1 }, upgrade: null, requires: null, plan: null },
   leurre: { name: 'Leurre', time: 4, desc: 'Se lance (touche 5) : attire les zombies à 45 m pendant 20 s', needs: { ferraille: 1, ruban: 1 }, makes: { leurre: 1 }, upgrade: null, requires: null, plan: null },
   etabli: { name: 'Établi', time: 20, desc: 'Aménagement : débloque plaque, hache, récupérateur, sirène', needs: { bois: 4, clous: 3, ferraille: 2 }, makes: null, upgrade: 'etabli', requires: null, plan: 'etabli' },
@@ -26,6 +29,32 @@ export const RECIPES = {
 
 // Durée de fabrication d'une recette, en secondes de jeu (0 si la clé est inconnue).
 export const craftTime = (key) => RECIPES[key]?.time ?? 0;
+
+// Fabrication dehors (`ctx.field`) : sans coffre ni aménagement du refuge. Seules les recettes sans établi et sans aménagement
+// (plaque, hache, récupérateur, sirène, établi et sac renforcé restent au refuge) ; ingrédients et produit passent par le sac,
+// dont `ctx.bagCap` donne les places.
+export const fieldRecipe = (key) => !!RECIPES[key] && !RECIPES[key].upgrade && !RECIPES[key].requires;
+
+// Bruit d'une fabrication dehors, en mètres : les zombies proches l'entendent (une fouille : 14 m). Coudre (tissu et ruban
+// seulement) fait peu de bruit, marteler et assembler davantage.
+export function craftNoise(key) {
+  const r = RECIPES[key];
+  if (!r) return 0;
+  return Object.keys(r.needs).every((k) => k === 'tissu' || k === 'ruban') ? 4 : 12;
+}
+
+// Recettes dont le sac contient tous les ingrédients (sans compter la place) : le bouton « Fabriquer » du jeu n'apparaît que
+// s'il y en a au moins une. Appelée à chaque image, donc sans texte ni objet créé.
+export function fieldReady(bag) {
+  let n = 0;
+  for (const key in RECIPES) {
+    if (!fieldRecipe(key)) continue;
+    let ok = true;
+    for (const k in RECIPES[key].needs) if ((bag?.[k] ?? 0) < RECIPES[key].needs[k]) { ok = false; break; }
+    if (ok) n++;
+  }
+  return n;
+}
 
 // Plan de l'établi : chance par fouille, plus forte en quincaillerie et en entrepôt, garanti à la 15e fouille sans plan.
 export const PLAN = { chance: 0.04, rich: { hardware: 0.5, industrial: 0.5 }, pity: 15 };
@@ -61,25 +90,27 @@ function chestNeed(r, survivor) {
   return countsTotal(dest);
 }
 
-// ctx = { chest, bag, upgrades, plans, chestCap } (+ `perk` facultatif).
-// `survivor` (facultatif, comme pour `craft`) : sans lui, tout produit compte une place au coffre.
+// ctx = { chest, bag, upgrades, plans, chestCap } (+ `perk` facultatif), ou { field: true, bag, bagCap } dehors.
+// `survivor` (facultatif, comme pour `craft`) : sans lui, tout produit compte une place au coffre (au sac, dehors).
 export function canCraft(key, ctx, survivor = null) {
   const r = RECIPES[key];
   if (!r) return { ok: false, why: 'Recette inconnue' };
+  if (ctx.field && !fieldRecipe(key)) return { ok: false, why: FIELD_WHY };
   const upgrades = ctx.upgrades ?? [];
   if (r.upgrade && upgrades.includes(r.upgrade)) return { ok: false, why: 'Déjà installé' };
   if (r.plan && !knowsPlan(r.plan, ctx)) return { ok: false, why: PLAN_WHY };
   if (r.requires && !upgrades.includes(r.requires)) return { ok: false, why: 'Il faut un établi' };
-  const stock = stockOf(ctx.chest, ctx.bag);
+  const stock = stockOf(ctx.field ? null : ctx.chest, ctx.bag);
   const missing = {};
   for (const [k, n] of Object.entries(r.needs)) if ((stock[k] ?? 0) < n) missing[k] = n - (stock[k] ?? 0);
   if (Object.keys(missing).length) return { ok: false, why: `Il manque ${countsLabel(missing)}` };
   if (r.makes) {
-    // Les ingrédients pris au coffre y libèrent de la place avant le dépôt du produit.
-    let fromChest = 0;
-    for (const [k, n] of Object.entries(r.needs)) fromChest += Math.min(ctx.chest?.[k] ?? 0, n);
-    const free = (ctx.chestCap ?? Infinity) - (countsTotal(ctx.chest) - fromChest);
-    if (chestNeed(r, survivor) > free) return { ok: false, why: 'Coffre plein' };
+    // Les ingrédients pris là où le produit va (le coffre, ou le sac dehors) y libèrent de la place avant le dépôt.
+    const dest = ctx.field ? ctx.bag : ctx.chest;
+    let taken = 0;
+    for (const [k, n] of Object.entries(r.needs)) taken += Math.min(dest?.[k] ?? 0, n);
+    const free = (ctx.field ? ctx.bagCap ?? Infinity : ctx.chestCap ?? Infinity) - (countsTotal(dest) - taken);
+    if (chestNeed(r, survivor) > free) return { ok: false, why: ctx.field ? 'Sac plein' : 'Coffre plein' };
   }
   return { ok: true, why: '' };
 }
@@ -92,9 +123,11 @@ export function craft(key, ctx, survivor = null) {
   const res = { ok: check.ok, why: check.why, made: {}, upgrade: null, equipped: null, discarded: null, msg: check.why };
   if (!check.ok) return res;
   const r = RECIPES[key];
-  if (!ctx.chest) ctx.chest = {};
+  if (!ctx.chest && !ctx.field) ctx.chest = {};
+  // Le produit va au coffre, ou au sac dehors.
+  const dest = ctx.field ? ctx.bag : ctx.chest;
   for (const [k, n] of Object.entries(r.needs)) {
-    const fromChest = Math.min(ctx.chest[k] ?? 0, n);
+    const fromChest = ctx.field ? 0 : Math.min(ctx.chest[k] ?? 0, n);
     takeCount(ctx.chest, k, fromChest);
     takeCount(ctx.bag, k, n - fromChest);
   }
@@ -107,10 +140,10 @@ export function craft(key, ctx, survivor = null) {
   for (const [k, n] of Object.entries(r.makes ?? {})) {
     for (let i = 0; i < n; i++) {
       if (survivor && ITEMS[k]?.equip) {
-        const { equipped, discarded } = equipOrStoreInfo(survivor, k, ctx.chest);
+        const { equipped, discarded } = equipOrStoreInfo(survivor, k, dest);
         if (equipped) res.equipped = equipped;
         if (discarded) res.discarded = discarded;
-      } else addCount(ctx.chest, k, 1);
+      } else addCount(dest, k, 1);
     }
     addCount(res.made, k, n);
   }
@@ -121,10 +154,10 @@ export function craft(key, ctx, survivor = null) {
 }
 
 // Lignes de l'onglet Fabriquer : coût comparé au stock (« 2 bois (12) · 1 clou (4) ») et motif de refus.
-// `survivor` (facultatif) : place au coffre comptée comme dans `craft`.
+// `survivor` (facultatif) : place au coffre comptée comme dans `craft`. Dehors (`ctx.field`), seulement les recettes de dehors.
 export function recipeRows(ctx, survivor = null) {
-  const stock = stockOf(ctx.chest, ctx.bag);
-  return Object.entries(RECIPES).map(([key, r]) => {
+  const stock = stockOf(ctx.field ? null : ctx.chest, ctx.bag);
+  return Object.entries(RECIPES).filter(([key]) => !ctx.field || fieldRecipe(key)).map(([key, r]) => {
     const { ok, why } = canCraft(key, ctx, survivor);
     const cost = Object.entries(r.needs).map(([k, n]) => `${itemLabel(k, n)} (${stock[k] ?? 0})`).join(' · ');
     return { key, name: r.name, desc: r.desc, cost, time: r.time, ok, why };

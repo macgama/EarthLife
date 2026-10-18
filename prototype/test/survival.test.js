@@ -5,7 +5,8 @@ import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, lootKind, count, effectiveAmbient, fatigueEffects, bagUsed,
   equipOrStore, equipOrStoreInfo, equipFrom, discardedBy, discardText,
   weaponDamage, wearWeapon, deathPenalty, wakeAfterDeath, offlineRecovery, itemLabel, countsLabel,
-  ITEMS, LOOT, WEAPONS, BAG_BASE, CONSUMABLE_KEYS, MATERIAL_KEYS, bagCapacity, wornKey, removePack, packSurplus,
+  ITEMS, LOOT, WEAPONS, BAG_BASE, CONSUMABLE_KEYS, MATERIAL_KEYS, bagCapacity, wornKey, removePack, packSurplus, packSwapRefusal,
+  PACK_SWAP_FULL,
 } from '../src/survival.js';
 import { featuresFromBytes } from '../src/tiles.js';
 import { createWorldStore, addFeatures, buildPatch } from '../src/world.js';
@@ -616,4 +617,73 @@ test('carburant : la station-service donne un bidon, rarement un entrepôt ou un
   assert.equal(ITEMS.bidon.fuel, true);
   assert.equal(itemLabel('bidon', 2), '2 bidons');
   assert.equal(itemLabel('batterie', 1), '1 batterie');
+});
+
+// ---------- Trois sacs : écolier 36, randonnée 45, renforcé 60 ----------
+
+test('sacs : trois tailles, les plus grands rares chez ceux qui en portent', () => {
+  const packs = Object.entries(ITEMS).filter(([, it]) => it.equip === 'bag').map(([k, it]) => [k, it.capacity]);
+  assert.deepEqual(packs, [['sac_ecolier', 36], ['sac_randonnee', 45], ['sac_renforce', 60]]);
+  const lines = (key) => Object.entries(LOOT).filter(([, rows]) => rows.some(([k]) => k === key)).map(([kind, rows]) => [kind, rows.find(([k]) => k === key)[1]]);
+  assert.deepEqual(lines('sac_ecolier'), [['clothes', 0.1], ['school', 0.15]].sort(([a], [b]) => Object.keys(LOOT).indexOf(a) - Object.keys(LOOT).indexOf(b)));
+  assert.deepEqual(lines('sac_renforce').map(([kind]) => kind).sort(), ['fire_station', 'outdoor', 'police']);
+  for (const [, chance] of lines('sac_renforce')) assert.equal(chance, 0.04);
+  assert.equal(rollLoot('school', () => 0.14).sac_ecolier, 1);
+  assert.equal(rollLoot('school', () => 0.16).sac_ecolier, undefined);
+  for (const [k, cap] of packs) {
+    const s = createSurvivor();
+    s.pack = k;
+    assert.equal(bagCapacity(s), cap, k);
+  }
+  assert.equal(itemLabel('sac_ecolier', 2), "2 sacs d'écolier");
+  assert.equal(itemLabel('sac_renforce', 1), '1 sac renforcé');
+});
+
+test('sacs trouvés : le plus grand est porté, les autres rangés', () => {
+  const s = createSurvivor();
+  const r = addLoot(s, { sac_ecolier: 1, sac_renforce: 1 });
+  assert.equal(s.pack, 'sac_renforce');
+  assert.equal(bagCapacity(s), 60);
+  assert.deepEqual(r.equipped, ['sac_ecolier', 'sac_renforce']);
+  assert.equal(s.inventory.sac_ecolier, 1, "le sac d'écolier remplacé est dans le sac");
+  // Un sac plus petit que celui porté n'est jamais porté d'office.
+  const t = createSurvivor();
+  t.pack = 'sac_randonnee';
+  const r2 = addLoot(t, { sac_ecolier: 1 });
+  assert.deepEqual(r2.equipped, []);
+  assert.equal(t.pack, 'sac_randonnee');
+  assert.equal(t.inventory.sac_ecolier, 1);
+});
+
+test("changer pour un sac plus petit : refusé tant que le sac ne tient pas dedans", () => {
+  const s = createSurvivor();
+  s.pack = 'sac_renforce';
+  s.inventory = { ferraille: 40, sac_ecolier: 1 };
+  assert.equal(packSwapRefusal(s, 'sac_ecolier'), PACK_SWAP_FULL, '41 objets dans un sac de 36');
+  assert.equal(equipFrom(s, 'sac_ecolier', s.inventory), false);
+  assert.equal(s.pack, 'sac_renforce');
+  assert.deepEqual(s.inventory, { ferraille: 40, sac_ecolier: 1 }, 'rien ne bouge');
+  // Quand il tient, l'échange a lieu : le sac renforcé retourne d'où vient le sac d'écolier.
+  s.inventory = { ferraille: 30, sac_ecolier: 1 };
+  assert.equal(packSwapRefusal(s, 'sac_ecolier'), null);
+  const chest = { sac_ecolier: 1 };
+  assert.equal(equipFrom(s, 'sac_ecolier', chest), true);
+  assert.equal(s.pack, 'sac_ecolier');
+  assert.deepEqual(chest, { sac_renforce: 1 });
+  // Plus grand, ou pas un sac : jamais refusé.
+  assert.equal(packSwapRefusal(s, 'sac_renforce'), null);
+  assert.equal(packSwapRefusal(s, 'conserve'), null);
+});
+
+test('enlever un sac renforcé : le surplus des 30 places de base va au coffre', () => {
+  const s = createSurvivor();
+  s.pack = 'sac_renforce';
+  s.inventory = { ferraille: 55 };
+  assert.equal(packSurplus(s), 25);
+  const chest = {};
+  const res = removePack(s, chest, 200);
+  assert.equal(res.ok, true);
+  assert.deepEqual(chest, { ferraille: 25, sac_renforce: 1 });
+  assert.equal(bagCapacity(s), 30);
+  assert.deepEqual(removePack(s, chest, 200), { ok: false, why: 'Tu ne portes pas de sac', moved: {} });
 });

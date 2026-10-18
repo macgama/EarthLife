@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RECIPES, PLAN, PLAN_FOUND_TEXT, stockOf, canCraft, craft, craftTime, recipeRows, rollPlan } from '../src/crafting.js';
-import { createSurvivor, ITEMS } from '../src/survival.js';
+import {
+  RECIPES, PLAN, PLAN_FOUND_TEXT, stockOf, canCraft, craft, craftTime, recipeRows, rollPlan, fieldRecipe, craftNoise, fieldReady,
+} from '../src/crafting.js';
+import { createSurvivor, ITEMS, bagUsed, bagCapacity } from '../src/survival.js';
 
 const ctxWith = (o = {}) => ({ chest: {}, bag: {}, upgrades: [], plans: [], chestCap: 200, ...o });
 const PLAN_WHY = "Il faut le plan de l'établi (quincailleries, entrepôts)";
@@ -14,7 +16,9 @@ const TABLE = {
   batte_cloutee: [{ bois: 1, clous: 3 }, { batte_cloutee: 1 }, null, null, null],
   bandage: [{ tissu: 2 }, { bandage: 1 }, null, null, null],
   manteau: [{ tissu: 4, ruban: 1 }, { manteau: 1 }, null, null, null],
+  sac_ecolier: [{ tissu: 2, ruban: 1 }, { sac_ecolier: 1 }, null, null, null],
   sac_randonnee: [{ tissu: 3, ruban: 2 }, { sac_randonnee: 1 }, null, null, null],
+  sac_renforce: [{ tissu: 6, ruban: 3, ferraille: 2 }, { sac_renforce: 1 }, null, 'etabli', null],
   poncho: [{ tissu: 2, ruban: 2 }, { poncho: 1 }, null, null, null],
   leurre: [{ ferraille: 1, ruban: 1 }, { leurre: 1 }, null, null, null],
   etabli: [{ bois: 4, clous: 3, ferraille: 2 }, null, 'etabli', null, 'etabli'],
@@ -23,7 +27,7 @@ const TABLE = {
   sirene: [{ ferraille: 2, clous: 2, ruban: 1 }, null, 'sirene', 'etabli', null],
 };
 
-test('les 13 recettes : coût exact, produit et conditions du tableau 3.3', () => {
+test('les 15 recettes : coût exact, produit et conditions du tableau 3.3', () => {
   assert.deepEqual(Object.keys(RECIPES), Object.keys(TABLE));
   for (const [key, [needs, makes, upgrade, requires, plan]] of Object.entries(TABLE)) {
     const r = RECIPES[key];
@@ -165,7 +169,7 @@ test('l\'équipement fabriqué s\'équipe tout seul s\'il est meilleur', () => {
 
 test('onglet Fabriquer : une ligne par recette, coût comparé au stock', () => {
   const rows = recipeRows(ctxWith({ chest: { bois: 10, clous: 3 }, bag: { bois: 2, clous: 1 } }));
-  assert.equal(rows.length, 13);
+  assert.equal(rows.length, 15);
   const planches = rows.find((r) => r.key === 'planches');
   assert.deepEqual(planches, { key: 'planches', name: 'Planches', desc: 'Donne 1 planche', cost: '2 bois (12) · 1 clou (4)', time: 4, ok: true, why: '' });
   const piege = rows.find((r) => r.key === 'piege');
@@ -253,4 +257,96 @@ test('sac de randonnée : la place au coffre tient compte du sac porté tout de 
   assert.deepEqual(canCraft('sac_randonnee', ctxWith({ chest: { tissu: 2, ruban: 2, bois: 4 }, bag: { tissu: 1 }, chestCap: 8 }), sv).ok, true);
   // Sans survivant, tout produit compte une place au coffre.
   assert.deepEqual(canCraft('sac_randonnee', ctxWith({ chest: { tissu: 3, ruban: 2, bois: 4 }, chestCap: 9 })), { ok: true, why: '' });
+});
+
+// ---------- Fabriquer dehors : sac seul, recettes sans établi ni aménagement ----------
+
+const field = (bag = {}, bagCap = 30) => ({ field: true, bag, bagCap, upgrades: [], plans: [] });
+
+test('dehors : seules les recettes sans établi ni aménagement', () => {
+  const keys = Object.keys(RECIPES).filter(fieldRecipe);
+  assert.deepEqual(keys, ['planches', 'piege', 'batte_cloutee', 'bandage', 'manteau', 'sac_ecolier', 'sac_randonnee', 'poncho', 'leurre']);
+  for (const key of ['plaque', 'hache', 'sac_renforce', 'etabli', 'recuperateur', 'sirene']) {
+    const full = { tissu: 9, ruban: 9, ferraille: 9, bois: 9, clous: 9 };
+    assert.deepEqual(canCraft(key, field(full)), { ok: false, why: 'À faire au refuge' }, key);
+  }
+  assert.equal(fieldRecipe('inconnue'), false);
+  assert.deepEqual(recipeRows(field({ tissu: 2 })).map((r) => r.key), keys, "l'onglet de dehors ne liste que ces recettes");
+});
+
+test('dehors : les ingrédients viennent du sac seul (le coffre ne compte pas), le produit va au sac', () => {
+  const sv = createSurvivor();
+  sv.inventory = { tissu: 3, eau: 1 };
+  const ctx = { ...field(sv.inventory), chest: { tissu: 9 } };
+  assert.deepEqual(canCraft('bandage', ctx, sv), { ok: true, why: '' });
+  const res = craft('bandage', ctx, sv);
+  assert.equal(res.ok, true);
+  assert.equal(res.msg, 'Fabriqué : 1 bandage');
+  assert.deepEqual(sv.inventory, { tissu: 1, eau: 1, bandage: 1 });
+  assert.deepEqual(ctx.chest, { tissu: 9 }, 'le coffre est intact');
+  const poor = { ...field({ tissu: 1 }), chest: { tissu: 9 } };
+  assert.deepEqual(canCraft('bandage', poor), { ok: false, why: 'Il manque 1 tissu' });
+  const rows = recipeRows(poor);
+  assert.equal(rows.find((r) => r.key === 'bandage').cost, '2 tissus (1)');
+});
+
+test('dehors : sac plein refusé, mais les ingrédients libèrent leur place', () => {
+  const sv = createSurvivor();
+  sv.inventory = { ferraille: 28, tissu: 2 };
+  assert.equal(bagUsed(sv), 30);
+  // Le bandage prend 2 tissus et en rend 1 : 29 + 1 = 30, tient.
+  assert.deepEqual(canCraft('bandage', field(sv.inventory, 30), sv), { ok: true, why: '' });
+  sv.inventory = { ferraille: 30, bois: 2, clous: 1 };
+  // Planches : 2 bois + 1 clou pris, 1 planche rangée : 30 + 3 - 3 + 1 = 31 > 30 ? Non : 33 - 3 + 1 = 31.
+  assert.deepEqual(canCraft('planches', field(sv.inventory, 30), sv), { ok: false, why: 'Sac plein' });
+  assert.deepEqual(canCraft('planches', field(sv.inventory, 31), sv), { ok: true, why: '' });
+  const res = craft('planches', field(sv.inventory, 30), sv);
+  assert.equal(res.ok, false);
+  assert.deepEqual(sv.inventory, { ferraille: 30, bois: 2, clous: 1 }, 'rien n\'est pris');
+});
+
+test("dehors : un sac fabriqué se porte d'office, un sac plus petit que celui porté se range", () => {
+  const sv = createSurvivor();
+  sv.inventory = { tissu: 2, ruban: 1, eau: 29 };
+  const bag = canCraft('sac_ecolier', field(sv.inventory, 30), sv);
+  assert.deepEqual(bag, { ok: true, why: '' }, 'sac de 30 plein : le sac porté ne prend aucune place');
+  const res = craft('sac_ecolier', field(sv.inventory, 30), sv);
+  assert.equal(res.equipped, 'sac_ecolier');
+  assert.equal(res.msg, "Sac d'écolier équipé");
+  assert.equal(sv.pack, 'sac_ecolier');
+  assert.equal(bagCapacity(sv), 36);
+  assert.deepEqual(sv.inventory, { eau: 29 });
+  // Avec le sac de randonnée déjà porté, un sac d'écolier fabriqué va au sac (une place).
+  const hiker = createSurvivor();
+  hiker.pack = 'sac_randonnee';
+  hiker.inventory = { tissu: 2, ruban: 1 };
+  const made = craft('sac_ecolier', field(hiker.inventory, 45), hiker);
+  assert.equal(made.equipped, null);
+  assert.equal(hiker.pack, 'sac_randonnee');
+  assert.deepEqual(hiker.inventory, { sac_ecolier: 1 });
+});
+
+test('sac renforcé : 60 places, à fabriquer au refuge avec un établi', () => {
+  const r = RECIPES.sac_renforce;
+  assert.deepEqual([r.needs, r.makes, r.requires, r.time], [{ tissu: 6, ruban: 3, ferraille: 2 }, { sac_renforce: 1 }, 'etabli', 20]);
+  assert.deepEqual(canCraft('sac_renforce', ctxWith({ chest: { ...r.needs } })), { ok: false, why: 'Il faut un établi' });
+  const sv = createSurvivor();
+  const ctx = ctxWith({ chest: { ...r.needs }, upgrades: ['etabli'] });
+  const res = craft('sac_renforce', ctx, sv);
+  assert.equal(res.ok, true);
+  assert.equal(sv.pack, 'sac_renforce');
+  assert.equal(bagCapacity(sv), 60);
+  assert.deepEqual(ctx.chest, {});
+});
+
+test('dehors : bruit (coudre 4 m, marteler 12 m) et recettes possibles', () => {
+  assert.deepEqual(['bandage', 'manteau', 'sac_ecolier', 'sac_randonnee', 'poncho'].map(craftNoise), [4, 4, 4, 4, 4]);
+  assert.deepEqual(['planches', 'piege', 'batte_cloutee', 'leurre'].map(craftNoise), [12, 12, 12, 12]);
+  assert.equal(craftNoise('inconnue'), 0);
+  assert.equal(fieldReady({}), 0);
+  assert.equal(fieldReady(null), 0);
+  // 2 tissus : le bandage ; 2 tissus et 1 ruban : bandage et sac d'écolier ; l'établi et la plaque ne comptent jamais.
+  assert.equal(fieldReady({ tissu: 2 }), 1);
+  assert.equal(fieldReady({ tissu: 2, ruban: 1 }), 2);
+  assert.equal(fieldReady({ bois: 4, clous: 3, ferraille: 3 }), 3, 'planches, piège, batte cloutée ; pas la plaque ni l\'établi');
 });
