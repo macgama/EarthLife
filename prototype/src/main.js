@@ -8,7 +8,7 @@ import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, buildingAt, 
 import { buildingFloor } from './terrain.js';
 import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate, addFeatures } from './world.js';
 import { DEM_ATTRIBUTION } from './dem.js';
-import { createChunkManager, VIEW_RADIUS } from './chunks.js';
+import { createChunkManager, VIEW_RADIUS, GROUND_DETAILS } from './chunks.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
   offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, bagCapacity, wornKey,
@@ -419,6 +419,20 @@ try {
   window.__earthlife = { error: err };
   throw err;
 }
+// Rendu logiciel (pas de carte graphique : SwiftShader, llvmpipe) : chaque pixel coûte cher, le sol garde les couleurs de
+// sa texture sans le détail calculé (chunks.js, GROUND_DETAILS). ?sol=fin, simple ou plat choisit le détail.
+const softRender = (() => {
+  try {
+    const gl = renderer.getContext();
+    let name = String(gl.getParameter(gl.RENDERER) ?? '');
+    if (/^webkit webgl$/i.test(name)) {
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) name = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) ?? '');
+    }
+    return /swiftshader|llvmpipe|softpipe|basic render/i.test(name);
+  } catch { return false; }
+})();
+const groundDetail = GROUND_DETAILS.includes(params.get('sol')) ? params.get('sol') : softRender ? 'plat' : lowPower ? 'simple' : 'fin';
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000);
 // Caméra isométrique, comme Project Zomboid, Dysmantle ou HumanitZ ; sa distance (zoom) et son tangage plancher : ZOOM
@@ -870,7 +884,7 @@ async function launch(place, spawn, plan = { kind: 'free', place }, arrival = nu
   setLoading('Construction du quartier en 3D…');
   await nextFrame();
   const chunks = createChunkManager({
-    scene, store, grid, lowPower, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
+    scene, store, grid, lowPower, groundDetail, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
     // Démontages : les siens (sauvegarde, 72 h), et ceux des autres survivants en ligne (72 h).
     propsView, floreView, isGone: (id) => localGone(id) || online.isGone(id),
   });
@@ -3584,7 +3598,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView } : {}),
+  saveStore, picker, renderer, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.
