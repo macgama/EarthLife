@@ -8,7 +8,7 @@ import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, buildingAt, 
 import { buildingFloor } from './terrain.js';
 import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate, addFeatures } from './world.js';
 import { DEM_ATTRIBUTION } from './dem.js';
-import { createChunkManager, VIEW_RADIUS } from './chunks.js';
+import { createChunkManager, VIEW_RADIUS, GROUND_DETAILS } from './chunks.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
   offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, bagCapacity, wornKey,
@@ -45,6 +45,7 @@ import { createInteriorGame } from './interieur-jeu.js';
 import { PROP_KINDS, PROP_TEXTS, rollPropLoot, propTime, propLabel, propLootText, goneChecker } from './props.js';
 import { createFinds, leftText as findsLeftText } from './trouvailles.js';
 import { createPropsView } from './props-view.js';
+import { createFloreView } from './flore-view.js';
 import { createBaseView } from './base-view.js';
 import {
   createRefugePanel, createCard, onlineChoiceCard, survivorCard, reportCard, followCard, myDataCard, eraseCard, exportCard,
@@ -422,6 +423,20 @@ try {
   window.__earthlife = { error: err };
   throw err;
 }
+// Rendu logiciel (pas de carte graphique : SwiftShader, llvmpipe) : chaque pixel coûte cher, le sol garde les couleurs de
+// sa texture sans le détail calculé (chunks.js, GROUND_DETAILS). ?sol=fin, simple ou plat choisit le détail.
+const softRender = (() => {
+  try {
+    const gl = renderer.getContext();
+    let name = String(gl.getParameter(gl.RENDERER) ?? '');
+    if (/^webkit webgl$/i.test(name)) {
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) name = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) ?? '');
+    }
+    return /swiftshader|llvmpipe|softpipe|basic render/i.test(name);
+  } catch { return false; }
+})();
+const groundDetail = GROUND_DETAILS.includes(params.get('sol')) ? params.get('sol') : softRender ? 'plat' : lowPower ? 'simple' : 'fin';
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000);
 // Caméra isométrique, comme Project Zomboid, Dysmantle ou HumanitZ ; sa distance (zoom) et son tangage plancher : ZOOM
@@ -472,6 +487,8 @@ const characters = createCharacters({ lowPower });
 const playerMeshes = characters.root.children.slice(0, 2);
 // Décor démontable (arbres, voitures, bancs) et refuge (ouvertures, drapeau, sac perdu, leurre) : un jeu par page.
 const propsView = createPropsView(scene, { lowPower });
+// Petits décors de la nature (buissons, rochers, touffes d'herbe) : sans collision ni démontage.
+const floreView = createFloreView(scene, { lowPower });
 const baseView = createBaseView(scene);
 // Tir : l'arme en main, l'éclair et la trace de la balle (un jeu par page).
 const tirView = createTirView(scene);
@@ -875,9 +892,9 @@ async function launch(place, spawn, plan = { kind: 'free', place }, arrival = nu
   setLoading('Construction du quartier en 3D…');
   await nextFrame();
   const chunks = createChunkManager({
-    scene, store, grid, lowPower, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
+    scene, store, grid, lowPower, groundDetail, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
     // Démontages : les siens (sauvegarde, 72 h), et ceux des autres survivants en ligne (72 h).
-    propsView, isGone: (id) => localGone(id) || online.isGone(id),
+    propsView, floreView, isGone: (id) => localGone(id) || online.isGone(id),
   });
   chunks.buildAll(0, 0);
   // Départ sur la terre ferme, hors des cours intérieures fermées.
@@ -3624,7 +3641,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, finds, ...(debug ? { debug, online, tirView, cars, driveMap } : {}),
+  saveStore, picker, renderer, finds, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.

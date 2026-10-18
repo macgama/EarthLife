@@ -388,11 +388,12 @@ test('taches d\'huile : à la place des voitures démontées, en un appel de des
   const gone = new Set(['c1_0']);
   const view = createPropsView(scene, { isGone: (id) => gone.has(id), reduceMotion: false });
   const car = (i, x) => ({ id: `c${i}_0`, kind: 'car', x, z: 0, yaw: 0.3, color: 0x8a9096 });
-  assert.equal(view.group.children.length, 6, 'pas de septième maillage avant la première tache');
+  // Huit maillages au départ (quatre espèces d'arbres, troncs, voitures, habitacles, bancs) ; celui des taches vient avec la première.
+  assert.equal(view.group.children.length, 8, 'pas de neuvième maillage avant la première tache');
   view.setChunk('a', [car(0, 0), car(1, 5)]);
   assert.deepEqual(view.stains(), ['c1_0'], 'voiture démontée (isGone) affichée à l\'échelle 0 : tache');
   assert.equal(view.scaleOf('c1_0'), 0);
-  assert.equal(view.group.children.length, 7);
+  assert.equal(view.group.children.length, 9);
   const stain = view.group.getObjectByName('taches');
   assert.equal(stain.instanceMatrix.count, PROP_CAPACITY.car);
   assert.equal(stain.material, view.group.getObjectByName('bancs').material, 'même matériau que les bancs');
