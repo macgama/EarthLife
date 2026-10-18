@@ -93,8 +93,9 @@ const started = async (page) => !!(await until(page, () => !!window.__earthlife?
 const clearZombies = (page) => ev(page, () => { window.__earthlife.session.director.zombies.length = 0; });
 const debug = (page, name, ...args) => ev(page, ([n, a]) => window.__earthlife.debug[n](...a), [name, args]);
 const interior = (page) => debug(page, 'interior');
-async function press(page, device, key, id) {
-  if (device === 'mobile') await page.tap(`#${id}`);
+// `soft` : sous swiftshader l'action peut finir entre la lecture de l'état et le toucher, le bouton a alors disparu : on n'attend pas 30 s.
+async function press(page, device, key, id, { soft = false } = {}) {
+  if (device === 'mobile') await page.tap(`#${id}`, soft ? { timeout: 2000 } : {}).catch((e) => { if (!soft) throw e; });
   else await page.keyboard.press(key);
 }
 const toastSeen = (page, start, timeout = 10000) => until(page, (t) => window.__seen.toasts.find((x) => x.startsWith(t)) ?? null, start, timeout);
@@ -154,10 +155,13 @@ async function searchRoom(page, device, slot, tag, { keepZombies = false } = {})
   let done = false;
   while (Date.now() - start < 240000 && !done) {
     if (!keepZombies) await clearZombies(page);
-    done = await ev(page, (sl) => window.__earthlife.debug.interior()?.rooms.find((r) => r.slot === sl)?.done ?? false, slot);
+    const st = await ev(page, (sl) => ({
+      done: window.__earthlife.debug.interior()?.rooms.find((r) => r.slot === sl)?.done ?? false,
+      idle: window.__earthlife.session.action === null,
+    }), slot);
+    done = !!st?.done;
     if (!done) {
-      const idle = await ev(page, () => window.__earthlife.session.action === null);
-      if (idle && !done) await press(page, device, 'KeyE', 'search');
+      if (st?.idle) await press(page, device, 'KeyE', 'search', { soft: true });
       await wait(250);
     }
   }
@@ -184,6 +188,7 @@ async function scenario(device) {
   await shot(page, `${device}-01-porte`);
 
   // 2. Entrer : l'intérieur s'ouvre, le joueur passe la porte.
+  const yaw0 = await ev(page, () => window.__earthlife.session.cameraYaw);
   await press(page, device, 'KeyE', 'search');
   const opened = await until(page, () => window.__earthlife.session.interior?.plan ? true : null, null, 10000);
   check(!!opened, `${tag} : l'intérieur s'ouvre`);
@@ -195,6 +200,17 @@ async function scenario(device) {
   await ev(page, (e) => { const p = window.__earthlife.session.player; Object.assign(p, { x: e.ix, z: e.iz, vx: 0, vz: 0 }); }, info0.entry);
   const entered = await until(page, () => window.__earthlife.debug.interior()?.entered || null, null, 10000);
   check(!!entered, `${tag} : le joueur est entré`);
+  // Vue de dessus : la caméra se redresse et se met d'aplomb sur le plan, le noir s'ouvre ; la lampe éclaire le joueur, pas ce qui est loin
+  // derrière lui. (La caméra et le noir s'ouvrent en 0,45 s de temps de jeu, bien plus sous swiftshader.)
+  const top = await until(page, () => { const t = window.__earthlife.debug.interior()?.top; return t && t.k >= 0.99 && t.dark ? t : null; }, null, 90000);
+  check(!!top && top.pitch > 1.3 && top.pitch < 1.5 && top.dist < 28, `${tag} : caméra de dessus (tangage ${round(top?.pitch ?? 0)}, distance ${round(top?.dist ?? 0, 1)} m)`);
+  check(!!top && top.lit > 0.9 && top.behind === 0, `${tag} : la lampe éclaire le joueur (${round(top?.lit ?? 0)}), rien à 6 m derrière lui (${round(top?.behind ?? 1)})`);
+  const aligned = await until(page, () => {
+    const s = window.__earthlife.session, f = s.interior.plan.frame, q = Math.PI / 2;
+    const d = (((Math.atan2(f.vx, f.vz) - s.cameraYaw) % q) + q) % q;
+    return Math.min(d, q - d) < 0.02 ? Math.min(d, q - d) + 1e-9 : null;
+  }, null, 60000) ?? 1;
+  check(aligned < 0.02, `${tag} : la caméra est d'aplomb sur le plan (écart ${round(aligned, 3)} rad au quart de tour)`);
   await wait(900);
   await shot(page, `${device}-02-entree`);
 
@@ -251,6 +267,9 @@ async function scenario(device) {
   await ev(page, (en) => { const p = window.__earthlife.session.player; Object.assign(p, { x: en.x + en.nx * 1.6, z: en.z + en.nz * 1.6, vx: 0, vz: 0 }); }, e);
   const closed = await until(page, () => (window.__earthlife.session.interior === null && window.__earthlife.session.grid.interior === undefined ? true : null), null, 20000);
   check(!!closed, `${tag} : ressorti, l'intérieur est défait`);
+  const back = await until(page, () => { const s = window.__earthlife.session; return s.interiorK === 0 && s.yawBefore === undefined ? true : null; }, null, 90000);
+  const yawBack = await ev(page, (y0) => { const s = window.__earthlife.session; return Math.abs(Math.atan2(Math.sin(s.cameraYaw - y0), Math.cos(s.cameraYaw - y0))); }, yaw0);
+  check(!!back && yawBack < 0.02, `${tag} : la caméra retrouve son tangage et son cap d'avant l'entrée (écart ${round(yawBack, 3)} rad)`);
   const after = await ev(page, async () => {
     const s = window.__earthlife.session;
     const f = document.getElementById('fiche');

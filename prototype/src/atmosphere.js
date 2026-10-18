@@ -164,9 +164,18 @@ export function createAtmosphere(scene, { lowPower }) {
     shadowFor(view.dist);
   }
 
+  // Sous un toit (intérieur ouvert) : ni pluie, ni neige, ni cône de lampe ; la lumière du monde ne change pas.
+  let indoor = false;
+  function setIndoor(on) {
+    indoor = !!on;
+  }
+
   function update(dt, focus, playerYaw) {
     const w = state.weather;
     if (!w) return;
+    rain.visible = (w.kind === 'rain' || w.kind === 'storm') && !indoor;
+    snow.visible = w.kind === 'snow' && !indoor;
+    beam.visible = torch.intensity > 0 && !indoor;
     sun.position.copy(focus).addScaledVector(state.sunDir, 150);
     sun.target.position.copy(focus);
     // Lampe tenue à hauteur de poitrine, un peu devant le joueur, pointée 12 m devant lui.
@@ -243,7 +252,7 @@ export function createAtmosphere(scene, { lowPower }) {
     groundMaterials = mats.map((m) => [m, m.color.getHex()]);
   }
 
-  return { state, setConditions, setView, update, endFrame, setGroundMaterials, setRelief };
+  return { state, setConditions, setView, update, endFrame, setGroundMaterials, setRelief, setIndoor };
 }
 
 function flakeTexture() {
