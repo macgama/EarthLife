@@ -3602,12 +3602,12 @@ async function fabricationScenario(device) {
   await ctx.close();
 }
 
-// ---------- Sons (scénario 20) ----------
+// ---------- Sons (scénario 21) ----------
 // Les sons sont fabriqués en direct (Web Audio, pas de fichier) : on ne les entend pas ici, mais le moteur compte ce qu'il joue
 // (son.stats()). Contexte créé au premier geste, pluie de fond, pas, voix d'un zombie qui poursuit, coup, bouton « Sons » qui coupe
 // et remet tout, réglage gardé après un rechargement, bouton à sa place sur les écrans étroits.
 async function sonsScenario(device) {
-  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 20`;
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 21`;
   const name = tag.replace(' ', '-');
   const ctx = await newContext(device);
   const page = await ctx.newPage();
@@ -3651,29 +3651,34 @@ async function sonsScenario(device) {
   check(state === 'running', `${tag} : contexte audio en marche après le premier geste (${state})`);
 
   // Pluie forcée : la boucle de pluie démarre.
-  const rain = await until(page, () => window.__earthlife.son.stats().loops.includes('rain') ? 1 : null, null, 30000);
+  const rain = await until(page, () => window.__earthlife.son.stats().loops.includes('rain') ? 1 : null, null, 90000);
   check(!!rain, `${tag} : sous la pluie, la boucle de pluie joue`);
 
-  // Pas : on marche sur 10 m (un pas toutes les 1,55 m).
   const yaw = await openYaw(page, 14);
   if (!check(yaw !== null, `${tag} : une direction libre trouvée autour du joueur`)) { await ctx.close(); return; }
+  // Pas : on marche 0,3 m par image, en allers-retours sur la ligne libre (un pas toutes les 1,55 m), jusqu'à 4 pas joués ; la machine
+  // lente de la CI (swiftshader) saute des images du jeu : on compte les pas joués, pas les images.
   const steps0 = (await stats()).plays.step ?? 0;
-  await ev(page, async (a) => {
-    const p = window.__earthlife.session.player;
-    for (let i = 0; i < 20; i++) {
+  const steps1 = await ev(page, async ([a, want]) => {
+    const { son, session } = window.__earthlife;
+    const p = session.player;
+    let dir = 1, along = 0;
+    for (let i = 0; i < 600 && (son.stats().plays.step ?? 0) < want; i++) {
       await new Promise((r) => requestAnimationFrame(r));
-      p.x += Math.sin(a) * 0.5; p.z += Math.cos(a) * 0.5;
+      p.x += Math.sin(a) * 0.3 * dir; p.z += Math.cos(a) * 0.3 * dir;
+      along += 0.3 * dir;
+      if (along > 12) dir = -1; else if (along < 0) dir = 1;
     }
-  }, yaw);
-  const steps1 = (await until(page, (n) => (window.__earthlife.son.stats().plays.step ?? 0) > n + 3 ? window.__earthlife.son.stats().plays.step : null, steps0, 15000)) ?? (await stats()).plays.step ?? 0;
-  check(steps1 - steps0 >= 4, `${tag} : 10 m parcourus = au moins 4 pas joués (${steps1 - steps0})`);
+    return son.stats().plays.step ?? 0;
+  }, [yaw, steps0 + 4]);
+  check(steps1 - steps0 >= 4, `${tag} : en marchant, au moins 4 pas joués (${steps1 - steps0})`);
 
   // Un zombie qui poursuit à 20 m : sa voix se fait entendre.
   const z = await putZombie(page, 20, yaw, 100);
   check(!!z, `${tag} : un zombie posé à 20 m`);
   await ev(page, () => { const zs = window.__earthlife.session.director.zombies; const t = zs.find((q) => q.tags?.test); if (t) t.state = 'chase'; });
   const groans0 = (await stats()).plays.groan ?? 0;
-  const groan = await until(page, (n) => (window.__earthlife.son.stats().plays.groan ?? 0) > n ? 1 : null, groans0, 30000);
+  const groan = await until(page, (n) => (window.__earthlife.son.stats().plays.groan ?? 0) > n ? 1 : null, groans0, 150000);
   check(!!groan, `${tag} : le zombie qui poursuit gémit`);
   await shot(page, `${name}-jeu`);
 
@@ -3683,7 +3688,7 @@ async function sonsScenario(device) {
   const sw0 = (await stats()).plays.swing ?? 0;
   await ev(page, () => { window.__earthlife.session.player.attackTimer = 0; });
   await press(page, device, 'Space', 'attack');
-  const swung = await until(page, (n) => (window.__earthlife.son.stats().plays.swing ?? 0) > n ? 1 : null, sw0, 30000);
+  const swung = await until(page, (n) => (window.__earthlife.son.stats().plays.swing ?? 0) > n ? 1 : null, sw0, 90000);
   check(!!swung, `${tag} : un coup donné joue le bruit du geste`);
   await clearZombies(page);
 
