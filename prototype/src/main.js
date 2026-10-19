@@ -106,6 +106,10 @@ const INTERIOR_ON = params.get('interieur') === '1' || (params.get('interieur') 
 // Fenêtre « Trouvé » (trouvailles.js) après une fouille ou un démontage : en jeu normal ; les essais (?debug=1) ramassent tout seuls
 // comme avant (leurs scénarios le supposent), sauf avec ?trouve=1 ; ?trouve=0 la coupe partout.
 const FINDS_ON = params.get('trouve') === '1' || (params.get('trouve') !== '0' && !DEBUG);
+// Sons (son.js) : le contexte audio démarre au premier geste du joueur en jeu normal ; les essais (?debug=1) le laissent éteint
+// (un moteur audio qui tourne coûte du temps d'image, et leurs mesures de durée sont serrées), sauf avec ?son=1 ; ?son=0 le coupe partout.
+// Le bouton « Sons » démarre toujours le contexte, même dans les essais.
+const SOUND_AUTOSTART = params.get('son') === '1' || (params.get('son') !== '0' && !DEBUG);
 // Vue des intérieurs : « bullet » (défaut) = caméra de dessus et noir, on ne voit que ce que la lampe éclaire ; ?interieurvue=decor garde
 // la caméra et la visibilité d'avant, seuls les sols, murs, meubles et lampes changent de style.
 const INTERIOR_DARK = params.get('interieurvue') !== 'decor';
@@ -448,7 +452,7 @@ const BUILDING_LABELS = { house: 'Habitation', retail: 'Commerce', commercial: '
 const atmosphere = createAtmosphere(scene, { lowPower });
 // Sons fabriqués dans le navigateur (son.js) : le contexte audio ne naît qu'au premier geste du joueur ; le réglage « Sons » est gardé à part de la partie.
 const son = createSon({ lowPower, storage: localStore });
-son.attach(window);
+if (SOUND_AUTOSTART) son.attach(window);
 const input = createInput(canvas, {
   stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'),
   action2Button: $('action2'), useButtons: [...document.querySelectorAll('#inventory .chip')], autoRun: true,

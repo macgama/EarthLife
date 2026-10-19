@@ -3612,7 +3612,7 @@ async function sonsScenario(device) {
   const ctx = await newContext(device);
   const page = await ctx.newPage();
   watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
-  await page.goto(`${START}&weather=rain`);
+  await page.goto(`${START}&weather=rain&son=1`);
   if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
   await clearZombies(page);
   const stats = () => ev(page, () => window.__earthlife.son.stats());
