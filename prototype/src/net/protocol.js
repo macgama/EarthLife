@@ -35,8 +35,9 @@ export const SEASON_KEY = new RegExp(`^(@${SEASON_NAME}|b-?\\d{1,2}\\.\\d{1,8}_-
 export const SEASON_COMMUNE = new RegExp(`^${SEASON_NAME}$`);
 export const SEASON_TILE = /^\d{1,2}\/\d{1,7}\/\d{1,7}$/;
 // Gestes d'un joueur : l prêt de la rue, t prise (horde, contre-attaque), d tirage de la réserve du cœur, r retour d'un
-// prêt, k zombie abattu (clé, nombre) ; n ouvrir le nid, f planter le fanion, L libérer, D fanion tombé, c cœur (clé).
-const SEASON_EVENTS = { l: 3, t: 3, d: 3, r: 3, k: 3, n: 2, f: 2, L: 2, D: 2, c: 2 };
+// prêt, k zombie abattu (clé, nombre) ; n ouvrir le nid, f planter le fanion, L libérer, D fanion tombé, c cœur (clé), h habitant
+// trouvé en fouillant (clé du pâté ; un jeu ne l'envoie que si l'état de la saison porte `hab`, un ancien serveur le refuserait).
+const SEASON_EVENTS = { l: 3, t: 3, d: 3, r: 3, k: 3, n: 2, f: 2, L: 2, D: 2, c: 2, h: 2 };
 
 export const GESTURES = ['Salut', 'Par ici', 'Attention !', 'Merci', 'Suis-moi', "Besoin d'aide"];
 export const REPORT_REASONS = { 1: 'Me suit partout', 2: 'Abuse des gestes', 3: 'Triche (vitesse, téléportation)' };

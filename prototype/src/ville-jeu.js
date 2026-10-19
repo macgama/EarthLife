@@ -374,7 +374,7 @@ export function homeCandidates(runtime, buildings, { window = [CITY.homeMin, CIT
 
 // Contexte d'une partie de ville. deps : { ville, store, client, template, graph, fn, member, unit, commune, proj, rand?,
 // now?, onEvent?, log?, season? } ; `proj` : { toLocal(lat, lon) -> { x, z }, toLatLon(x, z) -> { lat, lon } } du monde chargé.
-// `season` : { net } (net/season.js) pour la ville commune d'une saison : `ville` est alors la copie du serveur, les gestes
+// `season` : { net, hab } (net/season.js ; hab : le serveur connaît le geste « habitant trouvé ») pour la ville commune d'une saison : `ville` est alors la copie du serveur, les gestes
 // sont envoyés (saison-miroir.js), les tuiles sont placées par le serveur, les nuits, la fin de ville et le territoire de
 // l'appareil ne servent pas.
 export function createCityRuntime(deps) {
@@ -1235,6 +1235,7 @@ export function createCityRuntime(deps) {
   // Après une coupure : la copie reprend l'état du serveur ; les tuiles déjà découpées sont relues dans l'état.
   function resyncFrom(fresh) {
     resyncVille(ville, fresh.ville);
+    if (S) S.hab = fresh.hab === 1;              // le serveur a pu changer de version pendant la coupure
     applyLent(ville, fresh.lent);
     state.srv = null;
     state.capAt = -Infinity;
