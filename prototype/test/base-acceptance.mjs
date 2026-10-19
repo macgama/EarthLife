@@ -10,7 +10,8 @@
 // voiture : voitures et carburant (réparer, siphonner, plein, trajet de Lyon à Pérouges), ordinateur et téléphone ;
 // ecran : l'écran de jeu allégé du téléphone en portrait, seul sur une partie neuve ;
 // fabrication : fabriquer dehors (bouton, carte, durée, bruit, interruption) et les sacs de 36 et 60 places ;
-// campagne : (ou campagne:desktop, campagne:mobile) cueillir, puiser, pêcher, boire de l'eau brute puis bouillie, cuisiner au feu de camp du refuge, à Pérouges en octobre).
+// campagne : (ou campagne:desktop, campagne:mobile) cueillir, puiser, pêcher, boire de l'eau brute puis bouillie, cuisiner au feu de camp du refuge, à Pérouges en octobre ;
+// elle dure une vingtaine de minutes en CI : hors de la série complète, la CI la joue dans son propre travail, acceptance-campagne).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
@@ -3875,8 +3876,6 @@ try {
     if (!only) await voitureScenario('mobile');
     await fabricationScenario(only === 'mobile' ? 'mobile' : 'desktop');
     if (!only) await fabricationScenario('mobile');
-    await campagneScenario(only === 'mobile' ? 'mobile' : 'desktop');
-    if (!only) await campagneScenario('mobile');
   }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {
