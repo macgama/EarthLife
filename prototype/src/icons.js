@@ -38,6 +38,8 @@ const ICONS = {
   voiture: `<path d="M4 16V12.2L6.2 7h11.6L20 12.2V16H4z"/><path d="M4 12.2h16M7 16v2M17 16v2M8 12.2l1-3.7h6l1 3.7"/>${dot(8, 14.6, 1.1)}${dot(16, 14.6, 1.1)}`,
   fouiller: '<path d="M2.5 12h10v8.5h-10zM2.5 16h10"/><circle cx="16.5" cy="7" r="4"/><path d="M19.4 9.9 21.5 12"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  son: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4.5 4.5 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11"/>',
+  'son-coupe': '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',
   stats: '<path d="M4 20.5h16"/><path d="M6.5 20.5V12M12 20.5V4.5M17.5 20.5V9"/>',
   effets: `<path d="M9 7h11M9 12h11M9 17h11"/>${dot(5, 7, 1.3)}${dot(5, 12, 1.3)}${dot(5, 17, 1.3)}`,
   manteau: '<path d="M9 3.5 12 6l3-2.5 4.5 2L21 10l-2.5 1.5v9h-13v-9L3 10l1.5-4.5z"/><path d="M12 6v14.5"/>',
