@@ -501,7 +501,11 @@ export function createMinimap({ hud, box, button, canvas, zoomBtns, lowPower = f
     let step = 'plein';
     if (!open) {
       const touch = document.body.classList.contains('touch');
-      const blockers = [...MAP_BLOCKERS, ...(touch ? TOUCH_BLOCKERS : [])].map((id) => visibleRect(document.getElementById(id))).filter(Boolean);
+      // Téléphone en portrait : la fiche ouverte (quête ou conditions) passe par-dessus la carte le temps qu'elle est lue ; elle
+      // ne compte pas, sinon la carte disparaîtrait à chaque nouvel objectif.
+      const sheet = phone && !landscape.matches && (document.getElementById('quest')?.classList.contains('open') || document.body.classList.contains('show-mods'));
+      const fixed = sheet ? MAP_BLOCKERS.filter((id) => id !== 'quest' && id !== 'conditions') : MAP_BLOCKERS;
+      const blockers = [...fixed, ...(touch ? TOUCH_BLOCKERS : [])].map((id) => visibleRect(document.getElementById(id))).filter(Boolean);
       const hits = (r) => blockers.some((b) => r.left < b.right && b.left < r.right && r.top < b.bottom && b.top < r.bottom);
       const res = fitMap({ map, buttons: visibleRect(zoomBtns), blockers, corner });
       step = res.step;

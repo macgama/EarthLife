@@ -594,15 +594,41 @@ $('save-warn').addEventListener('click', () => { if (otherTab()) showTakeOverCar
 $('save-export').addEventListener('click', () => exportSave());
 $('save-import').addEventListener('click', () => $('import-file').click());
 $('import-file').addEventListener('change', (e) => importSave(e.target));
-$('mods-toggle').addEventListener('click', () => {
-  $('mods-toggle').setAttribute('aria-expanded', String(document.body.classList.toggle('show-mods')));
-});
-// Téléphone en portrait (index.html) : la bande des conditions ouvre les effets à la place du bouton Effets, et la quête
-// déplie ses compteurs et la fiche du bâtiment. Ailleurs, ces deux panneaux ne reçoivent pas le toucher (pointer-events).
+// Téléphone en portrait (index.html) : la puce de la météo ouvre la fiche des conditions et des effets à la place du bouton
+// Effets, la puce de l'objectif ouvre la fiche de la quête (texte, compteurs, fiche du bâtiment). Ailleurs, ces deux
+// panneaux ne reçoivent pas le toucher (pointer-events). Une seule fiche à la fois ; elle se referme d'un toucher ailleurs.
+// À chaque nouvel objectif la quête s'entrouvre quelques secondes (puce repliée, son texte ne se voit plus) ; ce coup d'œil
+// ne se referme pas au premier toucher du joystick, seulement au bout du délai ou d'un toucher sur la puce.
+const phonePortrait = window.matchMedia('(max-width: 759px) and (orientation: portrait), (max-width: 759px) and (min-height: 501px)');
+const QUEST_PEEK_MS = 6000;
+let questPeek = 0;
+function setQuestOpen(open, peek = false) {
+  clearTimeout(questPeek);
+  questPeek = peek && open ? setTimeout(() => setQuestOpen(false), QUEST_PEEK_MS) : 0;
+  $('quest').setAttribute('aria-expanded', String($('quest').classList.toggle('open', open)));
+}
+function setModsOpen(open) {
+  document.body.classList.toggle('show-mods', open);
+  $('mods-toggle').setAttribute('aria-expanded', String(open));
+  if (open && phonePortrait.matches) setQuestOpen(false);
+}
+$('mods-toggle').addEventListener('click', () => setModsOpen(!document.body.classList.contains('show-mods')));
 $('conditions').addEventListener('click', () => $('mods-toggle').click());
 $('quest').addEventListener('click', () => {
-  $('quest').setAttribute('aria-expanded', String($('quest').classList.toggle('open')));
+  const open = !$('quest').classList.contains('open');
+  setQuestOpen(open);
+  if (open && phonePortrait.matches) setModsOpen(false);
 });
+document.addEventListener('pointerdown', (e) => {
+  if (!phonePortrait.matches || e.target.closest?.('#quest, #conditions')) return;
+  if (!questPeek && $('quest').classList.contains('open')) setQuestOpen(false);
+  if (document.body.classList.contains('show-mods')) setModsOpen(false);
+}, true);
+// Nouvel objectif : bandeau « Objectif mis à jour », et sur téléphone en portrait la fiche de la quête un instant.
+function announceObjective() {
+  hud.showObjective();
+  if (phonePortrait.matches && !document.body.classList.contains('show-mods')) setQuestOpen(true, true);
+}
 // Bloc en ligne du menu (annexe A).
 $('online-toggle')?.addEventListener('change', (e) => {
   online.choose(e.target.checked);
@@ -2474,7 +2500,7 @@ function startMission(s, q) {
   s.quest = q;
   s.player.carrying = false;
   renderConditions();
-  hud.showObjective();
+  announceObjective();
 }
 
 // Fin de livraison : récompense au coffre (le surplus au sac), score ; ou échec au chrono.
@@ -2895,7 +2921,7 @@ function renderConditions() {
     quest.classList.toggle('stage-2', second);
     quest.classList.remove('explore', 'city');
     // Étape franchie (cargaison récupérée) : bandeau « Objectif mis à jour ».
-    if (s.hudQuest === q && s.hudStage === 'toPickup' && q.stage === 'toDropoff') hud.showObjective();
+    if (s.hudQuest === q && s.hudStage === 'toPickup' && q.stage === 'toDropoff') announceObjective();
     s.hudQuest = q;
     s.hudStage = q.stage;
   } else {
@@ -3614,6 +3640,11 @@ const debug = DEBUG ? {
   freezeHud(on = true) {
     hudFrozen = !!on;
     return hudFrozen;
+  },
+  // Nouvel objectif, comme au départ d'une mission : bandeau « Objectif mis à jour » et, sur téléphone en portrait, la fiche
+  // de la quête entrouverte quelques secondes.
+  announceObjective() {
+    announceObjective();
   },
   // Temps par image (ms) : 'step' ou un nombre d'images (600 au plus, 600 par défaut) : logique du jeu et, dans
   // `online`, temps du jeu en ligne ; 'carte' : dessin de la carte des environs, hors reconstruction du cache

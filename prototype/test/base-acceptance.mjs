@@ -1143,19 +1143,23 @@ async function bannerClear(page, tag, label) {
   check(!!banner && !hits.length, `${tag} : bandeau ${banner ? `${Math.round(banner.left)},${Math.round(banner.top)} → ${Math.round(banner.right)},${Math.round(banner.bottom)}` : 'absent'} disjoint de #leftcol (${left.map((b) => `#${b.id} ${Math.round(b.top)}–${Math.round(b.bottom)}`).join(', ')}), ${label}${hits.length ? ` : chevauche ${hits.map((b) => `#${b.id}`).join(', ')}` : ''}`);
 }
 
-// 8 bis. Écran allégé (retour de Gaël du 2026-10-13 : « beaucoup trop d'informations et de fenêtres »), téléphone en portrait :
-// l'état tient sur une bande de jauges, la quête sur deux lignes (compteurs et fiche au toucher), le bouton Effets cède la
-// place à la bande des conditions, la pastille du jeu en ligne se tait quand tout va bien et que personne n'est autour, l'affiche
-// d'un moment fort reste dans la colonne de gauche.
+// 8 bis. Écran en icônes (retours de Gaël du 2026-10-13 : « beaucoup trop d'informations et de fenêtres », et du 2026-10-18 :
+// « les boutons et menus prennent trop de place »), téléphone en portrait : une seule barre en haut (les cinq jauges et le menu) ;
+// dessous, deux puces d'une icône (météo, objectif) qui s'ouvrent d'un toucher en fiche, une à la fois, refermée d'un toucher
+// ailleurs ; la carte à droite avec ses boutons − et + à gauche ; Courir et Frapper sans texte ; la pastille du jeu en ligne se
+// tait quand tout va bien ; l'affiche d'un moment fort reste dans la colonne de gauche.
 async function screenDiet(page, tag) {
   const frame = () => ev(page, () => {
     const $ = (id) => document.getElementById(id);
     const shown = (e) => { if (!e) return false; const cs = getComputedStyle(e); const r = e.getBoundingClientRect(); return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0; };
-    const r = (id) => { const b = $(id).getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), left: Math.round(b.left), right: Math.round(b.right), height: Math.round(b.height) }; };
+    const r = (id) => { const b = $(id).getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), left: Math.round(b.left), right: Math.round(b.right), height: Math.round(b.height), width: Math.round(b.width) }; };
     return {
       vitals: r('vitals'), stats: shown(document.querySelector('.vital-stats')), kills: shown($('kills')), mods: shown($('mods-toggle')),
       showMods: document.body.classList.contains('show-mods'), more: shown(document.querySelector('.cond-more')),
+      conditions: r('conditions'), place: shown(document.querySelector('#conditions .place')),
+      wx: [...document.querySelectorAll('#weather-line > span')].filter(shown).map((e) => e.className),
       quest: r('quest'), meta: shown($('city-meta')), fiche: shown($('fiche')), open: $('quest').classList.contains('open'), expanded: $('quest').getAttribute('aria-expanded'),
+      questText: shown($('quest-text')), stage: shown($('quest-stage')),
       pill: shown($('online-pill')), quietAttr: $('online-pill').hasAttribute('data-quiet'),
     };
   });
@@ -1163,14 +1167,30 @@ async function screenDiet(page, tag) {
   check(start.vitals.height <= 44 && !start.stats && !start.kills,
     `${tag} 8 bis : état sur ${start.vitals.height} px (44 au plus), sans température ni zombies à terre tant que le corps va bien`);
   check(!start.mods, `${tag} 8 bis : bouton Effets caché`);
+  // Barre du haut : jauges et menu sur la même rangée ; puces sous la barre ; carte à droite, sous elle aussi.
+  const bar = await ev(page, () => {
+    const b = (id) => { const r = document.getElementById(id).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height }; };
+    const label = (id) => { const e = document.querySelector(`#${id} .round-label`); return !!e && getComputedStyle(e).display !== 'none'; };
+    return { vitals: b('vitals'), quit: b('quit'), conditions: b('conditions'), quest: b('quest'), map: b('minimap'), out: b('zoom-out'), zin: b('zoom-in'), run: b('run'), attack: b('attack'), runLabel: label('run'), attackLabel: label('attack') };
+  });
+  check(bar.quit.top < bar.vitals.bottom && bar.vitals.right <= bar.quit.left && Math.abs(bar.quit.top - bar.vitals.top) <= 2,
+    `${tag} 8 bis : jauges et menu sur une seule barre (jauges ${Math.round(bar.vitals.left)}–${Math.round(bar.vitals.right)}, menu ${Math.round(bar.quit.left)}–${Math.round(bar.quit.right)} px)`);
+  check(bar.conditions.top >= bar.vitals.bottom && bar.quest.top >= bar.vitals.bottom && bar.map.top >= bar.vitals.bottom && bar.map.left >= bar.conditions.right,
+    `${tag} 8 bis : puces météo (${Math.round(bar.conditions.top)} px) et objectif sous la barre, carte à droite (${Math.round(bar.map.left)}–${Math.round(bar.map.right)} px)`);
+  check(start.conditions.height <= 44 && !start.place && start.wx.join() === 'wx-temp',
+    `${tag} 8 bis : météo en puce de ${start.conditions.height} px : icône et température seules (${start.wx.join() || 'rien'}), sans nom de lieu`);
+  check(bar.out.right <= bar.map.left && bar.zin.right <= bar.map.left && bar.out.width >= 40 && bar.out.height >= 40 && bar.zin.height >= 40 && bar.out.bottom <= bar.zin.top + 1,
+    `${tag} 8 bis : boutons − et + l'un sur l'autre à gauche de la carte (${Math.round(bar.out.width)} × ${Math.round(bar.out.height)} px chacun)`);
+  check(!bar.runLabel && !bar.attackLabel && bar.run.width >= 56 && bar.attack.width >= 76,
+    `${tag} 8 bis : Courir (${Math.round(bar.run.width)} px) et Frapper (${Math.round(bar.attack.width)} px) sans texte`);
   await page.tap('#conditions');
   await wait(300);
   const eff = await frame();
-  check(eff.showMods && eff.more, `${tag} 8 bis : bande des conditions touchée, effets et sources ouverts`);
+  check(eff.showMods && eff.more && eff.place && eff.wx.length > 1, `${tag} 8 bis : puce de la météo touchée, fiche ouverte : lieu, météo, effets et sources (${eff.wx.length} mentions)`);
   await page.tap('#conditions');
   await wait(300);
   const effOff = await frame();
-  check(!effOff.showMods && !effOff.more, `${tag} 8 bis : bande des conditions retouchée, effets refermés`);
+  check(!effOff.showMods && !effOff.more && !effOff.place, `${tag} 8 bis : puce retouchée, fiche refermée`);
 
   // États forcés : quête de ville avec compteurs et fiche, pastille calme, affiche d'un moment fort.
   const keep = await ev(page, () => {
@@ -1181,6 +1201,7 @@ async function screenDiet(page, tag) {
     q.classList.remove('explore', 'no-target', 'stage-2'); q.classList.add('city', 'no-timer');
     $('quest-stage').textContent = 'Vulliens · Facile · Saison 1';
     $('quest-text').textContent = 'Nettoie ce pâté : 4 zombies';
+    $('quest-dist').textContent = '120 m';
     const m = $('city-meta'); m.hidden = false;
     m.firstElementChild.textContent = 'Zombies restants 108 · Habitants sauvés 29 / 475 · Pâtés libérés 4 / 42';
     m.lastElementChild.textContent = 'Route Vuaz des Chars · 5 zombies · 22 cachés';
@@ -1191,8 +1212,8 @@ async function screenDiet(page, tag) {
   });
   await wait(300);
   const closed = await frame();
-  check(!closed.meta && !closed.fiche && !closed.open && closed.quest.height <= 64 && closed.expanded !== 'true',
-    `${tag} 8 bis : quête de ville repliée sur ${closed.quest.height} px (64 au plus), compteurs et fiche cachés`);
+  check(!closed.meta && !closed.fiche && !closed.open && !closed.questText && !closed.stage && closed.quest.height <= 44 && closed.expanded !== 'true',
+    `${tag} 8 bis : objectif replié en puce de ${closed.quest.height} px (44 au plus) : texte, compteurs et fiche cachés`);
   const pillShown = await frame();
   check(pillShown.pill, `${tag} 8 bis : pastille « En ligne » visible quand elle n'est pas calme`);
   await ev(page, () => document.getElementById('online-pill').setAttribute('data-quiet', ''));
@@ -1201,16 +1222,41 @@ async function screenDiet(page, tag) {
   await page.tap('#quest');
   await wait(300);
   const opened = await frame();
-  check(opened.open && opened.expanded === 'true' && opened.meta && opened.fiche && opened.quest.height > closed.quest.height,
-    `${tag} 8 bis : quête touchée, compteurs et fiche dépliés (${closed.quest.height} → ${opened.quest.height} px)`);
+  check(opened.open && opened.expanded === 'true' && opened.meta && opened.fiche && opened.questText && opened.stage && opened.quest.height > closed.quest.height && opened.vitals.top === closed.vitals.top && opened.vitals.height === closed.vitals.height,
+    `${tag} 8 bis : objectif touché, fiche dépliée : étape, texte, compteurs et fiche du bâtiment (${closed.quest.height} → ${opened.quest.height} px, la barre du haut ne bouge pas)`);
   await shot(page, `${tag}-00-quete-depliee`);
+  const mapUnder = await ev(page, () => window.__earthlife.debug.minimapFit());
+  check(mapUnder.visible && mapUnder.step === 'plein', `${tag} 8 bis : fiche ouverte par-dessus la carte : la carte reste entière dessous (${mapUnder.visible ? mapUnder.step : 'masquée'})`);
+  // Une seule fiche à la fois (la fiche ouverte couvre les puces : le bouton Effets, caché, rouvre celle de la météo par
+  // le clavier) ; un toucher ailleurs (le jeu) referme la fiche ouverte.
+  await ev(page, () => document.getElementById('mods-toggle').click());
+  await wait(300);
+  const swap = await frame();
+  check(swap.showMods && !swap.open, `${tag} 8 bis : fiche des effets ouverte pendant que l'objectif est ouvert : une seule fiche, celle de la météo`);
+  await page.touchscreen.tap(200, 560);
+  await wait(300);
+  const away = await frame();
+  check(!away.showMods && !away.open, `${tag} 8 bis : toucher ailleurs (le jeu) : fiche refermée`);
   await page.tap('#quest');
   await wait(300);
-  const again = await frame();
-  check(!again.open && !again.meta && !again.fiche && again.quest.height === closed.quest.height, `${tag} 8 bis : quête retouchée, repliée de nouveau`);
+  await page.touchscreen.tap(200, 560);
+  await wait(300);
+  const away2 = await frame();
+  check(!away2.open && away2.expanded !== 'true', `${tag} 8 bis : fiche de l'objectif refermée d'un toucher ailleurs`);
   await shot(page, `${tag}-00-quete-repliee`);
+  // Nouvel objectif : la fiche s'entrouvre quelques secondes, sans se refermer au premier toucher du jeu.
+  await ev(page, () => window.__earthlife.debug.announceObjective());
+  await wait(300);
+  const peek = await frame();
+  await page.touchscreen.tap(200, 560);
+  await wait(300);
+  const peekTouch = await frame();
+  check(peek.open && peekTouch.open, `${tag} 8 bis : nouvel objectif : fiche entrouverte, toujours là après un toucher du jeu`);
+  await wait(6500);
+  const peekEnd = await frame();
+  check(!peekEnd.open && peekEnd.expanded !== 'true', `${tag} 8 bis : la fiche entrouverte se referme d'elle-même au bout de quelques secondes`);
 
-  // Affiche d'un moment fort : dans la colonne de gauche, sous la quête, sans toucher la carte ni le sac.
+  // Affiche d'un moment fort : dans la colonne de gauche, sous les puces, sans toucher la carte ni le sac.
   const moment = await ev(page, () => {
     const $ = (id) => document.getElementById(id);
     const m = $('moment');
@@ -1218,12 +1264,12 @@ async function screenDiet(page, tag) {
     m.querySelector('.moment-kicker').textContent = 'Alerte'; m.querySelector('.moment-title').textContent = 'Une horde approche';
     m.classList.remove('hidden'); m.style.animation = 'none';
     const rect = (e) => { const b = e.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom }; };
-    const mm = rect(m), map = rect($('mapbox')), inv = rect($('inventory')), quest = rect($('quest'));
+    const mm = rect(m), map = rect($('mapbox')), inv = rect($('inventory')), quest = rect($('quest')), cond = rect($('conditions'));
     m.classList.add('hidden'); m.style.animation = '';
     const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-    return { box: `${Math.round(mm.left)},${Math.round(mm.top)} → ${Math.round(mm.right)},${Math.round(mm.bottom)}`, h: Math.round(mm.bottom - mm.top), hits: [['carte', map], ['sac', inv], ['quête', quest]].filter(([, b]) => hit(mm, b)).map(([n]) => n), inside: mm.left >= 0 && mm.right <= innerWidth };
+    return { box: `${Math.round(mm.left)},${Math.round(mm.top)} → ${Math.round(mm.right)},${Math.round(mm.bottom)}`, h: Math.round(mm.bottom - mm.top), hits: [['carte', map], ['sac', inv], ['objectif', quest], ['météo', cond]].filter(([, b]) => hit(mm, b)).map(([n]) => n), inside: mm.left >= 0 && mm.right <= innerWidth };
   });
-  check(moment.inside && !moment.hits.length && moment.h <= 110, `${tag} 8 bis : affiche d'un moment fort ${moment.box} (${moment.h} px, 110 au plus), ${moment.hits.length ? `chevauche ${moment.hits.join(', ')}` : 'sans chevaucher la carte, le sac ni la quête'}`);
+  check(moment.inside && !moment.hits.length && moment.h <= 110, `${tag} 8 bis : affiche d'un moment fort ${moment.box} (${moment.h} px, 110 au plus), ${moment.hits.length ? `chevauche ${moment.hits.join(', ')}` : 'sans chevaucher la carte, le sac ni les puces'}`);
 
   // Remise en état.
   await ev(page, (k) => {
@@ -1697,10 +1743,11 @@ const MAP_LAYOUTS = {
     { width: 390, height: 844, lure: ['haut-droite', 96, true], none: ['haut-droite', 96, true] },
     // Hauteurs visibles sous les barres du navigateur : iPhone 12 à 15 dans Safari (390 × 664), petit Android (360 ×
     // 640), iPhone SE (375 × 553, la carte n'a pas la place au-dessus du plus haut toast quand le sac monte jusqu'à elle ;
-    // sans leurre, depuis l'écran allégé du 2026-10-13, elle tient réduite et sans boutons).
-    { width: 390, height: 664, lure: ['haut-droite', 96, false, 'sans-boutons'], none: ['haut-droite', 96, true] },
-    { width: 360, height: 640, lure: ['haut-droite', 88, false, 'sans-boutons'], none: ['haut-droite', 88, true] },
-    { width: 375, height: 553, lure: null, none: ['haut-droite', 66, false, 'reduite'] },
+    // depuis l'écran en icônes du 2026-10-18, plus haute dans l'écran, la carte garde ses boutons à 640 et 664 px de haut,
+    // même avec le leurre, et sur 375 × 553 elle tient : réduite et sans boutons avec le leurre, pleine sans).
+    { width: 390, height: 664, lure: ['haut-droite', 96, true], none: ['haut-droite', 96, true] },
+    { width: 360, height: 640, lure: ['haut-droite', 88, true], none: ['haut-droite', 88, true] },
+    { width: 375, height: 553, lure: ['haut-droite', 66, false, 'reduite'], none: ['haut-droite', 88, true] },
     { width: 844, height: 390, lure: ['haut-droite', 128, true], none: ['haut-droite', 128, true] },
     { width: 667, height: 375, lure: null, none: ['haut-droite', 88, false], besideBag: true },
     { width: 768, height: 1024, lure: ['bas-gauche', 152, true], none: ['bas-gauche', 152, true] },
