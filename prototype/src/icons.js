@@ -95,6 +95,9 @@ const ICONS = {
   cadenas: `<path d="M5.5 11h13v9.5h-13zM8 11V7.5a4 4 0 0 1 8 0V11"/>${dot(12, 15.5, 1.3)}`,
   enveloppe: '<path d="M3.5 6h17v12h-17z"/><path d="M3.5 6.5 12 13l8.5-6.5"/>',
   sortie: '<path d="M10 4H5.5v16H10M14.5 8l4 4-4 4M18.5 12H9"/>',
+
+  // Partager le jeu et inviter un ami : trois points reliés.
+  partager: '<circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="M8.2 10.8l7.6-4.1M8.2 13.2l7.6 4.1"/>',
 };
 
 // Icônes des 6 gestes, par numéro de geste (0 « Salut » … 5 « Besoin d'aide »).
