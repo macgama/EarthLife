@@ -211,6 +211,7 @@ export function relocateBase(old, building, openings, info = {}) {
     base.upgrades = [...(old.upgrades ?? [])];
     base.sirenAt = old.sirenAt ?? 0;
     base.lastReserve = old.lastReserve ?? null;
+    if (old.habitants > 0) base.habitants = old.habitants; // les habitants sauvés suivent leur refuge
   }
   return base;
 }

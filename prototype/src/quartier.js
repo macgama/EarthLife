@@ -1083,6 +1083,21 @@ export function liberate(ville, key) {
   return freed;
 }
 
+// Un habitant caché est trouvé en fouillant un bâtiment du pâté : il est sauvé tout de suite, seul, sans attendre la
+// libération du pâté (ses autres cachés restent cachés). Rend 1, ou 0 s'il ne reste personne à trouver (pâté libéré, ou
+// seulement toi dans ton pâté). La conservation tient : un caché de moins, un sauvé de plus.
+export function rescueOne(ville, key) {
+  const row = rowOf(ville, key);
+  if (!row || row[E] === ETAT.libere) return 0;
+  const me = key === ville.me && !ville.meOut ? 1 : 0;
+  if (row[H] - me < 1) return 0;
+  row[H]--;
+  ville.saved++;
+  const u = ville.units[unitKeyOfRow(ville, row)];
+  if (u) u.sv++;
+  return 1;
+}
+
 // Un pâté libéré par un autre survivant (en ligne) arrive avec la moitié de ses zombies : l'autre moitié est
 // comptée « abattue par les autres survivants ». À n'appliquer qu'une fois par trace (lot H).
 export function othersCleared(ville, key) {
@@ -1202,7 +1217,10 @@ export function changeLevel(ville, level) {
       } else {
         const st = s0 + delta;
         if (st < 0) surplus += st;
-        row[S0] = s0; row[R] = r.get(it.key); row[H0] = row[H] = h0; row[S] = Math.max(0, st);
+        // Les habitants déjà trouvés un à un (H0 − H) restent sauvés : ils sont retirés des cachés de la nouvelle part.
+        const found = row[H0] - row[H];
+        if (found > h0) return false;
+        row[S0] = s0; row[R] = r.get(it.key); row[H0] = h0; row[H] = h0 - found; row[S] = Math.max(0, st);
         live.push({ key: it.key, row });
       }
     }

@@ -9,7 +9,8 @@
 // trajet : trajet entre stations, ordinateur et téléphone ; trajet:desktop ou trajet:mobile : un seul ;
 // voiture : voitures et carburant (réparer, siphonner, plein, trajet de Lyon à Pérouges), ordinateur et téléphone ;
 // ecran : l'écran de jeu allégé du téléphone en portrait, seul sur une partie neuve ;
-// fabrication : fabriquer dehors (bouton, carte, durée, bruit, interruption) et les sacs de 36 et 60 places).
+// fabrication : fabriquer dehors (bouton, carte, durée, bruit, interruption) et les sacs de 36 et 60 places ;
+// habitants : un habitant trouvé en fouillant rejoint le refuge, dans une ville à sauver (Pérouges), ordinateur et téléphone).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
@@ -41,6 +42,8 @@ await new Promise((resolve) => server.listen(Number(process.env.PORT ?? 0), '127
 // sol=fin : tout le détail du sol, comme avec une carte graphique (sans le paramètre, le rendu logiciel de Chromium
 // garde le sol plat, chunks.js GROUND_DETAILS) ; une erreur du shader se lirait dans la console (scénario 8).
 const START = `http://127.0.0.1:${server.address().port}/index.html?lat=45.7578&lon=4.832&autostart=1&time=day&debug=1&menu=libre&sol=fin`;
+// Une ville à sauver, niveau Facile, à Pérouges (la partie démarre au refuge de la ville).
+const CITY_START = `http://127.0.0.1:${server.address().port}/index.html?lat=45.9034&lon=5.1795&name=P%C3%A9rouges&autostart=1&time=day&debug=1&menu=libre&sol=fin&niveau=facile`;
 
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const failures = [];
@@ -3601,6 +3604,174 @@ async function fabricationScenario(device) {
   await ctx.close();
 }
 
+// ---------- Des habitants à sauver (21) ----------
+// Une partie « Sauver sa ville » (Pérouges) : fouiller un bâtiment qui cache quelqu'un en trouve un (tirage forcé), il rejoint le
+// refuge et se tient devant la porte, le compteur de la ville monte d'un, la sauvegarde le garde ; un bâtiment qui ne cache
+// personne ne donne rien ; au-delà de 12 on voit un chiffre ; en partie libre, personne.
+
+// Bâtiment le plus proche qui cache encore quelqu'un (hiddenIn), pas encore fouillé, avec un point libre contre sa façade.
+const habSpot = (page, skip = []) => ev(page, async (skipIds) => {
+  const col = await import('/src/collision.js');
+  const { session: s, save } = window.__earthlife;
+  const p = s.player;
+  const home = s.store.buildings.find((b) => b.id === save.base?.id);
+  const list = s.store.buildings.map((b, i) => ({ b, i, d: Math.hypot(b.cx - p.x, b.cz - p.z) })).sort((a, b) => a.d - b.d);
+  for (const { b, i, d } of list) {
+    if (d > 300) break;
+    if (skipIds.includes(b.id) || save.searched[b.id] || b.id === save.base?.id) continue;
+    // Loin de la porte du refuge, où E propose d'y entrer plutôt que de fouiller.
+    if (home && Math.hypot(b.cx - home.cx, b.cz - home.cz) < 30) continue;
+    const hidden = s.city.hiddenIn(b.id);
+    if (hidden < 1) continue;
+    for (let rad = 2; rad < 40; rad += 0.5) {
+      for (let k = 0; k < 48; k++) {
+        const a = (k / 48) * Math.PI * 2;
+        const x = b.cx + Math.sin(a) * rad, z = b.cz + Math.cos(a) * rad;
+        if (!col.isFree(s.grid, x, z) || col.buildingNear(s.grid, x, z, 1.6) !== i) continue;
+        return { i, id: b.id, x, z, d: Math.round(d), hidden };
+      }
+    }
+  }
+  return null;
+}, skip);
+
+// Un bâtiment qui ne cache plus personne (ou qu'aucun pâté connu ne couvre), pour vérifier qu'il ne donne rien.
+const emptyBuilding = (page) => ev(page, () => {
+  const { session: s, save } = window.__earthlife;
+  const p = s.player;
+  return s.store.buildings
+    .filter((b) => !save.searched[b.id] && b.id !== save.base?.id && s.city.hiddenIn(b.id) === 0)
+    .sort((a, b) => Math.hypot(a.cx - p.x, a.cz - p.z) - Math.hypot(b.cx - p.x, b.cz - p.z))[0]?.id ?? null;
+});
+
+const habState = (page) => ev(page, () => {
+  const { session: s, save } = window.__earthlife;
+  const st = s.city?.stats();
+  const v = window.__earthlife.habitantsView;
+  const lab = document.querySelector('.habitant-label');
+  const r = lab && !lab.hidden ? lab.getBoundingClientRect() : null;
+  return {
+    habitants: save.base?.habitants ?? null, saved: s.city?.ville.saved ?? null, stats: st ? { saved: st.saved, toSave: st.toSave } : null,
+    drawn: v ? v.stats().drawn : 0, label: lab && !lab.hidden ? lab.textContent.replace(/\s+/g, ' ').trim() : null,
+    labelIn: r ? r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight : null,
+  };
+});
+
+async function habitantsScenario(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 21`;
+  const name = tag.replace(' ', '-');
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(CITY_START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  const base0 = await ev(page, () => ({ city: !!window.__earthlife.session.city, base: !!window.__earthlife.save.base, name: window.__earthlife.session.city?.ville.name }));
+  if (!check(base0.city && base0.base, `${tag} : ville à sauver ${base0.name}, refuge en place`)) { await ctx.close(); return; }
+  const first = await habState(page);
+  check(first.habitants === null && first.drawn === 0 && first.saved === 0, `${tag} : au départ, aucun habitant au refuge (${JSON.stringify(first)})`);
+
+  // Un bâtiment qui ne cache personne ne donne rien, même avec le tirage forcé.
+  const empty = await emptyBuilding(page);
+  if (empty) {
+    const none = await ev(page, (id) => { const c = window.__earthlife.session.city; c.state.forceFind = true; const n = c.rescueIn(id); c.state.forceFind = false; return n; }, empty);
+    check(none === 0, `${tag} : un bâtiment qui ne cache personne ne trouve personne (${none})`);
+  } else note(`${tag} : aucun bâtiment vide trouvé, contrôle sauté`);
+
+  // Fouille d'un bâtiment qui cache quelqu'un, tirage forcé.
+  const spot = await habSpot(page);
+  if (!check(!!spot, `${tag} : un bâtiment qui cache quelqu'un trouvé${spot ? ` (${spot.id}, ${spot.hidden} caché(s), à ${spot.d} m)` : ''}`)) { await shot(page, `${name}-echec`); await ctx.close(); return; }
+  await ev(page, () => { window.__earthlife.session.city.state.forceFind = true; });
+  await clearZombies(page);
+  await leave(page, device);   // la partie démarre dans le refuge : E y serait « Sortir »
+  await debug(page, 'teleport', spot.x, spot.z);
+  const label = await until(page, (id) => { const l = window.__label(id); return /^Fouiller/.test(l ?? '') ? l : null; }, 'search', 20000);
+  if (!check(!!label, `${tag} : bouton « ${label} »`)) { note(`${tag} : ${JSON.stringify(await menuOf(page))}`); await shot(page, `${name}-echec`); await ctx.close(); return; }
+  await press(page, device, 'KeyE', 'search');
+  const search = await searchSafely(page, device, spot.id);
+  if (!check(search.done, `${tag} : fouille terminée`)) { note(`${tag} : ${await state(page)}`); await shot(page, `${name}-echec`); await ctx.close(); return; }
+  const after = await until(page, () => (window.__earthlife.save.base?.habitants ? 1 : null), null, 8000);
+  check(!!after, `${tag} : un habitant rejoint le refuge`);
+  const found = await toastSeen(page, 'Un habitant se cachait ici', 40000);
+  check(!!found && /rejoint ton refuge/.test(found), `${tag} : notification « ${found} »`);
+  const hab1 = await habState(page);
+  check(hab1.habitants === 1 && hab1.saved === 1 && hab1.stats?.saved === 1, `${tag} : 1 habitant au refuge, 1 sauvé en ville (${JSON.stringify({ h: hab1.habitants, v: hab1.saved, s: hab1.stats })})`);
+  if (device !== 'mobile') {
+    const meta = await ev(page, () => document.getElementById('city-meta')?.firstElementChild?.textContent.replace(/\s+/g, ' ') ?? '');
+    check(/Habitants sauvés 1 \//.test(meta), `${tag} : le compteur de la ville affiche « ${meta} »`);
+  }
+  await ev(page, () => { window.__earthlife.session.city.state.forceFind = false; });
+
+  // Il se tient devant la porte du refuge.
+  const door = await ev(page, () => { const d = window.__earthlife.refuge.openingsWorld()[0]; return d ? { x: d.x, z: d.z, nx: d.nx, nz: d.nz } : null; });
+  if (!check(!!door, `${tag} : la porte du refuge est connue`)) { await ctx.close(); return; }
+  const stand = await openSpot(page, door.x + door.nx * 7, door.z + door.nz * 7, 0, 8);
+  await debug(page, 'teleport', stand?.x ?? door.x + door.nx * 7, stand?.z ?? door.z + door.nz * 7);
+  const drawn = await until(page, () => (window.__earthlife.habitantsView?.stats().drawn === 1 ? 1 : null), null, 20000);
+  check(!!drawn, `${tag} : l'habitant est dessiné devant la porte`);
+  const where = await ev(page, ([d]) => {
+    const v = window.__earthlife.habitantsView;
+    const m = v.crowd.meshes.body;
+    const arr = m.instanceMatrix.array;
+    return { x: arr[12], z: arr[14], d: Math.hypot(arr[12] - d.x, arr[14] - d.z), front: (arr[12] - d.x) * d.nx + (arr[14] - d.z) * d.nz };
+  }, [door]);
+  check(where.d > 1.5 && where.d < 6 && where.front > 0, `${tag} : à ${round(where.d, 1)} m de la porte, côté rue (${round(where.front, 1)} m devant le mur)`);
+  await wait(1200);
+  await shot(page, `${name}-habitant-au-refuge`);
+
+  // Coût de dessin : au plus 2 appels de plus que sans eux.
+  const calls = await ev(page, async () => {
+    const el = window.__earthlife, g = el.habitantsView.root;
+    const frame = () => new Promise((res) => requestAnimationFrame(() => res(el.renderer.info.render.calls)));
+    const median = async () => { const v = []; for (let i = 0; i < 5; i++) v.push(await frame()); return v.sort((a, b) => a - b)[2]; };
+    await frame();
+    const withThem = await median();
+    g.visible = false;
+    await frame();
+    const without = await median();
+    g.visible = true;
+    return { withThem, without };
+  });
+  check(calls.withThem - calls.without <= 2, `${tag} : ${calls.withThem - calls.without} appel(s) de dessin pour les habitants (${calls.withThem} contre ${calls.without})`);
+
+  // Beaucoup d'habitants : 12 silhouettes au plus, le reste en chiffre.
+  await ev(page, () => { window.__earthlife.save.base.habitants = 40; });
+  const many = await until(page, () => (window.__earthlife.habitantsView.stats().drawn >= 1 && window.__earthlife.habitantsView.stats().label ? 1 : null), null, 15000);
+  const crowd = await habState(page);
+  check(!!many && crowd.drawn === 12 && crowd.label === '+ 28 autres', `${tag} : 40 habitants : ${crowd.drawn} silhouettes et « ${crowd.label} »`);
+  check(crowd.labelIn === true, `${tag} : le chiffre est dans l'écran`);
+  await wait(2500);   // le fondu d'apparition des nouveaux venus (0,9 s de jeu) est fini
+  await shot(page, `${name}-habitants-nombreux`);
+  await ev(page, () => { window.__earthlife.save.base.habitants = 1; });
+  await until(page, () => (window.__earthlife.habitantsView.stats().drawn === 1 ? 1 : null), null, 10000);
+
+  // Sauvegarde : le nombre est relu après un rechargement.
+  await ev(page, () => window.__earthlife.saveStore.markDirty());
+  await until(page, () => !window.__earthlife.saveStore.dirty, null, 10000);
+  await page.reload();
+  if (!check(await started(page), `${tag} : partie reprise après le rechargement`)) { await ctx.close(); return; }
+  const again = await habState(page);
+  check(again.habitants === 1 && again.saved === 1, `${tag} : après rechargement : ${again.habitants} habitant au refuge, ${again.saved} sauvé en ville`);
+  const door2 = await ev(page, () => { const d = window.__earthlife.refuge.openingsWorld()[0]; return d ? { x: d.x, z: d.z, nx: d.nx, nz: d.nz } : null; });
+  const stand2 = await openSpot(page, door2.x + door2.nx * 7, door2.z + door2.nz * 7, 0, 8);
+  await debug(page, 'teleport', stand2?.x ?? door2.x + door2.nx * 7, stand2?.z ?? door2.z + door2.nz * 7);
+  const redrawn = await until(page, () => (window.__earthlife.habitantsView?.stats().drawn === 1 ? 1 : null), null, 20000);
+  check(!!redrawn, `${tag} : l'habitant est de nouveau devant la porte`);
+
+  // Partie libre : on n'en montre aucun (la ville est retirée un instant, comme dans une partie libre).
+  const free = await ev(page, async () => {
+    const s = window.__earthlife.session;
+    const rt = s.city;
+    s.city = null;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const drawn = window.__earthlife.habitantsView.stats().drawn;
+    s.city = rt;
+    return drawn;
+  });
+  check(free === 0, `${tag} : en partie libre, aucun habitant dessiné (${free})`);
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
@@ -3621,6 +3792,9 @@ try {
   } else if (only === 'fabrication') {
     await fabricationScenario('desktop');
     await fabricationScenario('mobile');
+  } else if (only === 'habitants') {
+    await habitantsScenario('desktop');
+    await habitantsScenario('mobile');
   } else if (only.startsWith('trajet')) {
     if (only !== 'trajet:mobile') await trajet('desktop');
     if (only !== 'trajet:desktop') await trajet('mobile');
@@ -3647,6 +3821,8 @@ try {
     if (!only) await voitureScenario('mobile');
     await fabricationScenario(only === 'mobile' ? 'mobile' : 'desktop');
     if (!only) await fabricationScenario('mobile');
+    await habitantsScenario(only === 'mobile' ? 'mobile' : 'desktop');
+    if (!only) await habitantsScenario('mobile');
   }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {

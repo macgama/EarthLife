@@ -13,6 +13,7 @@ import { homeQuest } from './quest.js';
 import { localDate, utcOffsetFor } from './horde.js';
 import { storeItems, chestCap, countOf, countsLabel, claimableShape } from './base.js';
 import { nearestOpen } from './collision.js';
+import { addHabitant, clearHabitants } from './habitants.js';
 import { SEASON_TEXT } from './net/season.js';
 import { insideTiles, resumeHome } from './saison-miroir.js';
 import { createMenuSheet } from './menu-sheet.js';
@@ -723,6 +724,12 @@ export function createCityGame(host) {
 
   // Ta maison : tirée parmi les habitants cachés, déjà fouillée et à toi (refuge). Une ancienne partie garde son refuge.
   async function startHome(s, plan) {
+    await settleHome(s, plan);
+    // Une ville neuve : les habitants installés au refuge venaient de l'ancienne.
+    if (s.refuge?.base?.habitants) { clearHabitants(s.refuge.base); host.saveDirty(); }
+  }
+
+  async function settleHome(s, plan) {
     const rt = s.city, ville = rt.ville;
     if (plan.adopt) {
       const b = host.homeLatLon();
@@ -848,6 +855,18 @@ export function createCityGame(host) {
     if (a.id === 'nest') rt.openNestAt(a.arg, s.director, s.player);
     else if (a.id === 'flag') rt.plantFlagAt(a.arg, { night: s.isNight, weatherKind: s.weather?.kind ?? 'clear' });
     host.saveDirty();
+  }
+
+  // Fouille du bâtiment `b` (ou d'une de ses `parts` pièces) : s'il cachait un habitant, il est sauvé tout de suite et s'installe au
+  // refuge. Rend { refuge } (le joueur a un refuge pour l'accueillir), ou null.
+  function rescueFrom(s, b, { parts = 1 } = {}) {
+    const rt = s.city;
+    if (!rt || rt.ended || !b || !rt.rescueIn(b.id, { parts })) return null;
+    const base = s.refuge?.base ?? null;
+    if (base) addHabitant(base);
+    host.saveDirty();
+    refreshHud(s, true);
+    return { refuge: !!base };
   }
 
   // Ce que la ville change dans les vagues du refuge (taille du niveau, Nuit du cœur, plus rien si sauvée).
@@ -1057,7 +1076,7 @@ export function createCityGame(host) {
   }
 
   return {
-    initMenu, syncMenu, playLabel, placeChosen, prepareLaunch, planTrip, landTrip, tripCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws,
+    initMenu, syncMenu, playLabel, placeChosen, prepareLaunch, planTrip, landTrip, tripCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws, rescueFrom,
     questText, homeGoal, onRefugeAction, onDeath, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },
