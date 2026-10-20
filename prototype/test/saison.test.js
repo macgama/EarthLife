@@ -312,6 +312,17 @@ test('gestes du miroir : mêmes gestes que seul, plus l\'envoi au serveur et le 
   const solo = soloOps(miniVille());
   assert.equal(solo.lend(KEY, 2), 2);
   assert.deepEqual(solo.leases(), []);
+  // Habitant trouvé en fouillant : seul, il est sauvé ; en saison le serveur ne connaît pas encore ce geste, rien ne change.
+  const hidden = () => { const h = miniVille(); h.me = null; Object.assign(h.tiles['14/1/1'].b[KEY], { 3: 2, 4: 2 }); return h; };
+  const alone = hidden();
+  assert.equal(soloOps(alone).rescue(KEY), 1);
+  assert.equal(alone.saved, 1);
+  assert.equal(soloOps(alone).rescue('inconnu'), 0);
+  const waiting = hidden();
+  sent.length = 0;
+  assert.equal(seasonOps(waiting, { emit: (e) => sent.push(e) }).rescue(KEY), 0);
+  assert.equal(waiting.saved, 0);
+  assert.deepEqual(sent, []);
 });
 
 test('le serveur écrit dans la copie : rangées, tuiles, compteurs, prêts ; jamais `me`', () => {

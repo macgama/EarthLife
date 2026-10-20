@@ -23,6 +23,7 @@ import { censusPlan, mergeCensus, pateAt, edgeNeighbours, blocksTileKey, createB
 import { createBlocksJobs } from './blocks-worker.js';
 import { tileUrl } from './tiles.js';
 import { claimableShape } from './base.js';
+import { findChance } from './habitants.js';
 
 export const CITY = {
   tilesAround: 1,        // tuiles découpées autour du joueur (3 × 3)
@@ -411,6 +412,7 @@ export function createCityRuntime(deps) {
   const lent = new Map();      // zombie -> clé du pâté (ou '@' + quartier) qui l'a prêté
   const state = {
     counter: null, nightDone: null, lastDirty: 0, dirtyPending: false, ended: false, acc: 0, unitAcc: 0, heartAt: -Infinity, heartVal: null, capAt: -Infinity, capVal: 0,
+    forceFind: false,   // essais (?debug=1) : un bâtiment qui cache quelqu'un le donne à coup sûr
   };
   let disposed = false;
 
@@ -742,6 +744,41 @@ export function createCityRuntime(deps) {
     if (director) director.removeWhere?.((z) => lent.has(z));
     lent.clear();
     ops.recallAll();
+  }
+
+  // ----- Habitants trouvés en fouillant -----
+
+  // Pâté d'un bâtiment (son identifiant est dans `ids` de la découpe qui le contient), parmi les découpes gardées près du joueur.
+  function pateOfBuilding(id) {
+    for (const res of cuts.values()) {
+      for (const p of res.pates) if (pos.has(p.key) && p.ids?.includes(id)) return p;
+    }
+    return null;
+  }
+
+  // Cachés d'un bâtiment : sa part du pâté (hiddenByBuilding), 0 si le pâté est inconnu ou n'en cache plus.
+  function hiddenIn(id) {
+    const pate = pateOfBuilding(id);
+    if (!pate) return 0;
+    return hiddenByBuilding(ville, pate).find(([bid]) => bid === id)?.[1] ?? 0;
+  }
+
+  // La fouille d'un bâtiment (ou d'une de ses `parts` pièces) trouve-t-elle un habitant ? Seulement s'il en cache encore ; la
+  // chance suit leur nombre (habitants.js). Un habitant trouvé est sauvé tout de suite, seul, sans libérer le pâté. Rend 1 ou 0.
+  // En saison, seulement si le serveur connaît le geste (S.hab).
+  function rescueIn(id, { parts = 1 } = {}) {
+    if (state.ended || (S && !S.hab)) return 0;
+    const pate = pateOfBuilding(id);
+    if (!pate) return 0;
+    const share = hiddenByBuilding(ville, pate).find(([bid]) => bid === id)?.[1] ?? 0;
+    if (share < 1) return 0;
+    if (!state.forceFind && rand() >= findChance(share, parts)) return 0;
+    const n = ops.rescue(pate.key);
+    if (n) {
+      markDirty(true);
+      onEvent({ type: 'rescued', key: pate.key, n });
+    }
+    return n;
   }
 
   // ----- Ce que le joueur peut faire (E) -----
@@ -1238,6 +1275,7 @@ export function createCityRuntime(deps) {
     setMembership(next) { fn = next.fn ?? fn; member = next.member ?? member; },
     ensureAround, place, blockAt, nearestBlock, reconcile, recall, tick, actions, openNestAt, plantFlagAt, endCounter, onDeath,
     settleEmpty, nightly, refugeCtx, objective, stats, blockLine, finish, networkBack, chooseHeart, frontier, markDirty, dispose,
+    rescueIn, hiddenIn,
     status: () => cityStatus(ville),
     heartUnit,
     counterSize,

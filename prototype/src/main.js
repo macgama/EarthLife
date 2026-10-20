@@ -4,7 +4,7 @@ import { CITIES } from './cities.js';
 import { createPicker, placeFromCity } from './picker.js';
 import { fetchWeather, forcedWeather, gameplayModifiers } from './weather.js';
 import { sunPosition, localTimeLabel } from './sun.js';
-import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, buildingAt, lineFree, groundAt, groundNormal } from './collision.js';
+import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, buildingAt, lineFree, groundAt, groundNormal, isFree } from './collision.js';
 import { buildingFloor } from './terrain.js';
 import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate, addFeatures } from './world.js';
 import { DEM_ATTRIBUTION } from './dem.js';
@@ -47,6 +47,8 @@ import { createFinds, leftText as findsLeftText } from './trouvailles.js';
 import { createPropsView } from './props-view.js';
 import { createFloreView } from './flore-view.js';
 import { createBaseView } from './base-view.js';
+import { createHabitantsView } from './habitants-view.js';
+import { habitantCount, HABITANT_TEXT } from './habitants.js';
 import {
   createRefugePanel, createCard, onlineChoiceCard, survivorCard, reportCard, followCard, myDataCard, eraseCard, exportCard,
   zonesCard, ONLINE_TEXTS, ACCOUNT_TEXTS,
@@ -498,6 +500,8 @@ const propsView = createPropsView(scene, { lowPower });
 // Petits décors de la nature (buissons, rochers, touffes d'herbe) : sans collision ni démontage.
 const floreView = createFloreView(scene, { lowPower });
 const baseView = createBaseView(scene);
+// Habitants sauvés devant la porte du refuge : créé au premier habitant (habitants-view.js).
+let habitantsView = null;
 // Tir : l'arme en main, l'éclair et la trace de la balle (un jeu par page).
 const tirView = createTirView(scene);
 // Intérieur des bâtiments : la vue (maillages créés à « Entrer », défaits à la sortie) et ses règles dans la partie.
@@ -1196,6 +1200,7 @@ function disposeSession() {
   // Les plans gardés sont dans le repère de ce monde : le suivant (autre origine) reprendrait des coordonnées périmées.
   clearPlanCache();
   othersView?.clear();
+  habitantsView?.clear();
   panel.close();
   closeFinds();
   baseView.setLure(null);
@@ -1885,10 +1890,10 @@ function finishCraft(s, a) {
 // Butin d'une fouille ou d'un démontage. En jeu normal, la fenêtre « Trouvé » (trouvailles.js) laisse choisir ce qui entre dans le sac,
 // ce qui s'équipe et ce qui reste sur place ; le jeu y est en pause et les notifications attendent sa fermeture. Renvoie false quand
 // elle n'a pas servi (essais, rien trouvé) : l'appelant ramasse alors comme avant (`pickLoot`).
-function openFinds(s, { title, found, kicker = '', sub = '' }) {
+function openFinds(s, { title, found, kicker = '', sub = '', notes = [] }) {
   if (!FINDS_ON || !countOf(found)) return false;
   return finds.open(s, {
-    title, found, kicker, sub,
+    title, found, kicker, sub, notes,
     onClose: (left) => {
       if (session !== s) return;
       const text = findsLeftText(left);
@@ -1923,11 +1928,14 @@ function finishSearch(s, a) {
   const tiles = s.store.source === 'tiles';
   const other = tiles ? online.searchedByOther(b.id) : null;
   const found = rollLoot(b.loot, lootRand, { ...(other ? REDUCED_LOOT : null), draws: city.lootDraws(s) });
+  // Ville à sauver : le bâtiment cachait peut-être un habitant, qui rejoint le refuge.
+  const hab = city.rescueFrom(s, b);
   // La fenêtre « Trouvé » s'ouvre d'abord : l'embuscade, le plan et le niveau gagné qui suivent attendent sa fermeture (toast).
-  const windowed = openFinds(s, { title: a.title, found, sub: other ? 'Un autre survivant est déjà passé : il restait peu de choses' : '' });
+  const windowed = openFinds(s, { title: a.title, found, sub: other ? 'Un autre survivant est déjà passé : il restait peu de choses' : '', notes: hab ? [HABITANT_TEXT.found(hab.refuge)] : [] });
   ambush(s, b);
   if (tiles && rollPlan(b.loot, save.profile)) toast(PLAN_FOUND_TEXT, 4, 'success');
   if (!windowed) pickLoot(s, a.title, found, other ? ' · il restait peu de choses' : '');
+  if (hab && !windowed) toast(HABITANT_TEXT.found(hab.refuge), 3.5, 'success');
   gainSkill(s, 'fouille', GAIN.search); // après le butin : le niveau gagné passe derrière la notification du butin
   if (tiles) online.mark('s', b.id);
   claimHint(s, b, a.arg);
@@ -1946,10 +1954,13 @@ function finishRoom(s, a) {
   const tiles = s.store.source === 'tiles';
   const other = tiles ? online.searchedByOther(b.id) : null;
   const found = rollRoomLoot(plan, a.arg, lootRand, { ...(other ? REDUCED_LOOT : null), draws: city.lootDraws(s) });
-  const windowed = openFinds(s, { title: roomTitle(plan, a.arg), found, sub: other ? 'Un autre survivant est déjà passé : il restait peu de choses' : '' });
+  // Ville à sauver : une des pièces du bâtiment cachait peut-être un habitant (la chance de la pièce est celle du bâtiment divisée par ses pièces).
+  const hab = city.rescueFrom(s, b, { parts: plan.rooms.length });
+  const windowed = openFinds(s, { title: roomTitle(plan, a.arg), found, sub: other ? 'Un autre survivant est déjà passé : il restait peu de choses' : '', notes: hab ? [HABITANT_TEXT.found(hab.refuge)] : [] });
   ambushRoom(s, plan, a.arg);
   if (tiles && after.whole && rollPlan(b.loot, save.profile)) toast(PLAN_FOUND_TEXT, 4, 'success');
   if (!windowed) pickLoot(s, roomTitle(plan, a.arg), found, other ? ' · il restait peu de choses' : '');
+  if (hab && !windowed) toast(HABITANT_TEXT.found(hab.refuge), 3.5, 'success');
   if (after.whole) {
     if (tiles) online.mark('s', b.id);
     toast('Bâtiment fouillé : toutes les pièces', 2.5, 'success');
@@ -2893,6 +2904,32 @@ function syncBase(s, dt) {
     baseView.setOrphan(oc ? s.store.proj.toLocal(oc.lat, oc.lon) : null);
   }
   baseView.update(dt, { night: s.isNight });
+  syncHabitants(s, dt);
+}
+
+// Habitants sauvés, debout devant la porte du refuge : seulement dans une ville à sauver, jamais dans un intérieur ouvert
+// (le noir y cache le dehors). La porte est relue quand le refuge ou ses ouvertures changent.
+function syncHabitants(s, dt) {
+  const r = s.refuge;
+  const count = s.city && r.base && !s.interior ? habitantCount(r.base) : 0;
+  if (!habitantsView) {
+    if (!count) return;
+    habitantsView = createHabitantsView({ scene, characters, labelRoot: $('others-labels') });
+  }
+  const dk = `${s.viewBase}|${r.version}`;
+  if (dk !== s.habDoorKey) {
+    s.habDoorKey = dk;
+    const d = r.openingsWorld()[0];
+    s.habDoor = d ? { x: d.x, z: d.z, nx: d.nx, nz: d.nz } : null;
+  }
+  s.habInfo ??= {
+    count: 0, door: null, player: s.player,
+    free: (x, z) => isFree(s.grid, x, z),
+    ground: (x, z) => (s.grid?.terrain?.enabled ? groundAt(s.grid, x, z) : 0),
+  };
+  s.habInfo.count = count;
+  s.habInfo.door = s.habDoor;
+  habitantsView.sync(s.habInfo, camera, dt);
 }
 
 // ---------- Interface ----------
@@ -3738,5 +3775,6 @@ window.__earthlife = {
 };
 // others-view.js arrive plus tard (import dynamique) : lu à la demande, pas recopié au chargement.
 if (debug) Object.defineProperty(window.__earthlife, 'othersView', { get: () => othersView, enumerable: true });
+if (debug) Object.defineProperty(window.__earthlife, 'habitantsView', { get: () => habitantsView, enumerable: true });
 // Chargement lent : le message « le jeu n'a pas pu se charger » (index.html) a pu s'afficher entre-temps.
 if ($('loading').classList.contains('fatal')) setLoading(null);

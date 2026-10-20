@@ -12,7 +12,7 @@ import {
 import { createBlocksClient } from '../src/blocks.js';
 import { findCommune, findNeighbours, createCommuneCache } from '../src/commune.js';
 import { createTerritoryStore, currentVille, parseTerritory } from '../src/territory-store.js';
-import { checkVille, counters, blockInfo, cityStatus, zombiesLeft, LEVEL_KEYS, NIVEAUX, heartWaves, ROW } from '../src/quartier.js';
+import { checkVille, counters, blockInfo, cityStatus, zombiesLeft, LEVEL_KEYS, NIVEAUX, heartWaves, ROW, hiddenByBuilding } from '../src/quartier.js';
 import { createGrid } from '../src/collision.js';
 import { createZombieDirector, createPlayer } from '../src/game.js';
 import { gameplayModifiers, forcedWeather } from '../src/weather.js';
@@ -528,6 +528,88 @@ test('maison : tirée parmi les habitants cachés, à bonne distance, jamais dan
 
 test('niveaux : texte en clair pour chaque niveau', () => {
   for (const lv of LEVEL_KEYS) assert.ok(LEVEL_TEXT[lv].rule.includes(`${NIVEAUX[lv].pct} %`), lv);
+});
+
+// ---------- Habitants trouvés en fouillant ----------
+
+// Bâtiments des pâtés placés, avec leur part de cachés : [{ id, key, hidden }].
+const buildingsOf = (g) => {
+  const out = [];
+  for (const res of g.rt.cuts.values()) for (const p of res.pates) {
+    if (!g.rt.pos.has(p.key)) continue;
+    for (const [id, hidden] of hiddenByBuilding(g.ville, p)) out.push({ id, key: p.key, hidden });
+  }
+  return out;
+};
+
+test('habitants : fouiller un bâtiment qui en cache peut en trouver un, sauvé tout de suite, sans libérer le pâté', async () => {
+  const g = await newGame({ level: 'facile' });
+  g.rt.ville.me = null;
+  const { ville, rt } = g;
+  const target = buildingsOf(g).find((b) => b.hidden >= 2);
+  assert.ok(target, 'un bâtiment qui cache au moins deux habitants');
+  const before = counters(ville).saved, hidden = blockInfo(ville, target.key).hidden;
+  let found = 0;
+  for (let i = 0; i < 60 && !found; i++) found = rt.rescueIn(target.id);
+  assert.equal(found, 1, 'trouvé au bout de quelques fouilles');
+  assert.equal(counters(ville).saved, before + 1);
+  assert.equal(blockInfo(ville, target.key).hidden, hidden - 1);
+  assert.notEqual(blockInfo(ville, target.key).state, 'libere');
+  assert.ok(checkVille(ville).ok, checkVille(ville).errors.join(' ; '));
+});
+
+test('habitants : l\'événement « rescued » est annoncé, le territoire est à écrire, et une ville sauvée n\'en cache plus', async () => {
+  const events = [];
+  const client = makeClient();
+  const storage = memoryStorage();
+  const store = createTerritoryStore({ storage, onDirty: () => {} });
+  const communes = createCommuneCache(storage);
+  const deps = { client, communes, template: TEMPLATE, store };
+  const prep = await prepareCity(deps, HOME);
+  const began = beginCity(deps, prep, 'facile', { at: 1000 });
+  const rt = createCityRuntime({
+    ville: began.ville, store, client, template: TEMPLATE, graph: prep.graph, fn: prep.fn, member: prep.member, unit: prep.unit, commune: prep.commune,
+    proj: makeProjection(HOME.lat, HOME.lon), maison: prep.ref, rand: rng(11), now: (() => { let t = 1e6; return () => (t += 1); })(), onEvent: (e) => events.push(e),
+  });
+  await rt.ensureAround(0, 0, { wait: true });
+  const g = { ville: began.ville, rt };
+  const target = buildingsOf(g).find((b) => b.hidden >= 3);
+  let n = 0;
+  for (let i = 0; i < 80 && !n; i++) n = rt.rescueIn(target.id);
+  assert.equal(n, 1);
+  assert.deepEqual(events.filter((e) => e.type === 'rescued'), [{ type: 'rescued', key: target.key, n: 1 }]);
+  // Pas un bâtiment du pâté : rien, et rien n'est annoncé.
+  const count = events.length;
+  assert.equal(rt.rescueIn('batiment-inconnu'), 0);
+  assert.equal(events.length, count);
+  // Ville sauvée : plus rien à trouver.
+  rt.state.ended = true;
+  for (let i = 0; i < 80; i++) assert.equal(rt.rescueIn(target.id), 0);
+});
+
+test('habitants : un bâtiment qui n\'en cache plus n\'en donne jamais ; en tout, jamais plus que les cachés de la ville', async () => {
+  const g = await newGame({ level: 'moyen' });
+  const { ville, rt } = g;
+  const hidden0 = counters(ville).toSave;
+  const none = buildingsOf(g).find((b) => b.hidden === 0);
+  if (none) for (let i = 0; i < 200; i++) assert.equal(rt.rescueIn(none.id), 0, 'aucun caché : aucune trouvaille');
+  // Même avec le tirage forcé des essais (?debug=1), un bâtiment sans caché ne donne rien.
+  rt.state.forceFind = true;
+  if (none) assert.equal(rt.rescueIn(none.id), 0, 'tirage forcé : aucun caché, aucune trouvaille');
+  rt.state.forceFind = false;
+  // Fouilles à n'en plus finir de chaque bâtiment : les habitants s'épuisent, la conservation tient.
+  let total = 0;
+  for (let round = 0; round < 40; round++) for (const b of buildingsOf(g)) total += rt.rescueIn(b.id);
+  assert.equal(counters(ville).saved, total);
+  assert.ok(total > 0 && total <= hidden0, `${total} sauvés pour ${hidden0} cachés`);
+  assert.ok(checkVille(ville).ok, checkVille(ville).errors.join(' ; '));
+  for (const k of rt.pos.keys()) assert.ok(blockInfo(ville, k).hidden >= 0);
+  // Une pièce tire moins qu'un bâtiment entier : sur le même nombre d'essais, moins de trouvailles.
+  const a = await newGame({ level: 'facile', seed: 21 }), b = await newGame({ level: 'facile', seed: 21 });
+  const ta = buildingsOf(a).find((x) => x.hidden >= 3), tb = buildingsOf(b).find((x) => x.hidden >= 3);
+  let whole = 0, room = 0;
+  for (let i = 0; i < 40; i++) { whole += a.rt.rescueIn(ta.id); room += b.rt.rescueIn(tb.id, { parts: 6 }); }
+  assert.ok(whole > room, `bâtiment entier : ${whole}, une pièce sur 6 : ${room}`);
 });
 
 test('file d\'attente : carte du rang (1er, 7e, seul), puis « Une place est à toi » avec Entrer, Quitter la file dans les deux', () => {
