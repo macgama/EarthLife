@@ -92,6 +92,7 @@ const ICONS = {
 
   // Compte facultatif (spécification des comptes, 5.2) : silhouette, cadenas, enveloppe, sortie.
   compte: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
+  amis: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20.5a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9.5" r="2.8"/><path d="M16.2 14.4a5.2 5.2 0 0 1 5.3 6.1"/>',
   cadenas: `<path d="M5.5 11h13v9.5h-13zM8 11V7.5a4 4 0 0 1 8 0V11"/>${dot(12, 15.5, 1.3)}`,
   enveloppe: '<path d="M3.5 6h17v12h-17z"/><path d="M3.5 6.5 12 13l8.5-6.5"/>',
   sortie: '<path d="M10 4H5.5v16H10M14.5 8l4 4-4 4M18.5 12H9"/>',

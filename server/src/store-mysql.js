@@ -379,8 +379,9 @@ export function createMysqlStore({
         ['bans', 'DELETE FROM el_ip_bans WHERE until_ms <= ?', [nowMs]],
         ['sessions', 'DELETE FROM el_sessions WHERE expires_ms <= ?', [nowMs]],
         ['codes', 'DELETE FROM el_codes WHERE expires_ms <= ? AND day < ?', [nowMs, dayOf(nowMs - DAY)]],
+        ['friendCodes', 'DELETE FROM el_friend_codes WHERE expires_ms <= ?', [nowMs]],
       ];
-      const out = { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0 };
+      const out = { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0 };
       const t0 = Date.now();
       let done = 0;
       for (const [k, sql, values] of steps) {
@@ -582,6 +583,77 @@ export function createMysqlStore({
         if (attempts >= maxAttempts) await c.execute('UPDATE el_codes SET attempts = ?, code_hash = NULL WHERE email_hash = ?', [attempts, bin(emailHash)]);
         else await c.execute('UPDATE el_codes SET attempts = ? WHERE email_hash = ?', [attempts, bin(emailHash)]);
         return 'bad';
+      });
+    },
+
+    // Amis (cahier « Amis », étape 1). Une amitié = une ligne (a < b) ; le code d'ami d'un compte est unique (un seul à la fois).
+    // putFriendCode : l'ancien code est retiré puis le nouveau écrit dans la même transaction (jamais `ON DUPLICATE KEY` :
+    // une empreinte déjà prise par un autre compte aurait réécrit SA ligne) ; empreinte déjà prise : erreur code 'DUP'.
+    async putFriendCode({ accountId, codeHash, nowMs, expiresMs }) {
+      try {
+        return await tx(async (c) => {
+          await c.execute('DELETE FROM el_friend_codes WHERE account_id = ?', [bin(accountId)]);
+          await c.execute('INSERT INTO el_friend_codes (account_id, code_hash, made_ms, expires_ms) VALUES (?, ?, ?, ?)',
+            [bin(accountId), bin(codeHash), nowMs, expiresMs]);
+          return true;
+        });
+      } catch (e) {
+        if (e?.code === 'ER_NO_REFERENCED_ROW_2') return false;
+        if (e?.code === 'ER_DUP_ENTRY') throw Object.assign(new Error('code d\'ami en double'), { code: 'DUP' });
+        throw e;
+      }
+    },
+    async friendCodeOf(accountId, nowMs) {
+      const r = await one('SELECT expires_ms FROM el_friend_codes WHERE account_id = ? AND expires_ms > ?', [bin(accountId), nowMs], fast);
+      return r.length ? { expiresMs: Number(r[0].expires_ms) } : null;
+    },
+    // Une transaction : le code (verrouillé), puis les deux comptes dans l'ordre de leurs identifiants (deux demandes
+    // croisées ne s'interbloquent pas, et le plafond d'amis se compte sous verrou).
+    async joinFriend({ codeHash, accountId, fid, nowMs, max, today }) {
+      return tx(async (c) => {
+        const code = await rows(c, 'SELECT account_id, expires_ms FROM el_friend_codes WHERE code_hash = ? FOR UPDATE', [bin(codeHash)]);
+        if (!code.length || Number(code[0].expires_ms) <= nowMs) return { ok: false, why: 'none' };
+        const owner = hex(code[0].account_id);
+        if (owner === accountId) return { ok: false, why: 'self' };
+        const acc = await rows(c, 'SELECT id, player_id FROM el_accounts WHERE id IN (?, ?) ORDER BY id FOR UPDATE', [bin(accountId), bin(owner)]);
+        if (acc.length !== 2) return { ok: false, why: 'gone' };
+        const player = (id) => hex(acc.find((x) => hex(x.id) === id)?.player_id);
+        const [a, b] = accountId < owner ? [accountId, owner] : [owner, accountId];
+        const known = await rows(c, 'SELECT fid FROM el_friends WHERE a = ? AND b = ?', [bin(a), bin(b)]);
+        if (known.length) {
+          await c.execute('DELETE FROM el_friend_codes WHERE account_id = ?', [bin(owner)]);
+          return { ok: true, fid: hex(known[0].fid), other: owner };
+        }
+        const px = player(accountId), py = player(owner);
+        if (px && py) {
+          const [x, y] = px < py ? [px, py] : [py, px];
+          const hidden = await rows(c, 'SELECT 1 AS hidden FROM el_blocks WHERE a = ? AND b = ?', [bin(x), bin(y)]);
+          if (hidden.length) return { ok: false, why: 'blocked' };
+        }
+        const count = async (id) => Number((await rows(c, 'SELECT COUNT(*) AS n FROM el_friends WHERE a = ? OR b = ?', [bin(id), bin(id)]))[0].n);
+        if ((await count(accountId)) >= max) return { ok: false, why: 'mine' };
+        if ((await count(owner)) >= max) return { ok: false, why: 'theirs' };
+        await c.execute('INSERT INTO el_friends (fid, a, b, since_day) VALUES (?, ?, ?, ?)', [bin(fid), bin(a), bin(b), today]);
+        await c.execute('DELETE FROM el_friend_codes WHERE account_id = ?', [bin(owner)]);
+        return { ok: true, fid, other: owner };
+      });
+    },
+    async friendsOf(accountId) {
+      const r = await one('SELECT f.fid, f.since_day, p.name_a, p.name_p, p.name_n FROM el_friends f '
+        + 'JOIN el_accounts o ON o.id = IF(f.a = ?, f.b, f.a) LEFT JOIN el_players p ON p.id = o.player_id '
+        + 'WHERE f.a = ? OR f.b = ? ORDER BY f.since_day, f.fid', [bin(accountId), bin(accountId), bin(accountId)]);
+      return r.map((x) => ({ fid: hex(x.fid), nm: x.name_a === null ? null : [x.name_a, x.name_p, x.name_n], since: x.since_day }));
+    },
+    async removeFriend({ accountId, fid }) {
+      return tx(async (c) => {
+        const f = await rows(c, 'SELECT a, b FROM el_friends WHERE fid = ? FOR UPDATE', [bin(fid)]);
+        if (!f.length) return { ok: false };
+        const a = hex(f[0].a), b = hex(f[0].b);
+        if (a !== accountId && b !== accountId) return { ok: false };
+        const acc = await rows(c, 'SELECT id, player_id FROM el_accounts WHERE id IN (?, ?)', [bin(a), bin(b)]);
+        const player = (id) => hex(acc.find((x) => hex(x.id) === id)?.player_id);
+        await c.execute('DELETE FROM el_friends WHERE fid = ?', [bin(fid)]);
+        return { ok: true, mine: player(accountId) ?? null, theirs: player(a === accountId ? b : a) ?? null };
       });
     },
 

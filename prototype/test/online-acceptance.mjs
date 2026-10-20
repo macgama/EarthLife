@@ -2631,6 +2631,215 @@ await scenario('O32', 'départ en voiture vers une autre ville pendant la saison
 });
 
 // =====================================================================================================
+// O33 : « Mes amis » (cahier amis-et-echanges, étape 1) : trois comptes (A sur ordinateur, B sur téléphone, C par un lien).
+// Le code d'ami (carte, un seul usage, refus uniforme), la liste et les surnoms des deux côtés, le lien qui quitte la barre
+// d'adresse et attend un compte, « Retirer » et « Bloquer » (qui masque l'un à l'autre et empêche de se réajouter)
+// =====================================================================================================
+await scenario('O33', 'amis : code, lien, liste, retrait et blocage', async () => {
+  const SERVER = `http://127.0.0.1:${srv.port}`;
+  const { createOnline } = await load('prototype/src/online.js');
+  const { nameOf } = await load('prototype/src/net/protocol.js');
+  const mem = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => { m.set(k, String(v)); }, removeItem: (k) => { m.delete(k); } }; };
+  const post = async (route, body) => {
+    const r = await fetch(`${SERVER}${route}`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
+    return { status: r.status, body: await r.json() };
+  };
+  // Trois comptes ouverts d'un appel (pas par le formulaire : c'est l'affaire de O22) ; A et B jouent un instant en ligne pour
+  // avoir un surnom (l'identité du compte naît à la première connexion), C non (« Ami (pas encore en ligne) »).
+  class OriginWs extends WebSocket { constructor(u) { super(u, { headers: { Origin: ORIGIN } }); } }
+  const U = {};
+  for (const n of ['a', 'b', 'c']) {
+    const u = U[n] = { email: `${n}.ami@exemple.test`, pw: `essai-ami-${n}-quai-77` };
+    await post('/v1/account/code', { v: 1, email: u.email, why: 'signup' });
+    const ver = await post('/v1/account/verify', { v: 1, email: u.email, code: srv.mailbox.lastCode(u.email), password: u.pw, tok: null, age: true });
+    u.ses = ver.body.ses;
+    check(ver.status === 200 && !!u.ses, `${n.toUpperCase()} : compte créé (${ver.status})`);
+  }
+  for (const n of ['a', 'b']) {
+    const o = createOnline({ server: SERVER, storage: mem(), WebSocketImpl: OriginWs, session: () => U[n].ses });
+    o.start();
+    o.choose(true);
+    for (let i = 0; i < 100 && !o.live; i++) await wait(50);
+    check(o.live, `${n.toUpperCase()} : une connexion en ligne, le temps d'avoir un surnom`);
+    o.choose(false);
+  }
+  const ids = {};
+  for (const n of ['a', 'b', 'c']) ids[n] = await srv.accounts.debug.byEmail(U[n].email);
+  check(!!ids.a?.playerId && !!ids.b?.playerId && !ids.c?.playerId, `serveur : identités de A et de B, pas de C (${!!ids.a?.playerId}, ${!!ids.b?.playerId}, ${!!ids.c?.playerId})`);
+  const stateOf = (u) => JSON.stringify({ ses: u.ses, email: u.email, since: Date.now(), base: null, stamp: null, print: null, pending: null, conflict: false, syncedAt: null, notice: null });
+  const openAs = async (tag, device, n, query = '') => {
+    const t = await open(tag, device, accUrl() + query, { waitGame: false, before: (ctx) => {
+      ctx.addInitScript(acctProbe);
+      if (n) ctx.addInitScript(([k, s]) => { try { if (!localStorage.getItem(k)) localStorage.setItem(k, s); } catch { /* stockage refusé */ } }, [accKey(), stateOf(U[n])]);
+    } });
+    check((await accWait(t, (v) => v.menu, 60000)).ok, `${tag} : menu affiché`);
+    return t;
+  };
+  const cardWait = (t, title, timeout = 15000) => until(t, (x) => (document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent === x ? 1 : null), title, timeout);
+  const cardBtn = (t, id) => click(t, `#card:not(.hidden) [data-card-btn="${id}"]`);
+  const cardView = (t) => ev(t, () => {
+    const c = document.querySelector('#card:not(.hidden) .rp-card');
+    if (!c) return null;
+    const r = c.getBoundingClientRect();
+    return {
+      title: c.querySelector('.rp-card-title')?.textContent ?? '', text: c.innerText.replace(/\s+/g, ' ').trim(),
+      lines: [...c.querySelectorAll('.rp-card-line')].map((l) => l.innerText.replace(/\s+/g, ' ').trim()),
+      score: c.querySelector('.rp-card-score')?.textContent.trim() ?? null,
+      btns: [...c.querySelectorAll('[data-card-btn]')].map((b) => b.dataset.cardBtn),
+      fits: r.left >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight + 1, scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth,
+    };
+  });
+  const openFriends = async (t) => {
+    const shown = await until(t, () => { const b = document.getElementById('friends-block'); return b && !b.hidden ? 1 : null; }, null, 30000);
+    check(!!shown, `${t.tag} : le bouton « Mes amis » est au menu`);
+    await click(t, '#friends-open');
+  };
+  const CODE_RE = /^[A-Z2-9]{4}-[A-Z2-9]{4}$/;
+  const A = await openAs('A (ordinateur, amis)', desktop, 'a');
+  const B = await openAs('B (téléphone, amis)', mobile, 'b');
+  let C = null;
+  try {
+    // ---- A : liste vide, puis un code ----
+    await openFriends(A);
+    check(!!(await cardWait(A, 'Mes amis (0/30)')), 'A : carte « Mes amis (0/30) »');
+    const v0 = await cardView(A);
+    check(v0?.btns.join() === 'invite,enter,close' && /Pas encore d'amis/.test(v0.text), `A : liste vide, boutons ${v0?.btns.join()}`);
+    await shot(A, 'o33-ordi-amis-vide');
+    await cardBtn(A, 'invite');
+    check(!!(await cardWait(A, "Ton code d'ami")), "A : carte « Ton code d'ami »");
+    const v1 = await cardView(A);
+    const code1 = v1?.score ?? '';
+    check(CODE_RE.test(code1) && v1.btns.join() === 'share,copy,back', `A : code ${code1 ? 'de la forme ABCD-EFGH' : 'absent'}, boutons ${v1?.btns.join()}`);
+    check(!/€|euro|gratuit|prix/i.test(v1?.text ?? ''), 'A : le texte ne parle ni de prix ni de gratuité');
+    await shot(A, 'o33-ordi-code');
+    const srvCode = await srv.store.friendCodeOf(ids.a.accountId, Date.now());
+    check(!!srvCode && srvCode.expiresMs - Date.now() > 6.9 * 86400000, `serveur : un code en attente pour A, valable ${srvCode ? ((srvCode.expiresMs - Date.now()) / 86400000).toFixed(1) : '—'} jours`);
+    // ---- B : entre le code ----
+    await openFriends(B);
+    check(!!(await cardWait(B, 'Mes amis (0/30)')), 'B : carte « Mes amis (0/30) »');
+    await cardBtn(B, 'enter');
+    check(!!(await cardWait(B, 'Ajouter un ami')), 'B : carte « Ajouter un ami »');
+    // Une saisie qui n'est pas un code est refusée sans appeler le serveur.
+    const reqs0 = B.requests.filter((r) => /\/v1\/friends\//.test(r.url)).length;
+    await B.page.fill('#card [data-card-field]', 'abc');
+    await cardBtn(B, 'add');
+    const bad = await until(B, () => /Ce n'est pas un code d'ami/.test(document.querySelector('#card:not(.hidden) .rp-card')?.innerText ?? '') ? 1 : null, null, 10000);
+    check(!!bad && B.requests.filter((r) => /\/v1\/friends\//.test(r.url)).length === reqs0, `B : « abc » refusé sur la carte, sans appel au serveur`);
+    await B.page.fill('#card [data-card-field]', code1.toLowerCase());
+    await shot(B, 'o33-tel-saisie');
+    await cardBtn(B, 'add');
+    check(!!(await cardWait(B, 'Vous êtes amis')), 'B : carte « Vous êtes amis »');
+    const nameA = (await srv.store.friendsOf(ids.b.accountId)).map((f) => (Array.isArray(f.nm) ? nameOf(f.nm) : null));
+    const vAdd = await cardView(B);
+    check(nameA.length === 1 && !!nameA[0] && vAdd.text.includes(nameA[0]), `B : le surnom de A « ${nameA[0]} » est sur la carte`);
+    await cardBtn(B, 'list');
+    check(!!(await cardWait(B, 'Mes amis (1/30)')), 'B : « Mes amis (1/30) »');
+    const vB = await cardView(B);
+    check(vB.text.includes(nameA[0]) && /Ami depuis le/.test(vB.text) && vB.fits && vB.scrollW <= vB.innerW, `B : liste « ${vB.lines[0]} », carte dans l'écran du téléphone (${vB.scrollW}/${vB.innerW})`);
+    await shot(B, 'o33-tel-liste');
+    check(await srv.store.friendCodeOf(ids.a.accountId, Date.now()) === null, 'serveur : le code de A a servi, il n\'existe plus');
+    // Le même code, rejoué par B (déjà amis) puis une saisie d'un code inventé : même refus, sans rien dire de l'autre joueur.
+    await cardBtn(B, 'enter');
+    await cardWait(B, 'Ajouter un ami');
+    const doneB = expectNet(B);
+    await B.page.fill('#card [data-card-field]', code1);
+    await cardBtn(B, 'add');
+    const used = await until(B, () => /Ce code ne marche pas/.test(document.querySelector('#card:not(.hidden) .rp-card')?.innerText ?? '') ? 1 : null, null, 15000);
+    doneB();
+    const vUsed = await cardView(B);
+    check(!!used && vUsed.title === 'Ajouter un ami' && !vUsed.text.includes(nameA[0]), `B : code déjà servi : « ${vUsed?.lines[0]} »`);
+    await cardBtn(B, 'back');
+    await cardWait(B, 'Mes amis (1/30)');
+    await cardBtn(B, 'close');
+    // ---- A : revient à sa liste (B y est, avec son surnom), puis un nouveau code ----
+    await cardBtn(A, 'back');
+    check(!!(await cardWait(A, 'Mes amis (1/30)')), 'A : retour à la liste : « Mes amis (1/30) »');
+    const label = (f) => (Array.isArray(f.nm) ? nameOf(f.nm) : 'Ami (pas encore en ligne)');
+    const fB = (await srv.store.friendsOf(ids.a.accountId))[0];
+    const vA1 = await cardView(A);
+    check(Array.isArray(fB.nm) && vA1.text.includes(label(fB)), `A : le surnom de B « ${label(fB)} » est sur la liste`);
+    await cardBtn(A, 'invite');
+    await cardWait(A, "Ton code d'ami");
+    const code2 = (await cardView(A))?.score ?? '';
+    check(CODE_RE.test(code2) && code2 !== code1, `A : un nouveau code ${code2 === code1 ? '(identique !)' : 'différent'}`);
+    // ---- C : lien sans compte, le code attend ; puis un compte, puis l'acceptation ----
+    C = await openAs('C (ordinateur, lien d\'ami)', desktop, null, `&code=${code2.replace('-', '').toLowerCase()}`);
+    check(!!(await cardWait(C, "Un ami t'invite")), "C : sans compte, carte « Un ami t'invite »");
+    const vC0 = await cardView(C);
+    check(vC0.btns.join() === 'account,later' && /compte/.test(vC0.text), `C : elle propose un compte (${vC0.btns.join()})`);
+    const urlC = await ev(C, () => ({ search: location.search, kept: localStorage.getItem('earthlife.codeAmi') }));
+    check(!/code=/.test(urlC.search) && !!urlC.kept, `C : le code a quitté la barre d'adresse (« ${urlC.search} ») et attend dans le stockage`);
+    await shot(C, 'o33-ordi-lien-sans-compte');
+    await cardBtn(C, 'later');
+    // Un compte ouvert ensuite sur cet appareil : la carte revient avec l'accord, le code de l'ami étant resté.
+    await ev(C, ([k, s]) => localStorage.setItem(k, s), [accKey(), stateOf(U.c)]);
+    await C.page.reload();
+    check(!!(await cardWait(C, "Un ami t'invite", 30000)), "C : compte ouvert, la carte « Un ami t'invite » revient");
+    const vC1 = await cardView(C);
+    check(vC1.btns.join() === 'accept,decline', `C : boutons ${vC1.btns.join()}`);
+    await shot(C, 'o33-ordi-accepter');
+    await cardBtn(C, 'accept');
+    check(!!(await cardWait(C, 'Vous êtes amis')), 'C : « Vous êtes amis »');
+    check((await ev(C, () => localStorage.getItem('earthlife.codeAmi'))) === null, 'C : le code en attente est effacé après l\'acceptation');
+    const fa = await srv.store.friendsOf(ids.a.accountId);
+    check(fa.length === 2, `serveur : A a ${fa.length} amis (B et C)`);
+    // ---- A : liste à deux, fiche, retrait de C, blocage de B ----
+    await cardBtn(A, 'back');
+    check(!!(await cardWait(A, 'Mes amis (2/30)')), 'A : carte « Mes amis (2/30) »');
+    const vA2 = await cardView(A);
+    check(vA2.lines.length === 2 && fa.every((f) => vA2.text.includes(label(f))), `A : les deux amis sont listés (${fa.map(label).join(', ')})`);
+    await shot(A, 'o33-ordi-amis-deux');
+    const fidC = (await srv.store.friendsOf(ids.c.accountId))[0].fid;
+    const iC = fa.findIndex((f) => f.fid === fidC);
+    const fC = fa[iC];
+    await cardBtn(A, `f${iC}`);
+    check(!!(await cardWait(A, label(fC))), `A : fiche de C « ${label(fC)} »`);
+    await shot(A, 'o33-ordi-fiche');
+    await cardBtn(A, 'remove');
+    check(!!(await cardWait(A, 'Mes amis (1/30)')), 'A : après « Retirer », « Mes amis (1/30) »');
+    check(/Ami retiré/.test((await cardView(A))?.text ?? ''), 'A : « Ami retiré. »');
+    check((await srv.store.friendsOf(ids.c.accountId)).length === 0, 'serveur : C n\'a plus d\'amis (l\'amitié disparaît des deux côtés)');
+    await cardBtn(A, 'f0');
+    check(!!(await cardWait(A, label(fB))), 'A : fiche de B');
+    await cardBtn(A, 'block');
+    check(!!(await cardWait(A, `Bloquer ${label(fB)} ?`)), 'A : confirmation « Bloquer … ? »');
+    await shot(A, 'o33-ordi-bloquer');
+    await cardBtn(A, 'block');
+    check(!!(await cardWait(A, 'Mes amis (0/30)')), 'A : après « Bloquer », « Mes amis (0/30) »');
+    check((await srv.store.friendsOf(ids.a.accountId)).length === 0 && (await srv.store.friendsOf(ids.b.accountId)).length === 0, 'serveur : plus d\'amitié entre A et B');
+    const [blA, blB] = await Promise.all([srv.store.blocksOf(ids.a.playerId), srv.store.blocksOf(ids.b.playerId)]);
+    check(blA.has(ids.b.playerId) && blB.has(ids.a.playerId), 'serveur : A et B se masquent l\'un à l\'autre (« Masquer » réciproque)');
+    // B ne peut plus se réajouter avec un nouveau code de A : même refus que pour un code faux.
+    await cardBtn(A, 'invite');
+    await cardWait(A, "Ton code d'ami");
+    const code3 = (await cardView(A))?.score ?? '';
+    await openFriends(B);
+    await cardWait(B, 'Mes amis (0/30)');
+    await cardBtn(B, 'enter');
+    await cardWait(B, 'Ajouter un ami');
+    const doneB2 = expectNet(B);
+    await B.page.fill('#card [data-card-field]', code3);
+    await cardBtn(B, 'add');
+    const refused = await until(B, () => /Ce code ne marche pas/.test(document.querySelector('#card:not(.hidden) .rp-card')?.innerText ?? '') ? 1 : null, null, 15000);
+    doneB2();
+    check(!!refused, 'B : bloqué par A, le nouveau code est refusé comme un code faux');
+    // Rien d'un code d'ami dans le stockage ni dans les adresses visitées.
+    for (const t of [A, B, C]) {
+      const leak = await ev(t, ([c1, c2, c3]) => {
+        const vals = [location.href];
+        for (const st of [localStorage, sessionStorage]) for (let i = 0; i < st.length; i++) vals.push(st.getItem(st.key(i)) ?? '');
+        return vals.some((v) => [c1, c2, c3].some((c) => c && (v.includes(c) || v.toUpperCase().includes(c.replace('-', '')))));
+      }, [code1, code2, code3]);
+      check(!leak, `${t.tag} : aucun code d'ami dans le stockage ni dans l'adresse`);
+      const urls = t.requests.map((r) => r.url).filter((u) => /code=|[?&]fid=/i.test(u) && !/\/index\.html\?/.test(u));
+      check(urls.length === 0, `${t.tag} : aucune requête ne porte un code ou un identifiant d'amitié dans l'adresse`);
+    }
+  } finally {
+    for (const t of [A, B, C]) await closeAcc(t);
+  }
+});
+
+// =====================================================================================================
 // O19 : toute la séance : aucune erreur de console, aucune exception, aucune violation de la politique de
 // sécurité (hors fenêtre de O12), aucune requête vers earthlife.needhelpapp.com (sauf F, voulue) ; K, L et M compris
 // (refus voulus des scénarios du compte tolérés dans leur fenêtre : netExpected)
