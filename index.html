@@ -416,7 +416,7 @@ select, button { font: inherit; }
 #menu[data-tab="saison"] .pane-libre, #menu[data-tab="libre"] .pane-saison, #menu.no-salon .pane-saison { display: none !important; }
 /* À plusieurs : le compte (nécessaire pour rejoindre) avant les réglages en ligne, le bouton unique en dernier. */
 #menu[data-tab="saison"] #account-block { order: 2; }
-#menu[data-tab="saison"] #online-block, #menu[data-tab="saison"] #share-block, #menu[data-tab="saison"] #share-note { order: 3; }
+#menu[data-tab="saison"] #online-block, #menu[data-tab="saison"] #share-block, #menu[data-tab="saison"] #share-note, #menu[data-tab="saison"] #friends-block { order: 3; }
 #menu[data-tab="saison"] #salon-cta { order: 4; }
 .invite-note { padding-left: 10px; border-left: 2px solid var(--c-accent); color: var(--c-text); }
 .menu-tabs { display: flex; gap: 2px; margin: var(--sp-2) 0 0; border-bottom: 1px solid var(--c-line); }
@@ -515,7 +515,7 @@ select, button { font: inherit; }
   #menu .salon-cta, #menu #play { box-shadow: 0 0 0 var(--sp-2) var(--c-panel-solid), 0 max(var(--sp-3), env(safe-area-inset-bottom)) 0 var(--sp-2) var(--c-panel-solid); }
   /* Aperçu : rien ne défile, la carte garde le reste de l'écran. */
   #menu[data-sheet="peek"] .sheet { gap: var(--sp-2); max-height: none; overflow: hidden; }
-  #menu[data-sheet="peek"] :is(.salon-time, .salon-stats, .salon-label, .front-bar, .front-nums, .front-foot, .front-badge, .front-tag, .sheet-label, .level-row, .level-rule, #city-line, #city-next, .options, .place-title, #stats-open, #online-block, #share-block, #share-note, #account-block:not(:has(#account-conflict:not([hidden])))) { display: none; }
+  #menu[data-sheet="peek"] :is(.salon-time, .salon-stats, .salon-label, .front-bar, .front-nums, .front-foot, .front-badge, .front-tag, .sheet-label, .level-row, .level-rule, #city-line, #city-next, .options, .place-title, #stats-open, #online-block, #share-block, #share-note, #friends-block, #account-block:not(:has(#account-conflict:not([hidden])))) { display: none; }
   /* À plusieurs : saison sur deux lignes, trois niveaux côte à côte (nom, part de zombies, ville). */
   #menu[data-sheet="peek"] .salon { gap: var(--sp-2); }
   #menu[data-sheet="peek"] .salon-banner { padding: var(--sp-2) var(--sp-3); }
@@ -1545,6 +1545,10 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <button type="button" class="secondary" id="share-invite" hidden><span class="btn-icon" data-icon="position"></span><span>Inviter ici</span></button>
       </div>
       <p class="picker-note" id="share-note" role="status" aria-live="polite" hidden></p>
+      <!-- « Mes amis » (src/amis.js) : amitié par code ou lien, cartes ouvertes depuis le menu ; rien sur l'écran de jeu. Caché sans comptes. -->
+      <div class="online-actions share-actions" id="friends-block" hidden>
+        <button type="button" class="secondary" id="friends-open"><span class="btn-icon" data-icon="amis"></span><span>Mes amis</span></button>
+      </div>
       <!-- « Mes statistiques » (src/stats.js) : les compteurs de la partie que « Jouer » reprend ; replié avec le détail sur téléphone. -->
       <button type="button" class="secondary" id="stats-open"><span class="btn-icon" data-icon="stats"></span><span>Mes statistiques</span></button>
       <!-- « Voir mon refuge » recentre la carte sur le refuge ; on change de refuge en jeu (« Déménager ici »), #save-move le dit. -->

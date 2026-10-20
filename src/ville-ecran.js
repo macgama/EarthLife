@@ -690,7 +690,7 @@ export function createCityGame(host) {
       if (!g) return fail('Ville illisible : partie libre');
       built = { graph: g.graph, fn: g.fn, member: g.member, unit, commune, maison };
     }
-    const rt = createCityRuntime({ store, client, template, proj: s.store.proj, onEvent: (e) => onEvent(s, e), ville, ...built, season: { net: n } });
+    const rt = createCityRuntime({ store, client, template, proj: s.store.proj, onEvent: (e) => onEvent(s, e), ville, ...built, season: { net: n, hab: plan.state.hab === 1 } });
     seasonRef.rt = rt;
     s.city = rt;
     s.seasonLevel = plan.level; // « Reprendre ici » relance la saison à ce niveau

@@ -82,6 +82,11 @@ import { FLAGS, nameOf, sectorOf } from './net/protocol.js';
 import { BUILD } from './net/build.js';
 import { zoneStatus, removeZone, metersBetween as zoneMeters } from './privacy.js';
 import { SHARE_TEXTS, gameUrl, inviteUrl, shareLink, shareNote } from './partage.js';
+import {
+  FRIEND_TEXTS, friendLink, codeFromParams, pendingFriend, friendErrorText, needAccountCard, friendsCard, friendCard, blockCard,
+  inviteCard, enterCodeCard, acceptCard, addedCard,
+} from './amis.js';
+import { normFriendCode, showFriendCode } from './net/amis.js';
 import { REDUCED_LOOT, searchedLabel } from './shared-world.js';
 // Compte facultatif (spécification des comptes, 5.8) : partie sauvegardée sur le serveur, autre appareil.
 import { createAccount, NULL_ACCOUNT } from './account.js';
@@ -247,7 +252,11 @@ if (onlineOn) {
   });
   online.on('session', () => account.sessionRefused());
   // Connexion ou déconnexion : le bloc « Saison 1 » du menu relit l'inscription.
-  account.on('state', () => city.seasonChanged());
+  account.on('state', () => {
+    city.seasonChanged();
+    // Connexion faite pour accepter une invitation d'ami : la carte revient quand le formulaire du compte s'est refermé.
+    if (friendWait.get()) setTimeout(() => { renderFriendsMenu(); offerPendingFriend(); }, 800);
+  });
 }
 // Écouteurs posés après ceux de save.js (créé plus haut) : la partie est écrite d'abord, puis envoyée. Une erreur du
 // jeu en ligne n'empêche pas l'envoi de la partie.
@@ -271,6 +280,15 @@ const urlPlace = placeFromParams(params);
 if (urlPlace) picker.setPlace(urlPlace, { fly: false });
 // Arrivé par un lien « Inviter ici » (src/partage.js) : un mot d'accueil au menu jusqu'à la première partie.
 const arrivedByInvite = params.get('ami') === '1' && !!urlPlace;
+// Lien d'ami (?code=, src/amis.js) : le code attend 24 h dans le stockage (le temps de créer ou d'ouvrir un compte) et quitte
+// la barre d'adresse tout de suite ; la carte « Un ami t'invite » s'ouvre au menu, jamais en partie.
+const friendWait = pendingFriend(storage);
+let friendOffered = false;
+if (params.has('code')) {
+  const fromLink = codeFromParams(params);
+  if (fromLink) friendWait.set(fromLink);
+  history.replaceState(history.state, '', urlWithout('code'));
+}
 syncMenu();
 
 function placeFromParams(p) {
@@ -685,6 +703,7 @@ $('online-toggle')?.addEventListener('change', (e) => {
 $('online-rename')?.addEventListener('click', () => renameOnline());
 $('share-game')?.addEventListener('click', () => shareGame());
 $('share-invite')?.addEventListener('click', () => inviteHere());
+$('friends-open')?.addEventListener('click', () => showFriends());
 $('online-mute')?.addEventListener('click', () => {
   online.setMuted(!online.muted());
   renderOnlineMenu();
@@ -3481,6 +3500,7 @@ function renderOnlineMenu() {
     setText($('online-mute-label'), online.muted() ? 'Rétablir les gestes' : 'Couper les gestes');
   }
   accountUi?.render();
+  renderFriendsMenu();
 }
 
 function setText(el, text) {
@@ -3540,6 +3560,124 @@ async function inviteHere() {
     return;
   }
   setShareNote(shareNote(await shareLink(navigator, { title: SHARE_TEXTS.title, text: SHARE_TEXTS.invite, url }), { url, invite: true }));
+}
+
+// « Mes amis » (src/amis.js) : une amitié passe par un compte ; tout se fait en cartes ouvertes depuis le menu. Le bouton n'existe
+// que si le serveur a des comptes ; sans compte connecté, la carte propose d'en ouvrir un.
+function renderFriendsMenu() {
+  const block = $('friends-block');
+  if (block) block.hidden = !onlineOn || account.state === 'off';
+  // Invitation reçue par lien : proposée dès que le menu est là (un tour de boucle plus tard : la carte ne se pose pas au milieu d'un rendu).
+  if (friendWait.get() && !friendOffered) setTimeout(offerPendingFriend, 0);
+}
+
+// Montre une carte d'amis (marquée, pour ne pas en ouvrir une seconde par-dessus) ; Échap ferme.
+function friendsShow(spec, onButton) {
+  const info = showCard(spec, onButton, { escape: 'close' });
+  info.friends = true;
+  return info;
+}
+
+async function showFriends(note = '', warn = false) {
+  if (account.state !== 'in') {
+    friendsShow(needAccountCard(), (id) => { if (id === 'account') accountUi?.open('login'); });
+    return;
+  }
+  const r = await account.friends('list');
+  if (!r.ok) {
+    if (r.code === 'session') { friendsShow(needAccountCard(), (id) => { if (id === 'account') accountUi?.open('login'); }); return; }
+    friendsShow(friendsCard({ friends: [], note: friendErrorText(r.code, r.retryMs), warn: true }), friendsButtons([]));
+    return;
+  }
+  const friends = r.friends ?? [];
+  friendsShow(friendsCard({ friends, max: r.max, pending: r.pending ?? null, note, warn, nowMs: Date.now() }), friendsButtons(friends));
+}
+
+function friendsButtons(friends) {
+  return (id) => {
+    if (id === 'invite') { makeFriendCode(); return; }
+    if (id === 'enter') { enterFriendCode(); return; }
+    const i = Number(/^f(\d+)$/.exec(id)?.[1]);
+    if (Number.isInteger(i) && friends[i]) showFriend(friends[i]);
+  };
+}
+
+function showFriend(f) {
+  friendsShow(friendCard(f), async (id) => {
+    if (id === 'back') { showFriends(); return; }
+    if (id === 'remove') {
+      const r = await account.friends('remove', { fid: f.fid });
+      showFriends(r.ok ? 'Ami retiré.' : friendErrorText(r.code, r.retryMs), !r.ok);
+    } else if (id === 'block') {
+      friendsShow(blockCard(f.nm), async (bid) => {
+        if (bid !== 'block') { showFriend(f); return; }
+        const r = await account.friends('block', { fid: f.fid });
+        showFriends(r.ok ? 'Ami bloqué : vous ne vous verrez plus.' : friendErrorText(r.code, r.retryMs), !r.ok);
+      });
+    }
+  });
+}
+
+// « Inviter un ami » : un nouveau code (l'ancien est remplacé), envoyé en lien par la feuille de partage du téléphone, sinon copié.
+async function makeFriendCode() {
+  const r = await account.friends('code');
+  if (!r.ok || !r.friendCode) { showFriends(friendErrorText(r.code, r.retryMs), true); return; }
+  const code = r.friendCode;
+  const link = friendLink(gameUrl(location), code);
+  const spec = inviteCard({ code, expiresMs: r.expiresMs, nowMs: Date.now() });
+  const again = () => friendsShow(spec, async (id) => {
+    if (id === 'back') { showFriends(); return; }
+    if (id === 'copy') {
+      try { await navigator.clipboard.writeText(showFriendCode(code)); toast('Code copié', 2, 'success'); } catch { /* copie refusée : le code reste affiché */ }
+      again();
+    } else if (id === 'share') {
+      const out = await shareLink(navigator, { title: FRIEND_TEXTS.title, text: FRIEND_TEXTS.invite, url: link });
+      if (out === 'failed') { again(); return; }
+      showFriends(out === 'copied' ? 'Lien copié : colle-le dans une conversation.' : out === 'shared' ? "Invitation envoyée." : '');
+    }
+  });
+  again();
+}
+
+// « J'ai un code » : saisie d'un code d'ami reçu.
+function enterFriendCode(value = '', error = '') {
+  friendsShow(enterCodeCard({ value, error }), async (id, typed) => {
+    if (id === 'back') { showFriends(); return; }
+    if (id !== 'add') return;
+    const code = normFriendCode(typed ?? '');
+    if (!code) { enterFriendCode(typed ?? '', "Ce n'est pas un code d'ami : il a 8 signes, comme ABCD-EFGH."); return; }
+    joinFriend(code, (error2) => enterFriendCode(typed ?? '', error2));
+  });
+}
+
+async function joinFriend(code, onError) {
+  const r = await account.friends('join', { code });
+  if (r.ok) {
+    friendWait.clear();
+    friendsShow(addedCard(r.friend ?? {}), (id) => { if (id === 'list') showFriends(); });
+    return;
+  }
+  if (r.code === 'session') { friendsShow(needAccountCard({ invited: true }), (id) => { if (id === 'account') accountUi?.open('login'); }); return; }
+  if (r.code === 'ami-code') friendWait.clear();
+  onError(friendErrorText(r.code, r.retryMs));
+}
+
+// Code reçu par lien : proposé au menu, une fois, dès qu'un compte est ouvert (sinon, la carte propose d'en ouvrir un).
+function offerPendingFriend() {
+  const code = friendWait.get();
+  if (!code || friendOffered || !onlineOn || account.state === 'off' || card.isOpen() || accountUi?.isOpen() || $('menu').classList.contains('hidden')) return;
+  if (account.state === 'code') return;                                     // adresse à confirmer : ça attend la connexion
+  friendOffered = true;
+  if (account.state !== 'in') {
+    friendsShow(needAccountCard({ invited: true }), (id) => {
+      if (id === 'account') { friendOffered = false; accountUi?.open('login'); }
+    });
+    return;
+  }
+  friendsShow(acceptCard(), (id) => {
+    if (id === 'decline') { friendWait.clear(); return; }
+    if (id === 'accept') joinFriend(code, (msg) => enterFriendCode(showFriendCode(code), msg));
+  });
 }
 
 // « Mes statistiques » : les compteurs de la partie (save.profile) ; la carte met le jeu en pause le temps de la lecture.
