@@ -155,7 +155,9 @@ async function searchUntilOpen(page, device, spot, tag) {
 }
 
 // Position et taille de la feuille et de ses blocs, pour les contrôles de mise en page.
-const layout = (page) => ev(page, () => {
+const layout = (page) => ev(page, async () => {
+  // L'animation d'entrée de la feuille peut durer plus que prévu quand la machine est chargée : on mesure après.
+  await Promise.race([Promise.all(document.querySelector('#finds .tv-sheet')?.getAnimations().map((a) => a.finished.catch(() => {})) ?? []), new Promise((r) => setTimeout(r, 5000))]);
   const r = (el) => { const b = el?.getBoundingClientRect(); return b ? { x: b.x, y: b.y, w: b.width, h: b.height, right: b.right, bottom: b.bottom } : null; };
   const cols = [...document.querySelectorAll('#finds .tv-col')].map(r);
   return {
@@ -330,7 +332,7 @@ async function scenario(device) {
     await wait(1500);
     check((await food()) === foodB, `${tag} : le jeu est en pause`);
     const LB = await layout(page);
-    check(LB.cols.length === 1 && LB.sheet.x >= 0 && LB.sheet.right <= LB.vw + 0.5 && LB.sheet.bottom <= LB.vh + 0.5 && LB.sw <= LB.vw, `${tag} : une seule colonne, la fenêtre tient dans l'écran (${LB.cols.length} colonne)`);
+    check(LB.cols.length === 1 && LB.sheet.x >= 0 && LB.sheet.right <= LB.vw + 0.5 && LB.sheet.bottom <= LB.vh + 0.5 && LB.sw <= LB.vw, `${tag} : une seule colonne, la fenêtre tient dans l'écran (${LB.cols.length} colonne, feuille x ${Math.round(LB.sheet.x)}→${Math.round(LB.sheet.right)}, bas ${Math.round(LB.sheet.bottom)}, défilement ${LB.sw} sur ${LB.vw} × ${LB.vh})`);
     check(LB.buttons.every((b) => b.h >= 43.5) && LB.slots.every((b) => b.h >= 43.5 && b.w >= 43.5), `${tag} : boutons et cases de 44 px au moins`);
     await shot(page, `${device}-08-sac-ouvert`);
 
