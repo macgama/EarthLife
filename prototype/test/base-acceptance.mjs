@@ -3924,13 +3924,15 @@ async function sonsScenario(device) {
   const claim = await install(page, device, tag);
   if (!check(!!claim, `${tag} : refuge installé pour le feu de camp`)) { await ctx.close(); return; }
   check(await enterRefuge(page, device), `${tag} : entré au refuge`);
-  check(!(await stats()).loops.includes('fire'), `${tag} : sans feu de camp, rien ne crépite`);
+  check(((await stats()).levels?.fire ?? 0) === 0, `${tag} : sans feu de camp, rien ne crépite`);
   await ev(page, () => { const b = window.__earthlife.session.refuge.base; if (!b.upgrades.includes('feu')) b.upgrades.push('feu'); });
-  const crackle = await until(page, () => window.__earthlife.son.stats().loops.includes('fire') ? 1 : null, null, 60000);
+  const crackle = await until(page, () => (window.__earthlife.son.stats().levels?.fire ?? 0) > 0 ? 1 : null, null, 60000);
   check(!!crackle, `${tag} : le feu de camp du refuge crépite`);
   await leave(page, device);
-  const quiet = await until(page, () => window.__earthlife.son.stats().loops.includes('fire') ? null : 1, null, 60000);
-  check(!!quiet, `${tag} : dehors, le crépitement s'arrête`);
+  // Dehors, la consigne du feu tombe à zéro tout de suite ; la boucle elle-même n'est retirée qu'après 8 s de jeu sans bruit, ce que la
+  // machine lente de la CI (une image par seconde au refuge) met bien plus que 60 s à compter.
+  const quiet = await until(page, () => (window.__earthlife.son.stats().levels?.fire ?? 0) === 0 ? 1 : null, null, 60000);
+  check(!!quiet, `${tag} : dehors, le crépitement est coupé`);
 
   // Coupé : la commande le dit, rien ne joue plus, le réglage est gardé sur l'appareil.
   await toggle();

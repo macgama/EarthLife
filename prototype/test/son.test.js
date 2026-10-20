@@ -415,6 +415,9 @@ test('sons : le feu de camp du refuge crépite tant qu\'on est près, et s\'éte
   assert.ok(e.son.stats().loops.includes('fire'));
   e.son.update(0.016, frame({ indoor: true, fire: true, weather: { kind: 'rain', intensity: 0.8, windKmh: 30, temperature: 12 } }));
   assert.ok(e.son.stats().loops.includes('fire'), 'la pluie dehors ne couvre pas le feu');
+  assert.equal(e.son.stats().levels.fire, SON.fire, 'consigne du feu');
+  e.son.update(0.016, frame({ indoor: false, fire: false }));
+  assert.equal(e.son.stats().levels.fire, 0, 'dehors, la consigne tombe à zéro aussitôt (la boucle part 8 s plus tard)');
   for (let i = 0; i < 10; i++) e.son.update(1, frame({ indoor: false, fire: false }));
   assert.ok(!e.son.stats().loops.includes('fire'), 'dehors, plus de crépitement');
   e.son.update(0.016, frame({ indoor: true }));

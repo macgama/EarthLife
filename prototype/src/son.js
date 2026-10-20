@@ -158,6 +158,7 @@ export function createSon({ lowPower = false, storage = null, doc = globalThis.d
     let l = loops[name];
     if (level > 0.003 && !l) l = loops[name] = { ...LOOPS[name](ctx), idle: 0 };
     if (!l) return null;
+    l.level = level;
     l.gain.gain.setTargetAtTime(level, now(), 0.7);
     l.idle = level > 0.003 ? 0 : l.idle + dt;
     if (l.idle > 8) {
@@ -294,6 +295,6 @@ export function createSon({ lowPower = false, storage = null, doc = globalThis.d
     get volume() { return prefs.volume; },
     attach, setOn, setVolume, toggle() { setOn(!prefs.on); }, update, play, lightning, silence,
     onChange: (fn) => onChange.push(fn),
-    stats: () => ({ state: ctx?.state ?? 'none', plays: { ...counts }, loops: Object.keys(loops) }),
+    stats: () => ({ state: ctx?.state ?? 'none', plays: { ...counts }, loops: Object.keys(loops), levels: Object.fromEntries(Object.entries(loops).map(([k, l]) => [k, l.level])) }),
   };
 }
