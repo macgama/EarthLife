@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  prepareCity, beginCity, createCityRuntime, createResilientBlocks, inlineBlocksWorker, homeCandidates, levelCard, unitOfVille,
+  prepareCity, beginCity, createCityRuntime, createResilientBlocks, inlineBlocksWorker, homeCandidates, levelCard, queueCard, unitOfVille,
   rebuildGraph, CITY, LEVEL_TEXT,
 } from '../src/ville-jeu.js';
 import { createBlocksClient } from '../src/blocks.js';
@@ -610,4 +610,20 @@ test('habitants : un bâtiment qui n\'en cache plus n\'en donne jamais ; en tout
   let whole = 0, room = 0;
   for (let i = 0; i < 40; i++) { whole += a.rt.rescueIn(ta.id); room += b.rt.rescueIn(tb.id, { parts: 6 }); }
   assert.ok(whole > room, `bâtiment entier : ${whole}, une pièce sur 6 : ${room}`);
+});
+
+test('file d\'attente : carte du rang (1er, 7e, seul), puis « Une place est à toi » avec Entrer, Quitter la file dans les deux', () => {
+  const rank = (r, size) => queueCard('Vulliens', { state: 'wait', rank: r, size });
+  assert.equal(rank(7, 23).title, 'File d\'attente');
+  assert.equal(rank(7, 23).lines[0], 'Tu es 7e sur 23.');
+  assert.equal(rank(1, 23).lines[0], 'Tu es 1er sur 23.');
+  assert.equal(rank(1, 1).lines[0], 'Tu es le prochain.');
+  assert.match(rank(2, 2).lines[1], /Vulliens/);
+  assert.deepEqual(rank(7, 23).buttons, [{ id: 'leave', label: 'Quitter la file' }]);
+  const go = queueCard('Vulliens', { state: 'go', ms: 120000 });
+  assert.equal(go.title, 'Une place est à toi');
+  assert.match(go.lines[0], /2 minutes/);
+  assert.deepEqual(go.buttons.map((b) => b.id), ['enter', 'leave']);
+  assert.equal(go.buttons[0].primary, true);
+  assert.match(queueCard('Vulliens', { state: 'go', ms: 45000 }).lines[0], /1 minute,/);
 });
