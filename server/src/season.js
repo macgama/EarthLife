@@ -9,8 +9,9 @@
 //  - Tuiles : le serveur n'a pas de carte ; le jeu envoie les pâtés d'une tuile découpée (clé, appartenance, poids,
 //    voisins) et le serveur lance placeTile lui-même : la conservation tient par construction. Le premier découpage
 //    d'une tuile fait foi ; les autres joueurs lisent les rangées du serveur.
-//  - Gestes (WebSocket, message `sv`) : prêts (baux), retours, zombies abattus, nid, fanion, libération, cœur. Un zombie
-//    n'est abattu que sur un bail du joueur ; un bail s'éteint à la déconnexion ou après 15 s de silence.
+//  - Gestes (WebSocket, message `sv`) : prêts (baux), retours, zombies abattus, nid, fanion, libération, cœur, habitant
+//    trouvé en fouillant (`h`, au plus un toutes les 6 s). Un zombie n'est abattu que sur un bail du joueur ; un bail
+//    s'éteint à la déconnexion ou après 15 s de silence.
 //  - Nuits : jouées ici (volontaires, repousse, fanions), une fois par nuit solaire de la commune, seulement si un
 //    inscrit y a joué dans les dernières 24 h.
 //  - Rangement : ville, tuiles et voisinages en pièces JSON dans la base, écrites toutes les 15 s si elles ont changé.
@@ -23,7 +24,7 @@ import { createHash } from 'node:crypto';
 import { cleanText } from '../../prototype/src/limits.js';
 import { isNightAt, nightKey } from '../../prototype/src/horde.js';
 import {
-  startVille, placeTile, kill, lend, giveBack, take, drawReserve, openNest, plantFlag, dropFlag, liberate, setCoeur,
+  startVille, placeTile, kill, lend, giveBack, take, drawReserve, openNest, plantFlag, dropFlag, liberate, rescueOne, setCoeur,
   volunteersNight, regrow, fallFlag, checkVille, zombiesLeft, cityStatus, blockInfo, nestSize, keyPoint, ETAT, ROW, QUARTIER,
 } from '../../prototype/src/quartier.js';
 import { SEASON, SEASON_KEY, SEASON_COMMUNE, SEASON_TILE, TOKEN_RE, readJson } from '../../prototype/src/net/protocol.js';
@@ -43,7 +44,7 @@ const distM = (a, b) => Math.hypot((a.lon - b.lon) * Math.cos((((a.lat + b.lat) 
 
 export const SEASON_RULES = {
   seats: SEASON.seats, days: SEASON.days, name: 'Saison 1',
-  flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
+  flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, rescueBurst: 6, rescuePerSec: 1 / 6, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
   initRetryMs: 5000, playedMs: DAY, enrolCacheMs: 60000,
   rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000,
   citiesMax: 30,                                         // villes ouvertes au plus par niveau (choix libre)
@@ -562,6 +563,13 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
           break;
         }
         case 'D': if (dropFlag(v, key)) { dirtyRow(city, key); changed = true; } break;
+        case 'h': {
+          // Un habitant trouvé en fouillant (key est un pâté, jamais la réserve du cœur) : un seul caché devient sauvé. Refusé si
+          // le pâté n'en cache plus (un autre joueur l'a trouvé) ou si les trouvailles vont plus vite que des fouilles ne le permettent.
+          if (key[0] === '@') break;
+          if (sub.rescueBucket.take(1) && rescueOne(v, key) > 0) { dirtyRow(city, key); changed = true; } else fix.add(key);
+          break;
+        }
         case 'c': {
           const u = v.units[v.key];
           if (u && !u.coeur && setCoeur(v, v.key, key)) { dirtyCounts(city); changed = true; }
@@ -809,7 +817,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
 
   function state(w) {
     const city = w.city;
-    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville: city.ville, lent: lentSnapshot(city) }) };
+    // hab : ce serveur connaît le geste `h` (habitant trouvé) ; un jeu ne l'envoie que si l'état le dit.
+    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville: city.ville, lent: lentSnapshot(city), hab: 1 }) };
   }
 
   // Pâtés d'une tuile découpée : [clé, appartenance (1 dedans, 0 dehors, -1 inconnu), plancher, logements, bâtiments,
@@ -1009,7 +1018,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const entry = waiting.get(s) ?? queues.get(w.level)?.find((e) => e.accountId === s.accountId);
     if (entry) dropEntry(entry);
     const sub = { s, w, accountId: s.accountId, leases: new Map(), holdAt: 0, kills: 0, kills0: p.kills ?? 0, dirtyKills: false, bucket: createBucket(20, 6, now),
-      killBucket: createBucket(R.killBurst, R.killPerSec, now) };
+      killBucket: createBucket(R.killBurst, R.killPerSec, now), rescueBucket: createBucket(R.rescueBurst, R.rescuePerSec, now) };
     subs.set(s, sub);
     w.subs.add(sub);
     w.city.playedAt = now();

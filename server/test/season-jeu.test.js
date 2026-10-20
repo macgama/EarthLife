@@ -15,7 +15,7 @@ import { createOnline } from '../../prototype/src/online.js';
 import { createSeasonNet } from '../../prototype/src/net/season.js';
 import { prepareCity, createCityRuntime, createResilientBlocks, inlineBlocksWorker, unitOfVille, rebuildGraph } from '../../prototype/src/ville-jeu.js';
 import { findCommune, findNeighbours, createCommuneCache } from '../../prototype/src/commune.js';
-import { checkVille, zombiesLeft, blockInfo, counters } from '../../prototype/src/quartier.js';
+import { checkVille, zombiesLeft, blockInfo, counters, hiddenByBuilding } from '../../prototype/src/quartier.js';
 import { createGrid } from '../../prototype/src/collision.js';
 import { createZombieDirector, createPlayer } from '../../prototype/src/game.js';
 import { gameplayModifiers, forcedWeather } from '../../prototype/src/weather.js';
@@ -150,7 +150,7 @@ async function player(n, { seedFirst = false, enterKey = null } = {}) {
   }
   const proj = makeProjection(HOME.lat, HOME.lon);
   const store = { markDirty() {}, territory: {} };
-  p.rt = createCityRuntime({ store, client: p.client, template: TEMPLATE, proj, ville, ...built, rand: rng(n * 11), season: { net }, onEvent: (e) => events.push(e.type) });
+  p.rt = createCityRuntime({ store, client: p.client, template: TEMPLATE, proj, ville, ...built, rand: rng(n * 11), season: { net, hab: opened.state.hab === 1 }, onEvent: (e) => events.push(e.type) });
   ref.rt = p.rt;
   p.rt.applyServer({ o: 'ls', l: opened.state.lent ?? {} });
   p.ville = ville;
@@ -202,6 +202,23 @@ test('deux joueurs, la même ville : tuiles placées une fois, mêmes rangées, 
     assert.ok(b.rt.pos.size > 0, 'positions des pâtés connues du second joueur');
     assert.equal(rowsOf(b.ville), rowsOf(sv));
     assert.equal(b.rt.stats().zombies, a.rt.stats().zombies);
+
+    // Le second joueur trouve un habitant en fouillant : le serveur le sauve pour la ville, le premier joueur le voit.
+    assert.equal(b.rt.season, true);
+    b.rt.state.forceFind = true;
+    let target = null;
+    for (const res of b.rt.cuts.values()) for (const p of res.pates) {
+      if (!target && b.rt.pos.has(p.key)) { const f = hiddenByBuilding(b.ville, p).find(([, n]) => n >= 1); if (f) target = { id: f[0], key: p.key }; }
+    }
+    assert.ok(target, 'un bâtiment qui cache un habitant');
+    const saved0 = sv.saved;
+    assert.equal(b.rt.rescueIn(target.id), 1);
+    await settle(a, b);
+    assert.equal(sv.saved, saved0 + 1, 'le serveur a sauvé l\'habitant trouvé');
+    assert.equal(counters(a.ville).saved, saved0 + 1, 'le premier joueur le voit');
+    assert.equal(counters(b.ville).saved, saved0 + 1);
+    assert.equal(rowsOf(a.ville), rowsOf(sv));
+    assert.ok(checkVille(sv).ok, checkVille(sv).errors.join(' ; '));
 
     // Les deux sortent des zombies de la rue au même instant (aucun message du serveur entre les deux) : la rue du point de
     // départ n'a que quelques zombies, le premier les emprunte tous, le serveur refuse les mêmes au second, qui les retire.

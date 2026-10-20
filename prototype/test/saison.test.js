@@ -11,7 +11,7 @@ import {
 import { prepareCity, beginCity, createCityRuntime, createResilientBlocks, inlineBlocksWorker } from '../src/ville-jeu.js';
 import { findCommune, findNeighbours, createCommuneCache } from '../src/commune.js';
 import { createTerritoryStore } from '../src/territory-store.js';
-import { blockInfo, ROW_LENGTH, zombiesLeft, checkVille } from '../src/quartier.js';
+import { blockInfo, ROW_LENGTH, zombiesLeft, checkVille, hiddenByBuilding } from '../src/quartier.js';
 import { createGrid } from '../src/collision.js';
 import { createZombieDirector, createPlayer } from '../src/game.js';
 import { gameplayModifiers, forcedWeather } from '../src/weather.js';
@@ -312,17 +312,21 @@ test('gestes du miroir : mêmes gestes que seul, plus l\'envoi au serveur et le 
   const solo = soloOps(miniVille());
   assert.equal(solo.lend(KEY, 2), 2);
   assert.deepEqual(solo.leases(), []);
-  // Habitant trouvé en fouillant : seul, il est sauvé ; en saison le serveur ne connaît pas encore ce geste, rien ne change.
+  // Habitant trouvé en fouillant : seul, il est sauvé ; en saison il est sauvé ici et envoyé au serveur (geste `h`).
   const hidden = () => { const h = miniVille(); h.me = null; Object.assign(h.tiles['14/1/1'].b[KEY], { 3: 2, 4: 2 }); return h; };
   const alone = hidden();
   assert.equal(soloOps(alone).rescue(KEY), 1);
   assert.equal(alone.saved, 1);
   assert.equal(soloOps(alone).rescue('inconnu'), 0);
-  const waiting = hidden();
+  const shared = hidden();
   sent.length = 0;
-  assert.equal(seasonOps(waiting, { emit: (e) => sent.push(e) }).rescue(KEY), 0);
-  assert.equal(waiting.saved, 0);
-  assert.deepEqual(sent, []);
+  const sops = seasonOps(shared, { emit: (e) => sent.push(e) });
+  assert.equal(sops.rescue(KEY), 1);
+  assert.equal(shared.saved, 1);
+  assert.deepEqual(sent, [['h', KEY]]);
+  sent.length = 0;
+  assert.equal(sops.rescue('inconnu'), 0);
+  assert.deepEqual(sent, [], 'rien à envoyer quand rien n\'est sauvé');
 });
 
 test('le serveur écrit dans la copie : rangées, tuiles, compteurs, prêts ; jamais `me`', () => {
@@ -412,7 +416,7 @@ async function prepare() {
   assert.ok(began.ok, began.reason);
   return { client, store, prep, ville: began.ville, proj: makeProjection(HOME.lat, HOME.lon) };
 }
-async function seasonGame() {
+async function seasonGame({ hab = false } = {}) {
   const s = await prepare();
   const truth = s.ville;
   const solo = createCityRuntime({
@@ -441,10 +445,19 @@ async function seasonGame() {
   let clock = 1e6;
   const rt = createCityRuntime({
     ville: copy, store: a.store, client: a.client, template: TEMPLATE, graph: a.prep.graph, fn: a.prep.fn, member: a.prep.member, unit: a.prep.unit,
-    commune: a.prep.commune, proj: a.proj, maison: a.prep.ref, rand: rng(7), now: () => (clock += 1), season: { net },
+    commune: a.prep.commune, proj: a.proj, maison: a.prep.ref, rand: rng(7), now: () => (clock += 1), season: { net, hab },
   });
   return { rt, net, copy, truth, advance: (ms) => { clock += ms; } };
 }
+// Bâtiment d'un pâté placé qui cache encore au moins un habitant : { id, key }.
+const hiddenBuilding = (g) => {
+  for (const res of g.rt.cuts.values()) for (const p of res.pates) {
+    if (!g.rt.pos.has(p.key)) continue;
+    const found = hiddenByBuilding(g.copy, p).find(([, n]) => n >= 1);
+    if (found) return { id: found[0], key: p.key };
+  }
+  return null;
+};
 const withDirector = (rt) => {
   const director = createZombieDirector(createGrid(1300, 1), rng(3));
   director.setSupply(rt.supply);
@@ -454,6 +467,44 @@ const frame = (director, rt, player, dt = 1 / 30, desired = 30) => {
   director.update(dt, player, mods, { isNight: false, desired });
   rt.tick(dt, director, player);
 };
+
+test('ville de saison : un habitant trouvé en fouillant n\'est cherché que si le serveur connaît le geste (hab), puis envoyé', async () => {
+  const g = await seasonGame();
+  g.copy.me = null;
+  await g.rt.ensureAround(0, 0, { wait: true });
+  const target = hiddenBuilding(g);
+  assert.ok(target, 'un bâtiment qui cache quelqu\'un');
+  g.rt.state.forceFind = true;
+  const sent = () => g.net.events.filter((e) => e[0] === 'h');
+  const saved = g.copy.saved;
+  // Serveur sans le geste : rien n'est cherché ni envoyé (un ancien serveur refuserait le message entier).
+  assert.equal(g.rt.rescueIn(target.id), 0);
+  assert.equal(g.copy.saved, saved);
+  assert.deepEqual(sent(), []);
+  // L'état relu après une coupure dit que le serveur le connaît.
+  g.rt.resyncFrom({ ville: structuredClone(g.copy), lent: {}, hab: 1 });
+  assert.equal(g.rt.rescueIn(target.id), 1);
+  assert.equal(g.copy.saved, saved + 1);
+  assert.deepEqual(sent(), [['h', target.key]]);
+  // Et s'il change de version pendant une autre coupure, le jeu cesse d'en envoyer.
+  g.rt.resyncFrom({ ville: structuredClone(g.copy), lent: {} });
+  assert.equal(g.rt.rescueIn(target.id), 0);
+  assert.equal(sent().length, 1);
+});
+
+test('ville de saison avec hab : l\'habitant trouvé est sauvé dans la copie et envoyé une fois', async () => {
+  const g = await seasonGame({ hab: true });
+  g.copy.me = null;
+  await g.rt.ensureAround(0, 0, { wait: true });
+  const target = hiddenBuilding(g);
+  assert.ok(target);
+  g.rt.state.forceFind = true;
+  const before = blockInfo(g.copy, target.key).hidden;
+  assert.equal(g.rt.rescueIn(target.id), 1);
+  assert.equal(blockInfo(g.copy, target.key).hidden, before - 1);
+  assert.deepEqual(g.net.events.filter((e) => e[0] === 'h'), [['h', target.key]]);
+  assert.ok(checkVille(g.copy).ok, checkVille(g.copy).errors.join(' ; '));
+});
 
 test('ville de saison : une tuile inconnue du serveur est envoyée une fois, les pâtés rendus par le serveur sont adoptés', async () => {
   const g = await seasonGame();

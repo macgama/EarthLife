@@ -420,6 +420,10 @@ test('graine : population minimale, nombres vrais, clé de commune qui n\'est pa
   assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['l', '@constructor', 1]] }).ok, false);
   assert.equal(validateClient({ t: 'sv', o: 'ev', e: [[['l'], key(1), 1]] }).ok, false);
   assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['l', '@c01283', 1]] }).ok, true);
+  // Habitant trouvé : une clé de pâté, sans nombre.
+  assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['h', key(1)]] }).ok, true);
+  assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['h', key(1), 1]] }).ok, false);
+  assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['h']] }).ok, false);
 });
 
 test('tuile : une clé tenue par une autre tuile n\'est pas reprise, découpes et voisinages réservés aux joueurs assis', async () => {
@@ -503,6 +507,82 @@ test('gestes sans effet : ni jeu enregistré, ni rangée diffusée ou écrite', 
   // Un geste utile compte.
   await a.ev(['l', k, 1]);
   assert.ok(city.playedAt > t0);
+});
+
+// Pâté qui cache encore le plus d'habitants (pas libéré) : [clé, rangée].
+function hiddenBlock(w) {
+  let best = null;
+  for (const t of Object.values(cityOf(w).ville.tiles)) {
+    for (const [k, row] of Object.entries(t.b ?? {})) {
+      if (row[ROW.E] === ETAT.libere || row[ROW.H] < 3) continue;
+      if (!best || row[ROW.H] > best[1][ROW.H]) best = [k, row];
+    }
+  }
+  return best;
+}
+
+test('habitant trouvé (h) : un caché devient sauvé pour tous les joueurs, la réserve du cœur n\'en donne pas, l\'état dit que le geste existe', async () => {
+  const w = rig();
+  const a = await seeded(w), b = await w.player(2, { enter: SEED.key });
+  await a.send({ o: 'in', c: SEED.key });
+  await b.send({ o: 'in', c: SEED.key });
+  const city = cityOf(w), v = city.ville;
+  const [k, row] = hiddenBlock(w);
+  const h0 = row[ROW.H], saved0 = v.saved, sv0 = Object.values(v.units).reduce((n, u) => n + u.sv, 0);
+  const t0 = city.playedAt;
+  w.clock.t += 5000;
+  await a.ev(['h', k]);
+  assert.equal(row[ROW.H], h0 - 1);
+  assert.equal(v.saved, saved0 + 1);
+  assert.equal(Object.values(v.units).reduce((n, u) => n + u.sv, 0), sv0 + 1);
+  assert.ok(city.playedAt > t0, 'un habitant trouvé est du jeu');
+  assert.ok(checkVille(v).ok, checkVille(v).errors.join(' ; '));
+  w.tick(1000);
+  for (const p of [a, b]) {
+    const rows = p.sv('rows').at(-1);
+    assert.equal(Object.values(rows.r).find((x) => x[k])[k][ROW.H], h0 - 1, `rangée diffusée à ${p.n}`);
+    assert.equal(p.sv('cnt').at(-1).c.sv, saved0 + 1);
+  }
+  // Jamais sur la réserve du cœur ni sur une clé inconnue.
+  await a.ev(['h', '@c01283']);
+  await a.ev(['h', key(99, 5)]);
+  assert.equal(v.saved, saved0 + 1);
+  // L'état de la ville annonce le geste : un jeu ne l'envoie qu'à ce prix.
+  const st = await b.call('/v1/season/state', {});
+  assert.equal(st.body.hab, 1);
+});
+
+test('habitant trouvé (h) : refusé sans caché, au débit d\'une fouille ; la rangée corrigée ne va qu\'au joueur', async () => {
+  const w = rig({ rules: { rescueBurst: 2, rescuePerSec: 0.001 } });
+  const a = await seeded(w), b = await w.player(2, { enter: SEED.key });
+  await a.send({ o: 'in', c: SEED.key });
+  await b.send({ o: 'in', c: SEED.key });
+  const city = cityOf(w), v = city.ville;
+  const [k, row] = hiddenBlock(w);
+  const saved0 = v.saved;
+  await a.ev(['h', k]);
+  await a.ev(['h', k]);
+  assert.equal(v.saved, saved0 + 2);
+  await w.seasons.flush();
+  w.tick(1000);
+  const rowsB = b.sv('rows').length, rowsA = a.sv('rows').length;
+  await a.ev(['h', k]);
+  assert.equal(v.saved, saved0 + 2, 'le seau est vide : au-delà du débit d\'une fouille, ignoré');
+  assert.ok(a.sv('rows').length > rowsA, 'le joueur reçoit la rangée du serveur');
+  w.tick(1000);
+  assert.equal(b.sv('rows').length, rowsB, 'les autres joueurs n\'en savent rien');
+  // Sans caché dans le pâté : rien, même avec des jetons.
+  const w2 = rig({ rules: { rescueBurst: 1000 } });
+  const c = await seeded(w2);
+  await c.send({ o: 'in', c: SEED.key });
+  const [k2, row2] = hiddenBlock(w2);
+  const v2 = cityOf(w2).ville;
+  for (let left = row2[ROW.H]; left > 0; left -= 40) await c.ev(...Array(Math.min(40, left)).fill(['h', k2]));
+  assert.equal(row2[ROW.H], 0);
+  const saved2 = v2.saved;
+  await c.ev(['h', k2]);
+  assert.equal(v2.saved, saved2, 'plus aucun caché : rien de plus sauvé');
+  assert.ok(checkVille(v2).ok, checkVille(v2).errors.join(' ; '));
 });
 
 test('nid, fanion, libération : mêmes règles que le jeu seul, validées par le serveur', async () => {
