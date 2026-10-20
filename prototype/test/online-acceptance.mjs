@@ -2648,12 +2648,22 @@ await scenario('O33', 'amis : code, lien, liste, retrait et blocage', async () =
   // avoir un surnom (l'identité du compte naît à la première connexion), C non (« Ami (pas encore en ligne) »).
   class OriginWs extends WebSocket { constructor(u) { super(u, { headers: { Origin: ORIGIN } }); } }
   const U = {};
-  for (const n of ['a', 'b', 'c']) {
-    const u = U[n] = { email: `${n}.ami@exemple.test`, pw: `essai-ami-${n}-quai-77` };
-    await post('/v1/account/code', { v: 1, email: u.email, why: 'signup' });
-    const ver = await post('/v1/account/verify', { v: 1, email: u.email, code: srv.mailbox.lastCode(u.email), password: u.pw, tok: null, age: true });
-    u.ses = ver.body.ses;
-    check(ver.status === 200 && !!u.ses, `${n.toUpperCase()} : compte créé (${ver.status})`);
+  // Les inscriptions de O22 à O32 ont déjà usé les plafonds par adresse IP des codes (dont 5 par heure pour une adresse neuve) :
+  // ils sont relevés le temps d'ouvrir les trois comptes, puis rétablis.
+  const { ACCOUNT_LIMITS: LIM } = await load('server/src/accounts.js');
+  const was = { codesPerIpHour: LIM.codesPerIpHour, coldCodesPerIpHour: LIM.coldCodesPerIpHour };
+  LIM.codesPerIpHour += 10;
+  LIM.coldCodesPerIpHour += 10;
+  try {
+    for (const n of ['a', 'b', 'c']) {
+      const u = U[n] = { email: `${n}.ami@exemple.test`, pw: `essai-ami-${n}-quai-77` };
+      await post('/v1/account/code', { v: 1, email: u.email, why: 'signup' });
+      const ver = await post('/v1/account/verify', { v: 1, email: u.email, code: srv.mailbox.lastCode(u.email), password: u.pw, tok: null, age: true });
+      u.ses = ver.body.ses;
+      check(ver.status === 200 && !!u.ses, `${n.toUpperCase()} : compte créé (${ver.status})`);
+    }
+  } finally {
+    Object.assign(LIM, was);
   }
   for (const n of ['a', 'b']) {
     const o = createOnline({ server: SERVER, storage: mem(), WebSocketImpl: OriginWs, session: () => U[n].ses });
