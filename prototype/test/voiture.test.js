@@ -1,10 +1,12 @@
-// Voitures et carburant (src/voiture.js) : réparation, siphon, plein, portée, durée, décompte, interdits, cercle de portée.
+// Voitures et carburant (src/voiture.js) : réparation, siphon, plein, portée, durée, décompte, interdits, cercle de portée, conduite dans les rues.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CAR, litres, hashId, repairable, crowM, roadM, fuelFor, rangeM, driveSeconds, tripOf, circleRing,
   repairCheck, payRepair, repairedCar, siphonLoot, siphonKey, refuelCar, applyRefuel, refuelCheck, driveBlock, parkingSpot,
+  DRIVE, driveStep, driveFuel, canHit, hitDamage, hitWear, bodyHit, streetBlock, fixWearCost, fixWearCheck, payFixWear, angleDiff,
 } from '../src/voiture.js';
+import { ZOMBIE_TYPES } from '../src/game.js';
 
 const LYON = { lat: 45.7578, lon: 4.832 };
 const PEROUGES = { lat: 45.9206, lon: 5.1754 };
@@ -177,4 +179,135 @@ test('stationnement : sur le bas-côté droit de la route carrossable la plus pr
   // Route étroite : jamais à moins de 0,3 m de l\u2019axe.
   const lane = parkingSpot([road('service', [[0, 0], [10, 0]], { width: 2 })], 5, 3);
   assert.ok(Math.abs(lane.z - 0.3) < 1e-9);
+});
+
+// ---------- Conduite dans les rues ----------
+const roll = (st, want, seconds, traction = 1, dt = 1 / 60) => {
+  let t = 0;
+  while (t < seconds - 1e-9) { st = driveStep(st, want, dt, traction); t += dt; }
+  return st;
+};
+
+test('conduite : 30 km/h au plus, atteints en quelques secondes, jamais dépassés', () => {
+  assert.ok(Math.abs(DRIVE.maxMs * 3.6 - 30) < 1e-9);
+  let st = { yaw: 0, speed: 0 }, t = 0, peak = 0;
+  while (st.speed < DRIVE.maxMs * 0.95 && t < 20) { st = driveStep(st, { m: 1, heading: 0 }, 1 / 60); t += 1 / 60; peak = Math.max(peak, st.speed); }
+  assert.ok(t > 1.5 && t < 4, `accélération de ${t.toFixed(1)} s`);
+  st = roll(st, { m: 1, heading: 0 }, 10);
+  assert.ok(st.speed <= DRIVE.maxMs + 1e-9, `vitesse ${st.speed}`);
+  assert.ok(st.speed >= DRIVE.maxMs - 1e-6, 'le plein régime est atteint');
+  // Le joueur court à 9,5 m/s : la voiture ne va jamais plus vite que lui (le monde construit au fil de la marche suit).
+  assert.ok(DRIVE.maxMs < 9.5);
+  // Poussée à demi : demi-vitesse.
+  assert.ok(Math.abs(roll({ yaw: 0, speed: 0 }, { m: 0.5, heading: 0 }, 10).speed - DRIVE.maxMs / 2) < 0.05);
+});
+
+test('conduite : relâcher le stick ralentit puis arrête, sans reculer', () => {
+  let st = { yaw: 1, speed: DRIVE.maxMs };
+  let t = 0;
+  while (st.speed > 0 && t < 20) { st = driveStep(st, null, 1 / 60); t += 1 / 60; assert.ok(st.speed >= 0, 'jamais en marche arrière en roue libre'); if (st.speed < 1e-6) break; }
+  assert.ok(t > 1.5 && t < 4, `arrêt en ${t.toFixed(1)} s`);
+  assert.equal(st.yaw, 1, 'sans poussée, le cap ne bouge pas');
+  assert.deepEqual(driveStep({ yaw: 0.5, speed: 0 }, { m: 0.1, heading: 3 }, 1), { yaw: 0.5, speed: 0 }, 'sous le seuil du stick, rien ne bouge');
+});
+
+test('conduite : la voiture tourne vers la direction poussée, plus lentement quand elle va vite', () => {
+  // À l'arrêt, elle ne pivote pas sur place : elle démarre en arc.
+  const still = driveStep({ yaw: 0, speed: 0 }, { m: 1, heading: Math.PI / 2 }, 1 / 60);
+  assert.ok(Math.abs(still.yaw) < 0.02 && still.speed > 0);
+  // Après une seconde, le cap s'est rapproché ; elle n'a jamais dépassé la direction voulue.
+  const slow = roll({ yaw: 0, speed: 3 }, { m: 1, heading: Math.PI / 2 }, 1);
+  const fast = roll({ yaw: 0, speed: DRIVE.maxMs }, { m: 1, heading: Math.PI / 2 }, 1);
+  assert.ok(slow.yaw > 0.9 && slow.yaw <= Math.PI / 2 + 1e-9, `cap lent ${slow.yaw}`);
+  assert.ok(fast.yaw > 0.5 && fast.yaw < slow.yaw + 0.8, `cap rapide ${fast.yaw}`);
+  assert.ok(angleDiff(Math.PI / 2, fast.yaw) > 0, 'pas de dépassement');
+  // Rayon de braquage à 30 km/h : de l'ordre de 6 à 12 m (une voiture, pas un char).
+  const omega = DRIVE.turn / (1 + DRIVE.maxMs / DRIVE.turnHalf);
+  assert.ok(DRIVE.maxMs / omega > 5 && DRIVE.maxMs / omega < 12, `rayon ${(DRIVE.maxMs / omega).toFixed(1)} m`);
+  // Tourner à gauche ou à droite : symétrique.
+  const left = roll({ yaw: 0, speed: 5 }, { m: 1, heading: -1 }, 0.5), right = roll({ yaw: 0, speed: 5 }, { m: 1, heading: 1 }, 0.5);
+  assert.ok(Math.abs(left.yaw + right.yaw) < 1e-9);
+  // Le cap reste dans ]−π, π].
+  assert.ok(Math.abs(roll({ yaw: 3, speed: 5 }, { m: 1, heading: -3 }, 2).yaw) <= Math.PI + 1e-9);
+});
+
+test('conduite : une poussée derrière la voiture à l\'arrêt la fait reculer, lentement', () => {
+  const back = roll({ yaw: 0, speed: 0 }, { m: 1, heading: Math.PI }, 3);
+  assert.ok(back.speed < 0 && back.speed >= -DRIVE.reverseMs - 1e-9, `marche arrière ${back.speed}`);
+  assert.ok(Math.abs(back.yaw) < 1e-9, 'l\'arrière vise la poussée : le cap ne change pas');
+  // Poussée derrière à 30 km/h : elle freine et vire, elle ne passe pas en marche arrière d'un coup.
+  const braking = driveStep({ yaw: 0, speed: DRIVE.maxMs }, { m: 1, heading: Math.PI }, 1 / 60);
+  assert.ok(braking.speed > 0 && braking.speed < DRIVE.maxMs);
+  // Poussée vers l'avant en marche arrière : elle freine d'abord (poussée contraire) puis repart.
+  const fwd = driveStep({ yaw: 0, speed: -2 }, { m: 1, heading: 0 }, 1 / 60);
+  assert.ok(fwd.speed > -2);
+});
+
+test('conduite : sol mouillé ou enneigé (traction faible) : on accélère et on tourne moins vite', () => {
+  const dry = roll({ yaw: 0, speed: 0 }, { m: 1, heading: 0 }, 1, 1), wet = roll({ yaw: 0, speed: 0 }, { m: 1, heading: 0 }, 1, 0.4);
+  assert.ok(wet.speed < dry.speed);
+  const turnDry = roll({ yaw: 0, speed: 5 }, { m: 1, heading: 2 }, 0.5, 1), turnWet = roll({ yaw: 0, speed: 5 }, { m: 1, heading: 2 }, 0.5, 0.4);
+  assert.ok(turnWet.yaw < turnDry.yaw);
+  assert.deepEqual(driveStep({ yaw: 0, speed: 3 }, { m: 1, heading: 0 }, 1 / 60, 9), driveStep({ yaw: 0, speed: 3 }, { m: 1, heading: 0 }, 1 / 60, 1), 'traction bornée à 1');
+});
+
+test('conduite : l\'essence brûle comme au trajet (8 L aux 100 km), un bidon fait 62 km', () => {
+  assert.ok(Math.abs(driveFuel(1000) - 0.08) < 1e-12);
+  assert.equal(driveFuel(-5), 0);
+  assert.ok(Math.abs(CAR.canL / driveFuel(1) - 62500) < 1);
+});
+
+test('conduite : renverser un zombie le blesse selon la vitesse et use la voiture de 5 à 10 points', () => {
+  assert.ok(!canHit(1.9) && canHit(2) && canHit(-5), 'à partir de 2 m/s, aussi en marche arrière');
+  assert.equal(hitDamage(DRIVE.maxMs) >= ZOMBIE_TYPES.errant.health, true, 'à 30 km/h, un errant est abattu');
+  assert.equal(hitDamage(DRIVE.maxMs) >= ZOMBIE_TYPES.coureur.health, true);
+  assert.ok(hitDamage(DRIVE.maxMs) < ZOMBIE_TYPES.costaud.health, 'un costaud encaisse le premier choc');
+  assert.ok(hitDamage(2) < ZOMBIE_TYPES.errant.health, 'à 7 km/h, un errant survit');
+  assert.ok(hitDamage(2) > 0 && hitDamage(5) > hitDamage(2));
+  assert.equal(hitWear(2), 5);
+  assert.equal(hitWear(DRIVE.maxMs), 10);
+  for (let v = 2; v <= DRIVE.maxMs; v += 0.25) assert.ok(hitWear(v) >= 5 && hitWear(v) <= 10 && hitWear(v) >= hitWear(v - 0.25 < 2 ? 2 : v - 0.25));
+  assert.equal(hitWear(20), 10, 'jamais plus de 10');
+});
+
+test('conduite : la carrosserie (1,8 × 4,1 m) touche ce qui est devant, derrière et à côté, pas plus loin', () => {
+  // Voiture en (10, 10), cap +z (yaw 0) : avant = z croissant.
+  assert.ok(bodyHit(10, 10, 0, 10, 12.2), 'devant, contre le pare-chocs');
+  assert.ok(bodyHit(10, 10, 0, 10, 7.8), 'derrière, contre le coffre');
+  assert.ok(bodyHit(10, 10, 0, 11.2, 10), 'sur le flanc');
+  assert.ok(!bodyHit(10, 10, 0, 10, 13.5), 'trop loin devant');
+  assert.ok(!bodyHit(10, 10, 0, 12.6, 10), 'trop loin sur le côté');
+  // Cap +x (yaw π/2) : avant = x croissant.
+  assert.ok(bodyHit(10, 10, Math.PI / 2, 12.2, 10));
+  assert.ok(!bodyHit(10, 10, Math.PI / 2, 10, 12.2), 'de côté, 2,2 m, c\'est trop loin');
+});
+
+test('conduite : impossible sans voiture, sans essence ou en panne', () => {
+  assert.equal(streetBlock(null), 'Tu n’as pas de voiture.');
+  assert.match(streetBlock({ fuel: 0, wear: 100 }), /Plus d’essence/);
+  assert.match(streetBlock({ fuel: 3, wear: 0 }), /en panne/);
+  assert.equal(streetBlock({ fuel: 1, wear: 100 }), null);
+  assert.equal(streetBlock({ fuel: 0.05, wear: 100 }) !== null, true, 'quelques centilitres ne font pas rouler');
+});
+
+test('ta voiture abîmée se répare à la ferraille : une par 35 points perdus, trois pour une panne', () => {
+  assert.equal(fixWearCost({ wear: 100 }), 0);
+  assert.equal(fixWearCost({ wear: 99.8 }), 0);
+  assert.equal(fixWearCost({ wear: 95 }), 1);
+  assert.equal(fixWearCost({ wear: 65 }), 1);
+  assert.equal(fixWearCost({ wear: 64 }), 2);
+  assert.equal(fixWearCost({ wear: 30 }), 2);
+  assert.equal(fixWearCost({ wear: 29 }), 3);
+  assert.equal(fixWearCost({ wear: 0 }), 3);
+  assert.equal(fixWearCost(null), 0);
+  const car = { wear: 0, fuel: 4 };
+  assert.deepEqual(fixWearCheck({ ferraille: 1 }, car), { ok: false, why: 'Il te manque 2 ferrailles', cost: 3 });
+  assert.equal(fixWearCheck({ ferraille: 2 }, { wear: 0 }).why, 'Il te manque 1 ferraille');
+  assert.equal(fixWearCheck({}, { wear: 100 }).why, 'Ta voiture est en bon état.');
+  const bag = { ferraille: 5, ruban: 1 };
+  assert.deepEqual(fixWearCheck(bag, car), { ok: true, why: '', cost: 3 });
+  assert.equal(payFixWear(bag, car), 3);
+  assert.equal(bag.ferraille, 2);
+  assert.equal(car.wear, 100);
+  assert.equal(car.fuel, 4, 'l\'essence ne change pas');
 });

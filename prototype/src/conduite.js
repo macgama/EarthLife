@@ -1,15 +1,15 @@
 // Voitures et carburant dans la partie (cahier voitures-et-carburant/, conception.md) : réparer ou siphonner une voiture garée,
-// « ta voiture » (dessinée, flèche, carte du plein et du départ), trajet en voiture vers une autre ville et arrivée.
+// « ta voiture » (dessinée, flèche, carte du plein et du départ), conduite dans les rues, trajet en voiture vers une autre ville et arrivée.
 // Les règles (portée, coût, durée, butin) sont dans voiture.js ; main.js garde la session, les cartes et la boucle de jeu.
 import { chunkFeatures, tileTemplate } from './world.js';
-import { nearestFree, groundAt, buildingNear } from './collision.js';
+import { nearestFree, nearestFit, moveWithCollisions, isFree, groundAt, buildingNear } from './collision.js';
 import { goneChecker } from './props.js';
 import { itemLabel } from './survival.js';
 import { distanceText } from './stats.js';
 import { lonLatToTile, tileUrl, fetchTileBytes, TILE_ZOOM } from './tiles.js';
 import {
-  CAR, repairable, repairCheck, payRepair, repairedCar, siphonLoot, siphonKey, applyRefuel, refuelCheck, driveBlock, litres, rangeM,
-  parkingSpot, tripOf,
+  CAR, DRIVE, repairable, repairCheck, payRepair, repairedCar, siphonLoot, siphonKey, applyRefuel, refuelCheck, driveBlock, litres, rangeM,
+  parkingSpot, tripOf, driveStep, driveFuel, canHit, hitDamage, hitWear, bodyHit, streetBlock, fixWearCost, fixWearCheck, payFixWear,
 } from './voiture.js';
 
 export const MY_CAR = 'ma-voiture'; // clé du décor et identifiant de la voiture du joueur dans propsView
@@ -20,7 +20,8 @@ const FIX_NOISE = 24, SIPHON_NOISE = 12;
 const fmtTime = (t) => String(Math.round(t * 10) / 10).replace('.', ',');
 const round = (v, d) => Math.round(v * 10 ** d) / 10 ** d;
 
-// host : { current() (la session), save (la partie vivante), saveStore { markDirty, flush }, showCard, toast, propsView, online { mark, live },
+// host : { current() (la session), save (la partie vivante), saveStore { markDirty, flush }, showCard, toast, propsView (moveProp), online { mark, live },
+//          runOver(s, { hits, kills }) (zombies renversés : compteurs et compétence),
 //          overlay { show, progress, hide }, addLoot, lootNotes, gainSkill, craftXp, arrive(place, arrival, season) (lance le nouveau monde ;
 //          rend faux s'il n'a pas pu changer de ville, en saison), openMap({ from, fuel, cities }) (carte de conduite),
 //          tripCities() (villes ouvertes du niveau, pour la liste de repli de la carte, en saison) }
@@ -44,15 +45,24 @@ export function createCarGame(host) {
     const out = { primary: null, secondary: null };
     if (s.store.source !== 'tiles' || s.ended) return out;
     const p = s.player, car = save.car;
+    const key = touch ? '' : ' (R)';
     if (car) {
       const at = local(s, car);
       if (Math.hypot(at.x - p.x, at.z - p.z) <= CAR.reach) {
         out.primary = { id: 'owncar', arg: null, label: `Ta voiture · ${litres(car.fuel)}${touch ? '' : ' (E)'}`, time: 0, slot: 'primary' };
+        // Ta voiture abîmée (usure des zombies renversés) : R la remet en état avec de la ferraille.
+        const cost = fixWearCost(car);
+        if (cost > 0) {
+          const t = DRIVE.fix.time * s.actionMul * s.craftMul;
+          out.secondary = {
+            id: 'carwear', arg: null, label: `Réparer ta voiture${key} · ${cost} ferraille${cost > 1 ? 's' : ''} · ${fmtTime(t)} s`, time: t, slot: 'secondary',
+            off: !fixWearCheck(s.survivor.inventory, car).ok,
+          };
+        }
       }
     }
-    const prop = s.chunks.propNear(p.x, p.z, ['car']);
+    const prop = out.secondary ? null : s.chunks.propNear(p.x, p.z, ['car']);
     if (prop) {
-      const key = touch ? '' : ' (R)';
       if (repairable(prop.id)) {
         const t = CAR.repair.time * s.actionMul * s.craftMul;
         const ok = checkFix(s, prop).ok;
@@ -81,6 +91,11 @@ export function createCarGame(host) {
 
   // Début d'une action chronométrée (réparer, siphonner) : l'action à poser dans s.action, ou null (le jeu dit pourquoi).
   function begin(s, a, base) {
+    if (a.id === 'carwear') {
+      const w = fixWearCheck(s.survivor.inventory, save.car);
+      if (!w.ok) { host.toast(w.why, 2.5); return null; }
+      return { ...base, time: a.time, label: 'Réparation de ta voiture…', icon: 'cle', noise: FIX_NOISE, alarm: false };
+    }
     const prop = a.arg;
     const c = a.id === 'carfix' ? checkFix(s, prop) : checkSiphon(prop);
     if (!c.ok) { host.toast(c.why, 2.5); return null; }
@@ -92,8 +107,19 @@ export function createCarGame(host) {
 
   // Action terminée (le joueur ne doit pas avoir bougé : sinon elle aurait été annulée).
   function finish(s, a) {
-    if (a.id === 'carfix') finishFix(s, a.arg);
+    if (a.id === 'carwear') finishWear(s);
+    else if (a.id === 'carfix') finishFix(s, a.arg);
     else if (a.id === 'siphon') finishSiphon(s, a.arg);
+  }
+
+  // Ta voiture remise en état : la ferraille est prise à la fin ; l'état revient à 100 %.
+  function finishWear(s) {
+    const w = fixWearCheck(s.survivor.inventory, save.car);
+    if (!w.ok) { host.toast(w.why, 2.5); return; }
+    payFixWear(s.survivor.inventory, save.car);
+    host.gainSkill(s, 'fabrication', host.craftXp(DRIVE.fix.time));
+    host.toast('Ta voiture est remise en état', 3, 'success');
+    host.saveStore.flush('voiture');
   }
 
   function finishFix(s, prop) {
@@ -134,20 +160,26 @@ export function createCarGame(host) {
     const bag = s.survivor.inventory;
     const fill = refuelCheck(car, bag);
     const block = blockOf(s, car);
+    const streetWhy = streetBlock(car);
     const lines = [
       `Essence : ${litres(car.fuel)} sur ${CAR.tankL} L`,
       `Portée : ${distanceText(rangeM(car.fuel))} à vol d’oiseau`,
       `État : ${Math.round(car.wear)} %`,
     ];
     const buttons = [];
-    if (fill.can) buttons.push({ id: 'fill', label: `Faire le plein · ${fill.cans} bidon${fill.cans > 1 ? 's' : ''} (${litres(fill.added)})`, primary: !!block });
-    else lines.push(fill.why);
-    if (block) lines.push(block);
-    else buttons.push({ id: 'drive', label: 'Partir en voiture', primary: true });
+    if (!streetWhy) buttons.push({ id: 'street', label: 'Conduire dans les rues' });
+    else lines.push(streetWhy);
+    if (fill.can) buttons.push({ id: 'fill', label: `Faire le plein · ${fill.cans} bidon${fill.cans > 1 ? 's' : ''} (${litres(fill.added)})` });
+    else if (!streetWhy?.startsWith('Plus d’essence')) lines.push(fill.why); // « Plus d’essence » dit déjà qu'il faut un bidon
+    if (block) { if (!lines.includes(block)) lines.push(block); }
+    else buttons.push({ id: 'drive', label: 'Partir en voiture' });
     buttons.push({ id: 'close', label: 'Fermer' });
+    if (buttons[0].id !== 'close') buttons[0].primary = true;
     host.showCard({ title: 'Ta voiture', lines, buttons }, (id) => {
       if (host.current() !== s) return;
-      if (id === 'fill') {
+      if (id === 'street') {
+        enter(s);
+      } else if (id === 'fill') {
         const r = applyRefuel(car, s.survivor.inventory);
         if (r.cans > 0) {
           host.toast(`Plein : +${litres(r.added)} · ${litres(car.fuel)} dans le réservoir`, 3, 'success');
@@ -160,9 +192,148 @@ export function createCarGame(host) {
     }, { escape: 'close' });
   }
 
+  // ---------- Conduite dans les rues ----------
+  // s.driving = { yaw, speed (m/s, négatif en marche arrière), noiseT, saveT, warnedFuel, warnedWear } : le joueur est au volant ; sa position
+  // est celle de la voiture (disque de DRIVE.radius contre les murs et l'eau), qu'il pousse comme à pied vers où il veut aller.
+  const kmh = (d) => Math.round(Math.abs(d.speed) * 3.6);
+
+  // Bouton E pendant la conduite : descendre, avec la vitesse, l'essence et l'état (pas de fenêtre de plus).
+  function leaveAction(s, touch) {
+    const d = s.driving, car = save.car;
+    return { id: 'leave', arg: null, time: 0, slot: 'primary', label: `Descendre${touch ? '' : ' (E)'} · ${kmh(d)} km/h · ${litres(car.fuel)} · ${Math.round(car.wear)} %` };
+  }
+
+  // L'instance de ta voiture suit le joueur (une matrice réécrite par image) ; reprise du dessin complet si elle n'est pas affichée.
+  function placeCar(s, d) {
+    const p = s.player, car = save.car;
+    const gy = s.store.terrain?.enabled ? groundAt(s.grid, p.x, p.z) : 0;
+    if (host.propsView.moveProp(MY_CAR, p.x, p.z, gy, d.yaw)) return;
+    host.propsView.setChunk(MY_CAR, [{ id: MY_CAR, kind: 'car', x: p.x, z: p.z, gy, yaw: d.yaw, s: 1, color: car.tint }]);
+    shown ??= { key: '', gy };
+  }
+
+  // Position de la voiture dans la sauvegarde (où elle est garée quand on descend, ou ce qu'une page fermée garde).
+  function writePos(s) {
+    const d = s.driving, car = save.car, p = s.player;
+    if (!d || !car) return;
+    const ll = latLonOf(s, p.x, p.z);
+    Object.assign(car, { lat: round(ll.lat, 6), lon: round(ll.lon, 6), yaw: round(d.yaw, 3), fuel: round(Math.max(0, car.fuel), 4), wear: round(Math.max(0, car.wear), 1) }); // 4 décimales : 40 m de route ne coûtent que 3 mL
+  }
+
+  // Monter : la voiture est à portée, a de l'essence et n'est pas en panne ; elle est posée sur un point où son disque tient.
+  function enter(s) {
+    const car = save.car, p = s.player;
+    if (!car || s.driving || s.action || s.ended || s.refuge.inside || host.current() !== s || s.store.source !== 'tiles') return false;
+    const why = streetBlock(car);
+    if (why) { host.toast(why, 3, 'danger'); return false; }
+    const at = local(s, car);
+    if (Math.hypot(at.x - p.x, at.z - p.z) > CAR.reach + 0.5) { host.toast('Tu es trop loin de ta voiture', 2.5); return false; }
+    const spot = nearestFit(s.grid, at.x, at.z, DRIVE.radius, { maxD: 4, step: 0.25 });
+    if (!spot) { host.toast('Pas la place de démarrer ici : la voiture est coincée', 3.5, 'danger'); return false; }
+    s.driving = { yaw: car.yaw, speed: 0, noiseT: 0, saveT: 0, warnedFuel: car.fuel < 1, warnedWear: car.wear <= 25 };
+    Object.assign(p, { x: spot.x, z: spot.z, vx: 0, vz: 0, yaw: car.yaw, running: false });
+    placeCar(s, s.driving);
+    host.toast('Au volant : pousse dans la direction où aller', 3);
+    return true;
+  }
+
+  // Descendre (E, ou panne) : la voiture reste où elle est, le joueur sort à sa droite.
+  function leave(s, forced = false) {
+    const d = s.driving, car = save.car, p = s.player;
+    if (!d || !car) { s.driving = null; return; }
+    writePos(s);
+    const { x: cx, z: cz } = p, yaw = d.yaw;
+    const free = (q) => buildingNear(s.grid, q.x, q.z, 1.2) === null;
+    const side = nearestFree(s.grid, cx - Math.cos(yaw) * SPACE, cz + Math.sin(yaw) * SPACE, 12, 0.8, free)
+      ?? nearestFree(s.grid, cx + Math.cos(yaw) * SPACE, cz - Math.sin(yaw) * SPACE, 12, 0.8, free) ?? nearestFree(s.grid, cx, cz, 12);
+    if (side) Object.assign(p, { x: side.x, z: side.z });
+    Object.assign(p, { vx: 0, vz: 0, shield: forced ? 1.5 : 0.5 });
+    s.driving = null;
+    sync(s, 0, true);
+    host.saveStore.flush('voiture');
+  }
+
+  // Zombies sous les roues : chaque impact les blesse selon la vitesse, use la voiture de 5 à 10 points et ralentit un peu.
+  function runOver(s, d, dt) {
+    const p = s.player, car = save.car;
+    let hits = 0, kills = 0, wear = 0;
+    const ux = Math.sin(d.yaw), uz = Math.cos(d.yaw);
+    for (const z of s.director.zombies) {
+      if (z.carCd > 0) z.carCd -= dt;
+      if (z.dead || z.carCd > 0 || !canHit(d.speed)) continue;
+      if (Math.abs(z.x - p.x) > 4 || Math.abs(z.z - p.z) > 4 || !bodyHit(p.x, p.z, d.yaw, z.x, z.z)) continue;
+      if (((z.x - p.x) * ux + (z.z - p.z) * uz) * d.speed < 0) continue; // seulement du côté où l'on roule
+      z.carCd = DRIVE.hit.cooldown;
+      z.health -= hitDamage(d.speed);
+      z.hit = 0.25;
+      z.state = 'chase';
+      const dir = Math.sign(d.speed), kx = z.x + ux * dir * DRIVE.hit.knock, kz = z.z + uz * dir * DRIVE.hit.knock;
+      if (isFree(s.grid, kx, kz)) { z.x = kx; z.z = kz; }
+      hits++;
+      wear += hitWear(d.speed);
+      if (z.health <= 0) { z.dead = 0.001; p.kills++; kills++; }
+    }
+    if (!hits) return;
+    car.wear = Math.max(0, car.wear - wear);
+    d.speed *= Math.max(0.55, 0.88 ** hits);
+    host.runOver(s, { hits, kills });
+  }
+
+  // Une image au volant (appelée à la place de updatePlayer) : poussée, vitesse, collisions, essence, zombies, bruit, usure.
+  function drive(s, inp, dt, mods) {
+    const d = s.driving, car = save.car, p = s.player;
+    if (!d || !car) { s.driving = null; return; }
+    const len = Math.hypot(inp.move.x, inp.move.y);
+    let want = null;
+    if (len > 0.1) {
+      const mx = len > 1 ? inp.move.x / len : inp.move.x, my = len > 1 ? inp.move.y / len : inp.move.y;
+      const sin = Math.sin(s.cameraYaw), cos = Math.cos(s.cameraYaw);
+      want = { m: Math.min(1, len), heading: Math.atan2(-mx * cos + my * sin, mx * sin + my * cos) };
+    }
+    Object.assign(d, driveStep(d, want, dt, mods.traction ?? 1));
+    const dx = Math.sin(d.yaw) * d.speed * dt, dz = Math.cos(d.yaw) * d.speed * dt;
+    const next = moveWithCollisions(s.grid, p, dx, dz, DRIVE.radius);
+    const wanted = Math.hypot(dx, dz), got = Math.hypot(next.x - p.x, next.z - p.z);
+    if (wanted > 1e-6 && got < wanted * 0.6) d.speed *= DRIVE.crash; // contre un mur : la voiture s'arrête
+    Object.assign(p, { x: next.x, z: next.z, yaw: d.yaw, vx: Math.sin(d.yaw) * d.speed, vz: Math.cos(d.yaw) * d.speed, running: false });
+    car.fuel = Math.max(0, car.fuel - driveFuel(got));
+    runOver(s, d, dt);
+    // Le moteur s'entend à 50 m ; au volant et en mouvement, les zombies ne repèrent ni ne mordent le joueur (la carrosserie le protège).
+    d.noiseT += dt;
+    if (d.noiseT >= DRIVE.noiseEvery) {
+      d.noiseT = 0;
+      s.director.lureAt(p.x, p.z, { radius: DRIVE.noiseM, seconds: DRIVE.noiseSec });
+    }
+    p.shield = Math.max(0, (p.shield ?? 0) - dt);
+    if (Math.abs(d.speed) >= 1.5) p.shield = Math.max(p.shield, 0.3);
+    p.stamina = Math.min(p.staminaCap ?? 100, p.stamina + 12 * dt);
+    p.attackTimer = Math.max(0, p.attackTimer - dt);
+    p.swing = Math.max(0, p.swing - dt);
+    p.hurt = Math.max(0, p.hurt - dt);
+    d.saveT += dt;
+    if (d.saveT >= DRIVE.saveEvery) { d.saveT = 0; writePos(s); host.saveStore.markDirty(); }
+    // Avertissements, puis panne : le joueur descend.
+    if (!d.warnedFuel && car.fuel < 1 && car.fuel > 0) { d.warnedFuel = true; host.toast('Réservoir presque vide', 3, 'danger'); }
+    if (!d.warnedWear && car.wear > 0 && car.wear <= 25) { d.warnedWear = true; host.toast('Ta voiture est très abîmée', 3, 'danger'); }
+    if (car.fuel <= 0) {
+      host.toast('Panne d’essence : trouve un bidon', 4, 'danger');
+      placeCar(s, d);
+      leave(s, true);
+      return;
+    }
+    if (car.wear <= 0) {
+      host.toast('Ta voiture est en panne : répare-la avec de la ferraille', 4, 'danger');
+      placeCar(s, d);
+      leave(s, true);
+      return;
+    }
+    placeCar(s, d);
+  }
+
   // ---------- Dessin de ta voiture et flèche ----------
   // Une instance du décor (propsView), à sa place géographique ; reposée sur le sol quand le relief l'exige.
   function sync(s, dt = 0, force = false) {
+    if (s.driving) return; // la voiture suit le joueur (placeCar)
     const car = save.car;
     const at = car && s.store.source === 'tiles' ? local(s, car) : null;
     if (!at || Math.hypot(at.x - s.player.x, at.z - s.player.z) > NEAR_WORLD_M) { drop(); return; }
@@ -185,7 +356,7 @@ export function createCarGame(host) {
   // Flèche de boussole vers ta voiture (comme le refuge), estompée tout près.
   function arrow(s, near) {
     const car = save.car;
-    if (!car || s.store.source !== 'tiles') return null;
+    if (!car || s.driving || s.store.source !== 'tiles') return null;
     const at = local(s, car);
     if (Math.hypot(at.x - s.player.x, at.z - s.player.z) > NEAR_WORLD_M) return null;
     return { kind: 'car', x: at.x, z: at.z, near: Math.hypot(at.x - s.player.x, at.z - s.player.z) < near };
@@ -284,11 +455,12 @@ export function createCarGame(host) {
 
   // Trajet interrompu (mort, retour au menu) : le joueur reste au départ, l'essence n'est pas prise.
   function abort(s) {
+    if (s?.driving) { writePos(s); s.driving = null; host.saveStore.flush('voiture'); } // fin de partie ou nouveau monde : la voiture reste où elle est
     if (s.action?.id !== 'drive') return;
     s.action = null;
     if (s.player) s.player.hidden = !!s.refuge?.inside;
     host.overlay.hide();
   }
 
-  return { actions, begin, finish, openCar, sync, drop, arrow, start, arrived, land, abort, park };
+  return { actions, begin, finish, openCar, sync, drop, arrow, start, arrived, land, abort, park, enter, leave, drive, leaveAction };
 }

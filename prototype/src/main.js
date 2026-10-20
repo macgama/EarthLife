@@ -521,6 +521,14 @@ const cars = createCarGame({
   showCard: (...a) => showCard(...a), toast: (...a) => toast(...a), propsView, online, overlay: createRideOverlay(document),
   addLoot, lootNotes: (res) => lootNotes(res), gainSkill: (...a) => gainSkill(...a), craftXp,
   arrive: (place, arrival, season) => arriveByCar(place, arrival, season), openMap: (args) => driveMap.open(args), tripCities: () => city.tripCities(),
+  // Zombies renversés au volant : comptés comme des coups portés (profil, Combat).
+  runOver: (s, { hits, kills }) => {
+    if (kills) {
+      save.profile.kills += kills;
+      toast(kills > 1 ? `${kills} zombies renversés` : 'Zombie renversé', 1.2);
+    }
+    gainSkill(s, 'combat', hits * GAIN.hit + kills * GAIN.kill);
+  },
 });
 // Vivre de la campagne : cueillir ce qui est mûr, puiser au puits ou à la berge, pêcher (le feu de camp et la cuisine sont au refuge).
 const campagne = createCampagne({
@@ -1507,11 +1515,15 @@ function step(s, inp, dt) {
   // 6. Déplacement : immobile pendant une action dehors (caché au refuge, le joueur ne bouge pas).
   const before = { x: p.x, z: p.z };
   const still = s.action && (!s.action.inside || onTrip(s.action));
-  updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
-  addStep(save.profile, p.x - before.x, p.z - before.z, dt); // « Mes statistiques » : distance à pied et temps de jeu
-  if (p.running && !inside) {
-    const run = Math.hypot(p.x - before.x, p.z - before.z); // même règle que addStep : un saut (réveil, replacement) ne compte pas
-    if (run > 0 && run <= MAX_STEP_M) gainSkill(s, 'course', run * GAIN.runPerM);
+  if (s.driving) {
+    cars.drive(s, inp, dt, mods); // au volant (conduite.js) : ni pas, ni course, ni statistique de marche
+  } else {
+    updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
+    addStep(save.profile, p.x - before.x, p.z - before.z, dt); // « Mes statistiques » : distance à pied et temps de jeu
+    if (p.running && !inside) {
+      const run = Math.hypot(p.x - before.x, p.z - before.z); // même règle que addStep : un saut (réveil, replacement) ne compte pas
+      if (run > 0 && run <= MAX_STEP_M) gainSkill(s, 'course', run * GAIN.runPerM);
+    }
   }
   // Intérieur ouvert : sortie détectée, toit effacé ou rendu, lueur du meuble à fouiller.
   interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches, daylight: atmosphere.state.daylight });
@@ -1520,7 +1532,7 @@ function step(s, inp, dt) {
   updateActions(s, inp, dt, before);
   updateFiche(s, dt);
   // 8. Attaque.
-  if (inp.attack && !p.hidden) attack(s);
+  if (inp.attack && !p.hidden && !s.driving) attack(s);
   // 9. Zombies : ordinaires sous le plafond de 60 (horde comprise), horde guidée par le champ de distances.
   const density = urbanDensity(s.grid, p.x, p.z);
   const desired = Math.max(0, Math.min(targetZombieCount(s.mods, density), 60 - r.hordeAlive()));
@@ -1593,7 +1605,7 @@ const onTrip = (a) => a?.id === 'ride' || a?.id === 'drive';
 // Icône du bouton selon l'action (les objets du décor par leur sorte).
 const ACTION_ICONS = {
   search: 'fouiller', room: 'fouiller', door: 'refuge', enter: 'refuge', claim: 'refuge', move: 'refuge', exit: 'fleche', nail: 'marteau', repair: 'marteau',
-  plate: 'marteau', trap: 'piege', sleep: 'lune', craft: 'marteau', orphan: 'sac', tree: 'hache', car: 'cle', owncar: 'voiture', carfix: 'cle', siphon: 'bidon', bench: 'cle', nest: 'cle', flag: 'marteau',
+  plate: 'marteau', trap: 'piege', sleep: 'lune', craft: 'marteau', orphan: 'sac', tree: 'hache', car: 'cle', owncar: 'voiture', leave: 'voiture', carwear: 'cle', carfix: 'cle', siphon: 'bidon', bench: 'cle', nest: 'cle', flag: 'marteau',
   plant: 'feuille', water: 'boire', fish: 'canne',
 };
 // Libellé du bouton pendant l'action.
@@ -1677,6 +1689,7 @@ function takenBy(s, b) {
 function chooseActions(s) {
   const p = s.player, r = s.refuge;
   const touch = isTouch();
+  if (s.driving) return { primary: cars.leaveAction(s, touch), secondary: null, why: '' }; // au volant, E descend
   const near = r.inside ? null : buildingNear(s.grid, p.x, p.z, 1.6);
   const building = near === null ? null : s.store.buildings[near];
   const searched = building ? isSearched(s, building) : false;
@@ -1795,7 +1808,11 @@ function startAction(s, a) {
     cars.openCar(s);
     return;
   }
-  if (a.id === 'carfix' || a.id === 'siphon') {
+  if (a.id === 'leave') {
+    cars.leave(s);
+    return;
+  }
+  if (a.id === 'carfix' || a.id === 'carwear' || a.id === 'siphon') {
     const act = cars.begin(s, a, base);
     if (act) s.action = act;
     return;
@@ -1856,7 +1873,7 @@ function finishAction(s, a) {
   s.action = null;
   if (a.id === 'ride') ride.finish(s, a);
   else if (a.id === 'drive') cars.land(s, a);
-  else if (a.id === 'carfix' || a.id === 'siphon') cars.finish(s, a);
+  else if (a.id === 'carfix' || a.id === 'carwear' || a.id === 'siphon') cars.finish(s, a);
   else if (a.id === 'plant' || a.id === 'water' || a.id === 'fish') campagne.finish(s, a);
   else if (a.id === 'search') finishSearch(s, a);
   else if (a.id === 'room') finishRoom(s, a);
@@ -2176,6 +2193,7 @@ function attack(s) {
 function shootFirearm(s) {
   const p = s.player, sv = s.survivor;
   if (p.hidden) { toast('Pas de tir depuis le refuge', 1.5); return; }
+  if (s.driving) { toast('Pas de tir au volant', 1.5); return; }
   const fx = skillEffects(s);
   const res = fireShot(sv, p, s.director.zombies, s.grid, { fx });
   if (!res.ok) {
@@ -2597,6 +2615,7 @@ function onDeath(s) {
   s.downUntil = performance.now() + 10000;
   city.onDeath(s);
   cancelAction(s);
+  cars.abort(s); // mort au volant : la voiture reste là où elle est
   panel.close();
   p.carrying = false;
   const lines = [s.deathCause && !s.lastBite ? s.deathCause : 'Les zombies ont eu raison de toi.'];
@@ -2829,7 +2848,8 @@ function syncScene(s, dt) {
 
   // Joueur et zombies : marche, coups, éclairs, ombres de contact ; puis petite secousse de caméra
   // quand un coup porte ou qu'un zombie mord (aucune en mouvement réduit). Au refuge, le joueur est caché.
-  for (const m of playerMeshes) m.visible = !p.hidden;
+  for (const m of playerMeshes) m.visible = !p.hidden && !s.driving;
+  document.body.classList.toggle('driving', !!s.driving);
   s.sightAt = INTERIOR_DARK && s.interior?.entered ? interiorView.shadow.lightAtWorld : null; // zombies dans le noir : cachés
   characters.sync(s, dt, camera, atmosphere.state.daylight);
   tirView.update(dt, p, s.grid?.terrain?.enabled ? s.grid : null);
