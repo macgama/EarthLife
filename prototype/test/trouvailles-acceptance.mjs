@@ -295,7 +295,87 @@ async function scenario(device) {
   else await tap(page, device, '#finds [data-tv="close"].tv-btn:not(.tv-primary)');
   check(!(await open(page)), `${tag} : la fenêtre se ferme`);
 
-  // 7. Aucune exception de page n'a eu lieu.
+  // 7. Puce « Ouvrir » du sac (et touche I) : la même fenêtre sans butin ; on y jette, on reprend, la fermeture perd ce qui reste jeté.
+  await ev(page, () => { const s = window.__earthlife.session.survivor; for (const k of Object.keys(s.inventory)) delete s.inventory[k]; });
+  await debug(page, 'give', { planche: 5, clous: 3 });
+  // Le HUD se redessine à chaque image : sous swiftshader, la jauge peut tarder après le don.
+  await until(page, () => /Ouvrir le sac, 8 places sur/.test(document.getElementById('bag-open').getAttribute('aria-label')) || null, null, 60000);
+  const hud = await ev(page, () => {
+    const r = (el) => { const b = el?.getBoundingClientRect(); return b ? { x: b.x, y: b.y, w: b.width, h: b.height, right: b.right, bottom: b.bottom } : null; };
+    const bagBtn = document.getElementById('bag-open');
+    const visible = (b) => b !== bagBtn && b.offsetParent !== null && !b.classList.contains('hidden');
+    const others = [...document.querySelectorAll('#inventory .chip, #topbuttons .small, #search, #action2, #minimap')].filter(visible).map((b) => ({ id: b.id, ...r(b) }));
+    return {
+      bag: r(bagBtn), label: bagBtn.getAttribute('aria-label'), count: document.getElementById('bag-open-count').textContent, shown: bagBtn.offsetParent !== null,
+      first: document.querySelector('#inventory .chip')?.id, others, vw: window.innerWidth, vh: window.innerHeight,
+    };
+  });
+  const minSide = device === 'mobile' ? 43.5 : 28;
+  check(hud.shown && hud.bag.w >= minSide && hud.bag.h >= minSide, `${tag} : la puce « Ouvrir » du sac est là (${Math.round(hud.bag?.w)} × ${Math.round(hud.bag?.h)} px)`);
+  check(hud.first === 'bag-open', `${tag} : c'est la première puce du sac (${hud.first})`);
+  check(hud.bag.x >= 0 && hud.bag.right <= hud.vw + 0.5 && hud.bag.y >= 0 && hud.bag.bottom <= hud.vh + 0.5, `${tag} : elle tient dans l'écran`);
+  const overlaps = hud.others.filter((o) => o.x < hud.bag.right - 1 && o.right > hud.bag.x + 1 && o.y < hud.bag.bottom - 1 && o.bottom > hud.bag.y + 1);
+  check(overlaps.length === 0, `${tag} : elle ne recouvre aucun autre bouton${overlaps.length ? ` (${overlaps.map((o) => o.id).join(', ')})` : ''}`);
+  check(hud.count === '8' && /^Ouvrir le sac, 8 places sur \d+$/.test(hud.label), `${tag} : la pastille compte les places prises (${hud.count}, « ${hud.label} »)`);
+  await shot(page, `${device}-07-puce-sac`);
+
+  await tap(page, device, '#inventory #bag-open');
+  const bagOpened = await until(page, () => window.__earthlife.finds.isOpen() || null, null, 30000);
+  check(!!bagOpened, `${tag} : le bouton ouvre la fenêtre du sac`);
+  if (bagOpened) {
+    await wait(600);
+    const b0 = await view(page);
+    check(b0.mode === 'bag' && b0.ground.length === 0 && b0.title === 'Mon sac', `${tag} : mode sac, rien à prendre, titre « ${b0.title} »`);
+    const foodB = await food();
+    await wait(1500);
+    check((await food()) === foodB, `${tag} : le jeu est en pause`);
+    const LB = await layout(page);
+    check(LB.cols.length === 1 && LB.sheet.x >= 0 && LB.sheet.right <= LB.vw + 0.5 && LB.sheet.bottom <= LB.vh + 0.5 && LB.sw <= LB.vw, `${tag} : une seule colonne, la fenêtre tient dans l'écran (${LB.cols.length} colonne)`);
+    check(LB.buttons.every((b) => b.h >= 43.5) && LB.slots.every((b) => b.h >= 43.5 && b.w >= 43.5), `${tag} : boutons et cases de 44 px au moins`);
+    await shot(page, `${device}-08-sac-ouvert`);
+
+    // Jeter une pile entière, puis la reprendre, puis la rejeter.
+    await tap(page, device, '#finds .tv-slot[data-side="bag"][data-key="planche"]');
+    const b1 = await view(page);
+    check(b1.detail?.move.label === 'Jeter ×5', `${tag} : « ${b1.detail?.move.label} »`);
+    await tap(page, device, '#finds [data-tv="move"]');
+    const b2 = await view(page);
+    check((await bag(page)).planche === undefined && b2.ground.some((e) => e.key === 'planche' && e.n === 5) && /^Jeté : /.test(b2.msg), `${tag} : 5 planches jetées (« ${b2.msg} »)`);
+    check(await ev(page, () => !!document.querySelector('#finds [aria-label="Jeté"]')), `${tag} : la colonne « Jeté » apparaît`);
+    await shot(page, `${device}-09-jete`);
+    await tap(page, device, '#finds .tv-slot[data-side="ground"][data-key="planche"]');
+    const b3 = await view(page);
+    check(b3.detail?.move.label === 'Reprendre ×5', `${tag} : « ${b3.detail?.move.label} »`);
+    await tap(page, device, '#finds [data-tv="move"]');
+    check((await bag(page)).planche === 5 && (await view(page)).ground.length === 0, `${tag} : les planches sont reprises`);
+    await tap(page, device, '#finds .tv-slot[data-side="bag"][data-key="clous"]');
+    await tap(page, device, '#finds [data-tv="move"]');
+    check((await bag(page)).clous === undefined, `${tag} : 3 clous jetés`);
+
+    // Fermer : ce qui reste jeté est perdu, la notification le dit, le jeu reprend.
+    await ev(page, () => { window.__seen.toasts.length = 0; });
+    if (device === 'mobile') await tap(page, device, '#finds [data-tv="close"].tv-primary');
+    else await page.keyboard.press('KeyI');
+    check(!!(await until(page, () => !window.__earthlife.finds.isOpen() || null, null, 30000)), `${tag} : la fenêtre se ferme (${device === 'mobile' ? 'bouton « Fermer »' : 'touche I'})`);
+    const lost = await until(page, () => window.__seen.toasts.find((t) => t.startsWith('Jeté')) ?? null, null, 60000);
+    check(/^Jeté : 3 clous/.test(lost ?? ''), `${tag} : notification « ${lost} »`);
+    const bagEnd = await bag(page);
+    check(bagEnd.planche === 5 && bagEnd.clous === undefined, `${tag} : le sac garde 5 planches, les clous sont perdus`);
+    const foodE = await food();
+    check(!!(await until(page, (f) => window.__earthlife.session.survivor.food < f || null, foodE, 60000)), `${tag} : le jeu a repris`);
+    await wait(300);
+
+    // La touche I ouvre, Échap ferme (ordinateur seulement : pas de clavier sur téléphone).
+    if (device !== 'mobile') {
+      await page.keyboard.press('KeyI');
+      check(!!(await until(page, () => window.__earthlife.finds.isOpen() || null, null, 30000)), `${tag} : la touche I ouvre le sac`);
+      await wait(600);
+      await page.keyboard.press('Escape');
+      check(!!(await until(page, () => !window.__earthlife.finds.isOpen() || null, null, 30000)), `${tag} : Échap le ferme`);
+    }
+  }
+
+  // 8. Aucune exception de page n'a eu lieu.
   await ctx.close();
 }
 
