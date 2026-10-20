@@ -10,6 +10,7 @@
     "acceptance": "node test/base-acceptance.mjs",
     "acceptance:online": "node test/online-acceptance.mjs",
     "acceptance:trouvailles": "node test/trouvailles-acceptance.mjs",
+    "son:rendu": "node test/son-rendu.mjs",
     "bench": "node test/bench-base.mjs",
     "bench:blocks": "node test/bench-blocks.mjs",
     "smoke": "node test/browser-smoke.mjs",

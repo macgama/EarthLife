@@ -8,15 +8,19 @@ import { icon } from './icons.js';
 export const ART = {
   items: new Set([
     'conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette', 'bois', 'clous', 'ferraille', 'tissu', 'ruban', 'planche', 'plaque',
-    'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee', 'pistolet', 'fusil', 'balles', 'cartouches',
-    'bidon', 'batterie',
+    'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_ecolier', 'sac_randonnee', 'sac_renforce', 'pistolet', 'fusil', 'balles', 'cartouches',
+    'bidon', 'batterie', 'cueillette', 'poisson', 'canne', 'puits',
   ]),
   // Objets dont l'image n'est pas encore livrée (accord de Gaël pour les crédits Artlist) : ils gardent l'icône au trait.
-  pending: new Set(['sac_ecolier', 'sac_renforce']),
+  pending: new Set(['champignon_cuit', 'legume_cuit', 'poisson_cuit', 'eau_riviere', 'eau_bouillie']),
   scenes: new Set(['horde', 'metro', 'tram', 'train', 'refuge', 'coop', 'victoire', 'terre', 'mort', 'facile', 'moyen', 'difficile']),
 };
 
 const base = (dir, name) => new URL(`../assets/art/${dir}/${name}.webp`, import.meta.url).href;
+
+// Objets qui partagent l'image d'un autre fichier : baies, champignons et légumes crus montrent la même cueillette.
+// `puits` n'est pas un objet du sac : son image sert à la notification de l'eau du puits (campagne-jeu.js).
+export const ITEM_ART = { baies: 'cueillette', champignon: 'cueillette', legume: 'cueillette' };
 
 // Famille d'un objet : donne la teinte de l'emplacement et l'icône de repli.
 // food faim, water soif, heal santé, warm chaleur, mat matériaux, tool arme ou piège, wear vêtement, pack sac, gun arme à feu,
@@ -28,6 +32,8 @@ export const ITEM_KIND = {
   manteau: 'wear', poncho: 'wear', sac_ecolier: 'pack', sac_randonnee: 'pack', sac_renforce: 'pack',
   pistolet: 'gun', fusil: 'gun', balles: 'ammo', cartouches: 'ammo',
   bidon: 'fuel', batterie: 'mat',
+  baies: 'food', champignon: 'food', legume: 'food', poisson: 'food', champignon_cuit: 'food', legume_cuit: 'food', poisson_cuit: 'food',
+  eau_riviere: 'water', eau_bouillie: 'water', canne: 'tool',
 };
 
 // Icône de repli par objet (noms d'icons.js).
@@ -38,6 +44,8 @@ export const ITEM_ICON = {
   manteau: 'manteau', poncho: 'manteau', sac_ecolier: 'sac', sac_randonnee: 'sac', sac_renforce: 'sac',
   pistolet: 'tirer', fusil: 'tirer', balles: 'cible', cartouches: 'cible',
   bidon: 'bidon', batterie: 'batterie',
+  baies: 'feuille', champignon: 'feuille', legume: 'feuille', poisson: 'poisson', champignon_cuit: 'manger', legume_cuit: 'manger', poisson_cuit: 'poisson',
+  eau_riviere: 'boire', eau_bouillie: 'boire', canne: 'canne',
 };
 
 const KIND_LABEL = {
@@ -47,8 +55,8 @@ const KIND_LABEL = {
 
 export const kindOf = (key) => ITEM_KIND[key] ?? 'mat';
 export const kindLabel = (key) => KIND_LABEL[kindOf(key)];
-export const hasItemArt = (key) => ART.items.has(key);
-export const itemArtUrl = (key) => (hasItemArt(key) ? base('items', key) : null);
+export const hasItemArt = (key) => ART.items.has(ITEM_ART[key] ?? key);
+export const itemArtUrl = (key) => (hasItemArt(key) ? base('items', ITEM_ART[key] ?? key) : null);
 export const hasScene = (name) => ART.scenes.has(name);
 export const sceneUrl = (name) => (hasScene(name) ? base('scenes', name) : null);
 
