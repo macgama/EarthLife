@@ -3944,7 +3944,8 @@ async function campagneScenario(device) {
   check(!!(await toastSeen(page, 'Eau de rivière', 20000)), `${tag} : notification sur l'eau de rivière`);
   await ev(page, () => { const sv = window.__earthlife.session.survivor; sv.inventory = { eau_bouillie: 1 }; sv.sick = 0; sv.water = 40; });
   await hit(page, device, '#use-drink');
-  await wait(600);
+  // Le jeu tourne plus lentement que la montre (une attente fixe de 600 ms ne laissait pas toujours passer un pas de jeu) : on attend la soif qui monte.
+  await until(page, () => (window.__earthlife.session.survivor.water > 70 ? 1 : null), null, 20000);
   const boiled = await ev(page, () => ({ sick: window.__earthlife.session.survivor.sick ?? 0, water: window.__earthlife.session.survivor.water }));
   check(boiled.sick === 0 && boiled.water > 70, `${tag} : eau bouillie bue sans malaise (soif ${round(boiled.water, 0)} %)`);
 

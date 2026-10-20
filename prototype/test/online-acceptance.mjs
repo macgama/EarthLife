@@ -2599,14 +2599,34 @@ await scenario('O32', 'départ en voiture vers une autre ville pendant la saison
       return;
     }
     await wait(1000);
-    const there = await ev(A, () => {
+    // La voiture se gare au bord de la route carrossable la plus proche de la porte du joueur, jusqu'à 150 m (parkingSpot) : la distance
+    // joueur-voiture dépend donc de la maison tirée au hasard (de 9 à 60 m dans le village de Pérouges, dont le centre est piéton). On lit la règle,
+    // pas un seuil fixe : la voiture est à quelques mètres de l'axe d'une route et pas plus loin du joueur que la route la plus proche (+ 20 m de
+    // recul pour les bâtiments, nearestFree de park).
+    const there = await ev(A, async () => {
+      const { parkingSpot } = await import('/src/voiture.js');
+      const { chunkFeatures } = await import('/src/world.js');
       const { session: s, save } = window.__earthlife, p = s.player;
       const at = s.store.proj.toLocal(save.car.lat, save.car.lon);
-      return { season: !!s.city?.season, name: s.city?.ville?.name ?? s.city?.name ?? null, car: { ...save.car }, gap: Math.hypot(at.x - p.x, at.z - p.z), inside: !!s.refuge?.inside, base: !!save.base };
+      const roadsAround = (x, z, radius) => {
+        const cs = s.store.chunkSize, seen = new Set(), out = [];
+        for (let cx = Math.floor((x - radius) / cs); cx <= Math.floor((x + radius) / cs); cx++) {
+          for (let cz = Math.floor((z - radius) / cs); cz <= Math.floor((z + radius) / cs); cz++) {
+            for (const r of chunkFeatures(s.store, cx, cz).roads) if (!seen.has(r)) { seen.add(r); out.push(r); }
+          }
+        }
+        return out;
+      };
+      return {
+        season: !!s.city?.season, name: s.city?.ville?.name ?? s.city?.name ?? null, car: { ...save.car }, gap: Math.hypot(at.x - p.x, at.z - p.z), inside: !!s.refuge?.inside, base: !!save.base,
+        playerRoad: parkingSpot(roadsAround(p.x, p.z, 170), p.x, p.z)?.d ?? null,
+        carRoad: parkingSpot(roadsAround(at.x, at.z, 60), at.x, at.z, 60)?.d ?? null,
+      };
     });
     check(there.season, `V : à l'arrivée, ville de saison « ${there.name} »`);
     check(Math.abs(there.car.fuel - (21 - pick.litres)) < 0.06, `V : essence décomptée : ${there.car.fuel} L (21 − ${pick.litres.toFixed(2)})`);
-    check(there.gap <= 40, `V : la voiture est garée à ${there.gap.toFixed(1)} m du joueur (au bord de la route la plus proche)`);
+    check(there.carRoad !== null && there.carRoad < 10, `V : la voiture est au bord d'une route (à ${there.carRoad === null ? '?' : there.carRoad.toFixed(1)} m de l'axe)`);
+    check(there.gap <= (there.playerRoad ?? 0) + 20, `V : la voiture est garée à ${there.gap.toFixed(1)} m du joueur, la route carrossable la plus proche de lui étant à ${there.playerRoad === null ? 'plus de 150' : there.playerRoad.toFixed(1)} m`);
     const now = await citiesWhen((c) => c.length === 2 && c.find((x) => x.key === realKey)?.subs === 1);
     const mine = now.find((c) => c.key === realKey), other = now.find((c) => c.key === 'c99999');
     check(now.length === 2 && mine?.subs === 1 && other?.subs === 0, `serveur : deux villes, V dans Pérouges et plus personne dans « Autre » (${JSON.stringify(now)})`);
