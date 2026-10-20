@@ -45,6 +45,7 @@ export const SAVE_MESSAGES = {
 const DAY = 86400000;
 const MAX_REV = 2 ** 31;
 const MAX_COUNT = 999;
+const MAX_HABITANTS = 999;
 export const MAX_ROOMS = 40;
 const MAX_STAT = 1e9;
 const BAG_CAP = 30;
@@ -74,7 +75,7 @@ const NORM_TOLERANCE = 0.02;
 const TOP_KEYS = ['v', 'writer', 'rev', 'savedAt', 'lastSiegeCheck', 'profile', 'survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'car', 'searched', 'dismantled'];
 const PROFILE_KEYS = ['createdAt', 'nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths', 'weathers', 'plans', 'sinceLastPlan', 'firstWaveDone', 'kitGiven', 'journal', 'distanceM', 'playSec', 'skills'];
 const SURVIVOR_KEYS = ['health', 'food', 'water', 'bodyTemp', 'wet', 'fatigue', 'bag', 'weapon', 'clothing', 'pack'];
-const BASE_KEYS = ['id', 'lat', 'lon', 'area', 'height', 'kind', 'name', 'place', 'claimedAt', 'density', 'utcOffset', 'perk', 'openings', 'chest', 'upgrades', 'sirenAt', 'lastReserve'];
+const BASE_KEYS = ['id', 'lat', 'lon', 'area', 'height', 'kind', 'name', 'place', 'claimedAt', 'density', 'utcOffset', 'perk', 'openings', 'chest', 'upgrades', 'sirenAt', 'lastReserve', 'habitants'];
 const HORDE_KEYS = ['nightKey', 't', 'waves', 'lastWaveEnd', 'held', 'played'];
 const COUNTERS = ['nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths'];
 // Compteurs d'« Mes statistiques » ajoutés après la première version : distance à pied (m) et temps de jeu (s). Absents d'une
@@ -433,6 +434,11 @@ function checkBase(b, c, now) {
     sirenAt: c.time(b.sirenAt, 'base.sirenAt', 0),
     lastReserve,
   };
+  // Habitants sauvés installés au refuge (habitants.js) : absent d'une ancienne sauvegarde, et tant qu'il n'y en a pas.
+  if (b.habitants !== undefined) {
+    const habitants = c.num(b.habitants, 'base.habitants', { min: 0, max: MAX_HABITANTS, def: 0, int: true });
+    if (habitants > 0) base.habitants = habitants;
+  }
   return { base };
 }
 
