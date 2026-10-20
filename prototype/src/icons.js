@@ -37,6 +37,11 @@ const ICONS = {
   batterie: '<path d="M3.5 8.5h17v11h-17z"/><path d="M7 8.5V6h3v2.5M14 8.5V6h3v2.5M6.5 14h4M8.5 12v4M13.5 14h4"/>',
   voiture: `<path d="M4 16V12.2L6.2 7h11.6L20 12.2V16H4z"/><path d="M4 12.2h16M7 16v2M17 16v2M8 12.2l1-3.7h6l1 3.7"/>${dot(8, 14.6, 1.1)}${dot(16, 14.6, 1.1)}`,
   fouiller: '<path d="M2.5 12h10v8.5h-10zM2.5 16h10"/><circle cx="16.5" cy="7" r="4"/><path d="M19.4 9.9 21.5 12"/>',
+  // Vivre de la campagne : cueillir (une feuille), pêcher (poisson et canne), puiser (un puits).
+  feuille: '<path d="M5 19C4 10 9 4.5 20 4c.5 10.5-4.5 15.5-13 15z"/><path d="M5 19 14 10"/>',
+  poisson: `<path d="M3 12c3-4.5 8-5.5 12-3.5l4-2.5v12l-4-2.5C11 17.5 6 16.5 3 12z"/>${dot(7.5, 11, 1.1)}`,
+  canne: '<path d="M4 20 18 4"/><path d="M18 4c2 .5 3 2 2.5 4.5v6"/><path d="M18.5 15.5a1.5 1.5 0 1 0 2 0"/>',
+  puits: '<path d="M5 11h14v9H5zM5 15h14"/><path d="M6.5 11V6M17.5 11V6M5 6h14L12 3z"/><path d="M12 6v5"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   son: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4.5 4.5 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11"/>',
   'son-coupe': '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',

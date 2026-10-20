@@ -11,7 +11,7 @@ export const ART = {
     'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee', 'pistolet', 'fusil', 'balles', 'cartouches',
   ]),
   // Objets dont l'image n'est pas encore livrée (accord de Gaël pour les crédits Artlist) : ils gardent l'icône au trait.
-  pending: new Set(['bidon', 'batterie', 'sac_ecolier', 'sac_renforce']),
+  pending: new Set(['bidon', 'batterie', 'sac_ecolier', 'sac_renforce', 'baies', 'champignon', 'legume', 'poisson', 'champignon_cuit', 'legume_cuit', 'poisson_cuit', 'eau_riviere', 'eau_bouillie', 'canne']),
   scenes: new Set(['horde', 'metro', 'tram', 'train', 'refuge', 'coop', 'victoire', 'terre', 'mort', 'facile', 'moyen', 'difficile']),
 };
 
@@ -27,6 +27,8 @@ export const ITEM_KIND = {
   manteau: 'wear', poncho: 'wear', sac_ecolier: 'pack', sac_randonnee: 'pack', sac_renforce: 'pack',
   pistolet: 'gun', fusil: 'gun', balles: 'ammo', cartouches: 'ammo',
   bidon: 'fuel', batterie: 'mat',
+  baies: 'food', champignon: 'food', legume: 'food', poisson: 'food', champignon_cuit: 'food', legume_cuit: 'food', poisson_cuit: 'food',
+  eau_riviere: 'water', eau_bouillie: 'water', canne: 'tool',
 };
 
 // Icône de repli par objet (noms d'icons.js).
@@ -37,6 +39,8 @@ export const ITEM_ICON = {
   manteau: 'manteau', poncho: 'manteau', sac_ecolier: 'sac', sac_randonnee: 'sac', sac_renforce: 'sac',
   pistolet: 'tirer', fusil: 'tirer', balles: 'cible', cartouches: 'cible',
   bidon: 'bidon', batterie: 'batterie',
+  baies: 'feuille', champignon: 'feuille', legume: 'feuille', poisson: 'poisson', champignon_cuit: 'manger', legume_cuit: 'manger', poisson_cuit: 'poisson',
+  eau_riviere: 'boire', eau_bouillie: 'boire', canne: 'canne',
 };
 
 const KIND_LABEL = {

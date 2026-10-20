@@ -12,7 +12,7 @@ import { createChunkManager, VIEW_RADIUS, GROUND_DETAILS } from './chunks.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
   offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, bagCapacity, wornKey,
-  removePack, packSurplus, packSwapRefusal, PACK_REMOVE_FULL,
+  removePack, packSurplus, packSwapRefusal, PACK_REMOVE_FULL, SICK,
 } from './survival.js';
 import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
 import { createCharacters } from './characters.js';
@@ -55,6 +55,8 @@ import {
 import { createHud, distanceText } from './hud.js';
 import { createRideGame, createRideOverlay } from './trajet.js';
 import { createCarGame } from './conduite.js';
+import { createCampagne } from './campagne-jeu.js';
+import { saisonDe, dateDuMois, mur as plantMure } from './campagne.js';
 import { createDriveMap } from './conduite-carte.js';
 import { networkOf, lineTitle } from './transport.js';
 import { addStep, statsCard, MAX_STEP_M } from './stats.js';
@@ -159,6 +161,8 @@ let city = null;
 let seasonNet = null;
 // Ses propres démontages (72 h, sauvegarde) ; ceux des autres viennent du jeu en ligne.
 const dismantledGone = goneChecker(() => save.dismantled);
+// Saison du monde construit (campagne.js), lue au départ de chaque partie.
+let worldSeason = 'ete';
 // La voiture garée que le joueur a réparée est devenue « sa » voiture (conduite.js) : elle ne repousse pas à sa place.
 const localGone = (id) => dismantledGone(id) || save.car?.from === id;
 // ?fresh=1 ne sert qu'une fois : un rechargement à la main ne doit pas effacer la partie.
@@ -525,6 +529,11 @@ const cars = createCarGame({
   showCard: (...a) => showCard(...a), toast: (...a) => toast(...a), propsView, online, overlay: createRideOverlay(document),
   addLoot, lootNotes: (res) => lootNotes(res), gainSkill: (...a) => gainSkill(...a), craftXp,
   arrive: (place, arrival, season) => arriveByCar(place, arrival, season), openMap: (args) => driveMap.open(args), tripCities: () => city.tripCities(),
+});
+// Vivre de la campagne : cueillir ce qui est mûr, puiser au puits ou à la berge, pêcher (le feu de camp et la cuisine sont au refuge).
+const campagne = createCampagne({
+  save, saveStore: { markDirty: () => saveStore.markDirty() }, toast: (...a) => toast(...a), floreView,
+  openFinds: (...a) => openFinds(...a), addLoot, lootNotes: (res) => lootNotes(res), isGone: (id) => dismantledGone(id),
 });
 // Carte de conduite (#drive) : le cercle de portée, un point à toucher, « Partir ».
 const driveMap = createDriveMap({ root: $('drive'), cities: CITIES, onGo: (out) => { if (session) goDrive(session, out); } });
@@ -946,6 +955,9 @@ async function launch(place, spawn, plan = { kind: 'free', place }, arrival = nu
   }
   setLoading('Construction du quartier en 3D…');
   await nextFrame();
+  // Saison du lieu (vrai mois de l'appareil, ou ?mois=) : baies, champignons et légumes pas mûrs ne sont pas dessinés (campagne.js).
+  worldSeason = saisonDe(store.proj.toLatLon(0, 0).lat, dateDuMois(params.get('mois')) ?? new Date());
+  floreView.setHidden((kind, id) => (kind === 'baie' || kind === 'champi' || kind === 'legume') && (!plantMure(kind, id, worldSeason) || dismantledGone(id)));
   const chunks = createChunkManager({
     scene, store, grid, lowPower, groundDetail, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
     // Démontages : les siens (sauvegarde, 72 h), et ceux des autres survivants en ligne (72 h).
@@ -968,6 +980,7 @@ async function launch(place, spawn, plan = { kind: 'free', place }, arrival = nu
   // Ville de secours : le refuge (géographique) n'y est pas ; on y joue comme en expédition, sans porte où se poser.
   buildSession(place, origin, atHome && store.source === 'tiles', store, grid, loader, chunks, start, liveWeather);
   const s = session;
+  s.saison = worldSeason;
   restoreCharacter(s);
   // Ville à sauver : pâtés, habitants et zombies de la commune, maison tirée au hasard (refuge) pour une ville neuve.
   await city.attach(s, plan);
@@ -1495,6 +1508,8 @@ function step(s, inp, dt) {
     p.health = Math.max(0, p.health - effects.damage);
     s.deathCause = effects.hypothermia ? 'Hypothermie : le froid réel a eu raison de toi.' : effects.dehydrated ? 'Déshydratation.' : 'Tu es mort de faim.';
   }
+  // Eau de rivière non bouillie : un peu de santé perdu pendant quelques secondes, jamais sous SICK.floor (cela ne tue pas).
+  if (effects.sickDamage && p.health > SICK.floor) p.health = Math.max(SICK.floor, p.health - effects.sickDamage);
   // 3. Fatigue : endurance plafonnée, récupération plus lente, pas et actions ralentis quand on est épuisé.
   const tired = fatigueEffects(sv.fatigue);
   p.staminaCap = tired.staminaCap;
@@ -1619,6 +1634,7 @@ const onTrip = (a) => a?.id === 'ride' || a?.id === 'drive';
 const ACTION_ICONS = {
   search: 'fouiller', room: 'fouiller', door: 'refuge', enter: 'refuge', claim: 'refuge', move: 'refuge', exit: 'fleche', nail: 'marteau', repair: 'marteau',
   plate: 'marteau', trap: 'piege', sleep: 'lune', craft: 'marteau', orphan: 'sac', tree: 'hache', car: 'cle', owncar: 'voiture', carfix: 'cle', siphon: 'bidon', bench: 'cle', nest: 'cle', flag: 'marteau',
+  plant: 'feuille', water: 'boire', fish: 'canne',
 };
 // Libellé du bouton pendant l'action.
 const BUSY_LABELS = { nail: 'Clouage…', repair: 'Réparation…', plate: 'Pose de la plaque…', trap: 'Pose du piège…', sleep: 'Tu dors…' };
@@ -1739,18 +1755,30 @@ function chooseActions(s) {
     const when = other ? ` · fouillée ${searchedLabel(online.serverNow() - other.at)}` : '';
     primary = { id: 'search', arg: near, label: `Fouiller : ${title}${touch ? '' : ' (E)'}${when}`, time: SEARCH_TIME * s.actionMul * s.searchMul, slot: 'primary', title };
   }
+  // Dehors, au sol : l'arbre ou la voiture à portée, et ce qui se cueille, se puise ou se pêche (campagne-jeu.js) ; le plus proche prend E,
+  // le suivant R s'il est libre.
+  let secondary = menu.secondary ?? carActs.secondary;
   if (!primary && !r.inside) {
+    const ground = [];
     const prop = s.chunks.propNear(p.x, p.z);
     if (prop) {
       const axe = prop.kind === 'tree' && s.survivor.weapon?.key === 'hache';
       const opts = { axe, mul: s.actionMul };
-      primary = { id: 'prop', arg: prop, label: propLabel(prop.kind, { ...opts, key: touch ? null : 'E' }), time: propTime(prop.kind, opts), slot: 'primary', axe };
+      ground.push({
+        id: 'prop', arg: prop, d: Math.hypot(prop.x - p.x, prop.z - p.z), time: propTime(prop.kind, opts), axe,
+        label: (key) => propLabel(prop.kind, { ...opts, key }),
+      });
     }
+    if (!open) ground.push(...campagne.actions(s));
+    ground.sort((a, b) => a.d - b.d);
+    const slotted = (g, slot) => g && { ...g, slot, label: g.label(touch ? null : slot === 'primary' ? 'E' : 'R') };
+    primary = slotted(ground[0], 'primary');
+    if (!secondary) secondary = slotted(ground[1], 'secondary');
   }
   if (!primary && !r.inside) primary = r.orphanAction(p, { touch, survivor: s.survivor });
   // Station à portée : prendre la ligne (carte des destinations).
   if (!primary && !r.inside && !open) primary = ride.action(s, touch);
-  return { primary, secondary: menu.secondary ?? carActs.secondary, why: menu.why ?? '' };
+  return { primary, secondary, why: menu.why ?? '' };
 }
 
 // Bouton E (principal) ou R (secondaire) : lance l'action proposée. Une action chronométrée dehors s'interrompt
@@ -1817,6 +1845,11 @@ function startAction(s, a) {
     if (act) s.action = act;
     return;
   }
+  if (a.id === 'plant' || a.id === 'water' || a.id === 'fish') {
+    const act = campagne.begin(s, a, base);
+    if (act) s.action = act;
+    return;
+  }
   if (a.id === 'room') {
     s.action = { ...base, time: a.time, title: a.title, label: `Fouille… ${a.title}`, icon: 'fouiller', noise: 14 };
     return;
@@ -1869,6 +1902,7 @@ function finishAction(s, a) {
   if (a.id === 'ride') ride.finish(s, a);
   else if (a.id === 'drive') cars.land(s, a);
   else if (a.id === 'carfix' || a.id === 'siphon') cars.finish(s, a);
+  else if (a.id === 'plant' || a.id === 'water' || a.id === 'fish') campagne.finish(s, a);
   else if (a.id === 'search') finishSearch(s, a);
   else if (a.id === 'room') finishRoom(s, a);
   else if (a.id === 'prop') finishProp(s, a);
@@ -2084,6 +2118,10 @@ function useItem(s, use) {
   if (use === 'shoot') { shootFirearm(s); return; }
   const used = useBest(s.survivor, use, s.player);
   if (used) son.play({ Manger: 'eat', Boire: 'drink', Soigner: 'rip' }[ITEMS[used].verb] ?? 'tic');
+  if (used && ITEMS[used].sick) {
+    toast("Eau de rivière : tu te sens malade. Fais-la bouillir au refuge, c'est mieux", 3.5, 'danger');
+    return;
+  }
   toast(used ? `${ITEMS[used].name} utilisé` : 'Rien dans ton sac pour ça', 1.5, used ? 'success' : '');
 }
 
@@ -3604,6 +3642,9 @@ const debug = DEBUG ? {
     return session.store.transitRev;
   },
   props: (kind) => session?.chunks.props(kind) ?? [],
+  // Ce qui se cueille ou se puise dans les morceaux construits (baie, champi, legume, puits), et la saison du monde.
+  recolte: (kind) => session?.chunks.recolte(kind) ?? [],
+  season: () => worldSeason,
   // Hauteur du sol (relief) au point, et pente lissée du joueur.
   groundAt: (x, z) => (session ? groundAt(session.grid, x, z) : 0),
   grade: () => session?.player?.grade ?? 0,
