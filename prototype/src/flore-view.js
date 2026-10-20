@@ -1,12 +1,17 @@
-// Rendu des petits décors de la nature (buissons, rochers, touffes d'herbe, haies, balles de paille) : un InstancedMesh
-// global de capacité fixe par type, comme le décor démontable (props-view.js). Un morceau remplace ses instances d'un
-// coup ; retirer un morceau remet à sa place les dernières instances. Rien ne se démonte et rien ne gêne le joueur : pas
-// de collision.
+// Rendu des petits décors de la nature (buissons, rochers, touffes d'herbe, haies, balles de paille) et de ce qui se cueille ou
+// se puise (baies, champignons, légumes, puits : campagne.js) : un InstancedMesh global de capacité fixe par type, comme le décor
+// démontable (props-view.js). Un morceau remplace ses instances d'un coup ; retirer un morceau remet à sa place les dernières
+// instances. Rien ne gêne le joueur : pas de collision. Ce qui a été cueilli (ou n'est pas mûr) n'est pas dessiné : `setHidden`
+// donne la règle, `hide` retire tout de suite une instance.
 import * as THREE from 'three';
 import { PETITS } from './flore-geo.js';
 import { tracker, touch, flush } from './props-view.js';
 
 const KINDS = Object.keys(PETITS);
+// Trop petits pour porter une ombre.
+const SANS_OMBRE = new Set(['touffe', 'baie', 'champi', 'legume']);
+// Teinte neutre (pierre, paille, chapeaux, baies) : seule la clarté change d'un pied à l'autre.
+const NEUTRES = new Set(['rocher', 'balle', 'puits', 'champi', 'baie']);
 
 export function createFloreView(scene, { lowPower = false } = {}) {
   const group = new THREE.Group();
@@ -22,7 +27,7 @@ export function createFloreView(scene, { lowPower = false } = {}) {
     mesh.count = 0;
     mesh.visible = false;
     mesh.frustumCulled = false;
-    mesh.castShadow = !lowPower && kind !== 'touffe';
+    mesh.castShadow = !lowPower && !SANS_OMBRE.has(kind);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(spec.cap * 3).fill(1), 3);
     mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
@@ -32,13 +37,14 @@ export function createFloreView(scene, { lowPower = false } = {}) {
 
   const chunks = new Map(); // clé de morceau → [[kind, id], …]
   let dropped = 0;
+  let hidden = () => false; // (kind, id) → true : pas dessiné (cueilli, ou pas mûr cette saison)
   const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _c = new THREE.Color();
   const _up = new THREE.Vector3(0, 1, 0);
 
   // Clarté et nuance propres à chaque pied (tirage `v`).
   function tint(kind, v, out) {
     const h = (v * 11.3) % 1;
-    if (kind === 'rocher' || kind === 'balle') {
+    if (NEUTRES.has(kind)) {
       const k = 0.82 + 0.34 * v;
       return out.setRGB(k * (0.97 + 0.08 * h), k, k * (1.03 - 0.06 * h));
     }
@@ -95,7 +101,7 @@ export function createFloreView(scene, { lowPower = false } = {}) {
     for (const kind of KINDS) {
       const pl = pools.get(kind);
       for (const it of flore?.[kind] ?? []) {
-        if (pl.slots.has(it.id)) continue;
+        if (pl.slots.has(it.id) || hidden(kind, it.id)) continue;
         if (pl.count >= pl.cap) { dropped++; continue; }
         add(pl, it);
         owned.push([kind, it.id]);
@@ -110,14 +116,32 @@ export function createFloreView(scene, { lowPower = false } = {}) {
     commit();
   }
 
+  // Règle de ce qui n'est pas dessiné ; elle sert aux morceaux construits ensuite.
+  function setHidden(fn) {
+    hidden = typeof fn === 'function' ? fn : () => false;
+  }
+
+  // Retire tout de suite une instance (une cueillette) ; sans effet si elle n'est pas dessinée.
+  function hide(kind, id) {
+    const pl = pools.get(kind);
+    if (!pl || !pl.slots.has(id)) return false;
+    remove(pl, id);
+    commit();
+    return true;
+  }
+
   const stats = () => ({
     buissons: pools.get('buisson').count, rochers: pools.get('rocher').count, touffes: pools.get('touffe').count,
     haies: pools.get('haie').count, balles: pools.get('balle').count,
+    baies: pools.get('baie').count, champis: pools.get('champi').count, legumes: pools.get('legume').count, puits: pools.get('puits').count,
     drawCalls: [...pools.values()].filter((pl) => pl.count > 0).length, chunks: chunks.size, dropped,
   });
 
   // Matériaux que la météo teinte : neige sur les feuillages et l'herbe, pluie sur tout (scene.js, followTreeWeather).
-  const treeMaterials = () => ({ crowns: [pools.get('buisson').mat, pools.get('touffe').mat, pools.get('haie').mat], trunks: [pools.get('rocher').mat, pools.get('balle').mat] });
+  const treeMaterials = () => ({
+    crowns: [pools.get('buisson').mat, pools.get('touffe').mat, pools.get('haie').mat, pools.get('legume').mat],
+    trunks: [pools.get('rocher').mat, pools.get('balle').mat, pools.get('baie').mat, pools.get('champi').mat, pools.get('puits').mat],
+  });
 
   function dispose() {
     scene.remove(group);
@@ -125,5 +149,5 @@ export function createFloreView(scene, { lowPower = false } = {}) {
     chunks.clear();
   }
 
-  return { setChunk, dropChunk, stats, treeMaterials, dispose, group };
+  return { setChunk, dropChunk, setHidden, hide, stats, treeMaterials, dispose, group };
 }

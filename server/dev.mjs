@@ -13,6 +13,7 @@
 import { fork } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './src/main.js';
 import { originAllowed } from './src/http.js';
@@ -31,6 +32,7 @@ export async function startDevServer({
   ws = true, maintenance = false, trustProxy = true, maxConn = 100, createPerHour = 300, minClient = 1, inviteCode = '',
   cfg = {}, quiet = true, log = null, timers = {}, onTick = null, appDir = null, portRange: range = null,
   accounts = true, mail = 'boite', hashParams = null, accountOpts = {}, mailer = null, seasons = accounts, seasonSeats = 100, seasonDays = 60,
+  mailPerHour = 1000, mailPerDay = 10000,
 } = {}) {
   const memory = store === 'memory';
   const theStore = memory ? createMemoryStore() : store;
@@ -45,7 +47,7 @@ export async function startDevServer({
     seasons: !!seasons && !!accounts, seasonSeats, seasonDays,
     accounts: !!accounts, accountSecret: randomBytes(32), gameUrl: 'https://macgama.github.io/EarthLife/',
     mail: { transport: 'boite', host: null, port: 465, user: null, password: null, from: 'earthlife@exemple.test', replyTo: null,
-      perHour: 1000, perDay: 10000 },
+      perHour: mailPerHour, perDay: mailPerDay },
   };
   log ??= createLog({ dir: null, stdout: quiet ? null : process.stdout });
   if (mail !== 'boite') throw new Error('faux serveur : fausse boîte seulement');
@@ -183,6 +185,14 @@ function parseArgs(argv) {
     else if (k === '--quiet') o.quiet = true;
     else if (k === '--no-accounts') o.accounts = false;
     else if (k === '--fast-hash') o.hashParams = { logN: 10, r: 8, p: 1 };
+    // Essais de charge (tools/season-load.mjs) : vraie base MariaDB (mysql://utilisateur:mot-de-passe@hôte:port/base), taille du
+    // pool, places par niveau, budget d'e-mails de la fausse boîte (comme le vrai : 60 par heure et 300 par jour).
+    else if (k === '--mysql') o.mysql = v();
+    else if (k === '--pool') o.pool = Number(v());
+    else if (k === '--seats') o.seasonSeats = Number(v());
+    else if (k === '--mail-per-hour') o.mailPerHour = Number(v());
+    else if (k === '--mail-per-day') o.mailPerDay = Number(v());
+    else if (k === '--log-file') o.logFile = v();
   }
   if (!o.origins.length) delete o.origins;
   return o;
@@ -200,7 +210,21 @@ async function cli() {
   } : null;
   // Avec --ipc, les compteurs ne sont remis à zéro que par la commande « measure » (pas de mesure toutes les 5 min).
   const timers = ipc ? { statsMs: 24 * 3600000 } : {};
-  const srv = await startDevServer({ port: 8787, ...o, quiet: ipc || o.quiet, onTick, timers });
+  // Vraie base (essais de charge) : le magasin MariaDB à la place du magasin en mémoire, pool de 3 comme au vrai serveur.
+  let store = 'memory';
+  if (o.mysql) {
+    const u = new URL(o.mysql);
+    const { createMysqlStore } = await import('./src/store-mysql.js');
+    store = createMysqlStore({ host: u.hostname, port: Number(u.port || 3306), user: decodeURIComponent(u.username),
+      password: decodeURIComponent(u.password), database: u.pathname.slice(1), connectionLimit: o.pool ?? 3, log: () => {} });
+  }
+  // Retard de la boucle d'événements (essais de charge), remis à zéro avec « tick-reset ».
+  const loop = monitorEventLoopDelay({ resolution: 10 });
+  loop.enable();
+  // Journal du serveur dans un fichier (essais de charge : erreurs de la saison, refus).
+  const log = o.logFile ? createLog({ dir: null, stdout: fs.createWriteStream(o.logFile, { flags: 'a' }) }) : null;
+  const srv = await startDevServer({ port: 8787, ...o, store, quiet: ipc || o.quiet, onTick, timers, ...(log ? { log } : {}) });
+  const seasonTotals = {};
   const stop = async () => { await srv.stop(); process.exit(0); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
@@ -208,7 +232,7 @@ async function cli() {
     process.on('message', async (m) => {
       if (!m) return;
       if (m.cmd === 'stop') return stop();
-      if (m.cmd === 'tick-reset') { ticks.length = 0; return process.send({ id: m.id, ok: true }); }
+      if (m.cmd === 'tick-reset') { ticks.length = 0; loop.reset(); return process.send({ id: m.id, ok: true }); }
       // Fausse boîte : messages (d'une adresse, ou tous), vidée avec clear.
       if (m.cmd === 'mail') {
         const messages = srv.mailbox ? srv.mailbox.list(m.to ?? null) : [];
@@ -226,7 +250,11 @@ async function cli() {
         const writes = col((t) => t.writes);
         const tick = { n: ms.length, p95: p95(ms), max: max(ms), cpuP95: p95(cpu), ioP95: p95(io), calcP95: p95(calc),
           calcMax: max(calc), cpuCalcP95: p95(cpuCalc), cpuMax: max(cpu), writesP50: writes.length ? writes[Math.floor(writes.length / 2)] : null };
-        return process.send({ id: m.id, mem: process.memoryUsage(), tick, room: srv.room.stats() });
+        // Retard de la boucle (ms) et compteurs de la saison cumulés depuis le démarrage (srv.seasons.stats() les remet à zéro).
+        const ms1 = (ns) => ns / 1e6;
+        const el = { p50: ms1(loop.percentile(50)), p95: ms1(loop.percentile(95)), p99: ms1(loop.percentile(99)), max: ms1(loop.max) };
+        if (srv.seasons) for (const [k, n] of Object.entries(srv.seasons.stats())) seasonTotals[k] = (seasonTotals[k] ?? 0) + n;
+        return process.send({ id: m.id, mem: process.memoryUsage(), cpu: process.cpuUsage(), tick, el, season: { ...seasonTotals }, room: srv.room.stats() });
       }
       process.send({ id: m.id, error: 'commande inconnue' });
     });

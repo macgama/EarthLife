@@ -228,19 +228,20 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     dirty.tiles = new Set();
     dirty.meta = false;
     dirty.adj = false;
-    const put = async (part, data) => {
-      const rev = (city.revs.get(part) ?? 0) + 1;
-      await store.seasonDocPut({ world: w.id, commune: city.key, part, rev, data, nowMs: now() });
-      city.revs.set(part, rev);
-    };
+    // Toutes les pièces sont sérialisées avant la première écriture, puis rangées d'un coup : un geste qui tombe pendant l'écriture (await)
+    // ne peut plus mettre une tuile et le meta dans deux états différents, et un arrêt brutal ne laisse que l'ancien instant ou le nouveau.
+    const parts = [];
+    const add = (part, data) => parts.push({ part, rev: (city.revs.get(part) ?? 0) + 1, data });
+    for (const tk of tiles) if (city.ville.tiles[tk]) add(`t:${tk}`, JSON.stringify(city.ville.tiles[tk]));
+    if (meta) add('meta', JSON.stringify({ place: city.place, playedAt: city.playedAt, ville: { ...city.ville, tiles: undefined } }));
+    if (adj) {
+      const keys = [...city.adj.keys()].sort(), idx = new Map(keys.map((k, i) => [k, i])), e = [];
+      for (const [a, set] of city.adj) for (const b of set) if (a < b) e.push([idx.get(a), idx.get(b)]);
+      add('adj', JSON.stringify({ k: keys, e }));
+    }
     try {
-      for (const tk of tiles) if (city.ville.tiles[tk]) await put(`t:${tk}`, JSON.stringify(city.ville.tiles[tk]));
-      if (meta) await put('meta', JSON.stringify({ place: city.place, playedAt: city.playedAt, ville: { ...city.ville, tiles: undefined } }));
-      if (adj) {
-        const keys = [...city.adj.keys()].sort(), idx = new Map(keys.map((k, i) => [k, i])), e = [];
-        for (const [a, set] of city.adj) for (const b of set) if (a < b) e.push([idx.get(a), idx.get(b)]);
-        await put('adj', JSON.stringify({ k: keys, e }));
-      }
+      await store.seasonDocsPut({ world: w.id, commune: city.key, parts, nowMs: now() });
+      for (const { part, rev } of parts) city.revs.set(part, rev);
     } catch (err) {
       stats.errors++;
       log('erreur', { type: 'saison-ecriture', err: err?.code ?? err?.name });
@@ -249,9 +250,38 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       dirty.adj ||= adj;
     }
   }
+  // Abattages des joueurs : mis en file (compte → total) puis rangés un à un. Les écrire tous d'un coup au départ de masse (arrêt du
+  // serveur, coupure réseau) dépassait les 200 requêtes en attente du pool de la base : les autres étaient perdues sans bruit.
+  const killsToSave = new Map();
+  let savingKills = null;
+  function queueKills(sub) {
+    if (!sub.dirtyKills) return;
+    sub.dirtyKills = false;
+    const total = sub.kills + sub.kills0;
+    const c = enrol.get(sub.accountId);
+    if (c) c.player.kills = total;
+    killsToSave.set(sub.accountId, { total, seenMs: now() });
+  }
+  function saveKills() {
+    savingKills ??= (async () => {
+      for (const [acc, rec] of killsToSave) {
+        try {
+          await store.seasonPlayerSet(acc, season.id, { kills: rec.total, seenMs: rec.seenMs });
+          if (killsToSave.get(acc) === rec) killsToSave.delete(acc);
+        } catch (err) {
+          stats.errors++;
+          log('erreur', { type: 'saison-abattus', err: err?.code ?? err?.name });
+          break;                                          // base injoignable : le reste attend le prochain rangement
+        }
+      }
+    })().finally(() => { savingKills = null; });
+    return savingKills;
+  }
   function flush() {
     flushing ??= (async () => {
       for (const w of worlds.values()) await flushCity(w);
+      for (const sub of subs.values()) queueKills(sub);   // les joueurs en ligne aussi : un arrêt brutal ne perd que 15 s d'abattages
+      await saveKills();
     })().finally(() => { flushing = null; });
     return flushing;
   }
@@ -832,12 +862,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     releaseAll(sub);
     sub.w.subs.delete(sub);
     subs.delete(s);
-    if (sub.dirtyKills) {
-      const total = sub.kills + sub.kills0;
-      const c = enrol.get(sub.accountId);
-      if (c) c.player.kills = total;
-      store.seasonPlayerSet(sub.accountId, season.id, { kills: total, seenMs: now() }).catch(() => {});
-    }
+    if (sub.dirtyKills) { queueKills(sub); saveKills(); }
   }
   async function onMessage(s, msg) {
     if (msg.o === 'out') return detach(s);

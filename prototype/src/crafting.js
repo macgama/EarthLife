@@ -5,6 +5,8 @@ import { ITEMS, equipOrStoreInfo, discardText, itemLabel, countsLabel, lootKind,
 
 const PLAN_WHY = "Il faut le plan de l'établi (quincailleries, entrepôts)";
 const FIELD_WHY = 'À faire au refuge';
+// Aménagement manquant pour une recette (`requires`).
+const REQUIRES_WHY = { etabli: 'Il faut un établi', feu: 'Il faut un feu de camp' };
 
 // Clé de recette → { name, time, desc, needs, makes, upgrade, requires, plan } (tableau 3.3).
 // `time` : secondes de fabrication (temps de jeu, allongé par la fatigue comme les autres actions du refuge) ;
@@ -25,13 +27,21 @@ export const RECIPES = {
   hache: { name: 'Hache', time: 10, desc: 'Arme : 90 dégâts, 50 coups ; abat un arbre en 1,5 s pour +1 bois', needs: { bois: 1, ferraille: 2, ruban: 1 }, makes: { hache: 1 }, upgrade: null, requires: 'etabli', plan: null },
   recuperateur: { name: "Récupérateur d'eau", time: 12, desc: "Aménagement : +1 eau au coffre par tranche de 240 s de vraie pluie (ou d'orage), à 2 km ou moins du refuge", needs: { ferraille: 2, tissu: 1, ruban: 1 }, makes: null, upgrade: 'recuperateur', requires: 'etabli', plan: null },
   sirene: { name: 'Sirène', time: 12, desc: 'Aménagement : appelle une horde 60 s plus tard (×0,8), au plus une fois toutes les 30 min', needs: { ferraille: 2, clous: 2, ruban: 1 }, makes: null, upgrade: 'sirene', requires: 'etabli', plan: null },
+  // Vivre de la campagne (campagne.js) : la canne se fabrique dehors comme une batte ; le feu de camp est un aménagement du refuge,
+  // sans établi, qui cuit la cueillette et la pêche et fait bouillir l'eau de rivière.
+  canne: { name: 'Canne à pêche', time: 6, desc: "Outil : pêcher au bord de l'eau (rivière, lac)", needs: { bois: 2, ruban: 1 }, makes: { canne: 1 }, upgrade: null, requires: null, plan: null },
+  feu: { name: 'Feu de camp', time: 10, desc: 'Aménagement : cuire et faire bouillir au refuge ; réchauffe un peu (+2 °C)', needs: { bois: 3, ferraille: 1 }, makes: null, upgrade: 'feu', requires: null, plan: null },
+  griller_poisson: { name: 'Griller un poisson', time: 6, desc: 'Poisson grillé : +34 faim', needs: { poisson: 1 }, makes: { poisson_cuit: 1 }, upgrade: null, requires: 'feu', plan: null },
+  poeler_champignon: { name: 'Poêler un champignon', time: 5, desc: 'Champignons poêlés : +22 faim', needs: { champignon: 1 }, makes: { champignon_cuit: 1 }, upgrade: null, requires: 'feu', plan: null },
+  roti_legume: { name: 'Rôtir un légume', time: 5, desc: 'Légumes rôtis : +26 faim', needs: { legume: 1 }, makes: { legume_cuit: 1 }, upgrade: null, requires: 'feu', plan: null },
+  bouillir_eau: { name: "Faire bouillir de l'eau", time: 8, desc: 'Eau bouillie : +38 soif, sans malaise', needs: { eau_riviere: 1 }, makes: { eau_bouillie: 1 }, upgrade: null, requires: 'feu', plan: null },
 };
 
 // Durée de fabrication d'une recette, en secondes de jeu (0 si la clé est inconnue).
 export const craftTime = (key) => RECIPES[key]?.time ?? 0;
 
 // Fabrication dehors (`ctx.field`) : sans coffre ni aménagement du refuge. Seules les recettes sans établi et sans aménagement
-// (plaque, hache, récupérateur, sirène, établi et sac renforcé restent au refuge) ; ingrédients et produit passent par le sac,
+// (plaque, hache, récupérateur, sirène, établi, sac renforcé, feu de camp et cuisine restent au refuge) ; ingrédients et produit passent par le sac,
 // dont `ctx.bagCap` donne les places.
 export const fieldRecipe = (key) => !!RECIPES[key] && !RECIPES[key].upgrade && !RECIPES[key].requires;
 
@@ -99,7 +109,7 @@ export function canCraft(key, ctx, survivor = null) {
   const upgrades = ctx.upgrades ?? [];
   if (r.upgrade && upgrades.includes(r.upgrade)) return { ok: false, why: 'Déjà installé' };
   if (r.plan && !knowsPlan(r.plan, ctx)) return { ok: false, why: PLAN_WHY };
-  if (r.requires && !upgrades.includes(r.requires)) return { ok: false, why: 'Il faut un établi' };
+  if (r.requires && !upgrades.includes(r.requires)) return { ok: false, why: REQUIRES_WHY[r.requires] ?? 'Aménagement manquant' };
   const stock = stockOf(ctx.field ? null : ctx.chest, ctx.bag);
   const missing = {};
   for (const [k, n] of Object.entries(r.needs)) if ((stock[k] ?? 0) < n) missing[k] = n - (stock[k] ?? 0);

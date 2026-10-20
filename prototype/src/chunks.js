@@ -1492,6 +1492,8 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
       if (relief) for (const kind in flore) for (const it of flore[kind]) seatProp(it, ground);
       floreView.setChunk(key, flore);
       v.flore = true;
+      // Ce qui se cueille ou se puise (campagne.js) : gardé pour floreNear.
+      v.recolte = { baie: flore.baie, champi: flore.champi, legume: flore.legume, puits: flore.puits };
     }
   }
 
@@ -1617,6 +1619,30 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     return best;
   }
 
+  // Plante à cueillir ou puits (baie, champi, legume, puits : flore.js) le plus proche à `radius` m ou moins que `accept(kind, item, d)`
+  // retient (mûre, pas déjà cueillie…), ou null. Appelée à chaque image : rien n'est créé.
+  function floreNear(x, z, radius, accept) {
+    let best = null, bestD = Infinity;
+    for (const c of around(x, z, radius)) {
+      const v = views.get(c.key);
+      if (!v?.recolte) continue;
+      for (const kind in v.recolte) {
+        for (const it of v.recolte[kind]) {
+          const d = Math.hypot(it.x - x, it.z - z);
+          if (d < bestD && d <= radius && accept(kind, it, d)) { best = it; bestD = d; }
+        }
+      }
+    }
+    return best;
+  }
+
+  // Tout ce qui se cueille ou se puise dans les morceaux construits (d'un type, ou tous) : pour le débogage.
+  function recolte(kind = null) {
+    const out = [];
+    for (const v of views.values()) for (const k in v.recolte ?? {}) if (!kind || k === kind) out.push(...v.recolte[k]);
+    return out;
+  }
+
   // Objet démonté (déjà noté dans save.dismantled par l'appelant) : caché tout de suite et plus proposé.
   function markGone(id) {
     if (gone.has(id)) return;
@@ -1663,5 +1689,5 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     return { views: views.size, patches: grid.chunks.size, buildings, props: decor, decorPending: pending.size, marks };
   }
 
-  return { update, buildAll, missing, setWeather, dispose, stats, propNear, markGone, props, root };
+  return { update, buildAll, missing, setWeather, dispose, stats, propNear, floreNear, recolte, markGone, props, root };
 }

@@ -661,6 +661,18 @@ export function createMysqlStore({
         + 'ON DUPLICATE KEY UPDATE rev = VALUES(rev), data = VALUES(data), updated_ms = VALUES(updated_ms)',
       [world, commune, part, rev, data, nowMs]);
     },
+    // Les pièces d'une ville rangées d'un coup : une transaction, pour qu'un arrêt brutal ne laisse pas des tuiles et un meta de deux
+    // instants différents (la conservation des zombies ne tiendrait plus).
+    async seasonDocsPut({ world, commune, parts, nowMs = Date.now() }) {
+      if (!parts.length) return;
+      await tx(async (c) => {
+        for (const { part, rev, data } of parts) {
+          await c.execute('INSERT INTO el_season_docs (world, commune, part, rev, data, updated_ms) VALUES (?, ?, ?, ?, ?, ?) '
+            + 'ON DUPLICATE KEY UPDATE rev = VALUES(rev), data = VALUES(data), updated_ms = VALUES(updated_ms)',
+          [world, commune, part, rev, data, nowMs]);
+        }
+      }, { ms: flushTimeoutMs });
+    },
 
     // Pour admin.mjs (reports) : signalements reçus depuis sinceMs, par identité signalée.
     async listReports(sinceMs) {

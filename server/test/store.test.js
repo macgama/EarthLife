@@ -561,6 +561,14 @@ for (const B of BACKENDS) {
       assert.deepEqual((await s.seasonDocs('1.facile', 'c99999')).map((d) => [d.commune, d.part]), [['c99999', 'meta']]);
       assert.deepEqual((await s.seasonDocs('1.facile', 'c01283')).map((d) => d.part).sort(), ['meta', 't:14/8500/5800']);
       assert.deepEqual(await s.seasonDocs('1.facile', 'c00000'), []);
+      // Rangement d'une ville en un seul geste : toutes les pièces passent ensemble (meta rev 3, une tuile neuve, une tuile mise à jour).
+      await s.seasonDocsPut({ world: '1.facile', commune: 'c01283', nowMs: T0 + 2, parts: [
+        { part: 'meta', rev: 3, data: '{"v":3}' }, { part: 't:14/8500/5800', rev: 2, data: '{"z":1}' }, { part: 't:14/8501/5800', rev: 1, data: '{"z":2}' }] });
+      const rangees = (await s.seasonDocs('1.facile', 'c01283')).sort((x, y) => (x.part < y.part ? -1 : 1));
+      assert.deepEqual(rangees.map((d) => [d.part, d.rev, d.data]), [['meta', 3, '{"v":3}'], ['t:14/8500/5800', 2, '{"z":1}'], ['t:14/8501/5800', 1, '{"z":2}']]);
+      assert.equal((await s.seasonDocs('1.facile', 'c99999')).length, 1, 'une autre ville du même niveau n\'est pas touchée');
+      await s.seasonDocsPut({ world: '1.facile', commune: 'c01283', nowMs: T0 + 3, parts: [] });
+      assert.equal((await s.seasonDocs('1.facile', 'c01283')).length, 3, 'rien à ranger : rien ne change');
       // Changer de ville : la commune change, la maison repasse à vide.
       await s.seasonPlayerSet(id(61), 1, { commune: 'c99999', homeKey: null, homeLat: null, homeLon: null });
       const moved = await s.seasonPlayer(id(61), 1);
