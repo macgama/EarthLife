@@ -122,6 +122,7 @@ export function itemInfo(key) {
     return gun ? `Munitions · ${ITEMS[gun].name}` : 'Munitions';
   }
   if (it.fuel) return 'Carburant pour ta voiture';
+  if (it.info) return it.info;
   if (key === 'batterie') return 'Sert à réparer une voiture';
   const effects = [];
   if (it.food) effects.push(`+${it.food} faim`);
@@ -129,6 +130,7 @@ export function itemInfo(key) {
   if (it.heal) effects.push(`+${it.heal} PV`);
   if (it.warm && !it.equip) effects.push('réchauffe');
   if (it.awake) effects.push(`−${it.awake} fatigue`);
+  if (it.sick) effects.push('rend malade : fais-la bouillir');
   if (it.verb) return `${it.verb}${effects.length ? ` · ${effects.join(', ')}` : ''}`;
   return it.mat ? 'Matériau de fabrication' : '';
 }

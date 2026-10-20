@@ -40,6 +40,10 @@ const CELLS = {
   // Haies le long des champs (une pièce toutes les 2,6 m, repérée au pas de 2,4e-5 degré) et balles de paille.
   haie: { step: 2.4e-5, prefix: 'fq', salt: 0x4be19a37 },
   balle: { step: 1.4e-4, prefix: 'fo', salt: 0x2d90c6b1 },
+  // À cueillir ou à puiser (campagne.js) : champignons des bois, légumes des champs et des jardins, puits des cours de ferme.
+  champi: { step: 1.1e-4, prefix: 'fm', salt: 0x5d3c27e1 },
+  legume: { step: 7e-5, prefix: 'fl', salt: 0x13b7a9c5 },
+  puits: { step: 2.2e-4, prefix: 'fp', salt: 0x7a41d3f9 },
 };
 const KEEP = { wood: 0.81, park: 0.17, car: 0.3, bench: 0.12, benchPark: 0.5 };
 const CAR_ROAD = 6; // une route carrossable doit passer à moins de 6 m
