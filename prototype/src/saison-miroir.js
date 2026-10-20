@@ -5,7 +5,7 @@
 //  - `applyRows`, `applyTile`, `applyCounts`, `resync` : le serveur écrit dans la copie (jamais `me`, `meOut`, ni les prêts).
 // Module sans DOM ni THREE, testé sous node (test/saison.test.js).
 import {
-  lend, giveBack, take, drawReserve, kill, openNest, plantFlag, dropFlag, liberate, setCoeur, recallAll, setLent, blockInfo, ROW_LENGTH,
+  lend, giveBack, take, drawReserve, kill, openNest, plantFlag, dropFlag, liberate, rescueOne, setCoeur, recallAll, setLent, blockInfo, ROW_LENGTH,
 } from './quartier.js';
 
 const MAX_N = 60;
@@ -21,6 +21,7 @@ export function soloOps(ville) {
     plantFlag: (key) => plantFlag(ville, key),
     dropFlag: (key) => dropFlag(ville, key),
     liberate: (key) => liberate(ville, key),
+    rescue: (key) => rescueOne(ville, key),
     setCoeur: (ukey, key) => setCoeur(ville, ukey, key),
     recallAll: () => recallAll(ville),
     unlease: () => {},
@@ -84,6 +85,13 @@ export function seasonOps(ville, net) {
       const was = stateOf(key);
       const n = liberate(ville, key);
       if (was && was !== 'libere' && stateOf(key) === 'libere') net.emit(['L', key]);
+      return n;
+    },
+    // Un habitant trouvé en fouillant. Le jeu n'appelle ceci que si l'état de la saison dit que le serveur connaît le geste (`hab`) :
+    // un ancien serveur refuserait le message entier.
+    rescue(key) {
+      const n = rescueOne(ville, key);
+      if (n > 0) net.emit(['h', key]);
       return n;
     },
     setCoeur(ukey, key) {

@@ -43,6 +43,8 @@ const ICONS = {
   canne: '<path d="M4 20 18 4"/><path d="M18 4c2 .5 3 2 2.5 4.5v6"/><path d="M18.5 15.5a1.5 1.5 0 1 0 2 0"/>',
   puits: '<path d="M5 11h14v9H5zM5 15h14"/><path d="M6.5 11V6M17.5 11V6M5 6h14L12 3z"/><path d="M12 6v5"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  son: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4.5 4.5 0 0 1 0 6M18 6.5a8 8 0 0 1 0 11"/>',
+  'son-coupe': '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',
   stats: '<path d="M4 20.5h16"/><path d="M6.5 20.5V12M12 20.5V4.5M17.5 20.5V9"/>',
   effets: `<path d="M9 7h11M9 12h11M9 17h11"/>${dot(5, 7, 1.3)}${dot(5, 12, 1.3)}${dot(5, 17, 1.3)}`,
   manteau: '<path d="M9 3.5 12 6l3-2.5 4.5 2L21 10l-2.5 1.5v9h-13v-9L3 10l1.5-4.5z"/><path d="M12 6v14.5"/>',
@@ -97,9 +99,13 @@ const ICONS = {
 
   // Compte facultatif (spécification des comptes, 5.2) : silhouette, cadenas, enveloppe, sortie.
   compte: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20.5a7.5 7.5 0 0 1 15 0"/>',
+  amis: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20.5a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9.5" r="2.8"/><path d="M16.2 14.4a5.2 5.2 0 0 1 5.3 6.1"/>',
   cadenas: `<path d="M5.5 11h13v9.5h-13zM8 11V7.5a4 4 0 0 1 8 0V11"/>${dot(12, 15.5, 1.3)}`,
   enveloppe: '<path d="M3.5 6h17v12h-17z"/><path d="M3.5 6.5 12 13l8.5-6.5"/>',
   sortie: '<path d="M10 4H5.5v16H10M14.5 8l4 4-4 4M18.5 12H9"/>',
+
+  // Partager le jeu et inviter un ami : trois points reliés.
+  partager: '<circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="M8.2 10.8l7.6-4.1M8.2 13.2l7.6 4.1"/>',
 };
 
 // Icônes des 6 gestes, par numéro de geste (0 « Salut » … 5 « Besoin d'aide »).

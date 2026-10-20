@@ -3,7 +3,7 @@
 // Module pur, partagé tel quel par le jeu et par le serveur : il n'importe rien.
 
 export const PROTOCOL = 1;
-export const CLIENT_LEVEL = 2;                    // comparé à minClient (section 4.8) ; 2 : saisons (message `sv`)
+export const CLIENT_LEVEL = 3;                    // comparé à minClient (section 4.8) ; 2 : saisons (message `sv`) ; 3 : file d'attente de la saison
 // crown : posé par le serveur seulement, dans les lignes de `near` d'un survivant en couronne anonyme (spec 3.1 et
 // 6.6 : jamais de flèche vers lui) ; un client ne l'envoie pas (allure de 0 à 15).
 export const FLAGS = { run: 1, inside: 2, carrying: 4, down: 8, crown: 16 };
@@ -22,12 +22,13 @@ export const RULES = {
   clockLagMs: 10000, clockResetMs: 2000, positionTtlMs: 15000,
 };
 // Saisons (conception validée, lot 1) : un seul type de message, `sv`, dans les deux sens ; `o` dit l'opération.
-// Client : in (je joue dans cette commune), ev (gestes de la ville, 40 au plus), out. Serveur : in, no, full, rows, tile,
-// cnt, ls (prêts de tous les joueurs), deny, end. Une rangée de pâté a 9 nombres (quartier.js, ROW) ; un message du serveur tient en 16 Ko.
+// Client : in (je joue dans cette commune ; q : je sais attendre dans la file), ev (gestes de la ville, 40 au plus), out, cancel (quitter la
+// file). Serveur : in, no, full, wait (rang et taille de la file), go (une place est gardée ms), rows, tile, cnt, ls (prêts de tous les
+// joueurs), deny, end. Un client sans `q` reçoit `full` quand le niveau est complet, comme avant la file. Une rangée de pâté a 9 nombres (quartier.js, ROW) ; un message du serveur tient en 16 Ko.
 export const SEASON = {
   maxEvents: 40, maxRows: 400, maxUnits: 160, rowLength: 9, seats: 100, days: 60,
   levels: ['facile', 'moyen', 'difficile'],
-  noWhy: ['compte', 'inscription', 'commune', 'monde', 'fin', 'avenir', 'base'],
+  noWhy: ['compte', 'inscription', 'commune', 'monde', 'fin', 'avenir', 'base', 'attente'],
 };
 // Clés de commune : lettre puis lettres, chiffres, _ . - ; jamais un nom propre aux objets (constructor, __proto__…), la clé sert d'index.
 const SEASON_NAME = '(?!(?:constructor|prototype|toString|valueOf|hasOwnProperty|isPrototypeOf|toLocaleString|propertyIsEnumerable)$)[A-Za-z][A-Za-z0-9_.-]{0,39}';
@@ -35,8 +36,9 @@ export const SEASON_KEY = new RegExp(`^(@${SEASON_NAME}|b-?\\d{1,2}\\.\\d{1,8}_-
 export const SEASON_COMMUNE = new RegExp(`^${SEASON_NAME}$`);
 export const SEASON_TILE = /^\d{1,2}\/\d{1,7}\/\d{1,7}$/;
 // Gestes d'un joueur : l prêt de la rue, t prise (horde, contre-attaque), d tirage de la réserve du cœur, r retour d'un
-// prêt, k zombie abattu (clé, nombre) ; n ouvrir le nid, f planter le fanion, L libérer, D fanion tombé, c cœur (clé).
-const SEASON_EVENTS = { l: 3, t: 3, d: 3, r: 3, k: 3, n: 2, f: 2, L: 2, D: 2, c: 2 };
+// prêt, k zombie abattu (clé, nombre) ; n ouvrir le nid, f planter le fanion, L libérer, D fanion tombé, c cœur (clé), h habitant
+// trouvé en fouillant (clé du pâté ; un jeu ne l'envoie que si l'état de la saison porte `hab`, un ancien serveur le refuserait).
+const SEASON_EVENTS = { l: 3, t: 3, d: 3, r: 3, k: 3, n: 2, f: 2, L: 2, D: 2, c: 2, h: 2 };
 
 export const GESTURES = ['Salut', 'Par ici', 'Attention !', 'Merci', 'Suis-moi', "Besoin d'aide"];
 export const REPORT_REASONS = { 1: 'Me suit partout', 2: 'Abuse des gestes', 3: 'Triche (vitesse, téléportation)' };
@@ -323,10 +325,11 @@ const CLIENT = {
   },
   g(o, out) { out.k = int(o, 'k', 0, GESTURES.length - 1); },
   sv(o, out) {
-    out.o = oneOf(o, 'o', ['in', 'ev', 'out']);
+    out.o = oneOf(o, 'o', ['in', 'ev', 'out', 'cancel']);
     if (out.o === 'in') {
       const c = get(o, 'c');
       out.c = typeof c === 'string' && SEASON_COMMUNE.test(c) ? c : bad('c');
+      if (get(o, 'q') === true) out.q = true;
     } else if (out.o === 'ev') {
       const e = get(o, 'e');
       if (!Array.isArray(e) || e.length < 1 || e.length > SEASON.maxEvents) bad('e');
@@ -508,10 +511,12 @@ const SERVER = {
   },
   count(o, out) { out.n = int(o, 'n', 0, 1e7); },
   sv(o, out) {
-    out.o = oneOf(o, 'o', ['in', 'no', 'full', 'rows', 'tile', 'cnt', 'ls', 'deny', 'end']);
+    out.o = oneOf(o, 'o', ['in', 'no', 'full', 'wait', 'go', 'rows', 'tile', 'cnt', 'ls', 'deny', 'end']);
     if (['in', 'rows', 'tile', 'cnt', 'ls'].includes(out.o)) out.rv = int(o, 'rv', 0, 2 ** 40);
     if (out.o === 'no') out.why = oneOf(o, 'why', SEASON.noWhy);
     else if (out.o === 'full') { out.used = int(o, 'used', 0, 1e6); out.max = int(o, 'max', 0, 1e6); }
+    else if (out.o === 'wait') { out.rank = int(o, 'rank', 1, 1e6); out.size = int(o, 'size', 1, 1e6); }
+    else if (out.o === 'go') out.ms = int(o, 'ms', 0, 3600000);
     else if (out.o === 'rows') out.r = seasonRows(get(o, 'r'));
     else if (out.o === 'tile') { out.k = seasonTileKey(get(o, 'k')); out.v = seasonTile(get(o, 'v')); }
     else if (out.o === 'cnt') out.c = seasonCounts(get(o, 'c'));

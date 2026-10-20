@@ -16,6 +16,7 @@ import {
   parseSavePutReq, passwordProblem,
 } from '../../prototype/src/net/account.js';
 import { PROTOCOL } from '../../prototype/src/net/protocol.js';
+import { createFriends } from './friends.js';
 import { PASSWORD_PARAMS, hashPassword, verifyPassword, needsRehash, createHashQueue } from './password.js';
 import { mailCode, mailPasswordChanged, mailDeleted, mailInactive, DEFAULT_GAME_URL } from './mail-texts.js';
 import { dayOf } from './rules.js';
@@ -111,11 +112,13 @@ function createBuckets({ capacity, refillMs, cap, now }) {
 // admin.mjs (erase-account). Changer ACCOUNT_SECRET rend toutes les adresses introuvables et illisibles.
 export function accountCrypto(master, randomBytes = nodeRandomBytes) {
   const key = (info) => Buffer.from(hkdfSync('sha256', master, 'earthlife-comptes', info, 32));
-  const indexKey = key('index'), boxKey = key('adresse'), codeKey = key('code');
+  const indexKey = key('index'), boxKey = key('adresse'), codeKey = key('code'), friendKey = key('ami');
   const AAD = Buffer.from('earthlife-adresse-v1');
   return {
     emailHashOf: (email) => createHmac('sha256', indexKey).update(email).digest('hex'),
     codeHashOf: (emailHash, code) => createHmac('sha256', codeKey).update(`${emailHash}:${code}`).digest('hex'),
+    // Empreinte d'un code d'ami (amis.js) : seule forme sous laquelle le serveur le garde.
+    friendHashOf: (code) => createHmac('sha256', friendKey).update(`ami:${code}`).digest('hex'),
     seal(email) {
       const iv = randomBytes(12);
       const c = createCipheriv('aes-256-gcm', boxKey, iv);
@@ -147,7 +150,7 @@ export function createAccounts({
   const params = { ...PASSWORD_PARAMS, ...hashParams };
   // Clés (2.4) tirées de ACCOUNT_SECRET ; en mode local sans secret, tiré au démarrage (comptes perdus à l'arrêt,
   // comme le reste du magasin en mémoire).
-  const { emailHashOf, codeHashOf, seal, unseal } = accountCrypto(secret ?? config.accountSecret ?? randomBytes(32), randomBytes);
+  const { emailHashOf, codeHashOf, friendHashOf, seal, unseal } = accountCrypto(secret ?? config.accountSecret ?? randomBytes(32), randomBytes);
   // Empreinte d'adresse IP (unité ipScope, comme la salle) ; adresse illisible : seau commun « inconnue », limité lui aussi
   // (mais plus large) : sans cela, un X-Forwarded-For illisible ferait sauter toutes les limites par adresse.
   const ipKeyOf = (ip) => (ip ? (hmac ? hmac(ip) : sha256(`ip:${ip}`)) : UNKNOWN_IP);
@@ -499,8 +502,9 @@ export function createAccounts({
     const account = await store.accountById(sess.accountId);
     if (!account) return noSession();
     const t = now();
-    const [list, save, player] = await Promise.all([
+    const [list, save, player, amis] = await Promise.all([
       store.sessionsOf(account.id), store.getSave(account.id), account.playerId ? store.exportPlayer(account.playerId) : null,
+      store.friendsOf(account.id),
     ]);
     let partie = null;
     if (save) {
@@ -519,6 +523,7 @@ export function createAccounts({
         },
         identite: player ? { surnom: player.nm, creeeLe: player.createdOn, vueLe: player.seenOn, refuge: player.refuge,
           masquages: player.blocks, signalementsFaits: player.reports } : null,
+        amis: amis.map((f) => ({ depuisLe: f.since, surnom: f.nm })),
         partie,
       },
     });
@@ -570,7 +575,12 @@ export function createAccounts({
     return ok({ rev: put.rev, savedMs: t, stamp: r.msg.stamp });
   }
 
+  // Amis : appelés avec la session, les refus et les tables de limites de ce module.
+  const friends = createFriends({ store, room, log, now, randomBytes, table, auth, friendHashOf, ok, refused, tooMany, noSession, badRequest, lim });
+  tables.push(...friends.tables);
+
   const ROUTES = {
+    ...friends.routes,
     '/v1/account/code': code, '/v1/account/verify': verify, '/v1/account/login': login, '/v1/account/me': me,
     '/v1/account/password': changePassword, '/v1/account/logout': logout, '/v1/account/delete': erase,
     '/v1/account/export': exportData, '/v1/save/get': saveGet, '/v1/save/put': savePut,
@@ -641,7 +651,7 @@ export function createAccounts({
     // base une fois par heure (purge).
     stats() {
       const m = mailer ? mailer.stats() : { envoyes: 0, echoues: 0 };
-      const out = { ...counts, courriels: m.envoyes, courrielsEchoues: m.echoues, hachageMsP95: queue.p95(),
+      const out = { ...counts, ...friends.stats(), courriels: m.envoyes, courrielsEchoues: m.echoues, hachageMsP95: queue.p95(),
         comptes: totals.accounts, sessions: totals.sessions, parties: totals.saves };
       for (const k of Object.keys(counts)) counts[k] = 0;
       return out;

@@ -382,7 +382,11 @@ test('base : création, ancrage, déménagement (le coffre suit, les barricades 
   assert.notEqual(moved.chest, base.chest);
   assert.deepEqual(moved.upgrades, ['etabli']);
   assert.equal(moved.sirenAt, 77);
+  assert.equal(moved.habitants, undefined, 'aucun habitant : le champ n\'existe pas');
   assert.ok(moved.openings.every((o) => o.lvl === 0 && o.trap === 0), 'barricades et pièges perdus');
+  // Les habitants sauvés suivent leur refuge.
+  base.habitants = 14;
+  assert.equal(relocateBase(base, other, openings, { lat: 45.7, lon: 4.8, now: 3000 }).habitants, 14);
   // Murs épais : PV de départ ×1,25.
   const police = createBase({ ...b, loot: 'police' }, openings, { now: 1 });
   assert.equal(police.perk, 'murs');

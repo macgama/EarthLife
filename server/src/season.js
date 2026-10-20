@@ -9,18 +9,22 @@
 //  - Tuiles : le serveur n'a pas de carte ; le jeu envoie les pâtés d'une tuile découpée (clé, appartenance, poids,
 //    voisins) et le serveur lance placeTile lui-même : la conservation tient par construction. Le premier découpage
 //    d'une tuile fait foi ; les autres joueurs lisent les rangées du serveur.
-//  - Gestes (WebSocket, message `sv`) : prêts (baux), retours, zombies abattus, nid, fanion, libération, cœur. Un zombie
-//    n'est abattu que sur un bail du joueur ; un bail s'éteint à la déconnexion ou après 15 s de silence.
+//  - Gestes (WebSocket, message `sv`) : prêts (baux), retours, zombies abattus, nid, fanion, libération, cœur, habitant
+//    trouvé en fouillant (`h`, au plus un toutes les 6 s). Un zombie n'est abattu que sur un bail du joueur ; un bail
+//    s'éteint à la déconnexion ou après 15 s de silence.
 //  - Nuits : jouées ici (volontaires, repousse, fanions), une fois par nuit solaire de la commune, seulement si un
 //    inscrit y a joué dans les dernières 24 h.
 //  - Rangement : ville, tuiles et voisinages en pièces JSON dans la base, écrites toutes les 15 s si elles ont changé.
+//  - File d'attente : les 100 places d'un niveau sont comptées sièges + places gardées. Au-delà, le client qui sait attendre (`q`) entre
+//    dans la file du niveau (en mémoire, un rang par compte) ; quand une place se libère, elle est gardée `holdMs` pour le premier
+//    (`go`). Le siège d'un joueur dont la connexion tombe est gardé `seatGraceMs`.
 // Limites connues de la première version (écrites dans la conception) : mode « ville entière » seulement, pas de
-// partition par monde de la présence, des traces et des refuges, pas de file d'attente.
+// partition par monde de la présence, des traces et des refuges.
 import { createHash } from 'node:crypto';
 import { cleanText } from '../../prototype/src/limits.js';
 import { isNightAt, nightKey } from '../../prototype/src/horde.js';
 import {
-  startVille, placeTile, kill, lend, giveBack, take, drawReserve, openNest, plantFlag, dropFlag, liberate, setCoeur,
+  startVille, placeTile, kill, lend, giveBack, take, drawReserve, openNest, plantFlag, dropFlag, liberate, rescueOne, setCoeur,
   volunteersNight, regrow, fallFlag, checkVille, zombiesLeft, cityStatus, blockInfo, nestSize, keyPoint, ETAT, ROW, QUARTIER,
 } from '../../prototype/src/quartier.js';
 import { SEASON, SEASON_KEY, SEASON_COMMUNE, SEASON_TILE, TOKEN_RE, readJson } from '../../prototype/src/net/protocol.js';
@@ -40,10 +44,11 @@ const distM = (a, b) => Math.hypot((a.lon - b.lon) * Math.cos((((a.lat + b.lat) 
 
 export const SEASON_RULES = {
   seats: SEASON.seats, days: SEASON.days, name: 'Saison 1',
-  flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
+  flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, rescueBurst: 6, rescuePerSec: 1 / 6, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
   initRetryMs: 5000, playedMs: DAY, enrolCacheMs: 60000,
   rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000,
   citiesMax: 30,                                         // villes ouvertes au plus par niveau (choix libre)
+  queueMax: 500, holdMs: 120000, seatGraceMs: 60000, queueGraceMs: 60000, waitEveryMs: 2000,   // file d'attente par niveau
   body: { join: 1024, state: 1024, home: 1024, enter: 1024, seed: 24576, tile: 131072, adj: 32768 },
   // [capacité, jetons par seconde] par compte et par route.
   rate: { join: [12, 0.2], state: [6, 0.05], seed: [3, 0.02], enter: [6, 0.05], tile: [30, 0.5], adj: [30, 0.5], home: [6, 0.05] },
@@ -78,8 +83,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   const limits = new Map();            // compte → { route: seau }
   const ipLimits = new Map();          // adresse → seau
   const enrol = new Map();             // compte → { player, at }
-  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, moves: 0, errors: 0, integrity: 0, idleReleased: 0 };
-  let lastFlush = now(), lastNight = now(), lastCheck = now(), lastProgress = { at: -Infinity, body: null }, flushing = null;
+  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, moves: 0, errors: 0, integrity: 0, idleReleased: 0, queued: 0, promoted: 0, expired: 0 };
+  let lastFlush = now(), lastNight = now(), lastCheck = now(), lastWaits = now(), lastProgress = { at: -Infinity, body: null }, flushing = null;
 
   // ---------- Saison ----------
 
@@ -126,6 +131,111 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   const levelCities = (level) => levelWorlds(level).filter((w) => w.city);
   // Joueurs assis au niveau, toutes villes confondues : les 100 places sont celles du niveau.
   const levelUsed = (level) => levelWorlds(level).reduce((n, w) => n + w.subs.size, 0);
+
+  // ---------- File d'attente du niveau ----------
+
+  // Une place gardée (`held`) est réservée à un compte jusqu'à `until` et compte comme un siège : jamais plus de `seats` sièges + places gardées.
+  //  - 'tour' : libérée pour le premier de la file (`go`), qui a `holdMs` pour entrer ;
+  //  - 'siege' : le siège d'un joueur dont la connexion vient de tomber (ou qui change de ville), gardé `seatGraceMs`.
+  const queues = new Map();            // niveau → [entrée…] dans l'ordre d'arrivée : { level, accountId, s, lostAt, rank, size }
+  const held = new Map();              // 'niveau/compte' → { level, accountId, until, kind, s }
+  const waiting = new Map();           // session → entrée de file
+  const waitsDirty = new Set();        // niveaux dont les rangs sont à renvoyer (au plus toutes les waitEveryMs : un départ change le rang de toute la file)
+  const heldKey = (level, acc) => `${level}/${acc}`;
+  const heldCount = (level) => { let n = 0; for (const h of held.values()) if (h.level === level) n++; return n; };
+  const freeSeats = (level) => R.seats - levelUsed(level) - heldCount(level);
+  // Une entrée de file est sans connexion (s = null) pendant `queueGraceMs` après une coupure : elle garde son rang, pas de place.
+  function canSeatNow(level, acc) {
+    if (freeSeats(level) <= 0) return false;
+    for (const e of queues.get(level) ?? []) {
+      if (e.accountId === acc) return true;
+      if (e.s) return false;                              // un joueur connecté attend devant lui
+    }
+    return true;
+  }
+  function pushWaits(level) {
+    const q = queues.get(level);
+    q?.forEach((e, i) => {
+      if (!e.s || (e.rank === i + 1 && e.size === q.length)) return;
+      e.rank = i + 1;
+      e.size = q.length;
+      send(e.s, { t: 'sv', o: 'wait', rank: e.rank, size: e.size });
+    });
+  }
+  function dropEntry(e) {
+    if (e.s) waiting.delete(e.s);
+    const q = queues.get(e.level), i = q ? q.indexOf(e) : -1;
+    if (i >= 0) { q.splice(i, 1); waitsDirty.add(e.level); }
+  }
+  // Libère les places au premier de la file connecté, une place gardée chacun.
+  function promote(level) {
+    const q = queues.get(level);
+    if (!q?.length) return;
+    let free = freeSeats(level);
+    for (let i = 0; free > 0 && i < q.length;) {
+      const e = q[i];
+      if (!e.s) { i++; continue; }
+      q.splice(i, 1);
+      waiting.delete(e.s);
+      held.set(heldKey(level, e.accountId), { level, accountId: e.accountId, until: now() + R.holdMs, kind: 'tour', s: e.s });
+      send(e.s, { t: 'sv', o: 'go', ms: R.holdMs });
+      stats.promoted++;
+      free--;
+    }
+    waitsDirty.add(level);
+  }
+  // Places gardées échues (celle d'un 'tour' est dite à son joueur : `no` « attente »), entrées sans connexion trop anciennes.
+  function sweep(t) {
+    const levels = new Set();
+    for (const [k, h] of held) {
+      if (h.until > t) continue;
+      held.delete(k);
+      levels.add(h.level);
+      if (h.kind === 'tour') { stats.expired++; if (h.s) no(h.s, 'attente'); }
+    }
+    for (const [level, q] of queues) {
+      const n = q.length;
+      for (let i = q.length - 1; i >= 0; i--) if (!q[i].s && t - q[i].lostAt >= R.queueGraceMs) q.splice(i, 1);
+      if (q.length !== n) levels.add(level);
+    }
+    for (const level of levels) promote(level);
+  }
+  // Quitter la file ou rendre la place gardée (message `cancel`, `out` d'un joueur pas assis).
+  function leaveLine(s) {
+    const e = waiting.get(s);
+    if (e) dropEntry(e);
+    if (!s.accountId) return;
+    for (const level of LEVELS) {
+      if (held.get(heldKey(level, s.accountId))?.kind !== 'tour') continue;
+      held.delete(heldKey(level, s.accountId));
+      promote(level);
+    }
+  }
+  // Niveau plein : un client qui sait attendre (`q`) entre dans la file, un autre reçoit `full` comme avant.
+  function refuseSeat(s, level, acc, canWait) {
+    const full = () => send(s, { t: 'sv', o: 'full', used: R.seats - Math.max(0, freeSeats(level)), max: R.seats });
+    if (!canWait) return full();
+    let q = queues.get(level);
+    if (!q) queues.set(level, (q = []));
+    let e = q.find((x) => x.accountId === acc);
+    if (!e) {
+      if (q.length >= R.queueMax) return full();
+      e = { level, accountId: acc, s, lostAt: 0, rank: 0, size: 0 };
+      q.push(e);
+      stats.queued++;
+      waitsDirty.add(level);
+    } else {
+      if (e.s && e.s !== s) waiting.delete(e.s);
+      e.s = s;
+      e.lostAt = 0;
+    }
+    waiting.set(s, e);
+    e.rank = q.indexOf(e) + 1;
+    e.size = q.length;
+    send(s, { t: 'sv', o: 'wait', rank: e.rank, size: e.size });
+    if (freeSeats(level) > 0) promote(level);
+    return undefined;
+  }
 
   function makeCity({ key, place, ville, playedAt = 0 }) {
     const city = {
@@ -453,6 +563,13 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
           break;
         }
         case 'D': if (dropFlag(v, key)) { dirtyRow(city, key); changed = true; } break;
+        case 'h': {
+          // Un habitant trouvé en fouillant (key est un pâté, jamais la réserve du cœur) : un seul caché devient sauvé. Refusé si
+          // le pâté n'en cache plus (un autre joueur l'a trouvé) ou si les trouvailles vont plus vite que des fouilles ne le permettent.
+          if (key[0] === '@') break;
+          if (sub.rescueBucket.take(1) && rescueOne(v, key) > 0) { dirtyRow(city, key); changed = true; } else fix.add(key);
+          break;
+        }
         case 'c': {
           const u = v.units[v.key];
           if (u && !u.coeur && setCoeur(v, v.key, key)) { dirtyCounts(city); changed = true; }
@@ -632,7 +749,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       for (const sub of [...subs.values()]) {
         if (sub.accountId !== acc || sub.w === w) continue;
         const s = sub.s;
-        detach(s);
+        detach(s, { ghost: true });
         no(s, 'commune');
       }
       p.commune = key;
@@ -700,7 +817,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
 
   function state(w) {
     const city = w.city;
-    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville: city.ville, lent: lentSnapshot(city) }) };
+    // hab : ce serveur connaît le geste `h` (habitant trouvé) ; un jeu ne l'envoie que si l'état le dit.
+    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville: city.ville, lent: lentSnapshot(city), hab: 1 }) };
   }
 
   // Pâtés d'une tuile découpée : [clé, appartenance (1 dedans, 0 dehors, -1 inconnu), plancher, logements, bâtiments,
@@ -847,16 +965,28 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   // ---------- WebSocket (message sv) ----------
 
   const no = (s, why) => send(s, { t: 'sv', o: 'no', why });
-  function detach(s) {
+  // Le siège est rendu. `ghost` (connexion tombée, changement de ville) : il reste au joueur `seatGraceMs` ; sinon la place va au premier de la file.
+  function detach(s, { ghost = false } = {}) {
     const sub = subs.get(s);
     if (!sub) return;
     releaseAll(sub);
     sub.w.subs.delete(sub);
     subs.delete(s);
     if (sub.dirtyKills) { queueKills(sub); saveKills(); }
+    const level = sub.w.level;
+    if (ghost && phaseOf() === 'en-cours') held.set(heldKey(level, sub.accountId), { level, accountId: sub.accountId, until: now() + R.seatGraceMs, kind: 'siege', s: null });
+    else promote(level);
+  }
+  // Connexion fermée : le siège est gardé, l'entrée de file garde son rang le temps de la coupure.
+  function closed(s) {
+    detach(s, { ghost: true });
+    const e = waiting.get(s);
+    if (e) { waiting.delete(s); e.s = null; e.lostAt = now(); }
+    for (const h of held.values()) if (h.s === s) h.s = null;
   }
   async function onMessage(s, msg) {
-    if (msg.o === 'out') return detach(s);
+    if (msg.o === 'cancel') return leaveLine(s);
+    if (msg.o === 'out') { detach(s); return leaveLine(s); }
     if (msg.o === 'ev') {
       const sub = subs.get(s);
       if (!sub || !sub.w.city || phaseOf() !== 'en-cours') return undefined;
@@ -879,10 +1009,16 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!w.city || w.city.key !== msg.c) return no(s, 'commune');
     const old = subs.get(s);
     if (old && old.w === w) return send(s, { t: 'sv', o: 'in', rv: w.city.rv });
-    detach(s);
-    if (levelUsed(w.level) >= R.seats) return send(s, { t: 'sv', o: 'full', used: levelUsed(w.level), max: R.seats });
+    detach(s, { ghost: true });
+    sweep(now());
+    // Une place gardée pour ce compte devient son siège ; sinon il faut une place libre et personne de connecté devant lui dans la file.
+    const hk = heldKey(w.level, s.accountId);
+    if (held.has(hk)) held.delete(hk);
+    else if (!canSeatNow(w.level, s.accountId)) return refuseSeat(s, w.level, s.accountId, msg.q === true);
+    const entry = waiting.get(s) ?? queues.get(w.level)?.find((e) => e.accountId === s.accountId);
+    if (entry) dropEntry(entry);
     const sub = { s, w, accountId: s.accountId, leases: new Map(), holdAt: 0, kills: 0, kills0: p.kills ?? 0, dirtyKills: false, bucket: createBucket(20, 6, now),
-      killBucket: createBucket(R.killBurst, R.killPerSec, now) };
+      killBucket: createBucket(R.killBurst, R.killPerSec, now), rescueBucket: createBucket(R.rescueBurst, R.rescuePerSec, now) };
     subs.set(s, sub);
     w.subs.add(sub);
     w.city.playedAt = now();
@@ -928,6 +1064,12 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     for (const w of worlds.values()) {
       try { tickWorld(w, t, over); } catch (err) { stats.errors++; log('erreur', { type: 'saison-tic', monde: w.id, err: err?.code ?? err?.name }); }
     }
+    sweep(t);
+    if (waitsDirty.size && t - lastWaits >= R.waitEveryMs) {
+      lastWaits = t;
+      for (const level of waitsDirty) pushWaits(level);
+      waitsDirty.clear();
+    }
     if (t - lastFlush >= R.flushMs) { lastFlush = t; flush(); }
     if (t - lastNight >= R.nightEveryMs) {
       lastNight = t;
@@ -946,15 +1088,17 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
 
   return {
     init, handle, admit, progress, flush, tick,
-    hooks: { message: onMessage, close: detach, tick },
+    hooks: { message: onMessage, close: closed, tick },
     stats() {
       let online = 0;
       for (const w of worlds.values()) online += w.subs.size;
-      const out = { ...stats, online };
+      let waits = 0;
+      for (const q of queues.values()) waits += q.length;
+      const out = { ...stats, online, waiting: waits, held: held.size };
       for (const k of Object.keys(stats)) stats[k] = 0;
       return out;
     },
     // Pour les essais.
-    debug() { return { season, ready, worlds, subs, stats, worldOf, levelCities }; },
+    debug() { return { season, ready, worlds, subs, stats, worldOf, levelCities, queues, held, freeSeats }; },
   };
 }

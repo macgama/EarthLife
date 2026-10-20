@@ -284,6 +284,12 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
           <dd>Si tu joues à plusieurs, ton identité anonyme (surnom, refuge partagé, masquages, signalements&nbsp;: <a href="#serveur">section&nbsp;02</a>) est reliée à ton compte&nbsp;: ton surnom te suit d'un appareil à l'autre.</dd>
         </div>
         <div class="fact">
+          <dt>Tes amis et ton code d'ami <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>Tant que ton compte existe (le code&nbsp;: 7&nbsp;jours au plus)</span></dt>
+          <dd>Si tu ajoutes des amis (menu «&nbsp;Mes amis&nbsp;», 30&nbsp;amis au plus), le serveur garde pour chaque amitié les deux comptes qu'elle relie et le jour où elle a commencé. Ton ami voit ton surnom dans sa liste, et toi le sien&nbsp;; personne d'autre.</dd>
+          <dd>Un code d'ami ne sert qu'une fois et vaut 7&nbsp;jours&nbsp;; on n'en a qu'un à la fois, le suivant remplace le précédent. Le serveur ne le garde que sous forme d'empreinte, jamais en clair. Celui qui le reçoit ne voit rien de toi avant d'avoir accepté. Les codes refusés sont comptés en mémoire, par compte et par code brouillé de l'adresse IP, pendant 1&nbsp;h, contre les essais au hasard.</dd>
+          <dd>«&nbsp;Retirer&nbsp;» efface l'amitié pour vous deux. «&nbsp;Bloquer&nbsp;» fait de même et vous masque l'un à l'autre, maintenant et plus tard (masquages, <a href="#serveur">section&nbsp;02</a>). Effacer ton compte efface tes amitiés et ton code.</dd>
+        </div>
+        <div class="fact">
           <dt>Compte inutilisé <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-horloge"/></svg>2 ans</span></dt>
           <dd>Sans connexion pendant 2&nbsp;ans, il est effacé avec tout ce qui précède&nbsp;; un e-mail te prévient 30&nbsp;jours avant.</dd>
         </div>
@@ -328,6 +334,8 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
         <li>les bâtiments fouillés et les objets démontés, sans savoir par qui.</li>
       </ul>
       <p>Ils ne voient jamais ta vraie position, ni ta clé, ni ton numéro d'identité. Si tu masques un survivant, vous ne vous voyez plus, ni maintenant, ni plus tard.</p>
+      <p>«&nbsp;Inviter ici&nbsp;» fabrique un lien que tu envoies toi-même, à qui tu veux&nbsp;: il porte le lieu de ton personnage, arrondi à environ 50&nbsp;m, et rien d'autre (ni surnom, ni refuge). Le jeu ne l'envoie pas, n'en garde pas de copie et refuse de le fabriquer dans une zone privée ou sa couronne. «&nbsp;Partager le jeu&nbsp;» n'envoie que l'adresse du jeu.</p>
+      <p>Tes amis (menu «&nbsp;Mes amis&nbsp;») voient ton surnom dans leur liste, rien de plus&nbsp;: ni ta position, ni ton refuge. Un lien ou un code d'ami ne porte ni lieu ni nom&nbsp;; le jeu ne l'envoie pas lui-même, c'est toi qui le donnes à qui tu veux.</p>
     </section>
 
     <section class="panel" id="services" aria-labelledby="t-services">
@@ -405,11 +413,11 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
       <dl class="facts">
         <div class="fact">
           <dt>Voir mes données</dt>
-          <dd>Ton surnom, tes dates, ton refuge partagé, le nombre de tes masquages et des signalements que tu as faits. Avec un compte, en plus&nbsp;: ton adresse, les dates du compte, le nombre d'appareils connectés et la partie gardée sur le serveur.</dd>
+          <dd>Ton surnom, tes dates, ton refuge partagé, le nombre de tes masquages et des signalements que tu as faits. Avec un compte, en plus&nbsp;: ton adresse, les dates du compte, le nombre d'appareils connectés et la partie gardée sur le serveur. Ta liste d'amis se lit dans «&nbsp;Mes amis&nbsp;».</dd>
         </div>
         <div class="fact">
           <dt>Exporter mes données</dt>
-          <dd>Avec un compte&nbsp;: un fichier avec tout ce que le serveur garde de ton compte, partie comprise.</dd>
+          <dd>Avec un compte&nbsp;: un fichier avec tout ce que le serveur garde de ton compte, partie et liste d'amis comprises.</dd>
         </div>
         <div class="fact">
           <dt>Un autre nom</dt>
@@ -421,7 +429,7 @@ h1 { margin: var(--sp-6) 0 var(--sp-2); font: 700 clamp(28px, 7vw, 40px) / 1.1 v
         </div>
         <div class="fact">
           <dt>Supprimer mon compte</dt>
-          <dd>Efface ton compte, ton adresse, ta partie sauvegardée, tes appareils connectés et ton identité en ligne. Ta partie reste sur ton appareil.</dd>
+          <dd>Efface ton compte, ton adresse, ta partie sauvegardée, tes appareils connectés, tes amitiés, ton code d'ami et ton identité en ligne. Ta partie reste sur ton appareil.</dd>
         </div>
         <div class="fact">
           <dt>Se déconnecter, «&nbsp;Déconnecter tous les appareils&nbsp;»</dt>

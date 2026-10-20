@@ -6,13 +6,14 @@
 import { LEVEL_KEYS, NIVEAUX, NIVEAU_DEFAUT, counters, takeHome, canChangeLevel, changeLevel, keyPoint, blockInfo, supplyFor } from './quartier.js';
 import { currentVille, switchVille, abandonVille, tally, supplyDay, noteFirst, adoptSave, TERRITORY_MESSAGES } from './territory-store.js';
 import {
-  prepareCity, beginCity, createCityRuntime, unitOfVille, rebuildGraph, homeCandidates, levelCard, LEVEL_TEXT, LEVEL_INTRO, CITY_TEXT, CITY,
+  prepareCity, beginCity, createCityRuntime, unitOfVille, rebuildGraph, homeCandidates, levelCard, queueCard, LEVEL_TEXT, LEVEL_INTRO, CITY_TEXT, CITY,
 } from './ville-jeu.js';
 import { pointInContour, groupDigits, hasContour } from './commune.js';
 import { homeQuest } from './quest.js';
 import { localDate, utcOffsetFor } from './horde.js';
 import { storeItems, chestCap, countOf, countsLabel, claimableShape } from './base.js';
 import { nearestOpen } from './collision.js';
+import { addHabitant, clearHabitants } from './habitants.js';
 import { SEASON_TEXT } from './net/season.js';
 import { insideTiles, resumeHome } from './saison-miroir.js';
 import { createMenuSheet } from './menu-sheet.js';
@@ -534,6 +535,15 @@ export function createCityGame(host) {
     return connectSeason({ join, level, city, prep, home, touched: dest.kind === 'place' ? dest.place : place });
   }
 
+  // Niveau plein : la carte de la file (queueCard) ; fermer la carte quitte la file, « Entrer » demande la place gardée.
+  function showQueue(city, q) {
+    const n = net();
+    host.setLoading(null);
+    host.showCard(queueCard(city.name, q), (id) => {
+      if (id === 'enter') { host.setLoading(`Connexion à ${city.name}…`); n.claim(); } else n.leave();
+    }, { escape: 'leave' });
+  }
+
   // Abonnement à la ville choisie et départ de la partie de saison : où commencer (ta maison, sinon le point touché s'il est dans la ville,
   // sinon le point de la ville : chacun choisit son départ, la ville reste la même pour ceux qui la partagent). Plan { kind: 'season', level,
   // city, state, rv, prep, first, repost, place, join }, ou null (la ville ne s'ouvre pas : le joueur a lu pourquoi).
@@ -551,12 +561,14 @@ export function createCityGame(host) {
       leases: () => seasonRef.rt?.leases() ?? [],
       lost: () => { const s = host.getSession(); if (s?.city?.season) host.toast('Connexion perdue : la ville de la saison se met en pause', 4, 'danger'); },
       back: (r) => { const s = host.getSession(); if (s?.city?.season && r.ok) host.toast('Reconnecté à la ville de la saison', 3, 'success'); },
+      queue: (q) => showQueue(city, q),
     };
     seasonRef.rt = null;
     const opened = await n.open(city.key, handlers);
     host.setLoading(null);
     if (!opened.ok) {
       n.close();
+      if (opened.why === 'annule') return null;
       await askCard(infoCard('Saison', opened.why === 'complet' ? `${seasonText('complet')}` : seasonText(opened.why)), 'ok');
       return null;
     }
@@ -678,7 +690,7 @@ export function createCityGame(host) {
       if (!g) return fail('Ville illisible : partie libre');
       built = { graph: g.graph, fn: g.fn, member: g.member, unit, commune, maison };
     }
-    const rt = createCityRuntime({ store, client, template, proj: s.store.proj, onEvent: (e) => onEvent(s, e), ville, ...built, season: { net: n } });
+    const rt = createCityRuntime({ store, client, template, proj: s.store.proj, onEvent: (e) => onEvent(s, e), ville, ...built, season: { net: n, hab: plan.state.hab === 1 } });
     seasonRef.rt = rt;
     s.city = rt;
     s.seasonLevel = plan.level; // « Reprendre ici » relance la saison à ce niveau
@@ -723,6 +735,12 @@ export function createCityGame(host) {
 
   // Ta maison : tirée parmi les habitants cachés, déjà fouillée et à toi (refuge). Une ancienne partie garde son refuge.
   async function startHome(s, plan) {
+    await settleHome(s, plan);
+    // Une ville neuve : les habitants installés au refuge venaient de l'ancienne.
+    if (s.refuge?.base?.habitants) { clearHabitants(s.refuge.base); host.saveDirty(); }
+  }
+
+  async function settleHome(s, plan) {
     const rt = s.city, ville = rt.ville;
     if (plan.adopt) {
       const b = host.homeLatLon();
@@ -848,6 +866,18 @@ export function createCityGame(host) {
     if (a.id === 'nest') rt.openNestAt(a.arg, s.director, s.player);
     else if (a.id === 'flag') rt.plantFlagAt(a.arg, { night: s.isNight, weatherKind: s.weather?.kind ?? 'clear' });
     host.saveDirty();
+  }
+
+  // Fouille du bâtiment `b` (ou d'une de ses `parts` pièces) : s'il cachait un habitant, il est sauvé tout de suite et s'installe au
+  // refuge. Rend { refuge } (le joueur a un refuge pour l'accueillir), ou null.
+  function rescueFrom(s, b, { parts = 1 } = {}) {
+    const rt = s.city;
+    if (!rt || rt.ended || !b || !rt.rescueIn(b.id, { parts })) return null;
+    const base = s.refuge?.base ?? null;
+    if (base) addHabitant(base);
+    host.saveDirty();
+    refreshHud(s, true);
+    return { refuge: !!base };
   }
 
   // Ce que la ville change dans les vagues du refuge (taille du niveau, Nuit du cœur, plus rien si sauvée).
@@ -1057,7 +1087,7 @@ export function createCityGame(host) {
   }
 
   return {
-    initMenu, syncMenu, playLabel, placeChosen, prepareLaunch, planTrip, landTrip, tripCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws,
+    initMenu, syncMenu, playLabel, placeChosen, prepareLaunch, planTrip, landTrip, tripCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws, rescueFrom,
     questText, homeGoal, onRefugeAction, onDeath, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },

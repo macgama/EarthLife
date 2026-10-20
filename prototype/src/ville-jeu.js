@@ -23,6 +23,7 @@ import { censusPlan, mergeCensus, pateAt, edgeNeighbours, blocksTileKey, createB
 import { createBlocksJobs } from './blocks-worker.js';
 import { tileUrl } from './tiles.js';
 import { claimableShape } from './base.js';
+import { findChance } from './habitants.js';
 
 export const CITY = {
   tilesAround: 1,        // tuiles découpées autour du joueur (3 × 3)
@@ -81,6 +82,19 @@ export function levelCard(prep) {
     return { level: lv, text: `${LEVEL_TEXT[lv].name} : ${groupDigits(s.zombies)} zombies${where}, ${groupDigits(s.hidden)} habitants à sauver` };
   });
   return { title: `${unit.name} : ${pop}`, lines, rows };
+}
+
+// Carte de la file d'attente d'un niveau plein : q = { state: 'wait', rank, size } (ton rang, mis à jour) ou { state: 'go', ms } (une place
+// est gardée pour toi). Le bouton « leave » quitte la file ; « enter » demande la place gardée.
+export function queueCard(cityName, q) {
+  const leave = { id: 'leave', label: 'Quitter la file' };
+  if (q.state === 'go') {
+    const min = Math.max(1, Math.round(q.ms / 60000));
+    return { title: 'Une place est à toi', tone: 'success', lines: [`Entre dans les ${min} minute${min > 1 ? 's' : ''}, sinon elle passe au joueur suivant.`],
+      buttons: [{ id: 'enter', label: 'Entrer', primary: true }, leave] };
+  }
+  const rank = q.rank === 1 && q.size === 1 ? 'Tu es le prochain.' : `Tu es ${q.rank === 1 ? '1er' : `${q.rank}e`} sur ${q.size}.`;
+  return { title: 'File d\'attente', lines: [rank, `Ce niveau est complet : tu entres à ${cityName} dès qu'une place se libère. Garde cette page ouverte.`], buttons: [leave] };
 }
 
 // ---------- Client des pâtés qui survit à un travailleur en panne ----------
@@ -373,7 +387,7 @@ export function homeCandidates(runtime, buildings, { window = [CITY.homeMin, CIT
 
 // Contexte d'une partie de ville. deps : { ville, store, client, template, graph, fn, member, unit, commune, proj, rand?,
 // now?, onEvent?, log?, season? } ; `proj` : { toLocal(lat, lon) -> { x, z }, toLatLon(x, z) -> { lat, lon } } du monde chargé.
-// `season` : { net } (net/season.js) pour la ville commune d'une saison : `ville` est alors la copie du serveur, les gestes
+// `season` : { net, hab } (net/season.js ; hab : le serveur connaît le geste « habitant trouvé ») pour la ville commune d'une saison : `ville` est alors la copie du serveur, les gestes
 // sont envoyés (saison-miroir.js), les tuiles sont placées par le serveur, les nuits, la fin de ville et le territoire de
 // l'appareil ne servent pas.
 export function createCityRuntime(deps) {
@@ -398,6 +412,7 @@ export function createCityRuntime(deps) {
   const lent = new Map();      // zombie -> clé du pâté (ou '@' + quartier) qui l'a prêté
   const state = {
     counter: null, nightDone: null, lastDirty: 0, dirtyPending: false, ended: false, acc: 0, unitAcc: 0, heartAt: -Infinity, heartVal: null, capAt: -Infinity, capVal: 0,
+    forceFind: false,   // essais (?debug=1) : un bâtiment qui cache quelqu'un le donne à coup sûr
   };
   let disposed = false;
 
@@ -729,6 +744,41 @@ export function createCityRuntime(deps) {
     if (director) director.removeWhere?.((z) => lent.has(z));
     lent.clear();
     ops.recallAll();
+  }
+
+  // ----- Habitants trouvés en fouillant -----
+
+  // Pâté d'un bâtiment (son identifiant est dans `ids` de la découpe qui le contient), parmi les découpes gardées près du joueur.
+  function pateOfBuilding(id) {
+    for (const res of cuts.values()) {
+      for (const p of res.pates) if (pos.has(p.key) && p.ids?.includes(id)) return p;
+    }
+    return null;
+  }
+
+  // Cachés d'un bâtiment : sa part du pâté (hiddenByBuilding), 0 si le pâté est inconnu ou n'en cache plus.
+  function hiddenIn(id) {
+    const pate = pateOfBuilding(id);
+    if (!pate) return 0;
+    return hiddenByBuilding(ville, pate).find(([bid]) => bid === id)?.[1] ?? 0;
+  }
+
+  // La fouille d'un bâtiment (ou d'une de ses `parts` pièces) trouve-t-elle un habitant ? Seulement s'il en cache encore ; la
+  // chance suit leur nombre (habitants.js). Un habitant trouvé est sauvé tout de suite, seul, sans libérer le pâté. Rend 1 ou 0.
+  // En saison, seulement si le serveur connaît le geste (S.hab).
+  function rescueIn(id, { parts = 1 } = {}) {
+    if (state.ended || (S && !S.hab)) return 0;
+    const pate = pateOfBuilding(id);
+    if (!pate) return 0;
+    const share = hiddenByBuilding(ville, pate).find(([bid]) => bid === id)?.[1] ?? 0;
+    if (share < 1) return 0;
+    if (!state.forceFind && rand() >= findChance(share, parts)) return 0;
+    const n = ops.rescue(pate.key);
+    if (n) {
+      markDirty(true);
+      onEvent({ type: 'rescued', key: pate.key, n });
+    }
+    return n;
   }
 
   // ----- Ce que le joueur peut faire (E) -----
@@ -1198,6 +1248,7 @@ export function createCityRuntime(deps) {
   // Après une coupure : la copie reprend l'état du serveur ; les tuiles déjà découpées sont relues dans l'état.
   function resyncFrom(fresh) {
     resyncVille(ville, fresh.ville);
+    if (S) S.hab = fresh.hab === 1;              // le serveur a pu changer de version pendant la coupure
     applyLent(ville, fresh.lent);
     state.srv = null;
     state.capAt = -Infinity;
@@ -1225,6 +1276,7 @@ export function createCityRuntime(deps) {
     setMembership(next) { fn = next.fn ?? fn; member = next.member ?? member; },
     ensureAround, place, blockAt, nearestBlock, reconcile, recall, tick, actions, openNestAt, plantFlagAt, endCounter, onDeath,
     settleEmpty, nightly, refugeCtx, objective, stats, blockLine, finish, networkBack, chooseHeart, frontier, markDirty, dispose,
+    rescueIn, hiddenIn,
     status: () => cityStatus(ville),
     heartUnit,
     counterSize,

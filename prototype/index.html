@@ -7,6 +7,26 @@
      autorisés par leur empreinte SHA-256 ; un changement d'un seul caractère de l'un d'eux demande de la recalculer. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/three@0.170.0/ https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/ 'sha256-gjRsd/fgGZ+ke0ZAjm4YhOLuzwFKv0y+coY0Ga2e5C4=' 'sha256-1iIOm2hactO0ZlM3/NLmPRCobpDHq/3PaANEg3OM64U='; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/; connect-src 'self' https://tiles.openfreemap.org https://api.open-meteo.com https://photon.komoot.io https://nominatim.openstreetmap.org https://geo.api.gouv.fr https://www.wikidata.org https://geocoding-api.open-meteo.com https://s3.amazonaws.com https://cdn.jsdelivr.net https://earthlife.needhelpapp.com wss://earthlife.needhelpapp.com http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*; img-src 'self' data: blob: https:; worker-src 'self' blob: https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/; font-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'">
 <title>EarthLife</title>
+<!-- Partage (src/partage.js) : aperçu du lien dans WhatsApp, SMS, Messenger, Discord…, et ajout à l'écran d'accueil. Adresses absolues,
+     lues par les robots de ces applis : l'image (assets/partage/) est dessinée par tools/make-partage.mjs. Pas de promesse de prix. -->
+<meta name="description" content="Survie zombie sur la vraie Terre : les vraies rues de ta ville, la vraie météo du moment, des hordes de zombies et d'autres survivants. Dans le navigateur, sur téléphone, tablette ou ordinateur.">
+<meta name="theme-color" content="#0a0d10">
+<link rel="canonical" href="https://macgama.github.io/EarthLife/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="EarthLife">
+<meta property="og:locale" content="fr_FR">
+<meta property="og:title" content="EarthLife · Survie zombie sur la vraie Terre">
+<meta property="og:description" content="Les vraies rues de ta ville, la vraie météo du moment, des hordes de zombies. Fuis, fouille, tiens ton refuge, seul ou avec d'autres survivants.">
+<meta property="og:url" content="https://macgama.github.io/EarthLife/">
+<meta property="og:image" content="https://macgama.github.io/EarthLife/assets/partage/apercu.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="EarthLife : un survivant à la lampe de poche, de nuit sous la pluie, face à des zombies, et le titre du jeu, Survie zombie sur la vraie Terre.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="manifest" href="assets/partage/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="assets/partage/icone-192.png">
+<link rel="apple-touch-icon" href="assets/partage/icone-180.png">
 <style>
 /* Polices auto-hébergées : paquets @fontsource (sous-ensemble latin, licence OFL dans assets/fonts). */
 @font-face { font-family: 'Chakra Petch'; font-style: normal; font-weight: 600; font-display: swap; src: url('assets/fonts/chakra-petch-latin-600-normal.woff2') format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
@@ -396,8 +416,9 @@ select, button { font: inherit; }
 #menu[data-tab="saison"] .pane-libre, #menu[data-tab="libre"] .pane-saison, #menu.no-salon .pane-saison { display: none !important; }
 /* À plusieurs : le compte (nécessaire pour rejoindre) avant les réglages en ligne, le bouton unique en dernier. */
 #menu[data-tab="saison"] #account-block { order: 2; }
-#menu[data-tab="saison"] #online-block { order: 3; }
+#menu[data-tab="saison"] #online-block, #menu[data-tab="saison"] #share-block, #menu[data-tab="saison"] #share-note, #menu[data-tab="saison"] #friends-block { order: 3; }
 #menu[data-tab="saison"] #salon-cta { order: 4; }
+.invite-note { padding-left: 10px; border-left: 2px solid var(--c-accent); color: var(--c-text); }
 .menu-tabs { display: flex; gap: 2px; margin: var(--sp-2) 0 0; border-bottom: 1px solid var(--c-line); }
 #menu.no-salon .menu-tabs { display: none; }
 .menu-tab { position: relative; flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--touch); padding: 0 var(--sp-2); border: 0; border-radius: 0; background: none; color: var(--c-text-2); font: var(--fw-bold) var(--fs-sm) / 1 var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
@@ -494,7 +515,7 @@ select, button { font: inherit; }
   #menu .salon-cta, #menu #play { box-shadow: 0 0 0 var(--sp-2) var(--c-panel-solid), 0 max(var(--sp-3), env(safe-area-inset-bottom)) 0 var(--sp-2) var(--c-panel-solid); }
   /* Aperçu : rien ne défile, la carte garde le reste de l'écran. */
   #menu[data-sheet="peek"] .sheet { gap: var(--sp-2); max-height: none; overflow: hidden; }
-  #menu[data-sheet="peek"] :is(.salon-time, .salon-stats, .salon-label, .front-bar, .front-nums, .front-foot, .front-badge, .front-tag, .sheet-label, .level-row, .level-rule, #city-line, #city-next, .options, .place-title, #stats-open, #online-block, #account-block:not(:has(#account-conflict:not([hidden])))) { display: none; }
+  #menu[data-sheet="peek"] :is(.salon-time, .salon-stats, .salon-label, .front-bar, .front-nums, .front-foot, .front-badge, .front-tag, .sheet-label, .level-row, .level-rule, #city-line, #city-next, .options, .place-title, #stats-open, #online-block, #share-block, #share-note, #friends-block, #account-block:not(:has(#account-conflict:not([hidden])))) { display: none; }
   /* À plusieurs : saison sur deux lignes, trois niveaux côte à côte (nom, part de zombies, ville). */
   #menu[data-sheet="peek"] .salon { gap: var(--sp-2); }
   #menu[data-sheet="peek"] .salon-banner { padding: var(--sp-2) var(--sp-3); }
@@ -756,6 +777,9 @@ body.touch .chip:disabled .chip-icon { opacity: var(--o-disabled); }
 .small:active { transform: scale(.96); }
 .small:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
 body.show-mods #mods-toggle { border-color: var(--c-accent); color: var(--c-accent); }
+/* Sons : le bouton du bas à droite (et du haut en tactile) ; sur téléphone en portrait, une ligne de la fiche du lieu à la place (plus bas). */
+.sound-row { display: none; }
+#sound-toggle[hidden], .sound-row[hidden] { display: none !important; }
 /* Refuge : rouvre le panneau quand on est dedans et qu'il a été fermé. */
 #refuge-open .small-icon { color: var(--c-refuge); }
 /* Onglet en lecture seule (partie ouverte ailleurs) : rappel permanent, il rouvre la carte « Reprendre ici ». */
@@ -930,6 +954,10 @@ body.driving #attack, body.driving #run, body.driving #use-shoot { display: none
   #hud { --btn-item: 44px; --btn-run: 56px; --btn-attack: 76px; --mm-col: 0px; --card-w: calc(100vw - var(--hud-l) - var(--hud-r)); grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(var(--touch), auto) auto auto 1fr; gap: 0 var(--sp-2); }
   #leftcol { display: flex; flex-flow: row wrap; align-content: flex-start; align-items: flex-start; gap: 6px; grid-column: 1; grid-row: 3; position: relative; z-index: 2; margin-top: 6px; }
   #topbuttons { position: static; grid-column: 2; grid-row: 1; justify-self: end; }
+  /* Sons : pas de second bouton dans la barre du haut (retour de Gaël : trop de boutons), une ligne dans la fiche du lieu. */
+  #sound-toggle { display: none; }
+  .sound-row { display: flex; align-items: center; gap: var(--sp-2); width: 100%; min-height: var(--touch); margin-top: 6px; padding: 0 10px; border: 1px solid var(--c-line); border-radius: var(--r-sm); background: var(--c-panel); color: var(--c-text-2); font: var(--fw-semibold) var(--fs-sm) / 1 var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
+  .sound-row[aria-pressed="false"] { color: var(--c-text-3); }
   /* La barre des jauges court jusqu'au menu : sa marge de droite laisse la place des boutons (un seul d'ordinaire ; Refuge
      et Non sauvegardé s'y ajoutent à l'occasion). */
   #vitals { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-content: center; gap: 0 var(--sp-3); box-sizing: border-box; min-height: var(--touch); margin: 0 calc(var(--touch) + var(--sp-2)) 0 0; padding: 6px var(--sp-3); }
@@ -1195,6 +1223,8 @@ body.driving #attack, body.driving #run, body.driving #use-shoot { display: none
 #menu .online-actions .secondary { flex: 1 1 200px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--touch); padding: 0 var(--sp-3); font-family: var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
 #menu .online-actions .secondary:disabled { opacity: var(--o-disabled); cursor: not-allowed; }
 #menu .online-actions .icon { width: var(--icon-md); height: var(--icon-md); }
+/* Partager et Inviter côte à côte, même sur téléphone (deux fois 150 px au moins). */
+#menu .share-actions .secondary { flex: 1 1 150px; padding: 0 var(--sp-2); white-space: nowrap; }
 #zones-open .icon, #online-block .online-ico .icon { color: var(--c-others); }
 #online-mute[aria-pressed="true"] { border-color: var(--c-warn); color: var(--c-warn); }
 #menu #online-erase { border-color: color-mix(in srgb, var(--c-danger) 55%, transparent); color: var(--c-danger); }
@@ -1420,6 +1450,8 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
       <div class="quick pane-libre" id="quick" role="group" aria-label="Raccourcis">
         <button type="button" class="pick-chip locate" id="locate"><span class="btn-icon" data-icon="position"></span>Autour de moi</button>
       </div>
+      <!-- Arrivée par un lien « Inviter ici » (?ami=1) : dit ce que fait « Jouer ici » ; caché dès qu'une partie a été lancée. -->
+      <p class="picker-note invite-note pane-libre" id="invite-note" role="status" hidden>Un ami t'invite à jouer au même endroit que lui&nbsp;: touche «&nbsp;Jouer ici&nbsp;» pour le rejoindre.</p>
       <div class="place-card pane-libre">
         <span class="place-ico" data-icon="cible"></span>
         <div class="place-body">
@@ -1471,7 +1503,6 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
           <summary class="label">Réglages en ligne</summary>
           <div class="online-actions">
             <button type="button" class="secondary" id="online-rename"><span class="btn-icon" data-icon="aide"></span><span>Un autre nom (3 par jour)</span></button>
-            <button type="button" class="secondary" id="online-invite" hidden><span class="btn-icon" data-icon="position"></span><span>Inviter quelqu'un ici</span></button>
             <button type="button" class="secondary" id="zones-open" hidden><span class="btn-icon" data-icon="bouclier"></span><span id="zones-label">Mes zones privées (0)</span></button>
             <button type="button" class="secondary" id="online-mute" aria-pressed="false"><span class="btn-icon" data-icon="geste-salut"></span><span id="online-mute-label">Couper les gestes</span></button>
             <button type="button" class="secondary" id="online-data"><span class="btn-icon" data-icon="cible"></span><span>Voir mes données</span></button>
@@ -1509,6 +1540,16 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
           </div>
         </details>
         <p class="picker-note" id="account-note" role="status" aria-live="polite" hidden></p>
+      </div>
+      <!-- Partager le jeu et inviter un ami (src/partage.js) : sur la feuille du menu, replié avec le détail sur téléphone ; rien sur l'écran de jeu. -->
+      <div class="online-actions share-actions" id="share-block">
+        <button type="button" class="secondary" id="share-game"><span class="btn-icon" data-icon="partager"></span><span>Partager le jeu</span></button>
+        <button type="button" class="secondary" id="share-invite" hidden><span class="btn-icon" data-icon="position"></span><span>Inviter ici</span></button>
+      </div>
+      <p class="picker-note" id="share-note" role="status" aria-live="polite" hidden></p>
+      <!-- « Mes amis » (src/amis.js) : amitié par code ou lien, cartes ouvertes depuis le menu ; rien sur l'écran de jeu. Caché sans comptes. -->
+      <div class="online-actions share-actions" id="friends-block" hidden>
+        <button type="button" class="secondary" id="friends-open"><span class="btn-icon" data-icon="amis"></span><span>Mes amis</span></button>
       </div>
       <!-- « Mes statistiques » (src/stats.js) : les compteurs de la partie que « Jouer » reprend ; replié avec le détail sur téléphone. -->
       <button type="button" class="secondary" id="stats-open"><span class="btn-icon" data-icon="stats"></span><span>Mes statistiques</span></button>
@@ -1750,6 +1791,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <div class="cond-more">
       <div class="data" id="data-line"></div>
       <ul id="mods"></ul>
+      <button class="sound-row" id="sound-row" aria-pressed="true"><span class="small-icon" data-icon="son"></span><span class="sound-row-text">Sons activés</span></button>
     </div>
   </div>
   <div id="quest" class="pill">
@@ -1790,6 +1832,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
   <div id="topbuttons">
     <button class="small hidden" id="save-warn" aria-label="Cet onglet ne sauvegarde plus : reprendre ici"><span class="small-icon" data-icon="alerte"></span><span class="small-text">Non sauvegardé</span></button>
     <button class="small hidden" id="refuge-open" aria-label="Ouvrir le panneau du refuge"><span class="small-icon" data-icon="refuge"></span><span class="small-text">Refuge</span></button>
+    <button class="small" id="sound-toggle" aria-label="Couper les sons" aria-pressed="true"><span class="small-icon" data-icon="son"></span><span class="small-text">Sons</span></button>
     <button class="small" id="mods-toggle" aria-label="Effets et sources des données" aria-expanded="false"><span class="small-icon" data-icon="effets"></span><span class="small-text">Effets</span></button>
     <button class="small" id="quit" aria-label="Menu"><span class="small-icon" data-icon="menu"></span><span class="small-text">Menu</span></button>
   </div>
