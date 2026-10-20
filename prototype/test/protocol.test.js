@@ -45,7 +45,7 @@ function seeded(seed) {
 
 test('constantes de la spécification 7.2', () => {
   assert.equal(PROTOCOL, 1);
-  assert.equal(CLIENT_LEVEL, 2);
+  assert.equal(CLIENT_LEVEL, 3);
   assert.deepEqual(FLAGS, { run: 1, inside: 2, carrying: 4, down: 8, crown: 16 });
   assert.equal(CELL_DEG, 0.0036);
   const expected = { maxPayload: 2048, hz: 4, beatMs: 5000, tickMs: 250, nearM: 150, farM: 400, nameM: 30,
@@ -456,4 +456,19 @@ test('saison : messages `sv` du serveur (prêts partagés, refus) et leurs refus
     assert.equal(ok(bad).ok, false, JSON.stringify(bad));
   }
   assert.deepEqual(ok({ o: 'deny', d: [[k, 3]] }).msg.d, [[k, 3]]);
+});
+
+test('saison : file d\'attente (`q`, `cancel`, `wait`, `go`, `no` « attente »), un vieux serveur ou client reste compris', () => {
+  const ok = (o) => parseServer(JSON.stringify({ t: 'sv', ...o }));
+  assert.deepEqual(ok({ o: 'wait', rank: 7, size: 23 }).msg, { t: 'sv', o: 'wait', rank: 7, size: 23 });
+  assert.deepEqual(ok({ o: 'go', ms: 120000 }).msg, { t: 'sv', o: 'go', ms: 120000 });
+  assert.equal(ok({ o: 'no', why: 'attente' }).msg.why, 'attente');
+  for (const bad of [{ o: 'wait', rank: 0, size: 3 }, { o: 'wait', rank: 1 }, { o: 'wait', rank: '1', size: 3 }, { o: 'go' }, { o: 'go', ms: -1 }, { o: 'no', why: 'file' }]) {
+    assert.equal(ok(bad).ok, false, JSON.stringify(bad));
+  }
+  // Client : `q` seulement s'il vaut vrai (un message sans `q` reste tel qu'avant la file), `cancel` sans autre champ.
+  assert.deepEqual(validateClient({ t: 'sv', o: 'in', c: 'c01283' }), { ok: true, msg: { t: 'sv', o: 'in', c: 'c01283' } });
+  assert.deepEqual(validateClient({ t: 'sv', o: 'in', c: 'c01283', q: true }).msg, { t: 'sv', o: 'in', c: 'c01283', q: true });
+  assert.deepEqual(validateClient({ t: 'sv', o: 'in', c: 'c01283', q: 1 }).msg, { t: 'sv', o: 'in', c: 'c01283' });
+  assert.deepEqual(validateClient({ t: 'sv', o: 'cancel' }), { ok: true, msg: { t: 'sv', o: 'cancel' } });
 });

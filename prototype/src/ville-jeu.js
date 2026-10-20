@@ -84,6 +84,19 @@ export function levelCard(prep) {
   return { title: `${unit.name} : ${pop}`, lines, rows };
 }
 
+// Carte de la file d'attente d'un niveau plein : q = { state: 'wait', rank, size } (ton rang, mis à jour) ou { state: 'go', ms } (une place
+// est gardée pour toi). Le bouton « leave » quitte la file ; « enter » demande la place gardée.
+export function queueCard(cityName, q) {
+  const leave = { id: 'leave', label: 'Quitter la file' };
+  if (q.state === 'go') {
+    const min = Math.max(1, Math.round(q.ms / 60000));
+    return { title: 'Une place est à toi', tone: 'success', lines: [`Entre dans les ${min} minute${min > 1 ? 's' : ''}, sinon elle passe au joueur suivant.`],
+      buttons: [{ id: 'enter', label: 'Entrer', primary: true }, leave] };
+  }
+  const rank = q.rank === 1 && q.size === 1 ? 'Tu es le prochain.' : `Tu es ${q.rank === 1 ? '1er' : `${q.rank}e`} sur ${q.size}.`;
+  return { title: 'File d\'attente', lines: [rank, `Ce niveau est complet : tu entres à ${cityName} dès qu'une place se libère. Garde cette page ouverte.`], buttons: [leave] };
+}
+
 // ---------- Client des pâtés qui survit à un travailleur en panne ----------
 
 // Un faux travailleur « en ligne » : les mêmes messages, traités sur le fil du jeu (comme world.js quand son travailleur
