@@ -8,11 +8,11 @@ import { icon } from './icons.js';
 export const ART = {
   items: new Set([
     'conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette', 'bois', 'clous', 'ferraille', 'tissu', 'ruban', 'planche', 'plaque',
-    'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee', 'pistolet', 'fusil', 'balles', 'cartouches',
+    'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_ecolier', 'sac_randonnee', 'sac_renforce', 'pistolet', 'fusil', 'balles', 'cartouches',
     'cueillette', 'poisson', 'canne', 'puits',
   ]),
   // Objets dont l'image n'est pas encore livrée (accord de Gaël pour les crédits Artlist) : ils gardent l'icône au trait.
-  pending: new Set(['bidon', 'batterie', 'sac_ecolier', 'sac_renforce', 'champignon_cuit', 'legume_cuit', 'poisson_cuit', 'eau_riviere', 'eau_bouillie']),
+  pending: new Set(['bidon', 'batterie', 'champignon_cuit', 'legume_cuit', 'poisson_cuit', 'eau_riviere', 'eau_bouillie']),
   scenes: new Set(['horde', 'metro', 'tram', 'train', 'refuge', 'coop', 'victoire', 'terre', 'mort', 'facile', 'moyen', 'difficile']),
 };
 
