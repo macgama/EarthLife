@@ -788,6 +788,15 @@ export function createRoom({
     return store.addBlock(s.playerId, o.playerId, today());
   }
 
+  // Masquage venu d'ailleurs que du jeu (un ami bloqué, friends.js) : les mêmes effets que « Masquer », durables et réciproques,
+  // sans survivant à toucher ; les identités qui jouent en ce moment cessent de se voir tout de suite.
+  async function blockPlayers(x, y) {
+    if (x === y) return;
+    byPlayer.get(x)?.blocked.add(y);
+    byPlayer.get(y)?.blocked.add(x);
+    await store.addBlock(x, y, today());
+  }
+
   async function onHide(s, msg) {
     const o = bySid.get(msg.sid);
     if (!o || o === s || !account(s.playerId).hideDay.take()) return;
@@ -1034,6 +1043,7 @@ export function createRoom({
     message,
     close,
     forgetPlayer,
+    blockPlayers,
 
     // Sessions de compte retirées (déconnexion, mot de passe changé, reprise par code, onzième appareil, compte
     // supprimé) : chaque session ouverte avec l'une de ces empreintes reçoit err session et est fermée (1008). Le repli

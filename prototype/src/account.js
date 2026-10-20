@@ -7,6 +7,7 @@ import { PROTOCOL, TOKEN_RE, utf8Length } from './net/protocol.js';
 import {
   ACCOUNT_RULES, CODE_RE, normEmail, passwordProblem, stampOf, sameStamp, readAccountReply, readSaveReply,
 } from './net/account.js';
+import { readFriendsReply } from './net/amis.js';
 
 export const CLOUD = { everyMs: 120000, soonMs: 5000, retryMs: [30000, 60000, 120000, 300000, 600000], keepaliveMax: 60000,
   requestTimeoutMs: 15000, pendingCodeMs: 900000 };
@@ -103,7 +104,7 @@ export const NULL_ACCOUNT = Object.freeze({
   state: 'off', email: null, cloud: null, syncedAt: null, synced: false, unreachable: false, session: null, view: null,
   code: null,
   start: noop, requestCode: closed, cancelCode: noop, verify: closed, login: closed, me: closed, changePassword: closed,
-  logout: () => Promise.resolve({ ok: true }), logoutAll: closed, deleteAccount: closed, exportData: closed,
+  logout: () => Promise.resolve({ ok: true }), logoutAll: closed, deleteAccount: closed, exportData: closed, friends: closed,
   conflictSides: () => null, resolve: closed, onSaveWrite: noop, hidden: noop, pagehide: noop,
   syncNow: () => Promise.resolve(null), atMenu: noop, sessionRefused: noop, networkBack: noop, onStorage: noop,
   on: () => noop, debug: () => null,
@@ -783,6 +784,20 @@ export function createAccount({
         changed();
       }
       return { ok: true };
+    },
+
+    // Amis (src/amis.js) : 'list', 'code', 'join' ({ code }), 'remove' ou 'block' ({ fid }), avec la session du compte. Réponse lue
+    // champ par champ (net/amis.js) ; un refus rend { ok: false, code, retryMs? } (ami-code, ami-plein, trop, session…).
+    async friends(op, { code: friendCode = null, fid = null } = {}) {
+      if (!st) return { ok: false, code: 'session' };
+      if (!['list', 'code', 'join', 'remove', 'block'].includes(op)) return { ok: false, code: 'requete' };
+      const ses = st.ses;
+      const body = { v: PROTOCOL, ses };
+      if (typeof friendCode === 'string') body.code = friendCode;
+      if (typeof fid === 'string') body.fid = fid;
+      const r = await call(`friends/${op}`, JSON.stringify(body), { reader: readFriendsReply });
+      if (!r.ok) { refused(r, ses); return err(r); }
+      return r;
     },
 
     // « Exporter mes données » : le fichier complet (section 1.7).

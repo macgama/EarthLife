@@ -24,7 +24,7 @@ const th = (n) => (n + 1000).toString(16).padStart(64, 'a');
 const ipHash = (n) => n.toString(16).padStart(64, 'c');
 const day = (ms) => dayOf(ms);
 const TEST_DB = process.env.EARTHLIFE_TEST_DB || '';
-const TABLES = ['el_season_players', 'el_season_docs', 'el_seasons', 'el_codes', 'el_saves', 'el_sessions', 'el_accounts', 'el_reports', 'el_blocks', 'el_refuges', 'el_ip_bans', 'el_marks',
+const TABLES = ['el_friends', 'el_friend_codes', 'el_season_players', 'el_season_docs', 'el_seasons', 'el_codes', 'el_saves', 'el_sessions', 'el_accounts', 'el_reports', 'el_blocks', 'el_refuges', 'el_ip_bans', 'el_marks',
   'el_players', 'el_meta'];
 const eh = (n) => n.toString(16).padStart(64, 'e');            // empreinte d'adresse
 const sh = (n) => n.toString(16).padStart(64, '5');            // empreinte de session
@@ -248,7 +248,7 @@ for (const B of BACKENDS) {
       await s.banIp(ipHash(1), now);
       await s.banIp(ipHash(2), now + 1);
       const out = await s.purge(now);
-      assert.deepEqual(out, { marks: 2, refuges: 1, players: 1, reports: 1, bans: 1, sessions: 0, codes: 0 });
+      assert.deepEqual(out, { marks: 2, refuges: 1, players: 1, reports: 1, bans: 1, sessions: 0, codes: 0, friendCodes: 0 });
       assert.deepEqual((await s.activeMarks(0)).map((x) => x.target), ['c3_3']);
       assert.deepEqual((await s.refuges()).map((x) => x.owner), [id(3)]);
       assert.equal(await s.exportPlayer(id(1)), null);
@@ -257,7 +257,7 @@ for (const B of BACKENDS) {
       assert.deepEqual(await s.reportStats(id(2), 0, now + DAY), { distinctOldEnough: 1 });
       assert.deepEqual(await s.reportStats(id(3), 0, now + DAY), { distinctOldEnough: 0 });
       assert.deepEqual([...(await s.ipBans()).keys()], [ipHash(2)]);
-      assert.deepEqual(await s.purge(now), { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0 });
+      assert.deepEqual(await s.purge(now), { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0 });
     });
 
     test('la salle sur ce magasin : identité, refuge écrit puis relu au redémarrage', async () => {
@@ -578,6 +578,77 @@ for (const B of BACKENDS) {
       assert.deepEqual(await s.seasonCounts(1), { moyen: 1 });
     });
 
+    test('amis : un code par compte, amitié par code (une transaction), 30 au plus, masquage, retrait, effacement en cascade', async () => {
+      const s = await make();
+      await players(s, 3);
+      for (const n of [71, 72, 73, 74]) await s.createAccount({ id: id(n), emailHash: eh(n), emailBox: box(n), pwHash: 'x', today: day(T0) });
+      await s.linkPlayer({ accountId: id(71), playerId: id(1), newTokenHash: th(81) });
+      await s.linkPlayer({ accountId: id(72), playerId: id(2), newTokenHash: th(82) });
+      await s.linkPlayer({ accountId: id(74), playerId: id(3), newTokenHash: th(83) });
+      const put = (n, hash, ms = T0) => s.putFriendCode({ accountId: id(n), codeHash: hash, nowMs: ms, expiresMs: ms + DAY });
+      const join = (n, hash, extra = {}) => s.joinFriend({ codeHash: hash, accountId: id(n), fid: id(500 + n), nowMs: T0, max: 30, today: day(T0), ...extra });
+      assert.equal(await s.friendCodeOf(id(71), T0), null);
+      assert.equal(await put(71, eh(1)), true);
+      assert.equal(await put(99, eh(2)), false, 'compte inconnu');
+      await assert.rejects(put(72, eh(1)), { code: 'DUP' }, 'empreinte déjà prise par un autre compte');
+      assert.equal(await s.friendCodeOf(id(72), T0), null, 'rien de changé après le refus');
+      assert.deepEqual(await s.friendCodeOf(id(71), T0), { expiresMs: T0 + DAY });
+      assert.equal(await s.friendCodeOf(id(71), T0 + DAY), null, 'échu');
+      // Un nouveau code remplace l'ancien.
+      assert.equal(await put(71, eh(3)), true);
+      assert.deepEqual(await join(72, eh(1)), { ok: false, why: 'none' }, 'ancien code');
+      assert.deepEqual(await join(71, eh(3)), { ok: false, why: 'self' });
+      assert.deepEqual(await join(72, eh(9)), { ok: false, why: 'none' });
+      assert.deepEqual(await join(72, eh(3), { nowMs: T0 + DAY }), { ok: false, why: 'none' }, 'code échu');
+      assert.deepEqual(await join(99, eh(3)), { ok: false, why: 'gone' }, 'compte de celui qui accepte effacé');
+      // Amitié : le code ne sert qu'une fois.
+      assert.deepEqual(await join(72, eh(3)), { ok: true, fid: id(572), other: id(71) });
+      assert.equal(await s.friendCodeOf(id(71), T0), null);
+      assert.deepEqual(await join(73, eh(3)), { ok: false, why: 'none' });
+      assert.deepEqual(await s.friendsOf(id(71)), [{ fid: id(572), nm: [2, 14, 27], since: day(T0) }]);
+      assert.deepEqual(await s.friendsOf(id(72)), [{ fid: id(572), nm: [1, 7, 27], since: day(T0) }]);
+      assert.deepEqual(await s.friendsOf(id(73)), []);
+      // Déjà amis : même amitié rendue, code consommé ; un ami sans identité n'a pas de surnom.
+      await put(71, eh(4));
+      assert.deepEqual(await join(72, eh(4)), { ok: true, fid: id(572), other: id(71) });
+      assert.equal((await s.friendsOf(id(71))).length, 1);
+      assert.equal(await s.friendCodeOf(id(71), T0), null);
+      await put(71, eh(5));
+      assert.deepEqual(await join(73, eh(5)), { ok: true, fid: id(573), other: id(71) });
+      assert.deepEqual((await s.friendsOf(id(71))).map((f) => [f.fid, f.nm]), [[id(572), [2, 14, 27]], [id(573), null]]);
+      assert.deepEqual(await s.friendsOf(id(73)), [{ fid: id(573), nm: [1, 7, 27], since: day(T0) }]);
+      // Identités masquées l'une pour l'autre : pas d'amitié, le code reste valable.
+      await s.addBlock(id(1), id(3), day(T0));
+      await put(71, eh(6));
+      assert.deepEqual(await join(74, eh(6)), { ok: false, why: 'blocked' });
+      assert.deepEqual(await s.friendCodeOf(id(71), T0), { expiresMs: T0 + DAY });
+      // Plafond : le sien (mine) ou celui de l'autre (theirs), compté sous verrou.
+      assert.deepEqual(await join(74, eh(6), { max: 3 }), { ok: false, why: 'blocked' }, 'le masquage passe avant le plafond');
+      await put(72, eh(7));
+      assert.deepEqual(await join(73, eh(7), { max: 1 }), { ok: false, why: 'mine' }, '73 a déjà un ami');
+      assert.deepEqual(await s.friendsOf(id(73)), [{ fid: id(573), nm: [1, 7, 27], since: day(T0) }]);
+      assert.deepEqual(await join(74, eh(7), { max: 1 }), { ok: false, why: 'theirs' }, '72 a déjà un ami');
+      assert.deepEqual(await s.friendsOf(id(74)), []);
+      // Retrait : seulement par l'un des deux, avec les identités des deux comptes (pour un blocage) ; rien la seconde fois.
+      assert.deepEqual(await s.removeFriend({ accountId: id(74), fid: id(572) }), { ok: false }, 'pas son amitié');
+      assert.deepEqual(await s.removeFriend({ accountId: id(72), fid: id(9) }), { ok: false }, 'amitié inconnue');
+      assert.deepEqual(await s.removeFriend({ accountId: id(72), fid: id(572) }), { ok: true, mine: id(2), theirs: id(1) });
+      assert.deepEqual(await s.removeFriend({ accountId: id(72), fid: id(572) }), { ok: false });
+      assert.deepEqual(await s.friendsOf(id(72)), []);
+      assert.deepEqual(await s.removeFriend({ accountId: id(71), fid: id(573) }), { ok: true, mine: id(1), theirs: null }, 'ami sans identité');
+      // Compte effacé : ses amitiés et son code partent avec lui ; code échu purgé.
+      await put(73, eh(12));
+      assert.deepEqual(await join(72, eh(12)), { ok: true, fid: id(572), other: id(73) });
+      await put(73, eh(13));
+      await s.eraseAccount(id(73));
+      assert.deepEqual(await s.friendsOf(id(72)), []);
+      assert.equal(await s.friendCodeOf(id(73), T0), null);
+      assert.deepEqual(await join(74, eh(13)), { ok: false, why: 'none' });
+      await put(72, eh(14));
+      assert.ok((await s.purge(T0 + 2 * DAY)).friendCodes >= 1);
+      assert.deepEqual(await join(74, eh(14), { nowMs: T0 }), { ok: false, why: 'none' }, 'ligne retirée par la purge');
+    });
+
     test('fin de la suite', async () => {
       if (store) await store.close();
       store = null;
@@ -588,7 +659,7 @@ for (const B of BACKENDS) {
 // ---------- Hors suite (sans MariaDB) ----------
 
 test('schéma 002 : appliqué après 001, quatre tables utf8mb4 puis la version 2', () => {
-  assert.deepEqual(SCHEMA_FILES.map((f) => f.split(/[\\/]/).pop()), ['001-init.sql', '002-comptes.sql', '003-saisons.sql']);
+  assert.deepEqual(SCHEMA_FILES.map((f) => f.split(/[\\/]/).pop()), ['001-init.sql', '002-comptes.sql', '003-saisons.sql', '004-amis.sql']);
   const st = splitSql(fs.readFileSync(SCHEMA_FILES[1], 'utf8'));
   assert.equal(st.length, 5);
   assert.deepEqual(st.slice(0, 4).map((s) => /^CREATE TABLE IF NOT EXISTS (el_\w+)/.exec(s)?.[1]), ['el_accounts', 'el_sessions', 'el_saves', 'el_codes']);
@@ -608,7 +679,19 @@ test('schéma 003 : saisons, inscrits (effacés avec le compte) et ville commune
   assert.match(st[1], /FOREIGN KEY \(account_id\) REFERENCES el_accounts\(id\) ON DELETE CASCADE/);
 });
 
-test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001 à 003 (tables, schéma 3, données gardées)',
+test('schéma 004 : code d\'ami et amitiés (effacés avec le compte), puis la version 4', () => {
+  const st = splitSql(fs.readFileSync(SCHEMA_FILES[3], 'utf8'));
+  assert.equal(st.length, 3);
+  assert.deepEqual(st.slice(0, 2).map((s) => /^CREATE TABLE IF NOT EXISTS (el_\w+)/.exec(s)?.[1]), ['el_friend_codes', 'el_friends']);
+  for (const s of st) assert.ok(!s.includes('--') && !s.includes('«'), s.slice(0, 60));
+  for (const s of st.slice(0, 2)) assert.match(s, /ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$/);
+  assert.equal(st[2], "UPDATE el_meta SET v = '4' WHERE k = 'schema' AND CAST(v AS UNSIGNED) < 4");
+  assert.match(st[0], /FOREIGN KEY \(account_id\) REFERENCES el_accounts\(id\) ON DELETE CASCADE/);
+  assert.match(st[1], /UNIQUE KEY pair \(a, b\)/);
+  assert.equal((st[1].match(/ON DELETE CASCADE/g) ?? []).length, 2, 'les deux comptes de la paire');
+});
+
+test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001 à 004 (tables, schéma 4, données gardées)',
   { skip: TEST_DB ? false : 'EARTHLIFE_TEST_DB absente' }, async () => {
     await dropAll();
     const db = dbFromUrl(TEST_DB);
@@ -628,7 +711,7 @@ test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001
         assert.ok(await s.playerByTokenHash(th(1)), 'identité gardée');
         await s.close();
       }
-      assert.equal(await meta(), '3');
+      assert.equal(await meta(), '4');
       assert.deepEqual(await tables(), [...TABLES].sort());
     } finally {
       await admin.end();
@@ -732,6 +815,11 @@ test('magasin MariaDB (faux pilote) : valeurs toujours liées, autant de ? que d
   assert.equal(await s.takeCode({ emailHash: eh(1), nowMs: T0, maxAttempts: 5, check: () => false }), 'bad');
   assert.equal(await s.takeCode({ emailHash: eh(1), nowMs: T0, maxAttempts: 1, check: () => false }), 'bad');
   assert.equal(await s.takeCode({ emailHash: eh(1), nowMs: T0, maxAttempts: 5, check: () => true }), 'ok');
+  await s.putFriendCode({ accountId: id(1), codeHash: sh(3), nowMs: T0, expiresMs: T0 + DAY });
+  await s.friendCodeOf(id(1), T0);
+  await s.joinFriend({ codeHash: sh(3), accountId: id(2), fid: id(7), nowMs: T0, max: 30, today: '2026-10-02' });
+  await s.friendsOf(id(1));
+  await s.removeFriend({ accountId: id(1), fid: id(7) });
   await s.saveMeta(id(1));
   await s.getSave(id(1));
   assert.deepEqual(await s.putSave({ accountId: id(1), base: 1, blob: Buffer.from([1]), bytes: 1, stamp: ['w1', 0, 0], nowMs: T0 }), { ok: true, rev: 2 });
@@ -883,7 +971,7 @@ test('purge longue : lot par lot (chaque DELETE a son délai), compte juste, jam
   };
   // 60 lots de 5 000 à 20 ms : 1,2 s en tout, bien au-delà du délai d'un lot (200 ms).
   const full = await run({ lots: 60, latencyMs: 20 });
-  assert.deepEqual(full.r, { marks: 300000, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0 });
+  assert.deepEqual(full.r, { marks: 300000, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0 });
   assert.equal(full.d.calls.filter((c) => c.sql.startsWith('DELETE FROM el_marks')).length, 61);
   assert.deepEqual(full.logs, [{ e: 'base', etat: 'connectee' }]);
   // Budget de la purge dépassé : ce qui est fait est compté, le reste attend la purge suivante.

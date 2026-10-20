@@ -47,6 +47,22 @@
 //                                                               chaque liste limitée à `limit`, les plus anciens d'abord
 //   markWarned(id, today)
 //   countAccounts() → { accounts, sessions, saves }
+// Amis (cahier « Amis », étape 1) :
+//   putFriendCode({ accountId, codeHash, nowMs, expiresMs }) → boolean
+//                                                               remplace le code du compte (un seul à la fois) ; faux si
+//                                                               le compte manque, erreur code 'DUP' si l'empreinte est déjà
+//                                                               celle d'un autre compte
+//   friendCodeOf(accountId, nowMs) → { expiresMs } | null       code en attente, échéance seulement
+//   joinFriend({ codeHash, accountId, fid, nowMs, max, today }) → { ok: true, fid, other } | { ok: false, why }
+//                                                               une transaction : le code, rendu inutilisable, devient
+//                                                               l'amitié `fid` entre son compte et `accountId` ; déjà amis :
+//                                                               ok avec l'amitié existante ; why : 'none' (code inconnu ou
+//                                                               échu), 'self', 'blocked' (masquage entre leurs identités),
+//                                                               'mine' ou 'theirs' (30 amis déjà), 'gone' (compte effacé)
+//   friendsOf(accountId) → [{ fid, nm: [a, p, n] | null, since }]    les plus anciens d'abord
+//   removeFriend({ accountId, fid }) → { ok: true, mine, theirs } | { ok: false }
+//                                                               supprime l'amitié ; mine et theirs : identités des deux
+//                                                               comptes (ou null), pour un blocage
 // Sessions :
 //   createSession({ tokenHash, accountId, nowMs, expiresMs, today, max, pwHash = null }) → { dropped: [hash], stale? }
 //                                                               sessions échues du compte retirées ; au-delà de max,
@@ -115,6 +131,9 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
   const sessions = new Map();     // empreinte du jeton → { tokenHash, accountId, createdMs, seenOn, expiresMs, seq }
   const codes = new Map();        // empreinte de l'adresse → { codeHash, expiresMs, attempts, hourMs, hourN, day, dayN }
   const saves = new Map();        // id du compte → { rev, savedMs, bytes, stamp, blob }
+  // Amis.
+  const friendCodes = new Map();  // id du compte → { codeHash, madeMs, expiresMs }
+  const friendships = new Map();  // fid → { fid, a, b, sinceDay } (a < b, ids de comptes)
   // Saisons.
   const seasons = new Map();      // id → { id, name, startMs, endMs }
   const seasonPlayers = new Map(); // 'compte:saison' → joueur de saison
@@ -161,6 +180,12 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
     const a = accounts.get(id);
     if (a) { a.seenOn = today; a.warnedOn = null; }
   }
+  const pairOf = (x, y) => (x < y ? [x, y] : [y, x]);
+  const friendCount = (accountId) => {
+    let n = 0;
+    for (const f of friendships.values()) if (f.a === accountId || f.b === accountId) n++;
+    return n;
+  };
   function sessionsOfAccount(accountId) {
     const out = [];
     for (const x of sessions.values()) if (x.accountId === accountId) out.push(x);
@@ -317,7 +342,7 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
     // est passé de plus d'un jour. Une identité rattachée à un compte n'est jamais effacée par la règle des 180 jours.
     async purge(nowMs) {
       guard();
-      const out = { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0 };
+      const out = { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0 };
       for (const [k, m] of marks) if (m.untilMs <= nowMs) { removeMark(k); out.marks++; }
       const playerCut = dayOf(nowMs - playerDays * DAY), refugeCut = dayOf(nowMs - refugeDays * DAY);
       for (const [id, p] of players) if (p.seenOn < playerCut && !accountOf.has(id) && erasePlayer(id)) out.players++;
@@ -327,6 +352,7 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       for (const [h, x] of sessions) if (x.expiresMs <= nowMs) { sessions.delete(h); out.sessions++; }
       const codeCut = dayOf(nowMs - DAY);
       for (const [h, c] of codes) if (c.expiresMs <= nowMs && c.day < codeCut) { codes.delete(h); out.codes++; }
+      for (const [id, c] of friendCodes) if (c.expiresMs <= nowMs) { friendCodes.delete(id); out.friendCodes++; }
       return out;
     },
 
@@ -382,6 +408,8 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       if (playerId) erasePlayer(playerId);
       for (const [h, x] of sessions) if (x.accountId === id) sessions.delete(h);
       saves.delete(id);
+      friendCodes.delete(id);
+      for (const [fid, f] of friendships) if (f.a === id || f.b === id) friendships.delete(fid);
       for (const k of [...seasonPlayers.keys()]) if (k.startsWith(`${id}:`)) seasonPlayers.delete(k);
       byEmail.delete(a.emailHash);
       accounts.delete(id);
@@ -404,6 +432,61 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
     async countAccounts() {
       guard();
       return { accounts: accounts.size, sessions: sessions.size, saves: saves.size };
+    },
+
+    // ---------- Amis ----------
+
+    async putFriendCode({ accountId, codeHash, nowMs, expiresMs }) {
+      guard();
+      if (!accounts.has(accountId)) return false;
+      for (const [id, c] of friendCodes) if (c.codeHash === codeHash && id !== accountId) throw dup('code d\'ami');
+      friendCodes.set(accountId, { codeHash, madeMs: nowMs, expiresMs });
+      return true;
+    },
+    async friendCodeOf(accountId, nowMs) {
+      guard();
+      const c = friendCodes.get(accountId);
+      return c && c.expiresMs > nowMs ? { expiresMs: c.expiresMs } : null;
+    },
+    async joinFriend({ codeHash, accountId, fid, nowMs, max, today }) {
+      guard();
+      let owner = null;
+      for (const [id, c] of friendCodes) if (c.codeHash === codeHash) owner = c.expiresMs > nowMs ? id : null;
+      if (owner === null) return { ok: false, why: 'none' };
+      if (owner === accountId) return { ok: false, why: 'self' };
+      const me = accounts.get(accountId), them = accounts.get(owner);
+      if (!me || !them) return { ok: false, why: 'gone' };
+      const [a, b] = pairOf(accountId, owner);
+      for (const f of friendships.values()) {
+        if (f.a === a && f.b === b) { friendCodes.delete(owner); return { ok: true, fid: f.fid, other: owner }; }
+      }
+      if (me.playerId && them.playerId) {
+        const [x, y] = pairOf(me.playerId, them.playerId);
+        if (blocks.has(`${x}:${y}`)) return { ok: false, why: 'blocked' };
+      }
+      if (friendCount(accountId) >= max) return { ok: false, why: 'mine' };
+      if (friendCount(owner) >= max) return { ok: false, why: 'theirs' };
+      friendships.set(fid, { fid, a, b, sinceDay: today });
+      friendCodes.delete(owner);
+      return { ok: true, fid, other: owner };
+    },
+    async friendsOf(accountId) {
+      guard();
+      const out = [];
+      for (const f of friendships.values()) {
+        if (f.a !== accountId && f.b !== accountId) continue;
+        const other = accounts.get(f.a === accountId ? f.b : f.a);
+        const p = other?.playerId ? players.get(other.playerId) : null;
+        out.push({ fid: f.fid, nm: p ? p.name.slice() : null, since: f.sinceDay });
+      }
+      return out.sort((x, y) => (x.since < y.since ? -1 : x.since > y.since ? 1 : x.fid < y.fid ? -1 : 1));
+    },
+    async removeFriend({ accountId, fid }) {
+      guard();
+      const f = friendships.get(fid);
+      if (!f || (f.a !== accountId && f.b !== accountId)) return { ok: false };
+      friendships.delete(fid);
+      return { ok: true, mine: accounts.get(accountId)?.playerId ?? null, theirs: accounts.get(f.a === accountId ? f.b : f.a)?.playerId ?? null };
     },
 
     // ---------- Sessions ----------
