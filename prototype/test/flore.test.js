@@ -284,7 +284,7 @@ test('flore : sobre sur un appareil peu puissant, sans rien d\'autre de changé'
 
 test('flore : sans aire ni morceau voisin, rien et pas d\'erreur', () => {
   const { store, patch, f } = chunk([]);
-  const vide = { buisson: [], rocher: [], touffe: [], haie: [], balle: [] };
+  const vide = { buisson: [], rocher: [], touffe: [], haie: [], balle: [], champi: [], legume: [], puits: [], baie: [] };
   assert.deepEqual(floreForChunk(f, patch, 0, 0, 64, store.proj), vide);
   assert.deepEqual(floreForChunk(null, patch, 0, 0, 64, store.proj), vide);
 });
@@ -349,7 +349,7 @@ test('vue de la flore : construite, remplie, remplacée sans doublon, vidée et 
   const scene = new THREE.Scene();
   const view = createFloreView(scene, { lowPower: true });
   assert.equal(scene.children.length, 1);
-  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, haies: 0, balles: 0, drawCalls: 0, chunks: 0, dropped: 0 });
+  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, haies: 0, balles: 0, baies: 0, champis: 0, legumes: 0, puits: 0, drawCalls: 0, chunks: 0, dropped: 0 });
   const { store, patch, f } = chunk([area('wood', 'forest', 0, 0, 64, 64)]);
   const flore = floreForChunk(f, patch, 0, 0, 64, store.proj);
   view.setChunk('a', flore);
@@ -357,7 +357,9 @@ test('vue de la flore : construite, remplie, remplacée sans doublon, vidée et 
   assert.equal(s.buissons, flore.buisson.length);
   assert.equal(s.touffes, flore.touffe.length);
   assert.equal(s.rochers, flore.rocher.length);
-  assert.ok(s.drawCalls >= 2 && s.drawCalls <= 3);
+  assert.equal(s.baies, flore.baie.length);
+  assert.equal(s.champis, flore.champi.length);
+  assert.ok(s.drawCalls >= 2 && s.drawCalls <= 5);
   // Le même morceau remplacé ne double rien ; un morceau voisin qui reprend un identifiant ne le double pas non plus.
   view.setChunk('a', flore);
   assert.equal(view.stats().touffes, flore.touffe.length);
@@ -366,16 +368,16 @@ test('vue de la flore : construite, remplie, remplacée sans doublon, vidée et 
   view.dropChunk('b');
   assert.equal(view.stats().touffes, flore.touffe.length, 'le morceau a ne bouge pas quand b part');
   view.dropChunk('a');
-  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, haies: 0, balles: 0, drawCalls: 0, chunks: 0, dropped: 0 });
-  // Ombres : seules les masses (buissons, rochers, haies, balles) en portent, et pas sur appareil peu puissant.
-  assert.deepEqual(view.group.children.map((m) => m.castShadow), [false, false, false, false, false]);
+  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, haies: 0, balles: 0, baies: 0, champis: 0, legumes: 0, puits: 0, drawCalls: 0, chunks: 0, dropped: 0 });
+  // Ombres : seules les masses (buissons, rochers, haies, balles, puits) en portent, et pas sur appareil peu puissant.
+  assert.deepEqual(view.group.children.map((m) => m.castShadow), [false, false, false, false, false, false, false, false, false]);
   const full = createFloreView(new THREE.Scene(), {});
-  assert.deepEqual(full.group.children.map((m) => m.castShadow), [true, true, false, true, true]);
+  assert.deepEqual(full.group.children.map((m) => m.castShadow), [true, true, false, true, true, false, false, false, true]);
   full.dispose();
   // Matériaux suivis par la météo.
   const tm = view.treeMaterials();
-  assert.equal(tm.crowns.length, 3);
-  assert.equal(tm.trunks.length, 2);
+  assert.equal(tm.crowns.length, 4);
+  assert.equal(tm.trunks.length, 5);
   view.dispose();
   assert.equal(scene.children.length, 0);
 });

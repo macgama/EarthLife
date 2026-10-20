@@ -2,17 +2,20 @@
 // dans les terrains rocheux et au bord du sable, touffes d'herbe dans les prés, les bois et les marais, haies le long
 // des champs et des prés, balles de paille dans les champs. Comme les arbres (props.js), chacun naît d'une cellule
 // géographique fixe : même place pour tous les joueurs, quelle que soit l'origine du monde. Module pur : ni THREE, ni
-// DOM. Aucun identifiant n'est mémorisé (rien ne se démonte).
+// DOM. Aucun identifiant n'est mémorisé (rien ne se démonte), sauf pour ce qui se cueille (campagne.js) : baies des buissons,
+// champignons, légumes ; un puits se puise sans jamais disparaître.
 import { PLACEMENT } from './props.js';
 import { parcelle } from './bruit.js';
+import { hashId } from './campagne.js';
 
 const { gather, sortFeatures, eachCell, cellId, cellRand, salt, step, blocked, onAny, patchFree, near, inOrNear, TAU } = PLACEMENT;
 
 // Plafonds par morceau de 64 m (les mêmes en tout lieu : temps de construction et mémoire bornés).
-export const FLORE_CAPS = { buisson: 40, rocher: 14, touffe: 110, haie: 80, balle: 5 };
+export const FLORE_CAPS = { buisson: 40, rocher: 14, touffe: 110, haie: 80, balle: 5, champi: 8, legume: 14, puits: 2 };
 // Appareils peu puissants : moins de pièces (touffes surtout, nombreuses et petites) pour alléger le rendu.
-export const FLORE_CAPS_SOBRE = { buisson: 24, rocher: 8, touffe: 40, haie: 30, balle: 2 };
-const KINDS = Object.keys(FLORE_CAPS);
+export const FLORE_CAPS_SOBRE = { buisson: 24, rocher: 8, touffe: 40, haie: 30, balle: 2, champi: 5, legume: 8, puits: 2 };
+// `baie` : les baies de certains buissons (même identifiant que le buisson, dessinées à part), jamais plus que les buissons gardés.
+const KINDS = [...Object.keys(FLORE_CAPS), 'baie'];
 
 // Rang de peinture des aires (chunks.js, AREA_ORDER) : la dernière peinte l'emporte à un point donné.
 const ORDRE = ['farmland', 'square', 'platform', 'pier', 'bridge', 'grass', 'wood', 'sand', 'wetland', 'rock', 'ice',
@@ -21,12 +24,18 @@ const RANG = new Map(ORDRE.map((c, i) => [c, i]));
 
 // Part de cellules gardées selon l'aire qui couvre le point.
 const REGLES = {
-  grass: { touffe: 0.5, buisson: 0.04, rocher: 0.004 },
-  wood: { touffe: 0.3, buisson: 0.42, rocher: 0.05 },
-  sand: { touffe: 0.06, buisson: 0, rocher: 0.03 },
-  wetland: { touffe: 0.55, buisson: 0.05, rocher: 0 },
-  rock: { touffe: 0.02, buisson: 0.02, rocher: 0.5 },
+  grass: { touffe: 0.5, buisson: 0.04, rocher: 0.004, champi: 0.012 },
+  wood: { touffe: 0.3, buisson: 0.42, rocher: 0.05, champi: 0.11 },
+  sand: { touffe: 0.06, buisson: 0, rocher: 0.03, champi: 0 },
+  wetland: { touffe: 0.55, buisson: 0.05, rocher: 0, champi: 0.04 },
+  rock: { touffe: 0.02, buisson: 0.02, rocher: 0.5, champi: 0 },
 };
+// Part des buissons qui portent des baies (jardins et parcs : plus), des champs cultivés et des jardins qui portent un légume, et des
+// cellules d'herbe ou de champ qui ont un puits (si un bâtiment est à 4 à 30 m : la cour d'une ferme, pas le milieu d'un pré).
+const BAIE_PART = { wood: 0.45, grass: 0.5, wetland: 0.3 };
+const BAIE_SOUS = 0.7;
+const LEGUME_PART = { champ: 0.18, jardin: 0.08 };
+const PUITS_PART = 0.07, PUITS_PROCHE = 30, PUITS_LIBRE = 4;
 // Balles de paille : part des cellules des champs cultivés qui en portent une.
 const BALLE_PART = 0.1;
 const estChamp = (a) => a?.cls === 'farmland' && a.sub === 'farmland';
@@ -45,6 +54,17 @@ function aireEn(areas, x, z) {
   return found;
 }
 
+// Le point est dans la cour d'un bâtiment : à PUITS_LIBRE m au moins de ses murs, à PUITS_PROCHE m au plus.
+function cour(buildings, x, z) {
+  let proche = false;
+  for (const b of buildings) {
+    if (!near(b.bounds, x, z, PUITS_PROCHE)) continue;
+    if (inOrNear(b.rings, x, z, PUITS_LIBRE)) return false;
+    if (!proche && inOrNear(b.rings, x, z, PUITS_PROCHE)) proche = true;
+  }
+  return proche;
+}
+
 function pose(ctx, patch, x, z, marge) {
   return !blocked(ctx, x, z, marge) && !onAny(ctx.others, x, z, 1.4) && !onAny(ctx.rails, x, z, 2) && !onAny(ctx.walk, x, z, 0.6) && patchFree(patch, x, z);
 }
@@ -60,7 +80,11 @@ export function floreForChunk(f, patch, cx, cz, size, proj, { lowPower = false }
   const nature = gathered.areas;
   if (!nature.length) return out;
   const ctx = sortFeatures(gathered);
-  for (const kind of ['buisson', 'rocher', 'touffe', 'balle']) {
+  const baies = new Set(); // identifiants des buissons qui portent des baies
+  const champs = nature.some((a) => estChamp(a) || (a.cls === 'grass' && a.sub === 'garden'));
+  const sansBatiment = !ctx.buildings.length;
+  for (const kind of ['buisson', 'rocher', 'touffe', 'balle', 'champi', 'legume', 'puits']) {
+    if ((kind === 'legume' && !champs) || (kind === 'puits' && sansBatiment)) continue;
     const cands = [];
     eachCell(proj, kind, x0, z0, size, (ilat, ilon, x, z, rand) => {
       const keep = rand();
@@ -68,20 +92,30 @@ export function floreForChunk(f, patch, cx, cz, size, proj, { lowPower = false }
       let part;
       if (kind === 'balle') {
         part = estChamp(area) ? BALLE_PART : 0;
+      } else if (kind === 'legume') {
+        part = estChamp(area) ? LEGUME_PART.champ : area?.cls === 'grass' && area.sub === 'garden' ? LEGUME_PART.jardin : 0;
+      } else if (kind === 'puits') {
+        part = area && (area.cls === 'grass' || area.cls === 'farmland') ? PUITS_PART : 0;
       } else {
         const rules = area && REGLES[area.cls];
         if (!rules) return;
-        part = rules[kind];
+        part = rules[kind] ?? 0;
         if (kind === 'buisson' && area.cls === 'grass') part = BUISSON_SOUS[area.sub] ?? part;
       }
       if (keep >= part) return;
       if (!pose(ctx, patch, x, z, kind === 'touffe' ? 0.6 : 1.2)) return;
+      if (kind === 'puits' && !cour(ctx.buildings, x, z)) return;
       const yaw = rand() * TAU;
-      const s = kind === 'touffe' ? 0.7 + rand() * 0.8 : kind === 'rocher' ? 0.6 + rand() * 1.2 : kind === 'balle' ? 0.9 + rand() * 0.4 : 0.7 + rand() * 0.8;
-      cands.push({ keep, item: { id: cellId(kind, ilat, ilon), kind, x, z, yaw, s, v: rand() } });
+      const s = kind === 'touffe' ? 0.7 + rand() * 0.8 : kind === 'rocher' ? 0.6 + rand() * 1.2 : kind === 'balle' ? 0.9 + rand() * 0.4
+        : kind === 'champi' ? 1 + rand() * 0.5 : kind === 'legume' ? 0.9 + rand() * 0.4 : kind === 'puits' ? 1 : 0.7 + rand() * 0.8;
+      const id = cellId(kind, ilat, ilon);
+      cands.push({ keep, item: { id, kind, x, z, yaw, s, v: rand() } });
+      // Les baies sont décidées par l'identifiant du buisson et son aire : jamais un tirage de plus pour la cellule.
+      if (kind === 'buisson' && hashId(`baie:${id}`) < (area.cls === 'grass' && BUISSON_SOUS[area.sub] ? BAIE_SOUS : BAIE_PART[area.cls] ?? 0)) baies.add(id);
     });
     out[kind] = garder(cands, caps[kind]);
   }
+  out.baie = out.buisson.filter((b) => baies.has(b.id)).map((b) => ({ ...b, kind: 'baie' }));
   const seen = new Set();
   out.haie = garder([...haies(nature, ctx, patch, x0, z0, size, proj, seen), ...haiesParcelles(nature, ctx, patch, x0, z0, size, seen)], caps.haie);
   return out;
