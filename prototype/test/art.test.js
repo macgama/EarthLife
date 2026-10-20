@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ART, ITEM_KIND, ITEM_ICON, itemSlot, itemArtUrl, hasItemArt, sceneUrl, sceneCss, kindOf, kindLabel, ART_CSS } from '../src/art.js';
+import { ART, ITEM_ART, ITEM_KIND, ITEM_ICON, itemSlot, itemArtUrl, hasItemArt, sceneUrl, sceneCss, kindOf, kindLabel, ART_CSS } from '../src/art.js';
 import { ITEMS } from '../src/survival.js';
 import { ICON_NAMES } from '../src/icons.js';
 
@@ -24,8 +24,9 @@ test('art : chaque image annoncée existe dans assets/art/', () => {
 });
 
 test('art : tous les objets du jeu ont leur image (sauf ceux annoncés « à venir ») et aucun fichier livré n\'est oublié dans ART', () => {
-  for (const key of [...Object.keys(ITEMS), 'batte']) assert.ok(ART.items.has(key) !== ART.pending.has(key), `image de ${key} (livrée ou à venir, pas les deux)`);
-  for (const key of ART.pending) assert.ok(ITEMS[key] && !existsSync(file('items', key)), `${key} : annoncé à venir, mais livré ou inconnu`);
+  for (const key of [...Object.keys(ITEMS), 'batte']) assert.ok(hasItemArt(key) !== ART.pending.has(key), `image de ${key} (livrée ou à venir, pas les deux)`);
+  for (const key of ART.pending) assert.ok(ITEMS[key] && !existsSync(file('items', ITEM_ART[key] ?? key)), `${key} : annoncé à venir, mais livré ou inconnu`);
+  for (const [key, shared] of Object.entries(ITEM_ART)) assert.ok(ITEMS[key] && ART.items.has(shared), `${key} partage l'image ${shared}`);
   const listed = (dir) => readdirSync(fileURLToPath(new URL(`../assets/art/${dir}/`, import.meta.url))).filter((f) => f.endsWith('.webp')).map((f) => f.slice(0, -5)).sort();
   assert.deepEqual(listed('items'), [...ART.items].sort());
   assert.deepEqual(listed('scenes'), [...ART.scenes].sort());
