@@ -60,6 +60,10 @@ const WORDS = {
   batte_cloutee: ['batte cloutée', 'battes cloutées'], hache: ['hache', 'haches'],
   sac_ecolier: ["sac d'écolier", "sacs d'écolier"], sac_randonnee: ['sac de randonnée', 'sacs de randonnée'], sac_renforce: ['sac renforcé', 'sacs renforcés'],
   pistolet: ['pistolet', 'pistolets'], fusil: ['fusil de chasse', 'fusils de chasse'], balles: ['balle', 'balles'], cartouches: ['cartouche', 'cartouches'],
+  baies: ['poignée de baies', 'poignées de baies'], champignon: ['champignon', 'champignons'], legume: ['légume', 'légumes'],
+  poisson: ['poisson cru', 'poissons crus'], champignon_cuit: ['champignon poêlé', 'champignons poêlés'], legume_cuit: ['légume rôti', 'légumes rôtis'],
+  poisson_cuit: ['poisson grillé', 'poissons grillés'], eau_riviere: ['eau de rivière', 'eaux de rivière'], eau_bouillie: ['eau bouillie', 'eaux bouillies'],
+  canne: ['canne à pêche', 'cannes à pêche'],
 };
 
 export function itemWord(key, n = 1) {
@@ -312,9 +316,9 @@ export function breaches(base) {
   return base ? base.openings.filter(isBroken).length : 0;
 }
 
-// Chaleur gagnée au refuge : +10 °C, moins 3 °C par brèche, jamais négative.
+// Chaleur gagnée au refuge : +10 °C, moins 3 °C par brèche, jamais négative, plus 2 °C avec un feu de camp.
 export function refugeWarmth(base) {
-  return Math.max(0, 10 - 3 * breaches(base));
+  return Math.max(0, 10 - 3 * breaches(base)) + (base?.upgrades?.includes('feu') ? 2 : 0);
 }
 
 export function chestCap(base) {

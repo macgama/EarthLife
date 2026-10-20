@@ -201,6 +201,86 @@ export function balleGeometry(sobre = false) {
   return merged([paint(g, (_x, y) => { const k = shade(0.72, 1.1, y / 1.24); return [k, k, k * 0.97]; })]);
 }
 
+// ---------- À cueillir et à puiser (campagne.js) ----------
+
+// Baies d'un buisson : de petites boules posées sur les trois masses de buissonGeometry (mêmes positions et mêmes rayons), dans le
+// repère du buisson, si bien qu'elles suivent son échelle et son orientation. Seules elles disparaissent quand on les cueille.
+const BUISSON_MASSES = [[0, 0.42, 0, 0.62, 0.8], [0.5, 0.32, 0.22, 0.48, 0.8], [-0.4, 0.3, -0.25, 0.45, 0.8]];
+export function baieGeometry(sobre = false) {
+  const parts = [];
+  for (let i = 0; i < (sobre ? 4 : 7); i++) {
+    const [cx, cy, cz, r, sy] = BUISSON_MASSES[i % 3];
+    const a = Math.PI * 2 * hash3(i, 1, 2), y = 0.35 + 0.6 * hash3(i, 3, 4), rr = Math.sqrt(1 - y * y);
+    const g = ready(new THREE.OctahedronGeometry(0.075, 0));
+    g.translate(cx + r * rr * Math.cos(a) * 1.03, cy + r * sy * y * 1.03, cz + r * rr * Math.sin(a) * 1.03);
+    const k = shade(0.78, 1.18, hash3(i, 5, 6));
+    parts.push(paint(g, () => [k, k * 0.92, k * 0.96]));
+  }
+  return merged(parts);
+}
+
+// Champignons : un pied clair et un chapeau brun en cône, trois par instance (deux en version sobre). Une fois et demie plus gros que
+// nature : ils doivent se voir au sol d'un bois, sur un écran de téléphone.
+export function champiGeometry(sobre = false) {
+  const spots = [[0, 0, 0.26, 1], [0.3, 0.14, 0.17, 0.8], [-0.22, 0.24, 0.21, 0.9]];
+  const parts = [];
+  for (const [x, z, h, sc] of spots.slice(0, sobre ? 2 : 3)) {
+    const stem = ready(new THREE.CylinderGeometry(0.04 * sc, 0.055 * sc, h, 4, 1, true));
+    stem.translate(x, h / 2, z);
+    parts.push(paint(stem, (_vx, vy) => { const k = shade(0.9, 1.08, vy / h); return [k, k, k * 0.98]; }));
+    const cap = ready(new THREE.ConeGeometry(0.17 * sc, 0.11 * sc, 5));
+    cap.translate(x, h + 0.04 * sc, z);
+    parts.push(paint(cap, (_vx, vy) => { const k = shade(0.8, 1.08, (vy - h) / (0.1 * sc)); return [k * 0.74, k * 0.56, k * 0.4]; }));
+  }
+  const g = merged(parts);
+  g.scale(1.5, 1.5, 1.5);
+  g.computeBoundingSphere();
+  return g;
+}
+
+// Légume : une rosette de feuilles larges qui s'évasent, sombres au pied, claires à la pointe. Matériau à double face.
+export function legumeGeometry(sobre = false) {
+  const parts = [];
+  const n = sobre ? 5 : 8;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + 0.3 * hash3(i, 7, 1), ca = Math.cos(a), sa = Math.sin(a);
+    const r0 = 0.03, w = 0.075 + 0.03 * hash3(i, 8, 2), h = 0.32 + 0.16 * hash3(i, 9, 3), reach = 0.2 + 0.16 * hash3(i, 1, 4);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute([
+      ca * r0 - sa * w, 0, sa * r0 + ca * w,
+      ca * r0 + sa * w, 0, sa * r0 - ca * w,
+      ca * (r0 + reach), h, sa * (r0 + reach),
+    ], 3));
+    g.computeVertexNormals();
+    parts.push(paint(g, (_vx, vy) => { const k = shade(0.5, 1.18, vy / h); return [k * 0.96, k, k * 0.62]; }));
+  }
+  return merged(parts);
+}
+
+// Puits : margelle de pierre à huit pans, eau sombre au fond, deux montants de bois et un petit toit. 1,1 m de large, 1,9 m de haut.
+export function puitsGeometry(sobre = false) {
+  const parts = [];
+  const ring = ready(new THREE.CylinderGeometry(0.5, 0.56, 0.56, sobre ? 6 : 8, 1, true));
+  ring.translate(0, 0.28, 0);
+  parts.push(paint(ring, (_vx, vy) => { const k = shade(0.72, 1.12, vy / 0.56); return [k, k, k * 1.03]; }));
+  if (!sobre) {
+    const water = ready(new THREE.CircleGeometry(0.44, 8));
+    water.rotateX(-Math.PI / 2);
+    water.translate(0, 0.4, 0);
+    parts.push(paint(water, () => [0.2, 0.4, 0.7]));
+  }
+  for (const side of [-1, 1]) {
+    const post = ready(new THREE.CylinderGeometry(0.045, 0.055, 1.05, 4, 1, true));
+    post.translate(side * 0.5, 0.56 + 0.52, 0);
+    parts.push(paint(post, () => [0.88, 0.64, 0.46]));
+  }
+  const roof = ready(new THREE.ConeGeometry(0.92, 0.46, 4, 1, true));
+  roof.rotateY(Math.PI / 4);
+  roof.translate(0, 1.61 + 0.23, 0);
+  parts.push(paint(roof, (_vx, vy) => { const k = shade(0.78, 1.1, (vy - 1.61) / 0.46); return [k * 1.02, k * 0.52, k * 0.4]; }));
+  return merged(parts);
+}
+
 // Couleur de base des petits décors (suivie par la météo comme celle des arbres). build(sobre) : forme allégée quand
 // `sobre` est vrai (appareil peu puissant).
 export const PETITS = {
@@ -209,4 +289,9 @@ export const PETITS = {
   touffe: { color: 0x8fc36a, build: touffeGeometry, cap: 4096, doubleSide: true },
   haie: { color: 0x4c8745, build: haieGeometry, cap: 2000, doubleSide: false },
   balle: { color: 0xd3b766, build: balleGeometry, cap: 256, doubleSide: false },
+  // À cueillir et à puiser (campagne.js) : dessinés à part, pour que la couleur de base soit celle de la baie, du chapeau, de la pierre.
+  baie: { color: 0xb3263f, build: baieGeometry, cap: 2048, doubleSide: false },
+  champi: { color: 0xd8c4a0, build: champiGeometry, cap: 256, doubleSide: false },
+  legume: { color: 0x6aa84a, build: legumeGeometry, cap: 512, doubleSide: true },
+  puits: { color: 0x9b968d, build: puitsGeometry, cap: 64, doubleSide: true },
 };

@@ -27,6 +27,7 @@ export const ITEM_KEYS = [
   'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee', 'sac_ecolier', 'sac_renforce',
   'pistolet', 'fusil', 'balles', 'cartouches',
   'bidon', 'batterie',
+  'baies', 'champignon', 'legume', 'poisson', 'champignon_cuit', 'legume_cuit', 'poisson_cuit', 'eau_riviere', 'eau_bouillie', 'canne',
 ];
 
 // Textes affichés (5.3).
@@ -61,7 +62,7 @@ const NIGHT_KEYS = 14;
 const WEAPON_USES = { batte: null, batte_cloutee: 60, hache: 50 };
 const CLOTHING = ['manteau', 'poncho'];
 const PERK_KEYS = ['lits', 'infirmerie', 'reserve', 'atelier', 'murs', 'abri', 'arriere'];
-const UPGRADES = ['etabli', 'recuperateur', 'sirene'];
+const UPGRADES = ['etabli', 'recuperateur', 'sirene', 'feu'];
 const PLANS = ['etabli'];
 const BASE_ID = /^b-?\d{1,2}\.\d{5}_-?\d{1,3}\.\d{5}$/;
 const WRITER = /^w[0-9a-z]{1,16}$/;

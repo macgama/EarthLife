@@ -40,7 +40,23 @@ export const ITEMS = {
   // Voitures et carburant (voiture.js) : un bidon verse 5 litres dans le réservoir de ta voiture, la batterie sert à réparer une voiture.
   bidon: { name: "Bidon d'essence", fuel: true, one: 'bidon', many: 'bidons' },
   batterie: { name: 'Batterie', one: 'batterie', many: 'batteries' },
+  // Vivre de la campagne (campagne.js) : on cueille, on puise, on pêche ; le feu de camp du refuge cuit et fait bouillir (crafting.js).
+  // Crus, ces vivres nourrissent peu ; cuits, presque autant qu'une conserve (35). L'eau de rivière rend malade (`sick`, secondes).
+  baies: { name: 'Baies', verb: 'Manger', food: 10, water: 6, one: 'poignée de baies', many: 'poignées de baies' },
+  champignon: { name: 'Champignon', verb: 'Manger', food: 6, one: 'champignon', many: 'champignons' },
+  legume: { name: 'Légume', verb: 'Manger', food: 10, one: 'légume', many: 'légumes' },
+  poisson: { name: 'Poisson cru', verb: 'Manger', food: 14, one: 'poisson cru', many: 'poissons crus' },
+  champignon_cuit: { name: 'Champignons poêlés', verb: 'Manger', food: 22, one: 'champignon poêlé', many: 'champignons poêlés' },
+  legume_cuit: { name: 'Légumes rôtis', verb: 'Manger', food: 26, one: 'légume rôti', many: 'légumes rôtis' },
+  poisson_cuit: { name: 'Poisson grillé', verb: 'Manger', food: 34, one: 'poisson grillé', many: 'poissons grillés' },
+  eau_riviere: { name: 'Eau de rivière', verb: 'Boire', water: 35, sick: 45, one: 'eau de rivière', many: 'eaux de rivière' },
+  eau_bouillie: { name: 'Eau bouillie', verb: 'Boire', water: 38, cool: 0.4, one: 'eau bouillie', many: 'eaux bouillies' },
+  canne: { name: 'Canne à pêche', info: "Outil · permet de pêcher au bord de l'eau", one: 'canne à pêche', many: 'cannes à pêche' },
 };
+
+// Eau brute : malade `sick` secondes (le plus long des deux si l'on reboit), un peu de santé perdu à chaque seconde, jamais
+// sous `floor` (« légèrement » malade : cela ne tue pas).
+export const SICK = { dps: 0.12, floor: 10 };
 
 // Armes : la batte de base ne s'use pas et n'est pas un objet du sac.
 export const WEAPONS = {
@@ -113,6 +129,8 @@ LOOT.clothes.push(['sac_ecolier', 0.1, 1]);
 LOOT.outdoor.push(['sac_renforce', 0.04, 1]);
 LOOT.fire_station.push(['sac_renforce', 0.04, 1]);
 LOOT.police.push(['sac_renforce', 0.04, 1]);
+// Canne à pêche (crafting.js la fabrique aussi) : dans les magasins de sport et de plein air, en fin de table comme les lignes d'au-dessus.
+LOOT.outdoor.push(['canne', 0.2, 1]);
 const KIND_ALIASES = {
   apartments: 'house', residential: 'house', detached: 'house', yes: 'house', terrace: 'house', semidetached_house: 'house', dormitory: 'house',
   shop: 'retail', supermarket: 'supermarket', office: 'commercial', warehouse: 'industrial', garage: 'industrial', garages: 'industrial',
@@ -213,7 +231,7 @@ export const COMFORT_LOW = 18, COMFORT_HIGH = 28;
 export function updateSurvivor(s, env, dt) {
   // env : { feelsLike, raining, snowing, sheltered, running, windKmh, inside, night, refugeWarmth, climb, runMul } ; climb : pente
   // de montée lissée (relief, slope.js), la soif monte plus vite en grimpant ; runMul : facteur de la fatigue de course (1 sans bonus).
-  const effects = { hypothermia: false, hyperthermia: false, starving: false, dehydrated: false, damage: 0, fatigue: 0 };
+  const effects = { hypothermia: false, hyperthermia: false, starving: false, dehydrated: false, damage: 0, fatigue: 0, sick: false, sickDamage: 0 };
   s.warmth = Math.max(0, s.warmth - dt);
 
   // Mouillure : le poncho en retient les trois quarts ; au refuge on sèche trois fois plus vite.
@@ -247,6 +265,13 @@ export function updateSurvivor(s, env, dt) {
   if (hot) effects.hyperthermia = true;
   if (s.food <= 0) { effects.starving = true; effects.damage += 0.5 * dt; }
   if (s.water <= 0) { effects.dehydrated = true; effects.damage += 0.8 * dt; }
+  // Eau de rivière non bouillie : malade quelques secondes. Perte lente de santé, à part (`sickDamage`) : elle ne cause pas
+  // la mort et le jeu la borne à SICK.floor.
+  if (s.sick > 0) {
+    effects.sick = true;
+    effects.sickDamage = SICK.dps * Math.min(dt, s.sick);
+    s.sick = Math.max(0, s.sick - dt);
+  }
   return effects;
 }
 
@@ -469,6 +494,7 @@ export function wakeAfterDeath(s) {
   s.food = Math.max(40, s.food);
   s.water = Math.max(40, s.water);
   s.fatigue = Math.min(100, (s.fatigue ?? FATIGUE.start) + 10);
+  s.sick = 0;
 }
 
 // Hors du jeu, faim, soif et température sont figées ; la fatigue baisse (plus vite au refuge).
@@ -479,9 +505,10 @@ export function offlineRecovery(s, hours, atRefuge) {
   return before - s.fatigue;
 }
 
+// Du plus nourrissant au moins nourrissant ; l'eau de rivière (qui rend malade) ne se boit qu'en dernier.
 const USES = {
-  eat: ['conserve', 'barre'],
-  drink: ['eau', 'soda'],
+  eat: ['conserve', 'poisson_cuit', 'legume_cuit', 'champignon_cuit', 'barre', 'poisson', 'legume', 'baies', 'champignon'],
+  drink: ['eau', 'eau_bouillie', 'soda', 'eau_riviere'],
   heal: ['medicaments', 'bandage'],
   warm: ['chaufferette'],
   lure: ['leurre'],
@@ -502,6 +529,7 @@ export function useBest(s, action, player) {
   if (item.cool && s.bodyTemp > 37) s.bodyTemp = Math.max(37, s.bodyTemp - item.cool);
   if (item.heal && player) player.health = Math.min(100, player.health + item.heal);
   if (item.warm) s.warmth = 120;
+  if (item.sick) s.sick = Math.max(s.sick ?? 0, item.sick);
   if (item.awake) s.fatigue = Math.max(0, (s.fatigue ?? FATIGUE.start) - item.awake);
   return key;
 }

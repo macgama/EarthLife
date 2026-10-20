@@ -9,7 +9,9 @@
 // trajet : trajet entre stations, ordinateur et téléphone ; trajet:desktop ou trajet:mobile : un seul ;
 // voiture : voitures et carburant (réparer, siphonner, plein, trajet de Lyon à Pérouges), ordinateur et téléphone ;
 // ecran : l'écran de jeu allégé du téléphone en portrait, seul sur une partie neuve ;
-// fabrication : fabriquer dehors (bouton, carte, durée, bruit, interruption) et les sacs de 36 et 60 places).
+// fabrication : fabriquer dehors (bouton, carte, durée, bruit, interruption) et les sacs de 36 et 60 places ;
+// campagne : (ou campagne:desktop, campagne:mobile) cueillir, puiser, pêcher, boire de l'eau brute puis bouillie, cuisiner au feu de camp du refuge, à Pérouges en octobre ;
+// elle dure une vingtaine de minutes en CI : hors de la série complète, la CI la joue dans son propre travail, acceptance-campagne).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
@@ -3479,7 +3481,7 @@ async function ecranSeul() {
 // ---------- Fabriquer dehors et sacs ----------
 
 // Le bouton « Fabriquer » de l'écran de jeu : caché sans de quoi fabriquer, il apparaît avec les ingrédients dans le sac.
-// La carte liste les recettes sans établi (9) ; une fabrication dehors dure la recette, fait du bruit, s'interrompt si l'on
+// La carte liste les recettes sans établi (10) ; une fabrication dehors dure la recette, fait du bruit, s'interrompt si l'on
 // frappe, prend ses ingrédients au sac seul et y dépose le produit ; un sac fabriqué se porte et change la place du sac.
 // Au refuge, le bouton est caché et le sac renforcé (60 places) demande l'établi.
 const craftChip = (page) => ev(page, () => {
@@ -3537,11 +3539,11 @@ async function fabricationScenario(device) {
   await debug(page, 'give', { ruban: 1 });
   await until(page, () => document.querySelector('#use-craft .chip-count').textContent === '2', null, 5000);
 
-  // La carte : 9 recettes sans établi, celles que le sac permet d'abord ; rien qui demande l'établi.
+  // La carte : 10 recettes sans établi (ni feu de camp), celles que le sac permet d'abord ; rien qui demande l'établi.
   let { card, action, mul } = await craftOutside(page, device, 'bandage', `${name}-carte-fabriquer`);
   check(card?.title === 'Fabriquer', `${tag} : carte « ${card?.title} »`);
-  check(card?.lines.length === 9, `${tag} : ${card?.lines.length} recettes listées (les 9 sans établi)`);
-  const refugeOnly = (card?.lines ?? []).filter((l) => /Plaque|Hache|Établi|Sirène|Récupérateur|Sac renforcé/.test(l));
+  check(card?.lines.length === 10, `${tag} : ${card?.lines.length} recettes listées (les 10 sans établi ni feu)`);
+  const refugeOnly = (card?.lines ?? []).filter((l) => /Plaque|Hache|Établi|Sirène|Récupérateur|Sac renforcé|Feu de camp|Griller|Poêler|Rôtir|bouillir/.test(l));
   check(refugeOnly.length === 0, `${tag} : aucune recette d'établi dans la carte${refugeOnly.length ? ` (${refugeOnly.join(' | ')})` : ''}`);
   check(card?.buttons.map(([id]) => id).join() === 'craft:bandage,craft:sac_ecolier', `${tag} : boutons ${card?.buttons.map(([id]) => id).join()}`);
   check(card?.buttons[0]?.[1] === 'Fabriquer · 3 s' && card?.buttons[1]?.[1] === 'Fabriquer · 8 s', `${tag} : durées « ${card?.buttons.map(([, t]) => t).join(' » « ')} »`);
@@ -3601,6 +3603,230 @@ async function fabricationScenario(device) {
   await ctx.close();
 }
 
+// ---------- Vivre de la campagne (scénario 21) ----------
+
+// Pérouges en octobre (?mois=10 : l'automne, où tout est mûr) : tuiles enregistrées de l'Ain, avec bosquets, champs, deux puits
+// et une berge. Cueillir (E), puiser (puits, berge), pêcher avec une canne, boire de l'eau brute (malaise) puis bouillie, enfin
+// cuisiner et faire bouillir au feu de camp du refuge.
+const CAMPAGNE_START = `${START.replace('lat=45.7578&lon=4.832', 'lat=45.9034&lon=5.1795')}&mois=10`;
+
+// Plante mûre (ou puits) non cueillie la plus proche du joueur, par type : { id, x, z }, ou null.
+const harvestNear = (page, kind) => ev(page, async (k) => {
+  const { mur } = await import('/src/campagne.js');
+  const { session: s, save, debug: d } = window.__earthlife;
+  const p = s.player;
+  const list = d.recolte(k).filter((it) => k === 'puits' || (mur(k, it.id, d.season()) && !save.dismantled[it.id]));
+  list.sort((a, b) => Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z));
+  return list[0] ? { id: list[0].id, x: list[0].x, z: list[0].z } : null;
+}, kind);
+
+// Points de berge à pied sec (l'eau à 1,8 m ou moins), du plus proche du départ au plus loin : le jeu n'a de collisions qu'autour du
+// joueur, on s'y rend donc pour voir si le point est libre.
+const shorePoints = (page) => ev(page, async () => {
+  const w = await import('/src/world.js');
+  const s = window.__earthlife.session;
+  const out = [];
+  for (let x = -700; x <= 700; x += 3) {
+    for (let z = -700; z <= 700; z += 3) {
+      if (w.shoreDistance(s.store, x, z, 2.6) <= 1.8 && !w.waterAt(s.store, x, z)) out.push({ x, z, d: Math.hypot(x, z) });
+    }
+  }
+  return out.sort((a, b) => a.d - b.d).slice(0, 8);
+});
+
+// Action de campagne en cours (identifiant, durée, bruit), ou null.
+const campagneAction = (page) => until(page, () => { const a = window.__earthlife.session.action; return a ? { id: a.id, time: a.time, noise: a.noise } : null; }, null, 8000);
+// Dans le refuge, sans carte graphique, une image peut prendre une seconde sur ordinateur : une fabrication de 10 s de jeu dépasse 2 minutes.
+const actionDone = (page) => until(page, () => (window.__earthlife.session.action ? null : 1), null, 300000);
+
+async function campagneScenario(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 21`;
+  const name = tag.replace(' ', '-');
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(CAMPAGNE_START);
+  if (!check(await started(page), `${tag} : partie lancée à Pérouges`)) { await ctx.close(); return; }
+  await clearZombies(page);
+
+  const world = await ev(page, () => {
+    const d = window.__earthlife.debug;
+    return { season: d.season(), baie: d.recolte('baie').length, champi: d.recolte('champi').length, legume: d.recolte('legume').length, puits: d.recolte('puits').length };
+  });
+  check(world.season === 'automne', `${tag} : mois forcé à octobre, saison « ${world.season} »`);
+  check(world.baie > 0 && world.champi > 0 && world.legume > 0 && world.puits > 0, `${tag} : décor trouvé autour du départ (${JSON.stringify(world)})`);
+
+  // Se tenir à 0,9 m d'une plante ou d'un puits ; renvoie son bouton principal.
+  const standBy = async (spot) => {
+    await clearZombies(page);
+    await debug(page, 'teleport', spot.x + 0.9, spot.z);
+    await until(page, () => window.__earthlife.session.chunks.stats().decorPending === 0, null, 10000);
+    await wait(300);
+  };
+
+  // --- Baies : cueillir, le buisson reste, les baies ne repoussent pas avant 72 h, même après rechargement ---
+  const baie = await harvestNear(page, 'baie');
+  await standBy(baie);
+  const label = await until(page, (id) => { const l = window.__label(id); return l && l.startsWith('Cueillir') ? l : null; }, 'search', 10000);
+  const want = device === 'mobile' ? /^Cueillir des baies · 3,5 s$/ : /^Cueillir des baies \(E\) · 3,5 s$/;
+  check(want.test(label ?? ''), `${tag} : bouton « ${label} »`);
+  const target = await ev(page, () => window.__earthlife.session.menu?.primary?.arg?.id ?? null);
+  await shot(page, `${name}-baies`);
+  const bag0 = await bagNow(page);
+  await press(page, device, 'KeyE', 'search');
+  let action = await campagneAction(page);
+  const mul = await ev(page, () => window.__earthlife.session.actionMul);
+  check(action?.id === 'plant' && Math.abs(action.time - 3.5 * mul) < 0.02 && action.noise === 4, `${tag} : cueillette ${action?.id} en ${action?.time} s, bruit ${action?.noise} m`);
+  await actionDone(page);
+  let bag = await bagNow(page);
+  const got = (bag.baies ?? 0) - (bag0.baies ?? 0);
+  check(got >= 2 && got <= 4, `${tag} : ${got} baies au sac`);
+  check(!!(await toastSeen(page, 'Baies cueillies', 5000)), `${tag} : notification « Baies cueillies »`);
+  const stamped = await ev(page, (id) => typeof window.__earthlife.save.dismantled[id] === 'number', target);
+  check(stamped, `${tag} : ${target} noté dans save.dismantled (repousse après 72 h)`);
+  const after = await until(page, (id) => window.__earthlife.session.menu?.primary?.arg?.id !== id || null, target, 5000);
+  check(!!after, `${tag} : le buisson ne propose plus de baies`);
+  await until(page, () => !window.__earthlife.saveStore.dirty, null, 10000);
+  await page.reload();
+  check(await started(page), `${tag} : partie reprise après le rechargement`);
+  await clearZombies(page);
+  await debug(page, 'teleport', baie.x + 0.9, baie.z);
+  await until(page, () => window.__earthlife.session.chunks.stats().decorPending === 0, null, 10000);
+  await wait(600);
+  const again = await ev(page, () => ({ id: window.__earthlife.session.menu?.primary?.arg?.id ?? null, kept: Object.keys(window.__earthlife.save.dismantled).length }));
+  check(again.id !== target && again.kept >= 1, `${tag} : après rechargement la baie cueillie reste cueillie (${again.kept} entrée(s) notée(s))`);
+
+  // --- Champignon et légume : cueillis, ils disparaissent ---
+  for (const [kind, verb, title, item] of [['champi', 'Ramasser des champignons', 'Champignons ramassés', 'champignon'], ['legume', 'Arracher un légume', 'Légume arraché', 'legume']]) {
+    const spot = await harvestNear(page, kind);
+    await standBy(spot);
+    const l = await until(page, (v) => { const x = window.__label('search'); return x && x.startsWith(v) ? x : null; }, verb, 10000);
+    check(!!l, `${tag} : bouton « ${l} »`);
+    if (kind === 'champi') await shot(page, `${name}-champignons`); else await shot(page, `${name}-legumes`);
+    const before = await bagNow(page);
+    await press(page, device, 'KeyE', 'search');
+    action = await campagneAction(page);
+    check(action?.id === 'plant', `${tag} : ${kind} : action ${action?.id} en ${action?.time} s`);
+    await actionDone(page);
+    bag = await bagNow(page);
+    check((bag[item] ?? 0) > (before[item] ?? 0), `${tag} : ${item} au sac (${before[item] ?? 0} → ${bag[item] ?? 0}), « ${await toastSeen(page, title, 5000)} »`);
+  }
+
+  // --- Puits : eau saine ---
+  const puits = await harvestNear(page, 'puits');
+  await standBy(puits);
+  const pl = await until(page, () => { const x = window.__label('search'); return x && x.startsWith('Puiser') ? x : null; }, null, 10000);
+  check(/^Puiser de l'eau du puits/.test(pl ?? ''), `${tag} : bouton « ${pl} »`);
+  await shot(page, `${name}-puits`);
+  const bagP = await bagNow(page);
+  await press(page, device, 'KeyE', 'search');
+  action = await campagneAction(page);
+  check(action?.id === 'water', `${tag} : puisage ${action?.id} en ${action?.time} s`);
+  await actionDone(page);
+  bag = await bagNow(page);
+  check((bag.eau ?? 0) === (bagP.eau ?? 0) + 1, `${tag} : 1 eau au sac, « ${await toastSeen(page, 'Eau du puits', 5000)} »`);
+
+  // --- Berge : sans canne, on puise de l'eau brute ; avec, on peut pêcher (E), puiser passe sur R ---
+  let shore = null, wl = null;
+  for (const c of await shorePoints(page)) {
+    await clearZombies(page);
+    await debug(page, 'teleport', c.x, c.z);
+    await until(page, () => window.__earthlife.session.chunks.stats().decorPending === 0, null, 10000);
+    wl = await until(page, () => (window.__earthlife.session.menu?.primary?.arg?.source === 'riviere' ? window.__label('search') : null), null, 3000);
+    if (wl) { shore = c; break; }
+  }
+  if (!check(!!shore, `${tag} : une berge où puiser, à ${shore ? Math.round(shore.d) : '?'} m du départ`)) { await ctx.close(); return; }
+  check(/^Puiser de l'eau/.test(wl ?? ''), `${tag} : au bord de l'eau, sans canne : « ${wl} »`);
+  check(!!(await toastSeen(page, 'Avec une canne à pêche', 20000)), `${tag} : conseil « Avec une canne à pêche… »`);
+  const bagW = await bagNow(page);
+  await press(page, device, 'KeyE', 'search');
+  action = await campagneAction(page);
+  check(action?.id === 'water' && Math.abs(action.time - 5 * mul) < 0.02, `${tag} : eau brute en ${action?.time} s`);
+  await actionDone(page);
+  bag = await bagNow(page);
+  check((bag.eau_riviere ?? 0) === (bagW.eau_riviere ?? 0) + 1, `${tag} : 1 eau de rivière au sac, « ${await toastSeen(page, 'Eau puisée', 5000)} »`);
+  check(!!(await toastSeen(page, 'Eau brute : fais-la bouillir', 20000)), `${tag} : conseil « fais-la bouillir au feu de camp »`);
+
+  await debug(page, 'give', { canne: 1 });
+  const fl = await until(page, () => { const x = window.__label('search'); return x && x.startsWith('Pêcher') ? x : null; }, null, 10000);
+  const l2 = await ev(page, () => window.__label('action2'));
+  check(/^Pêcher/.test(fl ?? '') && /^Puiser de l'eau/.test(l2 ?? ''), `${tag} : avec une canne, E « ${fl} » et R « ${l2} »`);
+  // Le tirage est truqué (0,5) le temps de la pêche : une prise, pas de seconde.
+  await ev(page, () => { window.__rand = Math.random; Math.random = () => 0.5; });
+  const fish0 = (await bagNow(page)).poisson ?? 0;
+  await press(page, device, 'KeyE', 'search');
+  action = await campagneAction(page);
+  check(action?.id === 'fish' && Math.abs(action.time - 10 * mul) < 0.02 && action.noise === 3, `${tag} : pêche ${action?.id} en ${action?.time} s, bruit ${action?.noise} m`);
+  await wait(500);
+  await shot(page, `${name}-peche`);
+  await actionDone(page);
+  await ev(page, () => { Math.random = window.__rand; });
+  bag = await bagNow(page);
+  const caught = (bag.poisson ?? 0) - fish0;
+  check(caught === 1, `${tag} : 1 poisson au sac, « ${await toastSeen(page, 'Poisson pêché', 20000)} »`);
+  if (caught !== 1) note(`${tag} : notifications ${JSON.stringify((await seen(page)).toasts.slice(-6))}, sac ${JSON.stringify(bag)}`);
+
+  // --- Eau de rivière : malaise ; eau bouillie : aucun ---
+  await ev(page, () => { const sv = window.__earthlife.session.survivor; sv.inventory = { eau_riviere: 1 }; sv.sick = 0; sv.water = 40; });
+  await hit(page, device, '#use-drink');
+  const sick = await until(page, () => (window.__earthlife.session.survivor.sick > 0 ? window.__earthlife.session.survivor.sick : null), null, 5000);
+  const water1 = await ev(page, () => window.__earthlife.session.survivor.water);
+  check(!!sick && water1 > 70, `${tag} : eau de rivière bue : malaise ${round(sick ?? 0, 0)} s, soif ${round(water1, 0)} %`);
+  check(!!(await toastSeen(page, 'Eau de rivière', 20000)), `${tag} : notification sur l'eau de rivière`);
+  await ev(page, () => { const sv = window.__earthlife.session.survivor; sv.inventory = { eau_bouillie: 1 }; sv.sick = 0; sv.water = 40; });
+  await hit(page, device, '#use-drink');
+  await wait(600);
+  const boiled = await ev(page, () => ({ sick: window.__earthlife.session.survivor.sick ?? 0, water: window.__earthlife.session.survivor.water }));
+  check(boiled.sick === 0 && boiled.water > 70, `${tag} : eau bouillie bue sans malaise (soif ${round(boiled.water, 0)} %)`);
+
+  // --- Feu de camp au refuge : sans feu on ne cuit pas ; avec, poisson grillé et eau bouillie ---
+  await ev(page, () => { window.__earthlife.session.survivor.inventory = { eau: 1, conserve: 1 }; });
+  await clearZombies(page);
+  await debug(page, 'teleport', 1, 0);
+  await until(page, () => (window.__label('search') === null ? 1 : null), null, 10000);
+  const claim = await install(page, device, tag);
+  if (!check(!!claim, `${tag} : refuge installé`)) { await shot(page, `${name}-echec`); await ctx.close(); return; }
+  check(await enterRefuge(page, device), `${tag} : entré au refuge`);
+  await wait(300);
+  await hit(page, device, '#rp-tab-craft');
+  const cookRow = await ev(page, () => [...document.querySelectorAll('#refuge-panel .rp-recipe')].find((li) => li.textContent.includes('Griller un poisson'))?.textContent.replace(/\s+/g, ' ').trim() ?? null);
+  check(/Il faut un feu de camp/.test(cookRow ?? ''), `${tag} : avant le feu : « ${cookRow} »`);
+  await ev(page, () => { const c = window.__earthlife.save.base.chest; Object.assign(c, { bois: (c.bois ?? 0) + 3, ferraille: (c.ferraille ?? 0) + 1, poisson: 1, eau_riviere: 1 }); });
+  await hit(page, device, panelButton('craft', 'feu'));
+  action = await campagneAction(page);
+  check(action?.id === 'craft' && Math.abs(action.time - 10 * (await craftMul(page))) < 0.05, `${tag} : feu de camp en ${action?.time} s`);
+  // Le feu est posé quand la fabrication se termine.
+  const fire = await until(page, () => window.__earthlife.save.base.upgrades.includes('feu') || null, null, 300000);
+  check(!!fire, `${tag} : aménagement « feu » installé au refuge`);
+  await wait(400);
+  await shot(page, `${name}-refuge-feu`);
+  await hit(page, device, panelButton('craft', 'griller_poisson'));
+  await campagneAction(page);
+  await actionDone(page);
+  await hit(page, device, panelButton('craft', 'bouillir_eau'));
+  await campagneAction(page);
+  await actionDone(page);
+  const chest = await ev(page, () => ({ ...window.__earthlife.save.base.chest }));
+  check(chest.poisson_cuit === 1 && !chest.poisson && chest.eau_bouillie === 1 && !chest.eau_riviere, `${tag} : au coffre 1 poisson grillé et 1 eau bouillie (${JSON.stringify({ poisson_cuit: chest.poisson_cuit, eau_bouillie: chest.eau_bouillie })})`);
+  await shot(page, `${name}-refuge-cuisine`);
+
+  // Du coffre au sac, puis le repas : poisson grillé nourrit comme annoncé, eau bouillie sans malaise.
+  await leave(page, device);
+  await ev(page, () => {
+    const { save, session } = window.__earthlife;
+    const sv = session.survivor;
+    sv.inventory = { poisson_cuit: save.base.chest.poisson_cuit, eau_bouillie: save.base.chest.eau_bouillie };
+    sv.food = 40; sv.water = 40; sv.sick = 0;
+  });
+  await hit(page, device, '#use-eat');
+  await until(page, () => (window.__earthlife.session.survivor.food > 70 ? 1 : null), null, 5000);
+  await hit(page, device, '#use-drink');
+  await until(page, () => (window.__earthlife.session.survivor.water > 70 ? 1 : null), null, 5000);
+  const meal = await ev(page, () => ({ food: window.__earthlife.session.survivor.food, water: window.__earthlife.session.survivor.water, sick: window.__earthlife.session.survivor.sick ?? 0 }));
+  check(Math.abs(meal.food - 74) < 2 && meal.water > 70 && meal.sick === 0, `${tag} : poisson grillé (+34 faim → ${round(meal.food, 0)}) et eau bouillie (soif ${round(meal.water, 0)} %), pas malade`);
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
@@ -3621,6 +3847,9 @@ try {
   } else if (only === 'fabrication') {
     await fabricationScenario('desktop');
     await fabricationScenario('mobile');
+  } else if (only.startsWith('campagne')) {
+    if (only !== 'campagne:mobile') await campagneScenario('desktop');
+    if (only !== 'campagne:desktop') await campagneScenario('mobile');
   } else if (only.startsWith('trajet')) {
     if (only !== 'trajet:mobile') await trajet('desktop');
     if (only !== 'trajet:desktop') await trajet('mobile');
