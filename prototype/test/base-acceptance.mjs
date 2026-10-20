@@ -3725,6 +3725,7 @@ async function campagneScenario(device) {
   await actionDone(page);
   bag = await bagNow(page);
   check((bag.eau ?? 0) === (bagP.eau ?? 0) + 1, `${tag} : 1 eau au sac, « ${await toastSeen(page, 'Eau du puits', 5000)} »`);
+  await shot(page, `${name}-eau-du-puits`);
 
   // --- Berge : sans canne, on puise de l'eau brute ; avec, on peut pêcher (E), puiser passe sur R ---
   let shore = null, wl = null;
@@ -3764,6 +3765,7 @@ async function campagneScenario(device) {
   bag = await bagNow(page);
   const caught = (bag.poisson ?? 0) - fish0;
   check(caught === 1, `${tag} : 1 poisson au sac, « ${await toastSeen(page, 'Poisson pêché', 20000)} »`);
+  await shot(page, `${name}-poisson-peche`);
   if (caught !== 1) note(`${tag} : notifications ${JSON.stringify((await seen(page)).toasts.slice(-6))}, sac ${JSON.stringify(bag)}`);
 
   // --- Eau de rivière : malaise ; eau bouillie : aucun ---
