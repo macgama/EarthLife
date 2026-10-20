@@ -18,14 +18,16 @@ import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
 import { createCharacters } from './characters.js';
 import { shoot as fireShot, shotWave, SHOT, SHOT_TEXT } from './tir.js';
 import { createTirView } from './tir-view.js';
-import { playShot } from './tir-son.js';
+import { createSon } from './son.js';
+import { actionSound } from './son-logic.js';
+import { surfaceUnder } from './son-sol.js';
 import { createAtmosphere } from './atmosphere.js';
 import { createInput } from './input.js';
 import {
   ZOOM, clampZoom, zoomMax, pitchFloor, viewRadius, waveCap, edgeCap, smoothZoom, effectiveAspect, readViewPrefs,
   writeViewPrefs,
 } from './view.js';
-import { createPlayer, createZombieDirector, updatePlayer, playerAttack, urbanDensity, targetZombieCount } from './game.js';
+import { PLAYER, createPlayer, createZombieDirector, updatePlayer, playerAttack, urbanDensity, targetZombieCount } from './game.js';
 import {
   planDelivery, questText, updateQuest, currentTarget, placeWith, refugeQuest, offerMissions, questReward, missionLine,
   durationLabel as questDuration,
@@ -110,6 +112,10 @@ const INTERIOR_ON = params.get('interieur') === '1' || (params.get('interieur') 
 // Fenêtre « Trouvé » (trouvailles.js) après une fouille ou un démontage : en jeu normal ; les essais (?debug=1) ramassent tout seuls
 // comme avant (leurs scénarios le supposent), sauf avec ?trouve=1 ; ?trouve=0 la coupe partout.
 const FINDS_ON = params.get('trouve') === '1' || (params.get('trouve') !== '0' && !DEBUG);
+// Sons (son.js) : le contexte audio démarre au premier geste du joueur en jeu normal ; les essais (?debug=1) le laissent éteint
+// (un moteur audio qui tourne coûte du temps d'image, et leurs mesures de durée sont serrées), sauf avec ?son=1 ; ?son=0 le coupe partout.
+// Le bouton « Sons » démarre toujours le contexte, même dans les essais.
+const SOUND_AUTOSTART = params.get('son') === '1' || (params.get('son') !== '0' && !DEBUG);
 // Vue des intérieurs : « bullet » (défaut) = caméra de dessus et noir, on ne voit que ce que la lampe éclaire ; ?interieurvue=decor garde
 // la caméra et la visibilité d'avant, seuls les sols, murs, meubles et lampes changent de style.
 const INTERIOR_DARK = params.get('interieurvue') !== 'decor';
@@ -455,6 +461,9 @@ const CAM = { pitch: 1.0, minPitch: 0.6, maxPitch: 1.35, steep: 1.3 };
 const SEARCH_TIME = 2.2;
 const BUILDING_LABELS = { house: 'Habitation', retail: 'Commerce', commercial: 'Bureaux', industrial: 'Entrepôt', school: 'École', station: 'Gare', pharmacy: 'Pharmacie', clinic: 'Clinique', hospital: 'Hôpital', supermarket: 'Supermarché', convenience: 'Épicerie', fuel: 'Station-service', hardware: 'Quincaillerie', police: 'Commissariat', fire_station: 'Caserne de pompiers' };
 const atmosphere = createAtmosphere(scene, { lowPower });
+// Sons fabriqués dans le navigateur (son.js) : le contexte audio ne naît qu'au premier geste du joueur ; le réglage « Sons » est gardé à part de la partie.
+const son = createSon({ lowPower, storage: localStore });
+if (SOUND_AUTOSTART) son.attach(window);
 const input = createInput(canvas, {
   stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'),
   action2Button: $('action2'), useButtons: [...document.querySelectorAll('#inventory .chip')], autoRun: true,
@@ -534,6 +543,7 @@ const cars = createCarGame({
 const campagne = createCampagne({
   save, saveStore: { markDirty: () => saveStore.markDirty() }, toast: (...a) => toast(...a), floreView,
   openFinds: (...a) => openFinds(...a), addLoot, lootNotes: (res) => lootNotes(res), isGone: (id) => dismantledGone(id),
+  sound: (name, opts) => son.play(name, opts),
 });
 // Carte de conduite (#drive) : le cercle de portée, un point à toucher, « Partir ».
 const driveMap = createDriveMap({ root: $('drive'), cities: CITIES, onGo: (out) => { if (session) goDrive(session, out); } });
@@ -630,6 +640,26 @@ function setModsOpen(open) {
   if (open && phonePortrait.matches) setQuestOpen(false);
 }
 $('mods-toggle').addEventListener('click', () => setModsOpen(!document.body.classList.contains('show-mods')));
+// Bouton « Sons » : coupe ou remet tous les sons ; le choix reste sur l'appareil, à part de la partie (réglage « earthlife.son »).
+function syncSoundButton() {
+  const on = son.on;
+  const b = $('sound-toggle');
+  b.setAttribute('aria-pressed', String(on));
+  b.setAttribute('aria-label', on ? 'Couper les sons' : 'Remettre les sons');
+  b.querySelector('.small-text').textContent = on ? 'Sons' : 'Muet';
+  icons.setIcon(b.querySelector('.small-icon'), on ? 'son' : 'son-coupe');
+  // Téléphone en portrait : le même réglage, en ligne de la fiche du lieu (index.html).
+  const row = $('sound-row');
+  row.setAttribute('aria-pressed', String(on));
+  row.querySelector('.sound-row-text').textContent = on ? 'Sons activés' : 'Sons coupés';
+  icons.setIcon(row.querySelector('.small-icon'), on ? 'son' : 'son-coupe');
+}
+$('sound-toggle').hidden = !son.available; // navigateur sans Web Audio : pas de bouton
+$('sound-row').hidden = !son.available;
+$('sound-toggle').addEventListener('click', () => { son.toggle(); syncSoundButton(); });
+$('sound-row').addEventListener('click', (e) => { e.stopPropagation(); son.toggle(); syncSoundButton(); }); // sans refermer la fiche
+son.onChange?.(syncSoundButton);
+syncSoundButton();
 $('conditions').addEventListener('click', () => $('mods-toggle').click());
 $('quest').addEventListener('click', () => {
   const open = !$('quest').classList.contains('open');
@@ -700,6 +730,7 @@ function toMenu() {
   minimap.close();
   $('hud').classList.add('hidden');
   $('menu').classList.remove('hidden');
+  son.silence();
   if (session) {
     session.paused = true;
     if (session.action) cancelAction(session);
@@ -1262,6 +1293,7 @@ function buildSession(place, origin, home, store, grid, loader, chunks, start, l
   atmosphere.state.onLightning = () => {
     if (!session?.player) return;
     session.director.alertAll(session.player, 60);
+    son.lightning();
     toast('Un éclair te révèle aux zombies !', 2, 'danger');
   };
   applyConditions();
@@ -1544,8 +1576,10 @@ function step(s, inp, dt) {
   s.spottedRecently = Math.max(0, (s.spottedRecently ?? 0) - dt);
   if (events.some((e) => e.type === 'bitten')) {
     s.lastBite = 3;
+    son.play('bite');
     if (s.action && !s.action.inside) cancelAction(s);
   }
+  if (events.some((e) => e.type === 'trap')) son.play('trap');
   s.lastBite = Math.max(0, (s.lastBite ?? 0) - dt);
   // 10. Refuge : horloge de nuit, vagues, brèches, pièges, intrusions, soins, réserve.
   const mode = $('time-mode').value;
@@ -1556,6 +1590,14 @@ function step(s, inp, dt) {
   }));
   // Ville : zombies prêtés par les pâtés, contre-attaque, nuits, compteurs et fin de ville.
   city.step(s, dt);
+  // Sons : météo, vie du lieu, pas, voix des zombies, cœur qui bat (le sol sous les pieds n'est cherché qu'à chaque pas).
+  const indoors = inside || !!s.interior?.entered;
+  son.update(dt, {
+    weather: w, isNight: s.isNight, daylight: atmosphere.state.daylight, density, indoor: indoors, sheltered, asleep: asleep(s),
+    health: p.health, maxHealth: PLAYER.maxHealth, yaw: s.cameraYaw, player: p, zombies: s.director.zombies,
+    wet: w.kind === 'rain' || w.kind === 'storm', fire: inside && !!r.base?.upgrades?.includes('feu'),
+    surface: () => surfaceUnder(s.store, p.x, p.z, { indoor: indoors, snowing: w.kind === 'snow', fallback: density < 0.12 ? 'herbe' : 'bitume' }),
+  });
   // 11. Champ de distances de la horde, calculé par morceaux.
   if (!s.field.ready) s.field.step(4000);
   // 12. Sac perdu, ramassé en passant ; ta voiture posée sur le sol.
@@ -1782,6 +1824,12 @@ function updateActions(s, inp, dt, before) {
   }
   const prev = a.t;
   a.t += dt;
+  // Bruit de l'action en cours : frottements pour une fouille ou une cueillette, clapotis pour l'eau, grésillement pour la cuisine,
+  // hache ou marteau pour le reste (son-logic.js : actionSound).
+  if (a.id !== 'sleep') {
+    const sound = actionSound(a, { cooking: a.id === 'craft' && RECIPES[a.arg]?.requires === 'feu' });
+    if (Math.floor(a.t / sound.every) !== Math.floor(prev / sound.every)) son.play(sound.name, sound.opts);
+  }
   // Fouille et démontage font du bruit : les zombies proches l'entendent, deux fois par seconde.
   if (a.noise && Math.floor(a.t * 2) !== Math.floor(prev * 2)) s.director.alertAll(p, a.noise * s.mods.hearing);
   // Alarme de voiture (1 fois sur 5) : elle part au premier coup de clé.
@@ -1794,6 +1842,7 @@ function startAction(s, a) {
   const r = s.refuge;
   const base = { id: a.id, arg: a.arg, t: 0, slot: a.slot ?? 'primary', inside: r.inside, noise: 0 };
   if (a.id === 'door') {
+    son.play('door');
     interior.open(s, a.arg);
     return;
   }
@@ -1882,6 +1931,7 @@ function finishCraft(s, a) {
   const res = craft(a.arg, a.field ? fieldCtx(s) : craftCtx(s), s.survivor);
   toast(res.msg, 2.5, res.ok ? 'success' : '');
   if (res.ok) {
+    if (a.arg === 'feu') son.play('ignite');
     gainSkill(s, 'fabrication', craftXp(craftTime(a.arg)));
     saveStore.flush('fabrication');
   }
@@ -2088,6 +2138,7 @@ function useItem(s, use) {
   if (use === 'lure') { throwLure(s); return; }
   if (use === 'shoot') { shootFirearm(s); return; }
   const used = useBest(s.survivor, use, s.player);
+  if (used) son.play({ Manger: 'eat', Boire: 'drink', Soigner: 'rip' }[ITEMS[used].verb] ?? 'tic');
   if (used && ITEMS[used].sick) {
     toast("Eau de rivière : tu te sens malade. Fais-la bouillir au refuge, c'est mieux", 3.5, 'danger');
     return;
@@ -2141,6 +2192,7 @@ function throwLure(s) {
   }
   const door = r.inside ? r.openingsWorld()[0] : null;
   baseView.setLure({ x: at.x, z: at.z, fromX: door ? door.x : p.x, fromZ: door ? door.z : p.z, seconds: 20 });
+  son.play('swing');
   toast('Leurre lancé', 1.5, 'success');
   saveStore.markDirty();
 }
@@ -2172,7 +2224,10 @@ function attack(s) {
   const p = s.player, sv = s.survivor;
   const before = p.kills;
   const fx = skillEffects(s); // Combat : dégâts plus forts, arme qui s'use moins
+  const ready = p.attackTimer <= 0; // sinon le coup n'part pas : pas de bruit non plus
   const hits = playerAttack(p, s.director.zombies, s.grid, weaponDamage(sv) * fx.damageMul);
+  if (ready) son.play('swing');
+  if (hits.length) son.play('hit', { kill: p.kills > before, delay: 0.09 });
   if (s.action && !s.action.inside) cancelAction(s);
   if (hits.length) {
     const key = sv.weapon?.key;
@@ -2201,7 +2256,7 @@ function shootFirearm(s) {
   if (s.action && !s.action.inside) cancelAction(s);
   const ground = s.grid?.terrain?.enabled ? groundAt(s.grid, p.x, p.z) : 0;
   tirView.fire({ gun: res.gun, from: res.from, aim: res.aim, to: res.to, miss: res.hits === 0, y: ground, hold: SHOT.hold });
-  playShot(res.gun);
+  son.play('shot', { gun: res.gun });
   // Petite vague de nuit près du refuge : des errants arrivent du quartier, avant que le bruit n'attire tout le monde.
   const base = s.refuge.anchor();
   const dist = base ? Math.hypot(base.x - p.x, base.z - p.z) : null;
@@ -2282,9 +2337,11 @@ function runRefuge(s, a) {
     toast(res.msg, 6, 'success');
     openPanel(s);
   } else if (a.id === 'enter') {
+    son.play('door');
     openPanel(s);
     if (res.msg) toast(res.msg, 3, 'loot');
   } else if (a.id === 'exit') {
+    son.play('door');
     panel.close();
     saveNow('sortie');
   } else if (a.id === 'orphan') {
@@ -2305,18 +2362,25 @@ function handleRefugeEvents(s, events) {
         else toast('La nuit tombe : une horde va se former', 5, 'danger');
         break;
       case 'alert':
+        son.play('horn');
         if (s.action?.id === 'sleep') {
           cancelAction(s);
           toast('Impossible de dormir : la horde approche', 3, 'danger');
         }
         break;
       case 'wave-start':
+        son.play('boom');
         toast('La horde attaque !', 3, 'danger');
         break;
       case 'breach':
+        son.play('breach');
         toast(e.msg, 3, 'danger');
         break;
+      case 'trap':
+        son.play('trap');
+        break;
       case 'intrusion':
+        son.play('breach');
         toast(e.msg, 3.5, 'danger');
         // Éjecté dehors : panneau fermé, action du refuge interrompue.
         if (e.ejected) {
@@ -2614,6 +2678,8 @@ function onDeath(s) {
   city.onDeath(s);
   cancelAction(s);
   panel.close();
+  son.silence();
+  son.play('death');
   p.carrying = false;
   const lines = [s.deathCause && !s.lastBite ? s.deathCause : 'Les zombies ont eu raison de toi.'];
   const weaponKey = sv.weapon?.key;
@@ -2677,6 +2743,7 @@ function pressCard(id) {
 // Notification du HUD (seulement en partie).
 function toast(text, seconds = 2, kind = '', counts = null) {
   if (!session) return;
+  if (kind === 'loot') son.play('tic');
   if (finds.isOpen()) { findsToasts.push([text, seconds, kind, counts]); return; }
   hud.toast(text, seconds, kind, counts ? Object.keys(counts).filter((k) => counts[k] > 0) : null);
 }
@@ -3767,7 +3834,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, finds, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail } : {}),
+  saveStore, picker, renderer, finds, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail, son } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.

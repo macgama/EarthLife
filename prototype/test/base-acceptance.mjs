@@ -11,6 +11,7 @@
 // ecran : l'écran de jeu allégé du téléphone en portrait, seul sur une partie neuve ;
 // fabrication : fabriquer dehors (bouton, carte, durée, bruit, interruption) et les sacs de 36 et 60 places ;
 // partage : « Partager le jeu » et « Inviter ici » au menu, aperçu du lien, manifeste, arrivée d'un invité ; ordinateur et téléphone ;
+// sons : contexte audio au premier geste, pluie, pas, voix d'un zombie, coup, feu de camp du refuge, bouton « Sons » et réglage gardé, place du bouton ;
 // campagne : (ou campagne:desktop, campagne:mobile) cueillir, puiser, pêcher, boire de l'eau brute puis bouillie, cuisiner au feu de camp du refuge, à Pérouges en octobre ;
 // elle dure une vingtaine de minutes en CI : hors de la série complète, la CI la joue dans son propre travail, acceptance-campagne) ;
 // habitants : un habitant trouvé en fouillant rejoint le refuge, dans une ville à sauver (Pérouges), ordinateur et téléphone).
@@ -4178,6 +4179,166 @@ async function habitantsScenario(device) {
   await ctx.close();
 }
 
+// ---------- Sons (scénario 24) ----------
+// Les sons sont fabriqués en direct (Web Audio, pas de fichier) : on ne les entend pas ici, mais le moteur compte ce qu'il joue
+// (son.stats()). Contexte créé au premier geste, pluie de fond, pas, voix d'un zombie qui poursuit, coup, bouton « Sons » qui coupe
+// et remet tout, réglage gardé après un rechargement, bouton à sa place sur les écrans étroits.
+async function sonsScenario(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 24`;
+  const name = tag.replace(' ', '-');
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(`${START}&weather=rain&son=1`);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  const stats = () => ev(page, () => window.__earthlife.son.stats());
+  // Le réglage se lit sur le bouton « Sons » (ordinateur) ou sur la ligne de la fiche du lieu (téléphone en portrait).
+  const btn = () => ev(page, (phone) => {
+    const b = document.getElementById(phone ? 'sound-row' : 'sound-toggle');
+    return { hidden: b.hidden || b.offsetParent === null, label: b.querySelector(phone ? '.sound-row-text' : '.small-text').textContent, pressed: b.getAttribute('aria-pressed') };
+  }, device === 'mobile');
+  const toggle = async () => {
+    if (device === 'mobile') {
+      await page.tap('#conditions');
+      await page.tap('#sound-row');
+      await shot(page, `${name}-fiche-sons`);
+      await ev(page, () => document.getElementById('mods-toggle').click()); // referme la fiche
+    } else await page.click('#sound-toggle');
+  };
+  const onLabel = device === 'mobile' ? 'Sons activés' : 'Sons';
+  const offLabel = device === 'mobile' ? 'Sons coupés' : 'Muet';
+  check((await ev(page, () => window.__earthlife.son.available)) && (await stats()).state === 'none', `${tag} : Web Audio présent, aucun contexte avant le premier geste`);
+  const topBtn = await ev(page, () => { const b = document.getElementById('sound-toggle'); return { shown: !!b.offsetParent }; });
+  check(topBtn.shown === (device !== 'mobile'), `${tag} : bouton « Sons » ${device === 'mobile' ? 'absent de la barre du haut' : 'visible en bas à droite'}`);
+  if (device === 'mobile') {
+    await page.tap('#conditions');
+    const rowShown = await ev(page, () => { const r = document.getElementById('sound-row'); const q = r.getBoundingClientRect(); return { shown: !!r.offsetParent, inside: q.left >= 0 && q.right <= window.innerWidth, h: Math.round(q.height) }; });
+    check(rowShown.shown && rowShown.inside && rowShown.h >= 40, `${tag} : la fiche du lieu a sa ligne « Sons » (hauteur ${rowShown.h} px)`);
+    await ev(page, () => document.getElementById('mods-toggle').click());
+  }
+  const b0 = await btn();
+  check(!b0.hidden || device === 'mobile', `${tag} : commande des sons visible`);
+  check(b0.label === onLabel && b0.pressed === 'true', `${tag} : sons activés au départ (${b0.label})`);
+
+  // Premier geste : le contexte se crée et se réveille.
+  if (device === 'mobile') await page.touchscreen.tap(195, 430);
+  else await page.mouse.click(640, 300);
+  const state = await until(page, () => window.__earthlife.son.stats().state === 'running' ? 'running' : null, null, 15000);
+  check(state === 'running', `${tag} : contexte audio en marche après le premier geste (${state})`);
+
+  // Pluie forcée : la boucle de pluie démarre.
+  const rain = await until(page, () => window.__earthlife.son.stats().loops.includes('rain') ? 1 : null, null, 90000);
+  check(!!rain, `${tag} : sous la pluie, la boucle de pluie joue`);
+
+  const yaw = await openYaw(page, 14);
+  if (!check(yaw !== null, `${tag} : une direction libre trouvée autour du joueur`)) { await ctx.close(); return; }
+  // Pas : on marche 0,3 m par image, en allers-retours sur la ligne libre (un pas toutes les 1,55 m), jusqu'à 4 pas joués ; la machine
+  // lente de la CI (swiftshader) saute des images du jeu : on compte les pas joués, pas les images.
+  const steps0 = (await stats()).plays.step ?? 0;
+  const steps1 = await ev(page, async ([a, want]) => {
+    const { son, session } = window.__earthlife;
+    const p = session.player;
+    let dir = 1, along = 0;
+    for (let i = 0; i < 600 && (son.stats().plays.step ?? 0) < want; i++) {
+      await new Promise((r) => requestAnimationFrame(r));
+      p.x += Math.sin(a) * 0.3 * dir; p.z += Math.cos(a) * 0.3 * dir;
+      along += 0.3 * dir;
+      if (along > 12) dir = -1; else if (along < 0) dir = 1;
+    }
+    return son.stats().plays.step ?? 0;
+  }, [yaw, steps0 + 4]);
+  check(steps1 - steps0 >= 4, `${tag} : en marchant, au moins 4 pas joués (${steps1 - steps0})`);
+
+  // Un zombie qui poursuit à 20 m : sa voix se fait entendre.
+  const z = await putZombie(page, 20, yaw, 100);
+  check(!!z, `${tag} : un zombie posé à 20 m`);
+  await ev(page, () => { const zs = window.__earthlife.session.director.zombies; const t = zs.find((q) => q.tags?.test); if (t) t.state = 'chase'; });
+  const groans0 = (await stats()).plays.groan ?? 0;
+  const groan = await until(page, (n) => (window.__earthlife.son.stats().plays.groan ?? 0) > n ? 1 : null, groans0, 150000);
+  check(!!groan, `${tag} : le zombie qui poursuit gémit`);
+  await shot(page, `${name}-jeu`);
+
+  // Un coup : le geste s'entend.
+  await clearZombies(page);
+  await putZombie(page, 1.2, yaw, 100);
+  const sw0 = (await stats()).plays.swing ?? 0;
+  await ev(page, () => { window.__earthlife.session.player.attackTimer = 0; });
+  await press(page, device, 'Space', 'attack');
+  const swung = await until(page, (n) => (window.__earthlife.son.stats().plays.swing ?? 0) > n ? 1 : null, sw0, 90000);
+  check(!!swung, `${tag} : un coup donné joue le bruit du geste`);
+  await clearZombies(page);
+
+  // Refuge avec un feu de camp : il crépite dans la pièce (même sous la pluie qui étouffe le dehors) et se tait une fois dehors.
+  await debug(page, 'teleport', 1, 0);
+  await until(page, () => (window.__label('search') === null ? 1 : null), null, 10000);
+  const claim = await install(page, device, tag);
+  if (!check(!!claim, `${tag} : refuge installé pour le feu de camp`)) { await ctx.close(); return; }
+  check(await enterRefuge(page, device), `${tag} : entré au refuge`);
+  check(((await stats()).levels?.fire ?? 0) === 0, `${tag} : sans feu de camp, rien ne crépite`);
+  await ev(page, () => { const b = window.__earthlife.session.refuge.base; if (!b.upgrades.includes('feu')) b.upgrades.push('feu'); });
+  const crackle = await until(page, () => (window.__earthlife.son.stats().levels?.fire ?? 0) > 0 ? 1 : null, null, 60000);
+  check(!!crackle, `${tag} : le feu de camp du refuge crépite`);
+  await leave(page, device);
+  // Dehors, la consigne du feu tombe à zéro tout de suite ; la boucle elle-même n'est retirée qu'après 8 s de jeu sans bruit, ce que la
+  // machine lente de la CI (une image par seconde au refuge) met bien plus que 60 s à compter.
+  const quiet = await until(page, () => (window.__earthlife.son.stats().levels?.fire ?? 0) === 0 ? 1 : null, null, 60000);
+  check(!!quiet, `${tag} : dehors, le crépitement est coupé`);
+
+  // Coupé : la commande le dit, rien ne joue plus, le réglage est gardé sur l'appareil.
+  await toggle();
+  const b1 = await btn();
+  const saved = await ev(page, () => localStorage.getItem('earthlife.son'));
+  check(b1.label === offLabel && b1.pressed === 'false', `${tag} : « ${offLabel} » une fois coupé (${b1.label})`);
+  check(/"on":false/.test(saved ?? ''), `${tag} : réglage « coupé » gardé (${saved})`);
+  const before = await stats();
+  await ev(page, () => { const { son } = window.__earthlife; son.play('door'); son.play('swing'); });
+  await wait(500);
+  const mute = await stats();
+  check(JSON.stringify(mute.plays) === JSON.stringify(before.plays), `${tag} : coupé, aucun son ne part`);
+  check(mute.loops.length === 0 || (await until(page, () => window.__earthlife.son.stats().loops.length === 0 ? 1 : null, null, 20000)) === 1, `${tag} : les boucles de fond s'arrêtent`);
+  await shot(page, `${name}-muet`);
+
+  // Rechargement : le réglage est relu, les sons restent coupés ; on les remet d'un geste.
+  await page.reload();
+  check(await started(page), `${tag} : partie reprise après le rechargement`);
+  const b2 = await btn();
+  check(b2.label === offLabel, `${tag} : « ${offLabel} » relu après le rechargement (${b2.label})`);
+  check((await stats()).state === 'none', `${tag} : coupé, pas de contexte audio créé au geste`);
+  await toggle();
+  const b3 = await btn();
+  const again = await until(page, () => window.__earthlife.son.stats().state === 'running' ? 'running' : null, null, 15000);
+  check(b3.label === onLabel && again === 'running', `${tag} : remis, le contexte repart (${b3.label}, ${again})`);
+  check(/"on":true/.test(await ev(page, () => localStorage.getItem('earthlife.son')) ?? ''), `${tag} : réglage « activé » gardé`);
+
+  // Place des commandes sur les écrans étroits : rien du haut de l'écran ne se recouvre (jauges, puces, boutons, carte), tout reste
+  // dans l'écran, sans défilement latéral.
+  const sizes = device === 'mobile' ? [[360, 740], [390, 844], [411, 823], [740, 360], [844, 390]] : [[1280, 800], [820, 1180]];
+  for (const [w, h] of sizes) {
+    await page.setViewportSize({ width: w, height: h });
+    await wait(500);
+    const lay = await ev(page, () => {
+      const sel = ['#vitals', '#conditions', '#quest', '#online-pill', '#topbuttons button', '#minimap', '#zoom-out', '#zoom-in', '#inventory'];
+      const boxes = [];
+      for (const q of sel) for (const e of document.querySelectorAll(q)) {
+        if (e.hidden || e.classList.contains('hidden') || !e.offsetParent) continue;
+        const r = e.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) boxes.push({ id: e.id || q, left: r.left, right: r.right, top: r.top, bottom: r.bottom });
+      }
+      const inside = boxes.filter((r) => r.left < -0.5 || r.right > window.innerWidth + 0.5 || r.top < -0.5 || r.bottom > window.innerHeight + 0.5).map((r) => r.id);
+      const over = [];
+      for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], c = boxes[j];
+        if (a.left < c.right - 1 && c.left < a.right - 1 && a.top < c.bottom - 1 && c.top < a.bottom - 1) over.push(`${a.id}/${c.id}`);
+      }
+      return { ids: boxes.map((r) => r.id), outside: inside, over, scroll: document.documentElement.scrollWidth - window.innerWidth };
+    });
+    check(lay.outside.length === 0 && lay.over.length === 0 && lay.scroll <= 0, `${tag} : ${w}×${h} : commandes du haut dans l'écran, sans recouvrement ni défilement latéral (${lay.ids.join(' ')}${lay.outside.length ? `, hors écran : ${lay.outside.join(' ')}` : ''}${lay.over.length ? `, se recouvrent : ${lay.over.join(' ')}` : ''})`);
+    await shot(page, `${name}-ecran-${w}x${h}`);
+  }
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
@@ -4204,6 +4365,9 @@ try {
   } else if (only === 'habitants') {
     await habitantsScenario('desktop');
     await habitantsScenario('mobile');
+  } else if (only === 'sons') {
+    await sonsScenario('desktop');
+    await sonsScenario('mobile');
   } else if (only.startsWith('campagne')) {
     if (only !== 'campagne:mobile') await campagneScenario('desktop');
     if (only !== 'campagne:desktop') await campagneScenario('mobile');
@@ -4237,6 +4401,8 @@ try {
     if (!only) await partageScenario('mobile');
     await habitantsScenario(only === 'mobile' ? 'mobile' : 'desktop');
     if (!only) await habitantsScenario('mobile');
+    await sonsScenario(only === 'mobile' ? 'mobile' : 'desktop');
+    if (!only) await sonsScenario('mobile');
   }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {

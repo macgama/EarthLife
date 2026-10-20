@@ -13,7 +13,7 @@ export const RIEN_MUR = "Rien de mûr ici : c'est déjà cueilli";
 const CHERCHE = 2.5;
 const BORD = 0.4; // distance parcourue avant de relire la berge (m)
 
-// host : { current, save, saveStore, toast, floreView, openFinds, addLoot, lootNotes, isGone }
+// host : { current, save, saveStore, toast, floreView, openFinds, addLoot, lootNotes, isGone, sound } ; `sound(nom, options)` est facultatif.
 export function createCampagne(host) {
   // État de la partie en cours : saison (s.saison, posée au départ), berge lue à la dernière position, conseils déjà dits.
   const memo = (s) => (s.campagne ??= { x: NaN, z: NaN, near: false, rod: false, boil: false });
@@ -79,6 +79,7 @@ export function createCampagne(host) {
     if (a.id === 'fish') {
       if ((sv.inventory.canne ?? 0) <= 0) { host.toast(PECHE_TEXTS.rod, 2.5); return null; }
       if (coinEpuise(host.save.dismantled, coinOf(s))) { host.toast(PECHE_TEXTS.spent, 3); return null; }
+      host.sound?.('cast');
       return { ...base, time: a.time, label: PECHE_TEXTS.busy, icon: 'canne', noise: PECHE.noise };
     }
     const e = EAU[a.arg.source];
@@ -106,12 +107,14 @@ export function createCampagne(host) {
     if (!mûre(s, it.kind, it.id)) return;
     host.save.dismantled[it.id] = Date.now();
     host.floreView.hide(it.kind, it.id);
+    host.sound?.('pick');
     deliver(s, PLANTES[it.kind].done, 'Cueillette', rollCueillette(it.kind));
     host.saveStore.markDirty();
   }
 
   function finishWater(s, source) {
     const e = EAU[source];
+    host.sound?.('plop');
     deliver(s, e.done, 'Eau', { [e.item]: 1 }, source === 'puits' ? { puits: 1 } : null);
     // Une fois par partie : l'eau brute se boit bouillie (feu de camp du refuge).
     const m = memo(s);
@@ -128,6 +131,7 @@ export function createCampagne(host) {
     const caught = rollPeche({ weather: s.weather?.kind, night: !!s.isNight });
     if (!caught.poisson) { host.toast(PECHE_TEXTS.none, 2.5); return; }
     noterPrise(dismantled, coin);
+    host.sound?.('catch', { big: caught.poisson > 1 });
     deliver(s, caught.poisson > 1 ? 'Beau coup de pêche' : 'Poisson pêché', 'Pêche', caught);
     host.saveStore.markDirty();
   }
