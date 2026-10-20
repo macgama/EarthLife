@@ -3603,6 +3603,17 @@ async function fabricationScenario(device) {
   await hit(page, device, '#rp-tab-craft');
   const reinforced = await ev(page, () => [...document.querySelectorAll('#refuge-panel .rp-recipe')].find((li) => li.textContent.includes('Sac renforcé'))?.textContent.replace(/\s+/g, ' ').trim() ?? null);
   check(/Sac renforcé/.test(reinforced ?? '') && /Il faut un établi/.test(reinforced ?? '') && /60 places/.test(reinforced ?? ''), `${tag} : au refuge « ${reinforced} »`);
+  // Les deux nouveaux sacs ont leur image (webp livré), pas l'icône au trait de repli : on les amène à l'écran (chargement différé).
+  for (const label of ['Sac renforcé', "Sac d'écolier"]) {
+    await ev(page, (l) => [...document.querySelectorAll('#refuge-panel .rp-recipe')].find((li) => li.textContent.includes(l))?.scrollIntoView({ block: 'start' }), label);
+    await wait(800);
+  }
+  const bagArt = await ev(page, () => Object.fromEntries(["Sac d'écolier", 'Sac renforcé'].map((label) => {
+    const img = [...document.querySelectorAll('#refuge-panel .rp-recipe')].find((li) => li.textContent.includes(label))?.querySelector('img');
+    return [label, img ? { src: img.src.split('/').pop(), ok: img.complete && img.naturalWidth > 0 } : null];
+  })));
+  check(bagArt["Sac d'écolier"]?.src === 'sac_ecolier.webp' && bagArt["Sac d'écolier"].ok && bagArt['Sac renforcé']?.src === 'sac_renforce.webp' && bagArt['Sac renforcé'].ok,
+    `${tag} : images des deux sacs chargées (${JSON.stringify(bagArt)})`);
   await shot(page, `${name}-refuge-sac-renforce`);
   await leave(page, device);
   await ctx.close();
