@@ -295,6 +295,15 @@ test('bornes : base (identifiant, position, aire, hauteur, densité, décalage, 
   assert.deepEqual(b((x) => { x.upgrades = ['etabli', 'etabli', 'fusee', 'sirene']; }).upgrades, ['etabli', 'sirene']);
   assert.equal(b((x) => { x.lastReserve = '2026-10-01'; }).lastReserve, '2026-10-01');
   assert.equal(b((x) => { x.lastReserve = 'hier'; }).lastReserve, null);
+  // Habitants sauvés installés au refuge : absent d'une ancienne sauvegarde (ni champ, ni réparation), entier borné sinon.
+  assert.equal(check(() => {}).save.base.habitants, undefined);
+  assert.deepEqual(check(() => {}).fixes.filter((f) => /habitants/.test(f.path ?? f)), []);
+  assert.equal(b((x) => { x.habitants = 12; }).habitants, 12);
+  assert.equal(b((x) => { x.habitants = 12.6; }).habitants, 13);
+  assert.equal(b((x) => { x.habitants = 5000; }).habitants, 999);
+  assert.equal(b((x) => { x.habitants = -3; }).habitants, undefined);
+  assert.equal(b((x) => { x.habitants = 0; }).habitants, undefined);
+  assert.equal(b((x) => { x.habitants = 'beaucoup'; }).habitants, undefined);
   // Identifiants de la ville de secours ou malformés : refuge supprimé, coffre en caisse orpheline.
   for (const id of ['b12,4,0,1', 'b45.7571_4.83049', 'x45.75718_4.83049', 'b145.75718_4.83049', 42]) {
     const r = check((s) => { s.base.id = id; });

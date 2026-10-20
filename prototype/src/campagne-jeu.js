@@ -94,11 +94,12 @@ export function createCampagne(host) {
   }
 
   // Ce qui est ramassé va au sac ; s'il y manque de la place, la fenêtre « Trouvé » laisse choisir (sinon un simple message).
-  function deliver(s, title, kicker, found) {
+  // `extra` : images à montrer en plus de ce qui est rangé dans le sac (la notification de l'eau du puits montre le puits).
+  function deliver(s, title, kicker, found, extra = null) {
     const free = bagCapacity(s.survivor) - bagUsed(s.survivor);
     if (countsTotal(found) > free && host.openFinds(s, { title, kicker, found })) return;
     const res = host.addLoot(s.survivor, found);
-    host.toast(`${title} : ${countsLabel(found)}`, 3, 'loot', res.stored);
+    host.toast(`${title} : ${countsLabel(found)}`, 3, 'loot', extra ? { ...extra, ...res.stored } : res.stored);
     host.lootNotes(res);
   }
 
@@ -114,7 +115,7 @@ export function createCampagne(host) {
   function finishWater(s, source) {
     const e = EAU[source];
     host.sound?.('plop');
-    deliver(s, e.done, 'Eau', { [e.item]: 1 });
+    deliver(s, e.done, 'Eau', { [e.item]: 1 }, source === 'puits' ? { puits: 1 } : null);
     // Une fois par partie : l'eau brute se boit bouillie (feu de camp du refuge).
     const m = memo(s);
     if (source === 'riviere' && !m.boil) {
