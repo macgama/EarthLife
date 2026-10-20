@@ -10,8 +10,10 @@
 // voiture : voitures et carburant (réparer, siphonner, plein, trajet de Lyon à Pérouges), ordinateur et téléphone ;
 // ecran : l'écran de jeu allégé du téléphone en portrait, seul sur une partie neuve ;
 // fabrication : fabriquer dehors (bouton, carte, durée, bruit, interruption) et les sacs de 36 et 60 places ;
+// partage : « Partager le jeu » et « Inviter ici » au menu, aperçu du lien, manifeste, arrivée d'un invité ; ordinateur et téléphone ;
 // campagne : (ou campagne:desktop, campagne:mobile) cueillir, puiser, pêcher, boire de l'eau brute puis bouillie, cuisiner au feu de camp du refuge, à Pérouges en octobre ;
-// elle dure une vingtaine de minutes en CI : hors de la série complète, la CI la joue dans son propre travail, acceptance-campagne).
+// elle dure une vingtaine de minutes en CI : hors de la série complète, la CI la joue dans son propre travail, acceptance-campagne) ;
+// habitants : un habitant trouvé en fouillant rejoint le refuge, dans une ville à sauver (Pérouges), ordinateur et téléphone).
 // Sans carte graphique (swiftshader), une image prend de 50 à 150 ms et le pas de jeu est plafonné à 0,05 s : le jeu
 // va jusqu'à trois fois moins vite que la montre. On attend donc l'état du jeu, et les durées de la spec (fouille,
 // clouage, réparation, leurre) sont vérifiées en temps de jeu.
@@ -30,7 +32,7 @@ const only = process.env.ONLY ?? '';
 await mkdir(out, { recursive: true });
 
 // Serveur statique du prototype.
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json' };
 const server = http.createServer(async (req, res) => {
   const file = path.join(root, decodeURIComponent(new URL(req.url, 'http://x').pathname));
   if (!file.startsWith(root) || file.includes(`${path.sep}node_modules${path.sep}`)) { res.writeHead(403).end(); return; }
@@ -43,6 +45,8 @@ await new Promise((resolve) => server.listen(Number(process.env.PORT ?? 0), '127
 // sol=fin : tout le détail du sol, comme avec une carte graphique (sans le paramètre, le rendu logiciel de Chromium
 // garde le sol plat, chunks.js GROUND_DETAILS) ; une erreur du shader se lirait dans la console (scénario 8).
 const START = `http://127.0.0.1:${server.address().port}/index.html?lat=45.7578&lon=4.832&autostart=1&time=day&debug=1&menu=libre&sol=fin`;
+// Une ville à sauver, niveau Facile, à Pérouges (la partie démarre au refuge de la ville).
+const CITY_START = `http://127.0.0.1:${server.address().port}/index.html?lat=45.9034&lon=5.1795&name=P%C3%A9rouges&autostart=1&time=day&debug=1&menu=libre&sol=fin&niveau=facile`;
 
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 const failures = [];
@@ -3614,6 +3618,157 @@ async function fabricationScenario(device) {
   await ctx.close();
 }
 
+// ---------- Partager le jeu et inviter un ami ----------
+
+// Le bloc du menu (« Partager le jeu », « Inviter ici »), jamais sur l'écran de jeu ; l'appel de la feuille de partage du téléphone
+// (le test ne peut pas l'ouvrir : un faux navigator.share enregistre l'appel), le repli sur la copie du lien, le refus depuis une zone
+// privée ; l'aperçu du lien (balises, image, manifeste, icônes) tel que le serveur les sert ; l'arrivée d'un invité (?ami=1).
+async function partageScenario(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 22`;
+  const name = tag.replace(' ', '-');
+  const ctx = await newContext(device);
+  // Presse-papiers et feuille de partage : des faux qui enregistrent ce qu'on leur donne.
+  await ctx.addInitScript(() => {
+    window.__shared = { share: [], copy: [] };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (t) => { window.__shared.copy.push(t); } } });
+    Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: undefined });
+  });
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+
+  // En partie : rien de plus sur l'écran de jeu, ni dans la barre du haut.
+  const hud = await ev(page, () => ({
+    inHud: !!document.querySelector('#hud #share-game, #hud #share-invite, #hud #share-block'),
+    top: document.getElementById('topbuttons').textContent.replace(/\s+/g, ' ').trim(),
+  }));
+  check(!hud.inHud && !/partag|invit/i.test(hud.top), `${tag} : rien de partage sur l'écran de jeu (barre du haut : « ${hud.top} »)`);
+
+  await hit(page, device, '#quit');
+  check(!!(await until(page, () => (document.getElementById('menu').classList.contains('hidden') ? null : 1), null, 10000)), `${tag} : menu ouvert`);
+  if (device === 'mobile') {
+    const hidden = await ev(page, () => getComputedStyle(document.getElementById('share-block')).display === 'none');
+    check(hidden, `${tag} : bloc caché sur la feuille repliée (la carte garde l'écran)`);
+    await page.tap('#sheet-handle');
+    await until(page, () => (document.getElementById('menu').dataset.sheet === 'open' ? 1 : null), null, 5000);
+  }
+  await page.waitForSelector('#share-game', { state: 'visible', timeout: 5000 }).catch(() => {});
+  const btn = await ev(page, () => {
+    const box = (id) => { const e = document.getElementById(id); const r = e.getBoundingClientRect(); return { visible: !e.hidden && r.width > 0, h: Math.round(r.height), text: e.textContent.trim() }; };
+    return { game: box('share-game'), invite: box('share-invite') };
+  });
+  check(btn.game.visible && btn.game.text === 'Partager le jeu' && btn.game.h >= 44, `${tag} : bouton « ${btn.game.text} » de ${btn.game.h} px (44 px au moins)`);
+  check(btn.invite.visible && btn.invite.text === 'Inviter ici' && btn.invite.h >= 44, `${tag} : bouton « ${btn.invite.text} » de ${btn.invite.h} px, proposé parce qu'une partie est ouverte`);
+  const base = `${new URL(START).origin}/`;
+  const shared = () => ev(page, () => JSON.parse(JSON.stringify(window.__shared)));
+  const noteNow = () => ev(page, () => { const n = document.getElementById('share-note'); return { text: n.textContent, shown: !n.hidden, warn: n.classList.contains('warn') }; });
+  const noteChanged = (before) => until(page, (t) => { const n = document.getElementById('share-note'); return !n.hidden && n.textContent !== t ? 1 : null; }, before, 5000);
+  const row = await ev(page, () => { const a = document.getElementById('share-game').getBoundingClientRect(), b = document.getElementById('share-invite').getBoundingClientRect(); return { sameRow: Math.abs(a.top - b.top) < 2, w: Math.round(a.width), w2: Math.round(b.width) }; });
+  check(row.sameRow, `${tag} : les deux boutons côte à côte (${row.w} et ${row.w2} px)`);
+  await ev(page, () => document.getElementById('share-block').scrollIntoView({ block: 'center' }));
+  await shot(page, `${name}-bloc-partage`);
+
+  // Sans feuille de partage (ordinateur) : le lien du jeu, sans paramètre, est copié.
+  let before = (await noteNow()).text;
+  await hit(page, device, '#share-game');
+  await noteChanged(before);
+  let st = await shared();
+  check(st.share.length === 0 && st.copy.length === 1 && st.copy[0] === base, `${tag} : sans feuille de partage, lien copié : ${st.copy[0]}`);
+  let note = await noteNow();
+  check(note.shown && /Lien copié/.test(note.text) && !note.warn, `${tag} : message « ${note.text} »`);
+
+  // Avec la feuille de partage : un seul appel, titre, phrase du jeu et lien ; rien n'est copié de plus.
+  await ev(page, () => { navigator.share = async (d) => { window.__shared.share.push(d); }; });
+  await ev(page, () => { document.getElementById('share-note').textContent = ''; });
+  await hit(page, device, '#share-game');
+  await noteChanged('');
+  st = await shared();
+  check(st.share.length === 1 && st.copy.length === 1, `${tag} : la feuille de partage est appelée une fois, sans nouvelle copie`);
+  const g = st.share[0] ?? {};
+  check(g.title === 'EarthLife' && g.url === base && /vraie Terre/.test(g.text ?? '') && !/gratuit|€|euro|prix/i.test(g.text ?? ''),
+    `${tag} : partage du jeu : « ${g.title} », « ${g.text} », ${g.url}`);
+
+  // « Inviter ici » : position arrondie à 50 m, onglet « Partie libre », ami=1, aucun autre paramètre de la page ouverte.
+  await ev(page, () => { document.getElementById('share-note').textContent = ''; });
+  await hit(page, device, '#share-invite');
+  await noteChanged('');
+  st = await shared();
+  const inv = st.share[1] ?? {};
+  const u = new URL(inv.url ?? 'http://x/');
+  const lat = Number(u.searchParams.get('lat')), lon = Number(u.searchParams.get('lon'));
+  const onGrid = (v) => Math.abs(Math.round(v / 0.0005) * 0.0005 - v) < 1e-9;
+  check(st.share.length === 2 && `${u.origin}${u.pathname}` === base, `${tag} : invitation envoyée par la feuille de partage : ${inv.url}`);
+  check(onGrid(lat) && onGrid(lon) && Math.abs(lat - 45.7578) < 0.002 && Math.abs(lon - 4.832) < 0.002, `${tag} : position arrondie à 50 m (${lat}, ${lon})`);
+  check([...u.searchParams.keys()].sort().join() === 'ami,lat,lon,menu' && u.searchParams.get('menu') === 'libre' && u.searchParams.get('ami') === '1',
+    `${tag} : paramètres du lien : ${[...u.searchParams.keys()].sort().join(', ')} (ni debug, ni autostart, ni réglages de la page)`);
+  check(/même endroit|Rejoins-moi/.test(inv.text ?? '') && inv.title === 'EarthLife', `${tag} : phrase de l'invitation « ${inv.text} »`);
+  note = await noteNow();
+  check(note.shown && /Invitation envoyée/.test(note.text), `${tag} : message « ${note.text} »`);
+
+  // Zone privée : pas d'invitation depuis elle, et rien n'est envoyé.
+  await ev(page, async () => {
+    const m = await import('/src/privacy.js');
+    window.__earthlife.picker.setZones([m.makeZone(45.7578, 4.832, () => 0.5)]);
+  });
+  await ev(page, () => { document.getElementById('share-note').textContent = ''; });
+  await hit(page, device, '#share-invite');
+  await noteChanged('');
+  st = await shared();
+  note = await noteNow();
+  check(st.share.length === 2 && /zone privée/.test(note.text) && note.warn, `${tag} : depuis une zone privée, rien n'est envoyé (« ${note.text} »)`);
+  await ev(page, () => window.__earthlife.picker.setZones([]));
+
+  // Aperçu du lien tel que la page le déclare, et les fichiers tels que le serveur les sert.
+  const head = await ev(page, () => {
+    const m = (a, n) => document.querySelector(`meta[${a}="${n}"]`)?.content ?? null;
+    return {
+      title: m('property', 'og:title'), desc: m('property', 'og:description'), image: m('property', 'og:image'), url: m('property', 'og:url'),
+      w: m('property', 'og:image:width'), h: m('property', 'og:image:height'), card: m('name', 'twitter:card'), theme: m('name', 'theme-color'),
+      manifest: document.querySelector('link[rel="manifest"]')?.href ?? null, apple: document.querySelector('link[rel="apple-touch-icon"]')?.href ?? null,
+    };
+  });
+  check(!!head.title && !!head.desc && head.card === 'summary_large_image' && head.w === '1200' && head.h === '630' && head.theme === '#0a0d10',
+    `${tag} : balises d'aperçu : « ${head.title} », carte ${head.card}, image ${head.w} × ${head.h}`);
+  check(/^https:\/\/macgama\.github\.io\/EarthLife\/assets\/partage\/apercu\.jpg$/.test(head.image ?? '') && head.url === 'https://macgama.github.io/EarthLife/',
+    `${tag} : adresses absolues de l'aperçu : ${head.image}`);
+  const served = await ev(page, async ({ image, manifest, apple }) => {
+    const get = async (href) => { const r = await fetch(href); return { ok: r.ok, type: r.headers.get('content-type'), size: (await r.arrayBuffer()).byteLength, text: null }; };
+    // L'image publiée est celle du dépôt : même chemin, sur le serveur local.
+    const local = new URL(new URL(image).pathname.replace(/^\/EarthLife\//, ''), location.href).href;
+    const m = await (await fetch(manifest)).json();
+    const icons = await Promise.all(m.icons.map(async (i) => ({ sizes: i.sizes, purpose: i.purpose, ...(await get(new URL(i.src, manifest).href)) })));
+    return { image: await get(local), apple: await get(apple), name: m.name, start: new URL(m.start_url, manifest).href, icons };
+  }, head);
+  check(served.image.ok && served.image.type === 'image/jpeg' && served.image.size > 10_000 && served.image.size < 300_000, `${tag} : image d'aperçu servie (${served.image.type}, ${Math.round(served.image.size / 1024)} Ko)`);
+  check(served.name === 'EarthLife' && served.icons.length === 3 && served.icons.every((i) => i.ok && i.type === 'image/png') && served.apple.ok,
+    `${tag} : manifeste « ${served.name} » : icônes ${served.icons.map((i) => `${i.sizes}${i.purpose === 'maskable' ? ' adaptable' : ''}`).join(', ')}`);
+  check(new URL(served.start).pathname === '/' && served.apple.type === 'image/png', `${tag} : démarrage de l'application à la racine du jeu (${served.start})`);
+  await ctx.close();
+
+  // Arrivée d'un invité : le mot d'accueil, sur « Partie libre », avec le lieu du lien choisi ; sans ?ami=1, pas de mot d'accueil.
+  const guestCtx = await newContext(device);
+  const guest = await guestCtx.newPage();
+  watchErrors(guest, device === 'mobile' ? 'tél' : 'pc');
+  const origin = new URL(START).origin;
+  await guest.goto(`${origin}/index.html?lat=45.758&lon=4.832&menu=libre&ami=1`);
+  const hello = await until(guest, () => { const n = document.getElementById('invite-note'); return n && !n.hidden && n.getBoundingClientRect().height > 0 ? n.textContent.replace(/\s+/g, ' ').trim() : null; }, null, 30000);
+  check(/Un ami t'invite/.test(hello ?? '') && /Jouer ici/.test(hello ?? ''), `${tag} : mot d'accueil de l'invité : « ${hello} »`);
+  const tab = await ev(guest, () => ({ tab: document.getElementById('menu').dataset.tab, place: document.getElementById('place-line').textContent.replace(/\s+/g, ' ').trim() }));
+  check(tab.tab === 'libre' && /45\.758, 4\.832|Point choisi/.test(tab.place), `${tag} : onglet « Partie libre », départ choisi : « ${tab.place} »`);
+  await shot(guest, `${name}-invite-arrive`);
+  await guestCtx.close();
+  const plainCtx = await newContext(device);
+  const plain = await plainCtx.newPage();
+  watchErrors(plain, device === 'mobile' ? 'tél' : 'pc');
+  await plain.goto(`${origin}/index.html?lat=45.758&lon=4.832&menu=libre`);
+  await until(plain, () => (document.getElementById('place-name')?.textContent ? 1 : null), null, 30000);
+  const none = await ev(plain, () => document.getElementById('invite-note').hidden);
+  check(none, `${tag} : lien sans ?ami=1 : pas de mot d'accueil`);
+  await plainCtx.close();
+}
+
 // ---------- Vivre de la campagne (scénario 21) ----------
 
 // Pérouges en octobre (?mois=10 : l'automne, où tout est mûr) : tuiles enregistrées de l'Ain, avec bosquets, champs, deux puits
@@ -3736,6 +3891,7 @@ async function campagneScenario(device) {
   await actionDone(page);
   bag = await bagNow(page);
   check((bag.eau ?? 0) === (bagP.eau ?? 0) + 1, `${tag} : 1 eau au sac, « ${await toastSeen(page, 'Eau du puits', 5000)} »`);
+  await shot(page, `${name}-eau-du-puits`);
 
   // --- Berge : sans canne, on puise de l'eau brute ; avec, on peut pêcher (E), puiser passe sur R ---
   let shore = null, wl = null;
@@ -3775,6 +3931,7 @@ async function campagneScenario(device) {
   bag = await bagNow(page);
   const caught = (bag.poisson ?? 0) - fish0;
   check(caught === 1, `${tag} : 1 poisson au sac, « ${await toastSeen(page, 'Poisson pêché', 20000)} »`);
+  await shot(page, `${name}-poisson-peche`);
   if (caught !== 1) note(`${tag} : notifications ${JSON.stringify((await seen(page)).toasts.slice(-6))}, sac ${JSON.stringify(bag)}`);
 
   // --- Eau de rivière : malaise ; eau bouillie : aucun ---
@@ -3838,6 +3995,189 @@ async function campagneScenario(device) {
   await ctx.close();
 }
 
+// ---------- Des habitants à sauver (23) ----------
+// Une partie « Sauver sa ville » (Pérouges) : fouiller un bâtiment qui cache quelqu'un en trouve un (tirage forcé), il rejoint le
+// refuge et se tient devant la porte, le compteur de la ville monte d'un, la sauvegarde le garde ; un bâtiment qui ne cache
+// personne ne donne rien ; au-delà de 12 on voit un chiffre ; en partie libre, personne.
+
+// Bâtiment le plus proche qui cache encore quelqu'un (hiddenIn), pas encore fouillé, avec un point libre contre sa façade.
+const habSpot = (page, skip = []) => ev(page, async (skipIds) => {
+  const col = await import('/src/collision.js');
+  const { session: s, save } = window.__earthlife;
+  const p = s.player;
+  const home = s.store.buildings.find((b) => b.id === save.base?.id);
+  const list = s.store.buildings.map((b, i) => ({ b, i, d: Math.hypot(b.cx - p.x, b.cz - p.z) })).sort((a, b) => a.d - b.d);
+  for (const { b, i, d } of list) {
+    if (d > 300) break;
+    if (skipIds.includes(b.id) || save.searched[b.id] || b.id === save.base?.id) continue;
+    // Loin de la porte du refuge, où E propose d'y entrer plutôt que de fouiller.
+    if (home && Math.hypot(b.cx - home.cx, b.cz - home.cz) < 30) continue;
+    const hidden = s.city.hiddenIn(b.id);
+    if (hidden < 1) continue;
+    for (let rad = 2; rad < 40; rad += 0.5) {
+      for (let k = 0; k < 48; k++) {
+        const a = (k / 48) * Math.PI * 2;
+        const x = b.cx + Math.sin(a) * rad, z = b.cz + Math.cos(a) * rad;
+        if (!col.isFree(s.grid, x, z) || col.buildingNear(s.grid, x, z, 1.6) !== i) continue;
+        return { i, id: b.id, x, z, d: Math.round(d), hidden };
+      }
+    }
+  }
+  return null;
+}, skip);
+
+// Un bâtiment qui ne cache plus personne (ou qu'aucun pâté connu ne couvre), pour vérifier qu'il ne donne rien.
+const emptyBuilding = (page) => ev(page, () => {
+  const { session: s, save } = window.__earthlife;
+  const p = s.player;
+  return s.store.buildings
+    .filter((b) => !save.searched[b.id] && b.id !== save.base?.id && s.city.hiddenIn(b.id) === 0)
+    .sort((a, b) => Math.hypot(a.cx - p.x, a.cz - p.z) - Math.hypot(b.cx - p.x, b.cz - p.z))[0]?.id ?? null;
+});
+
+const habState = (page) => ev(page, () => {
+  const { session: s, save } = window.__earthlife;
+  const st = s.city?.stats();
+  const v = window.__earthlife.habitantsView;
+  const lab = document.querySelector('.habitant-label');
+  const r = lab && !lab.hidden ? lab.getBoundingClientRect() : null;
+  return {
+    habitants: save.base?.habitants ?? null, saved: s.city?.ville.saved ?? null, stats: st ? { saved: st.saved, toSave: st.toSave } : null,
+    drawn: v ? v.stats().drawn : 0, label: lab && !lab.hidden ? lab.textContent.replace(/\s+/g, ' ').trim() : null,
+    labelIn: r ? r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight : null,
+  };
+});
+
+async function habitantsScenario(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 23`;
+  const name = tag.replace(' ', '-');
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(CITY_START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  const base0 = await ev(page, () => ({ city: !!window.__earthlife.session.city, base: !!window.__earthlife.save.base, name: window.__earthlife.session.city?.ville.name }));
+  if (!check(base0.city && base0.base, `${tag} : ville à sauver ${base0.name}, refuge en place`)) { await ctx.close(); return; }
+  const first = await habState(page);
+  check(first.habitants === null && first.drawn === 0 && first.saved === 0, `${tag} : au départ, aucun habitant au refuge (${JSON.stringify(first)})`);
+
+  // Un bâtiment qui ne cache personne ne donne rien, même avec le tirage forcé.
+  const empty = await emptyBuilding(page);
+  if (empty) {
+    const none = await ev(page, (id) => { const c = window.__earthlife.session.city; c.state.forceFind = true; const n = c.rescueIn(id); c.state.forceFind = false; return n; }, empty);
+    check(none === 0, `${tag} : un bâtiment qui ne cache personne ne trouve personne (${none})`);
+  } else note(`${tag} : aucun bâtiment vide trouvé, contrôle sauté`);
+
+  // Fouille d'un bâtiment qui cache quelqu'un, tirage forcé.
+  const spot = await habSpot(page);
+  if (!check(!!spot, `${tag} : un bâtiment qui cache quelqu'un trouvé${spot ? ` (${spot.id}, ${spot.hidden} caché(s), à ${spot.d} m)` : ''}`)) { await shot(page, `${name}-echec`); await ctx.close(); return; }
+  await ev(page, () => { window.__earthlife.session.city.state.forceFind = true; });
+  await clearZombies(page);
+  await leave(page, device);   // la partie démarre dans le refuge : E y serait « Sortir »
+  await debug(page, 'teleport', spot.x, spot.z);
+  const label = await until(page, (id) => { const l = window.__label(id); return /^Fouiller/.test(l ?? '') ? l : null; }, 'search', 20000);
+  if (!check(!!label, `${tag} : bouton « ${label} »`)) { note(`${tag} : ${JSON.stringify(await menuOf(page))}`); await shot(page, `${name}-echec`); await ctx.close(); return; }
+  await press(page, device, 'KeyE', 'search');
+  const search = await searchSafely(page, device, spot.id);
+  if (!check(search.done, `${tag} : fouille terminée`)) { note(`${tag} : ${await state(page)}`); await shot(page, `${name}-echec`); await ctx.close(); return; }
+  const after = await until(page, () => (window.__earthlife.save.base?.habitants ? 1 : null), null, 8000);
+  check(!!after, `${tag} : un habitant rejoint le refuge`);
+  const found = await toastSeen(page, 'Un habitant se cachait ici', 40000);
+  check(!!found && /rejoint ton refuge/.test(found), `${tag} : notification « ${found} »`);
+  const hab1 = await habState(page);
+  check(hab1.habitants === 1 && hab1.saved === 1 && hab1.stats?.saved === 1, `${tag} : 1 habitant au refuge, 1 sauvé en ville (${JSON.stringify({ h: hab1.habitants, v: hab1.saved, s: hab1.stats })})`);
+  if (device !== 'mobile') {
+    const meta = await ev(page, () => document.getElementById('city-meta')?.firstElementChild?.textContent.replace(/\s+/g, ' ') ?? '');
+    check(/Habitants sauvés 1 \//.test(meta), `${tag} : le compteur de la ville affiche « ${meta} »`);
+  }
+  await ev(page, () => { window.__earthlife.session.city.state.forceFind = false; });
+
+  // Il se tient devant la porte du refuge.
+  const door = await ev(page, () => { const d = window.__earthlife.refuge.openingsWorld()[0]; return d ? { x: d.x, z: d.z, nx: d.nx, nz: d.nz } : null; });
+  if (!check(!!door, `${tag} : la porte du refuge est connue`)) { await ctx.close(); return; }
+  const stand = await openSpot(page, door.x + door.nx * 7, door.z + door.nz * 7, 0, 8);
+  await debug(page, 'teleport', stand?.x ?? door.x + door.nx * 7, stand?.z ?? door.z + door.nz * 7);
+  const drawn = await until(page, () => (window.__earthlife.habitantsView?.stats().drawn === 1 ? 1 : null), null, 20000);
+  check(!!drawn, `${tag} : l'habitant est dessiné devant la porte`);
+  const where = await ev(page, ([d]) => {
+    const v = window.__earthlife.habitantsView;
+    const m = v.crowd.meshes.body;
+    const arr = m.instanceMatrix.array;
+    return { x: arr[12], z: arr[14], d: Math.hypot(arr[12] - d.x, arr[14] - d.z), front: (arr[12] - d.x) * d.nx + (arr[14] - d.z) * d.nz };
+  }, [door]);
+  check(where.d > 1.5 && where.d < 6 && where.front > 0, `${tag} : à ${round(where.d, 1)} m de la porte, côté rue (${round(where.front, 1)} m devant le mur)`);
+  await wait(1200);
+  await shot(page, `${name}-habitant-au-refuge`);
+
+  // Coût de dessin : au plus 2 appels de plus que sans eux.
+  const calls = await ev(page, async () => {
+    const el = window.__earthlife, g = el.habitantsView.root;
+    const frame = () => new Promise((res) => requestAnimationFrame(() => res(el.renderer.info.render.calls)));
+    const median = async () => { const v = []; for (let i = 0; i < 5; i++) v.push(await frame()); return v.sort((a, b) => a - b)[2]; };
+    await frame();
+    const withThem = await median();
+    g.visible = false;
+    await frame();
+    const without = await median();
+    g.visible = true;
+    return { withThem, without };
+  });
+  check(calls.withThem - calls.without <= 2, `${tag} : ${calls.withThem - calls.without} appel(s) de dessin pour les habitants (${calls.withThem} contre ${calls.without})`);
+
+  // Beaucoup d'habitants : 12 silhouettes au plus, le reste en chiffre. Le chiffre n'est posé que si la porte est dans l'écran :
+  // selon la rue, la place libre trouvée plus haut peut être de l'autre côté d'un mur, hors du cadre d'un petit écran ; on
+  // se rapproche de la porte, côté rue, jusqu'à ce qu'il se montre.
+  await ev(page, () => { window.__earthlife.save.base.habitants = 40; });
+  const seen = () => {
+    const lab = document.querySelector('.habitant-label'), r = lab && !lab.hidden ? lab.getBoundingClientRect() : null;
+    return window.__earthlife.habitantsView.stats().drawn >= 1 && r && r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight ? 1 : null;
+  };
+  let many = await until(page, seen, null, 4000);
+  let tried = 0;
+  for (const dist of [5, 3.5, 8, 10]) {
+    if (many) break;
+    const near = await openSpot(page, door.x + door.nx * dist, door.z + door.nz * dist, 0, 3);
+    if (!near) continue;
+    tried++;
+    await debug(page, 'teleport', near.x, near.z);
+    many = await until(page, seen, null, 4000);
+  }
+  const crowd = await habState(page);
+  check(!!many && crowd.drawn === 12 && crowd.label === '+ 28 autres', `${tag} : 40 habitants : ${crowd.drawn} silhouettes et « ${crowd.label} »${tried ? ` (${tried} autre(s) place(s) essayée(s))` : ''}`);
+  check(crowd.labelIn === true, `${tag} : le chiffre est dans l'écran`);
+  await wait(2500);   // le fondu d'apparition des nouveaux venus (0,9 s de jeu) est fini
+  await shot(page, `${name}-habitants-nombreux`);
+  await ev(page, () => { window.__earthlife.save.base.habitants = 1; });
+  await until(page, () => (window.__earthlife.habitantsView.stats().drawn === 1 ? 1 : null), null, 10000);
+
+  // Sauvegarde : le nombre est relu après un rechargement.
+  await ev(page, () => window.__earthlife.saveStore.markDirty());
+  await until(page, () => !window.__earthlife.saveStore.dirty, null, 10000);
+  await page.reload();
+  if (!check(await started(page), `${tag} : partie reprise après le rechargement`)) { await ctx.close(); return; }
+  const again = await habState(page);
+  check(again.habitants === 1 && again.saved === 1, `${tag} : après rechargement : ${again.habitants} habitant au refuge, ${again.saved} sauvé en ville`);
+  const door2 = await ev(page, () => { const d = window.__earthlife.refuge.openingsWorld()[0]; return d ? { x: d.x, z: d.z, nx: d.nx, nz: d.nz } : null; });
+  const stand2 = await openSpot(page, door2.x + door2.nx * 7, door2.z + door2.nz * 7, 0, 8);
+  await debug(page, 'teleport', stand2?.x ?? door2.x + door2.nx * 7, stand2?.z ?? door2.z + door2.nz * 7);
+  const redrawn = await until(page, () => (window.__earthlife.habitantsView?.stats().drawn === 1 ? 1 : null), null, 20000);
+  check(!!redrawn, `${tag} : l'habitant est de nouveau devant la porte`);
+
+  // Partie libre : on n'en montre aucun (la ville est retirée un instant, comme dans une partie libre).
+  const free = await ev(page, async () => {
+    const s = window.__earthlife.session;
+    const rt = s.city;
+    s.city = null;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const drawn = window.__earthlife.habitantsView.stats().drawn;
+    s.city = rt;
+    return drawn;
+  });
+  check(free === 0, `${tag} : en partie libre, aucun habitant dessiné (${free})`);
+  await ctx.close();
+}
+
 // ---------- Déroulé ----------
 
 try {
@@ -3858,6 +4198,12 @@ try {
   } else if (only === 'fabrication') {
     await fabricationScenario('desktop');
     await fabricationScenario('mobile');
+  } else if (only === 'partage') {
+    await partageScenario('desktop');
+    await partageScenario('mobile');
+  } else if (only === 'habitants') {
+    await habitantsScenario('desktop');
+    await habitantsScenario('mobile');
   } else if (only.startsWith('campagne')) {
     if (only !== 'campagne:mobile') await campagneScenario('desktop');
     if (only !== 'campagne:desktop') await campagneScenario('mobile');
@@ -3887,6 +4233,10 @@ try {
     if (!only) await voitureScenario('mobile');
     await fabricationScenario(only === 'mobile' ? 'mobile' : 'desktop');
     if (!only) await fabricationScenario('mobile');
+    await partageScenario(only === 'mobile' ? 'mobile' : 'desktop');
+    if (!only) await partageScenario('mobile');
+    await habitantsScenario(only === 'mobile' ? 'mobile' : 'desktop');
+    if (!only) await habitantsScenario('mobile');
   }
   check(pageErrors.length === 0, `8 : aucune erreur de console ni exception de page${pageErrors.length ? ` : ${pageErrors.join(' | ')}` : ''}`);
 } catch (err) {

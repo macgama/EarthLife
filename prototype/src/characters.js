@@ -28,6 +28,8 @@ export const PLAYER_JACKET = 0xff7f1f;
 export const SURVIVOR_JACKET = 0x2bb3a3;
 // Ombres de contact réservées aux autres survivants, dans le maillage d'ombres commun.
 export const GUEST_SHADOWS = 24;
+// Ombres de contact des habitants du refuge (habitants-view.js), à la suite de celles des autres survivants.
+export const RESIDENT_SHADOWS = 12;
 
 // ---------- Géométrie ----------
 
@@ -88,8 +90,9 @@ function addOutlineNormals(g) {
 }
 
 // Joueur : veste et casquette orange (l'accent de l'interface, lisible de dessus), bas sombre, sac à dos olive, batte.
-// `jacket` : veste et casquette d'une autre couleur (sarcelle pour les autres survivants).
-export function playerGeometry({ jacket = PLAYER_JACKET } = {}) {
+// `jacket` : veste et casquette d'une autre couleur (sarcelle pour les autres survivants). `civil` : sans sac à dos ni batte
+// (les habitants sauvés).
+export function playerGeometry({ jacket = PLAYER_JACKET, civil = false } = {}) {
   const JACKET = jacket, PANTS = 0x3a3f46, SKIN = 0xd9a07a, DARK = 0x262b31, PACK = 0x5b6b3a, STRIP = 0xdfe3e6;
   const pieces = [];
   for (const [side, leg] of [[1, LEG_L], [-1, LEG_R]]) {
@@ -104,8 +107,10 @@ export function playerGeometry({ jacket = PLAYER_JACKET } = {}) {
   pieces.push({ geo: box(0.33, 0.1, 0.33, 0, 1.99, 0), color: JACKET }); // casquette
   pieces.push({ geo: box(0.28, 0.035, 0.14, 0, 1.955, 0.21), color: DARK }); // visière : sens du regard
   pieces.push({ geo: box(0.08, 0.05, 0.04, -0.1, 1.5, 0.2), color: STRIP, mask: GLOW }); // lampe de poitrine
-  pieces.push({ geo: box(0.32, 0.4, 0.18, 0, 1.3, -0.24), color: PACK });
-  pieces.push({ geo: new THREE.CylinderGeometry(0.07, 0.07, 0.36, 6).rotateZ(Math.PI / 2).translate(0, 1.54, -0.25), color: 0x8a7f5a });
+  if (!civil) {
+    pieces.push({ geo: box(0.32, 0.4, 0.18, 0, 1.3, -0.24), color: PACK });
+    pieces.push({ geo: new THREE.CylinderGeometry(0.07, 0.07, 0.36, 6).rotateZ(Math.PI / 2).translate(0, 1.54, -0.25), color: 0x8a7f5a });
+  }
   for (const [side, arm] of [[1, ARM_L], [-1, ARM_R]]) {
     const x = side * 0.31;
     pieces.push({ geo: prism(0.08, 0.07, 0.44, x, 1.32, 0), color: JACKET, part: arm });
@@ -113,8 +118,10 @@ export function playerGeometry({ jacket = PLAYER_JACKET } = {}) {
     pieces.push({ geo: box(0.1, 0.12, 0.11, x, 1.05, 0), color: DARK, part: arm });
   }
   // Batte dans la main droite, pointée vers l'avant et un peu vers le bas (garde basse).
-  const bat = new THREE.CylinderGeometry(0.048, 0.024, 0.86, 6).translate(0, 0.43, 0).rotateX(Math.PI / 2 + 0.52).translate(-0.31, 1.03, 0.04);
-  pieces.push({ geo: bat, color: 0x8b6a4a, part: ARM_R });
+  if (!civil) {
+    const bat = new THREE.CylinderGeometry(0.048, 0.024, 0.86, 6).translate(0, 0.43, 0).rotateX(Math.PI / 2 + 0.52).translate(-0.31, 1.03, 0.04);
+    pieces.push({ geo: bat, color: 0x8b6a4a, part: ARM_R });
+  }
   // Cargaison de la quête (caisse blanche à croix verte), sur le sac, visible une fois récupérée.
   pieces.push({ geo: box(0.46, 0.34, 0.32, 0, 1.34, -0.42), color: 0xf2f2ee, part: CARGO });
   pieces.push({ geo: box(0.26, 0.08, 0.02, 0, 1.34, -0.585), color: 0x2fae55, part: CARGO });
@@ -366,7 +373,7 @@ export function createCharacters({ lowPower = false } = {}) {
     zombies.castShadow = true;
     zombies.frustumCulled = false;
     zombies.count = 0;
-    blobs = new THREE.InstancedMesh(blobGeo, blobMat, capacity + 1 + GUEST_SHADOWS);
+    blobs = new THREE.InstancedMesh(blobGeo, blobMat, capacity + 1 + GUEST_SHADOWS + RESIDENT_SHADOWS);
     blobs.frustumCulled = false;
     blobs.count = 0;
     root.add(zombies, blobs);
@@ -432,23 +439,34 @@ export function createCharacters({ lowPower = false } = {}) {
 
   // Ombres de contact des autres survivants (others-view.js), après celles du joueur et des zombies : aucun appel
   // de dessin de plus. `list` : [{ x, z, r }], 24 au plus ; gardée pour les images suivantes.
-  const guests = new Float32Array(GUEST_SHADOWS * 3);
-  let guestCount = 0, guestFrom = 1;
+  // Les habitants du refuge (habitants-view.js) viennent après eux : mêmes maillage et appel de dessin.
+  const guests = new Float32Array(GUEST_SHADOWS * 3), residents = new Float32Array(RESIDENT_SHADOWS * 3);
+  let guestCount = 0, residentCount = 0, guestFrom = 1;
   function writeGuests(from) {
     guestFrom = from;
     for (let i = 0; i < guestCount; i++) writeBlob(from + i, guests[i * 3], guests[i * 3 + 1], guests[i * 3 + 2]);
-    blobs.count = from + guestCount;
+    for (let i = 0; i < residentCount; i++) writeBlob(from + guestCount + i, residents[i * 3], residents[i * 3 + 1], residents[i * 3 + 2]);
+    blobs.count = from + guestCount + residentCount;
     blobs.instanceMatrix.needsUpdate = true;
   }
-  function setGuests(list) {
-    guestCount = 0;
+  const blobRoom = () => Math.min(guestFrom, blobs.instanceMatrix.count - GUEST_SHADOWS - RESIDENT_SHADOWS);
+  function fill(target, cap, list) {
+    let n = 0;
     for (const g of list ?? []) {
-      if (guestCount >= GUEST_SHADOWS) break;
+      if (n >= cap) break;
       if (!Number.isFinite(g?.x) || !Number.isFinite(g?.z)) continue;
-      guests.set([g.x, g.z, Number.isFinite(g.r) ? g.r : 0.55], guestCount * 3);
-      guestCount++;
+      target.set([g.x, g.z, Number.isFinite(g.r) ? g.r : 0.55], n * 3);
+      n++;
     }
-    writeGuests(Math.min(guestFrom, blobs.instanceMatrix.count - GUEST_SHADOWS));
+    return n;
+  }
+  function setGuests(list) {
+    guestCount = fill(guests, GUEST_SHADOWS, list);
+    writeGuests(blobRoom());
+  }
+  function setResidents(list) {
+    residentCount = fill(residents, RESIDENT_SHADOWS, list);
+    writeGuests(blobRoom());
   }
 
   function sync(s, dt, camera, daylight = 1) {
@@ -600,7 +618,7 @@ export function createCharacters({ lowPower = false } = {}) {
 
   // Matériaux du joueur, partagés avec la foule des autres survivants (createSurvivorCrowd) : même programme.
   const shared = { body: playerMat, outline: outlineMat, reduceMotion };
-  return { root, sync, shake, reduceMotion, shared, setGuests };
+  return { root, sync, shake, reduceMotion, shared, setGuests, setResidents };
 }
 
 // ---------- Autres survivants (jeu à plusieurs) ----------
@@ -609,7 +627,7 @@ export function createCharacters({ lowPower = false } = {}) {
 // un pour le contour (2 appels de dessin). Avec `characters` (createCharacters), les matériaux du joueur sont
 // partagés (même programme, liseré et lampe suivent le jour et la nuit) ; sans lui, la foule a les siens (tests).
 // Pas d'ombre portée (budget de la spec 9.3, O18) : leurs ombres de contact vont dans le maillage commun.
-export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVOR_JACKET, characters = null } = {}) {
+export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVOR_JACKET, characters = null, civil = false } = {}) {
   const root = new THREE.Group();
   root.name = 'survivants';
   const own = characters?.shared ? null : humanUniforms();
@@ -620,7 +638,7 @@ export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVO
     own.uGlow.value.setHex(0xfff0d8).multiplyScalar(0.15);
   }
   const reduceMotion = characters?.reduceMotion ?? characters?.shared?.reduceMotion ?? null;
-  const geo = playerGeometry({ jacket });
+  const geo = playerGeometry({ jacket, civil });
   instanced(geo, capacity);
   const body = new THREE.InstancedMesh(geo, bodyMat, capacity);
   const outline = new THREE.InstancedMesh(geo, outlineMat, capacity);
@@ -640,7 +658,7 @@ export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVO
   const seen = new Set();
   const FLAG_RUN = 1, FLAG_CARRY = 4, FLAG_DOWN = 8;
 
-  // list : [{ key, x, z, yaw, flags, alpha }] (24 au plus, les plus proches d'abord). Les coups des autres ne sont
+  // list : [{ key, x, z, y?, yaw, flags, alpha }] (24 au plus, les plus proches d'abord ; y : hauteur du sol, 0 par défaut). Les coups des autres ne sont
   // pas animés (spec 2.1) : marche, course, caisse portée et chute seulement.
   function sync(list, dt) {
     const t = performance.now() / 1000;
@@ -674,7 +692,7 @@ export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVO
         moving && !calm ? Math.sin(st.phase) * 0.05 * Math.min(1, pace) : 0,
       );
       quat.setFromEuler(euler);
-      pos.set(g.x, moving ? Math.abs(Math.sin(st.phase)) * 0.08 * pace : 0, g.z);
+      pos.set(g.x, (g.y ?? 0) + (moving ? Math.abs(Math.sin(st.phase)) * 0.08 * pace : 0), g.z);
       scl.set(1, moving || st.down ? 1 : 1 + Math.sin(t * 2 + i) * 0.01, 1);
       m4.compose(pos, quat, scl);
       body.setMatrixAt(i, m4);

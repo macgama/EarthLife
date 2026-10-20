@@ -6,7 +6,7 @@ import {
   apportion, zombiesFor, reserveFor, nestSize, heartWaves, levelSummary, flagNights, supplyFor, tilePools,
   startVille, restartVille, placeTile, startUnit, setCoeur, blockInfo, counters, checkVille, cityStatus, zombiesLeft,
   lend, giveBack, recallAll, kill, take, drawReserve, settle, move, regrow, fallFlag, dropFlag, openNest, plantFlag,
-  liberate, othersCleared, volunteersNight, homeWeights, hiddenByBuilding, takeHome, canChangeLevel, changeLevel,
+  liberate, rescueOne, othersCleared, volunteersNight, homeWeights, hiddenByBuilding, takeHome, canChangeLevel, changeLevel,
   finishUnit, villeLine, compactVille, rowCount, rekeyVille, watched, keyPoint, unitKeyOf,
   memberOf, censusWeights, censusBlocks, unitTilesMissing, ROW_LENGTH,
 } from '../src/quartier.js';
@@ -1028,4 +1028,105 @@ test('début de ville refusé sans recensement ou sur une entrée invalide', () 
   assert.equal(counters(v).zombies, 0);
   assert.equal(cityStatus(v), 'nettoyee');
   assert.equal(ETAT.libere, 3);
+});
+
+// ---------- Habitants trouvés un à un (« Des habitants à sauver ») ----------
+
+test('rescueOne : un caché devient un sauvé, la conservation tient, jamais plus que les cachés du pâté', () => {
+  const v = perougesVille('facile');
+  const key = keysOf(v).find((k) => blockInfo(v, k).hidden >= 3);
+  const before = blockInfo(v, key).hidden;
+  const saved0 = counters(v).saved;
+  assert.equal(rescueOne(v, key), 1);
+  assert.equal(blockInfo(v, key).hidden, before - 1);
+  assert.equal(counters(v).saved, saved0 + 1);
+  ok(v);
+  // Aucun pâté libéré par ce geste : l'état, les zombies et le nid ne bougent pas.
+  assert.notEqual(blockInfo(v, key).state, 'libere');
+  // On en trouve jusqu'au dernier, puis plus aucun ; les sauvés ne dépassent jamais les cachés d'origine.
+  let n = 1;
+  while (rescueOne(v, key)) n++;
+  assert.equal(n, before);
+  assert.equal(blockInfo(v, key).hidden, 0);
+  assert.equal(rescueOne(v, key), 0);
+  assert.equal(counters(v).saved, saved0 + before);
+  ok(v);
+  // Clé inconnue : rien.
+  assert.equal(rescueOne(v, 'b45.0_5.0'), 0);
+});
+
+test('rescueOne : ton propre pâté garde ta place ; un pâté libéré n\'en cache plus', () => {
+  const v = perougesVille('facile');
+  const home = keysOf(v).find((k) => blockInfo(v, k).hidden >= 2);
+  assert.ok(takeHome(v, home));
+  const hidden = blockInfo(v, home).hidden; // sans toi
+  let got = 0;
+  while (rescueOne(v, home)) got++;
+  assert.equal(got, hidden);
+  assert.equal(rowOf(v, home)[ROW.H], 1, 'tu restes caché jusqu\'à la libération de ton pâté');
+  ok(v);
+  // La libération sort ce qui reste (toi compris : tu n'es pas compté parmi les sauvés), sans compter deux fois les trouvés.
+  const saved = counters(v).saved;
+  assert.equal(liberate(v, home), 0);
+  assert.equal(counters(v).saved, saved);
+  assert.equal(rescueOne(v, home), 0);
+  ok(v);
+  // Un pâté libéré d'office n'en cache plus.
+  const w = perougesVille('facile');
+  const empty = keysOf(w).find((k) => blockInfo(w, k).zombies === 0 && blockInfo(w, k).hidden > 0);
+  liberate(w, empty);
+  assert.equal(rescueOne(w, empty), 0);
+});
+
+test('rescueOne puis liberate : trouvés et libérés font ensemble tous les cachés du pâté, une seule fois', () => {
+  const v = perougesVille('facile');
+  const key = keysOf(v).find((k) => blockInfo(v, k).hidden >= 4);
+  const total = blockInfo(v, key).hidden;
+  assert.equal(rescueOne(v, key) + rescueOne(v, key), 2);
+  kill(v, key, lend(v, key, 1000, { nest: true })); // le pâté est nettoyé : il peut être libéré
+  assert.equal(liberate(v, key), total - 2);
+  assert.equal(blockInfo(v, key).saved, total);
+  assert.equal(counters(v).saved, total);
+  assert.equal(v.units.c01290.sv, total);
+  ok(v);
+});
+
+test('rescueOne alimente les volontaires : 1 zombie abattu par nuit pour 10 sauvés', () => {
+  const v = perougesVille('facile');
+  const keys = keysOf(v).filter((k) => blockInfo(v, k).hidden > 0);
+  let n = 0;
+  for (const k of keys) while (n < 10 && rescueOne(v, k)) n++;
+  assert.equal(n, 10);
+  const red = keysOf(v).filter((k) => blockInfo(v, k).state === 'rouge' && blockInfo(v, k).zombies > blockInfo(v, k).nest);
+  const night = volunteersNight(v, { night: '2026-10-19', frontier: red });
+  assert.equal(night.killed, 1);
+  ok(v);
+});
+
+test('rescueOne puis changeLevel : les trouvés restent sauvés, la conservation tient', () => {
+  const v = perougesVille('difficile');
+  const keys = keysOf(v).filter((k) => blockInfo(v, k).hidden >= 2).slice(0, 5);
+  let n = 0;
+  for (const k of keys) { rescueOne(v, k); rescueOne(v, k); n += 2; }
+  assert.equal(counters(v).saved, n);
+  assert.ok(canChangeLevel(v));
+  assert.ok(changeLevel(v, 'facile'), 'les trouvés ne bloquent pas le changement de niveau');
+  assert.equal(counters(v).saved, n);
+  ok(v);
+  assert.ok(changeLevel(v, 'difficile'));
+  assert.equal(counters(v).saved, n);
+  ok(v);
+});
+
+test('rescueOne : un pâté où des habitants ont été trouvés n\'est plus intact (l\'allègement le garde)', () => {
+  const v = perougesVille('facile');
+  const key = keysOf(v).find((k) => blockInfo(v, k).hidden >= 2);
+  const before = rowCount(v);
+  rescueOne(v, key);
+  const copy = structuredClone(v);
+  compactVille(copy);
+  assert.ok(rowOf(copy, key), 'la rangée du pâté est gardée');
+  assert.equal(rowOf(copy, key)[ROW.H0] - rowOf(copy, key)[ROW.H], 1);
+  assert.ok(before >= rowCount(copy));
+  ok(copy);
 });

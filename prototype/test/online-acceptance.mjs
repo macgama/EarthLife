@@ -2141,7 +2141,7 @@ await scenario('O28', 'salon du menu', async () => {
     return {
       tab: $('menu').dataset.tab, fronts: fronts.length, checked: fronts.filter((f) => f.getAttribute('aria-checked') === 'true').map((f) => f.dataset.level),
       names: fronts.map((f) => f.querySelector('.front-name')?.textContent), cta: $('salon-cta-label')?.textContent ?? null, ctaShown: shown($('salon-cta')),
-      play: shown($('play')), tabs: shown($('menu-tabs')), days: $('salon-days')?.textContent ?? '', card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null,
+      play: shown($('play')), share: shown($('share-game')), tabs: shown($('menu-tabs')), days: $('salon-days')?.textContent ?? '', card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null,
       scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth,
       link: $('salon-link-text')?.textContent ?? null, note: $('salon-note')?.hidden === false ? $('salon-note').textContent : null,
     };
@@ -2161,6 +2161,9 @@ await scenario('O28', 'salon du menu', async () => {
   check(first.ok && first.v.names.join('|') === 'Facile|Moyen|Difficile' && first.v.cta === 'Rejoindre · Facile' && first.v.checked.join() === 'facile', `N : trois fronts, bouton « ${first.v?.cta} »`);
   check(first.ok && /^\d+ jours? restants?$/.test(first.v.days), `N : jours restants « ${first.v?.days} »`);
   await shot(N, 'o28-ordi-salon');
+  // « Partager le jeu » est aussi sur « À plusieurs » (src/partage.js), avant le gros bouton ; « Inviter ici » attend une partie ouverte.
+  const shareTab = await ev(N, () => { const g = document.getElementById('share-game'), c = document.getElementById('salon-cta'); return { before: Number(getComputedStyle(g.parentElement).order) < Number(getComputedStyle(c).order), invite: !document.getElementById('share-invite').hidden }; });
+  check(first.ok && first.v.share && shareTab.before && !shareTab.invite, `N : « Partager le jeu » sur « À plusieurs », « Inviter ici » caché sans partie (${JSON.stringify({ share: first.v?.share, ...shareTab })})`);
   await click(N, '#fronts .front[data-level="moyen"]');
   const moyen = await seen((v) => v.cta === 'Rejoindre · Moyen');
   check(moyen.ok && moyen.v.checked.join() === 'moyen', `N : « Moyen » touché, bouton « ${moyen.v?.cta} »`);
@@ -2624,6 +2627,82 @@ await scenario('O32', 'départ en voiture vers une autre ville pendant la saison
     await closeCtx(A);
   } finally {
     try { wNet.close(); wOnline.bye(); } catch { /* déjà fermé */ }
+  }
+});
+
+// =====================================================================================================
+// O33 : file d'attente d'un niveau plein (PR « File d'attente ») : serveur à 2 places, vrais clients (online.js, net/season.js) en Node.
+// Deux joueurs sont assis dans la ville ; un troisième entre dans la file (rang 1), un vieux client sans `q` reçoit `full` ; le premier
+// part, la place est gardée pour le troisième (`go`), il la prend (`claim`) : deux sièges, aucune place gardée ; un quatrième qui quitte la
+// file ne dépasse jamais les 2 places.
+// =====================================================================================================
+await scenario('O33', 'file d\'attente d\'un niveau plein', async () => {
+  const { createOnline } = await load('prototype/src/online.js');
+  const { createSeasonNet } = await load('prototype/src/net/season.js');
+  const small = await startDevServer({ port: SRV_PORT ? SRV_PORT + 2 : 0, store: 'memory', bots: 0, origins: [ORIGIN], seasonSeats: 2 });
+  const SERVER = `http://127.0.0.1:${small.port}`;
+  const mem = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => { m.set(k, String(v)); }, removeItem: (k) => { m.delete(k); } }; };
+  class OriginWs extends WebSocket { constructor(u) { super(u, { headers: { Origin: ORIGIN } }); } }
+  const post = async (route, body) => {
+    const r = await fetch(`${SERVER}${route}`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
+    return { status: r.status, body: await r.json() };
+  };
+  const SEED = { key: 'c01283', name: 'Pérouges', place: { lat: 45.9, lon: 5.2, name: 'Pérouges' }, pop: 600, src: 'insee', approx: false, zl: 8, tiles: { '14/8500/5800': 3000, '14/8501/5800': 1000 }, failed: [], mode: 'entiere' };
+  const players = [];
+  const player = async (n) => {
+    const email = `file${n}@exemple.test`, pw = `essai-file-quai-${n}${n}${n}`;
+    await post('/v1/account/code', { v: 1, email, why: 'signup' });
+    const ver = await post('/v1/account/verify', { v: 1, email, code: small.mailbox.lastCode(email), password: pw, tok: null, age: true });
+    const online = createOnline({ server: SERVER, storage: mem(), WebSocketImpl: OriginWs, session: () => ver.body.ses });
+    online.start();
+    online.choose(true);
+    for (let i = 0; i < 100 && !online.live; i++) await wait(50);
+    const net = createSeasonNet({ server: SERVER, session: () => ver.body.ses, online });
+    const p = { n, online, net, queue: [], sv: [] };
+    online.on('sv', (m) => p.sv.push(m));
+    players.push(p);
+    check(online.live && ver.status === 200, `P${n} : compte et connexion en ligne`);
+    return p;
+  };
+  const used = () => small.seasons.debug().levelCities('facile').reduce((t, w) => t + w.subs.size, 0);
+  const settle = async (pred, ms = 6000) => { const end = Date.now() + ms; while (!pred() && Date.now() < end) await wait(50); return pred(); };
+  try {
+    const [p1, p2, p3, p4] = [await player(1), await player(2), await player(3), await player(4)];
+    for (const p of [p1, p2, p3, p4]) check((await p.net.join('facile')).ok, `P${p.n} : inscrit en « Facile »`);
+    check((await p1.net.seed(SEED)).ok, 'P1 : la ville est ouverte');
+    for (const p of [p2, p3, p4]) check((await p.net.enter(SEED.key)).ok, `P${p.n} : dans la ville`);
+    check((await p1.net.open(SEED.key, {})).ok && (await p2.net.open(SEED.key, {})).ok, 'P1 et P2 : assis (2 places sur 2)');
+    check(used() === 2, `2 sièges (${used()})`);
+    // P3 : niveau plein → la file ; l'ouverture reste en attente.
+    let done3 = null;
+    const open3 = p3.net.open(SEED.key, { queue: (q) => p3.queue.push(q) }).then((r) => { done3 = r; return r; });
+    check(await settle(() => p3.queue.length > 0), 'P3 : la file répond');
+    check(p3.queue[0]?.state === 'wait' && p3.queue[0].rank === 1 && p3.queue[0].size === 1, `P3 : « 1er sur 1 » (${JSON.stringify(p3.queue[0])})`);
+    await wait(500);
+    check(done3 === null, 'P3 : l\'ouverture attend (pas de « complet »)');
+    // P4, vieux client : pas de `q`, il reçoit `full` comme avant la file.
+    p4.online.season({ o: 'in', c: SEED.key });
+    check(await settle(() => p4.sv.some((m) => m.o === 'full')), 'P4 (sans `q`) : reçoit `full`');
+    const full = p4.sv.find((m) => m.o === 'full');
+    check(full?.used === 2 && full?.max === 2, `P4 : full ${full?.used}/${full?.max}`);
+    // P1 part : la place est gardée pour P3, que P4 ne peut pas prendre.
+    p1.net.close();
+    check(await settle(() => p3.queue.some((q) => q.state === 'go')), 'P3 : « une place est à toi » (go)');
+    check(p3.queue.find((q) => q.state === 'go')?.ms === 120000, 'P3 : 2 minutes pour entrer');
+    p4.online.season({ o: 'in', c: SEED.key, q: true });
+    check(await settle(() => p4.sv.some((m) => m.o === 'wait')), 'P4 (avec `q`) : la place gardée ne lui est pas donnée, il entre dans la file');
+    check(used() === 1 && small.seasons.debug().held.size === 1, `1 siège + 1 place gardée (${used()} / ${small.seasons.debug().held.size})`);
+    check(p3.net.claim(), 'P3 : claim');
+    const r3 = await open3;
+    check(r3.ok, `P3 : entré (${JSON.stringify({ ok: r3.ok, why: r3.why })})`);
+    check(used() === 2 && small.seasons.debug().held.size === 0, `2 sièges, plus de place gardée (${used()} / ${small.seasons.debug().held.size})`);
+    // P4 quitte la file : rien ne bouge.
+    p4.online.season({ o: 'cancel' });
+    await wait(300);
+    check(used() === 2 && (small.seasons.debug().queues.get('facile') ?? []).length === 0, 'P4 : a quitté la file, toujours 2 sièges');
+  } finally {
+    for (const p of players) { try { p.net.close(); p.online.bye(); } catch { /* déjà fermé */ } }
+    await small.stop?.();
   }
 });
 
