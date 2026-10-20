@@ -3960,11 +3960,26 @@ async function habitantsScenario(device) {
   });
   check(calls.withThem - calls.without <= 2, `${tag} : ${calls.withThem - calls.without} appel(s) de dessin pour les habitants (${calls.withThem} contre ${calls.without})`);
 
-  // Beaucoup d'habitants : 12 silhouettes au plus, le reste en chiffre.
+  // Beaucoup d'habitants : 12 silhouettes au plus, le reste en chiffre. Le chiffre n'est posé que si la porte est dans l'écran :
+  // selon la rue, la place libre trouvée plus haut peut être de l'autre côté d'un mur, hors du cadre d'un petit écran ; on
+  // se rapproche de la porte, côté rue, jusqu'à ce qu'il se montre.
   await ev(page, () => { window.__earthlife.save.base.habitants = 40; });
-  const many = await until(page, () => (window.__earthlife.habitantsView.stats().drawn >= 1 && window.__earthlife.habitantsView.stats().label ? 1 : null), null, 15000);
+  const seen = () => {
+    const lab = document.querySelector('.habitant-label'), r = lab && !lab.hidden ? lab.getBoundingClientRect() : null;
+    return window.__earthlife.habitantsView.stats().drawn >= 1 && r && r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight ? 1 : null;
+  };
+  let many = await until(page, seen, null, 4000);
+  let tried = 0;
+  for (const dist of [5, 3.5, 8, 10]) {
+    if (many) break;
+    const near = await openSpot(page, door.x + door.nx * dist, door.z + door.nz * dist, 0, 3);
+    if (!near) continue;
+    tried++;
+    await debug(page, 'teleport', near.x, near.z);
+    many = await until(page, seen, null, 4000);
+  }
   const crowd = await habState(page);
-  check(!!many && crowd.drawn === 12 && crowd.label === '+ 28 autres', `${tag} : 40 habitants : ${crowd.drawn} silhouettes et « ${crowd.label} »`);
+  check(!!many && crowd.drawn === 12 && crowd.label === '+ 28 autres', `${tag} : 40 habitants : ${crowd.drawn} silhouettes et « ${crowd.label} »${tried ? ` (${tried} autre(s) place(s) essayée(s))` : ''}`);
   check(crowd.labelIn === true, `${tag} : le chiffre est dans l'écran`);
   await wait(2500);   // le fondu d'apparition des nouveaux venus (0,9 s de jeu) est fini
   await shot(page, `${name}-habitants-nombreux`);
