@@ -87,8 +87,13 @@ export function seasonOps(ville, net) {
       if (was && was !== 'libere' && stateOf(key) === 'libere') net.emit(['L', key]);
       return n;
     },
-    // Un habitant trouvé en fouillant : le serveur de la saison ne connaît pas ce geste (il le dira dans l'état, `hab`).
-    rescue: () => 0,
+    // Un habitant trouvé en fouillant. Le jeu n'appelle ceci que si l'état de la saison dit que le serveur connaît le geste (`hab`) :
+    // un ancien serveur refuserait le message entier.
+    rescue(key) {
+      const n = rescueOne(ville, key);
+      if (n > 0) net.emit(['h', key]);
+      return n;
+    },
     setCoeur(ukey, key) {
       const ok = setCoeur(ville, ukey, key);
       if (ok) net.emit(['c', key]);
