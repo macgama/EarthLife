@@ -78,6 +78,41 @@ export function cricketBuffer(ctx) {
   return buf;
 }
 
+// Feu de camp : 4 s qui bouclent, un ronflement grave qui ondule et des craquements de braises (éclats de bruit qui s'éteignent
+// vite, souvent petits, parfois un gros). Les éclats restent dans le tampon ; le raccord de fin est un fondu comme pour le bruit.
+export function fireBuffer(ctx) {
+  const b = bank(ctx);
+  if (b.fire) return b.fire;
+  const sr = ctx.sampleRate, len = Math.floor(sr * 4), join = Math.floor(sr * 0.08);
+  const rand = mulberry32(0x1f3d5b79);
+  const raw = new Float32Array(len + join);
+  let lp = 0;
+  for (let i = 0; i < raw.length; i++) {
+    lp += 0.03 * ((rand() * 2 - 1) - lp); // bruit filtré vers le grave : le ronflement des flammes
+    const swell = 0.75 + 0.25 * Math.sin((i / sr) * TAU * 0.5) * Math.sin((i / sr) * TAU * 0.23 + 1);
+    raw[i] = lp * 2.2 * swell;
+  }
+  for (let t0 = 0.05; t0 < 4.05; t0 += 0.045 + rand() * 0.1) {
+    const big = rand() < 0.12, n = Math.floor(sr * (big ? 0.03 : 0.006 + rand() * 0.012)), g = big ? 0.9 : 0.15 + rand() * rand() * 0.5;
+    let hp = 0;
+    for (let i = 0; i < n; i++) {
+      const w = rand() * 2 - 1;
+      hp += 0.6 * (w - hp); // adouci vers 4 kHz : un craquement sec, sans le sifflement du bruit blanc
+      const idx = Math.floor(t0 * sr) + i;
+      raw[idx % raw.length] += g * hp * (1 - i / n) ** 2;
+    }
+  }
+  const buf = ctx.createBuffer(1, len, sr);
+  const out = buf.getChannelData(0);
+  out.set(raw.subarray(0, len));
+  for (let i = 0; i < join; i++) {
+    const k = (i / join) * Math.PI / 2;
+    out[i] = raw[i] * Math.sin(k) + raw[len + i] * Math.cos(k);
+  }
+  b.fire = buf;
+  return buf;
+}
+
 const rnd = Math.random;
 const around = (v, spread) => v * (1 + (rnd() - 0.5) * 2 * spread);
 
@@ -359,6 +394,67 @@ export function tic(ctx, out, t) {
   ping(ctx, out, t, { f: 880, f2: 1320, g: 0.1, d: 0.09, type: 'sine' });
 }
 
+// ---------- Campagne : cueillette, eau, pêche, cuisine ----------
+// Bulle d'eau : sinusoïde qui monte vite en hauteur.
+function bubble(ctx, out, t, { f = 500, g = 0.2, d = 0.07 }) {
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(f, t);
+  osc.frequency.exponentialRampToValueAtTime(f * 1.9, t + d);
+  const gain = ctx.createGain();
+  env(gain, t, 0.004, g, d);
+  osc.connect(gain).connect(out);
+  osc.start(t);
+  osc.stop(t + d + 0.03);
+}
+
+// Eau remuée ou puisée : clapotis, puis quelques bulles. `deep` : le creux d'un puits, plus grave et plus lent.
+export function splash(ctx, out, t, { deep = false, vol = 1 } = {}) {
+  const k = deep ? 0.55 : 1;
+  burst(ctx, out, t, { type: 'bandpass', f: around(1000 * k, 0.15), f2: 2600 * k, q: 0.9, dur: deep ? 0.4 : 0.28, g: 0.3 * vol, a: 0.03, color: 'pink' });
+  const n = 2 + Math.floor(rnd() * 3);
+  for (let i = 0; i < n; i++) bubble(ctx, out, t + 0.05 + i * (deep ? 0.1 : 0.07) + rnd() * 0.03, { f: around(deep ? 260 : 520, 0.25), g: (0.14 + rnd() * 0.1) * vol, d: deep ? 0.12 : 0.07 });
+}
+
+// Une goutte ou un bouchon qui plonge (la ligne de pêche bouge sur l'eau). `soft` : à peine un cercle sur l'eau.
+export function plop(ctx, out, t, { soft = false, vol = 1 } = {}) {
+  const g = (soft ? 0.12 : 0.3) * vol;
+  bubble(ctx, out, t, { f: around(420, 0.2), g, d: 0.09 });
+  burst(ctx, out, t, { type: 'bandpass', f: 2200, q: 1, dur: 0.05, g: g * 0.5, color: 'pink' });
+}
+
+// Lancer de la ligne : un souffle qui file, puis le plomb tombe à l'eau.
+export function cast(ctx, out, t) {
+  burst(ctx, out, t, { type: 'bandpass', f: 900, f2: 3800, q: 1.2, dur: 0.22, g: 0.2, a: 0.02 });
+  plop(ctx, out, t + 0.34);
+}
+
+// Poisson ferré : éclaboussure et battements de queue qui s'éteignent. `big` : une belle prise.
+export function catchFish(ctx, out, t, { big = false } = {}) {
+  splash(ctx, out, t, { vol: big ? 1.3 : 1 });
+  const flaps = big ? 6 : 4;
+  for (let i = 0; i < flaps; i++) burst(ctx, out, t + 0.2 + i * 0.1, { type: 'bandpass', f: around(1700, 0.2), q: 1, dur: 0.04, g: 0.32 * (1 - i / (flaps + 1)), color: 'pink' });
+}
+
+// Cueillette finie : la tige qui casse, quelques feuilles.
+export function pick(ctx, out, t) {
+  burst(ctx, out, t, { type: 'bandpass', f: around(2800, 0.15), q: 3, dur: 0.02, g: 0.55 });
+  burst(ctx, out, t + 0.03, { type: 'bandpass', f: 2200, q: 0.8, dur: 0.08, g: 0.3, color: 'pink' });
+}
+
+// Cuisson : crépitement de graisse et de braises (ça grésille, avec quelques éclats).
+export function sizzle(ctx, out, t) {
+  burst(ctx, out, t, { type: 'bandpass', f: 3200, q: 0.6, dur: 0.42, g: 0.32, a: 0.04, color: 'pink' });
+  const n = 3 + Math.floor(rnd() * 3);
+  for (let i = 0; i < n; i++) burst(ctx, out, t + rnd() * 0.4, { type: 'bandpass', f: around(3200, 0.4), q: 4, dur: 0.012, g: 0.3 + rnd() * 0.2 });
+}
+
+// Feu de camp allumé : un souffle qui prend, puis les premiers craquements.
+export function ignite(ctx, out, t) {
+  burst(ctx, out, t, { type: 'bandpass', f: 500, f2: 2200, q: 0.7, dur: 0.6, g: 0.5, a: 0.15, color: 'pink' });
+  for (let i = 0; i < 6; i++) burst(ctx, out, t + 0.2 + i * 0.09 + rnd() * 0.05, { type: 'bandpass', f: around(3000, 0.35), q: 4, dur: 0.012, g: 0.3 + rnd() * 0.25 });
+}
+
 // ---------- Horde et orage ----------
 // Corne grave et lointaine qui annonce la horde.
 export function horn(ctx, out, t) {
@@ -462,4 +558,4 @@ export function bird(ctx, out, t, { pan = 0 } = {}) {
 }
 
 // Toutes les recettes à un coup, par nom, pour le moteur, la page d'écoute et les essais de rendu.
-export const ONE_SHOTS = { step, groan, swing, hit, hurt, bite, trap, shot, door, rustle, tap, chop, eat, drink, rip, tic, horn, boom, breach, thunder, death, heartbeat, bird };
+export const ONE_SHOTS = { step, groan, swing, hit, hurt, bite, trap, shot, door, rustle, tap, chop, eat, drink, rip, tic, splash, plop, cast, catch: catchFish, pick, sizzle, ignite, horn, boom, breach, thunder, death, heartbeat, bird };

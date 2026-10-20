@@ -1,12 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SON, weatherBed, lifeBed, stepEvery, groanGain, groanDelay, panOf, thunderDelay, heartbeat, readPrefs, writePrefs, PREFS_KEY,
+  SON, weatherBed, lifeBed, actionSound, stepEvery, groanGain, groanDelay, panOf, thunderDelay, heartbeat, readPrefs, writePrefs, PREFS_KEY,
 } from '../src/son-logic.js';
 import { surfaceUnder } from '../src/son-sol.js';
 import { createWorldStore, addFeatures } from '../src/world.js';
 import * as synth from '../src/son-synth.js';
 import { createSon, NULL_SON } from '../src/son.js';
+import { createCampagne } from '../src/campagne-jeu.js';
+import { createSurvivor } from '../src/survival.js';
+import { mur } from '../src/campagne.js';
 
 // ---------- Règles ----------
 test('sons : la pluie et le vent suivent la vraie météo, étouffés à l\'abri', () => {
@@ -37,6 +40,60 @@ test('sons : oiseaux le jour, grillons la nuit, seulement à la campagne par tem
   assert.equal(lifeBed({ ...calm, windKmh: 40 }, { density: 0, daylight: 1 }).birds, 0, 'grand vent : pas d\'oiseaux');
   assert.equal(lifeBed({ ...calm, temperature: 4 }, { density: 0, daylight: 0, isNight: true }).crickets, 0, 'froid : pas de grillons');
   assert.ok(lifeBed(calm, { density: 0, daylight: 1, indoor: true }).birds < day.birds / 5);
+});
+
+test('sons : chaque action de la campagne a son bruit, la cuisine grésille, le reste garde hache et marteau', () => {
+  assert.equal(actionSound({ id: 'plant', arg: { kind: 'baie' } }).name, 'rustle');
+  assert.equal(actionSound({ id: 'search' }).name, 'rustle');
+  const puits = actionSound({ id: 'water', arg: { source: 'puits' } });
+  assert.equal(puits.name, 'splash');
+  assert.equal(puits.opts.deep, true, 'le puits résonne plus grave');
+  assert.equal(actionSound({ id: 'water', arg: { source: 'riviere' } }).opts.deep, false);
+  const fish = actionSound({ id: 'fish' });
+  assert.equal(fish.name, 'plop');
+  assert.ok(fish.every > 1, 'la ligne ne clapote pas toutes les demi-secondes');
+  assert.equal(actionSound({ id: 'craft', arg: 'griller_poisson' }, { cooking: true }).name, 'sizzle');
+  assert.equal(actionSound({ id: 'craft', arg: 'batte' }).name, 'tap');
+  assert.equal(actionSound({ id: 'prop', arg: { kind: 'tree' } }).name, 'chop');
+  assert.equal(actionSound({ id: 'prop', arg: { kind: 'car' } }).name, 'tap');
+  for (const id of ['search', 'plant', 'water', 'fish', 'craft', 'prop', 'claim']) assert.ok(actionSound({ id, arg: {} }).every > 0, id);
+  for (const id of ['plant', 'water', 'fish']) assert.ok(synth.ONE_SHOTS[actionSound({ id, arg: {} }).name], `${id} : la recette existe`);
+});
+
+test('sons : la campagne joue son bruit au bon moment (cueillette, eau, ligne lancée, poisson ferré) et se passe très bien de sons', () => {
+  const played = [];
+  const host = {
+    save: { dismantled: {} }, saveStore: { markDirty() {} }, toast() {}, floreView: { hide() {} }, openFinds: () => false,
+    addLoot: () => ({ stored: {} }), lootNotes() {}, isGone: () => false, sound: (name, opts) => played.push([name, opts]),
+  };
+  const s = {
+    survivor: createSurvivor(), saison: 'ete', weather: { kind: 'clear' }, isNight: false, actionMul: 1, player: { x: 0, z: 0 },
+    store: { proj: { toLatLon: () => ({ lat: 46.8, lon: 6.8 }) } },
+  };
+  const jeu = createCampagne(host);
+  let id = 0;
+  while (!mur('baie', `b${id}`, 'ete')) id++;
+  jeu.finish(s, { id: 'plant', arg: { kind: 'baie', id: `b${id}` } });
+  jeu.finish(s, { id: 'water', arg: { source: 'puits' } });
+  assert.deepEqual(played.map((p) => p[0]), ['pick', 'plop'], 'cueillette puis eau puisée');
+  s.survivor.inventory.canne = 1;
+  assert.ok(jeu.begin(s, { id: 'fish', arg: { coin: 'x' }, time: 10 }, { id: 'fish', t: 0 }));
+  assert.equal(played.at(-1)[0], 'cast', 'la ligne est lancée au début de la pêche');
+  const random = Math.random;
+  try {
+    Math.random = () => 0.99; // rien ne mord
+    const n = played.length;
+    jeu.finish(s, { id: 'fish', arg: {} });
+    assert.equal(played.length, n, 'pas de prise, pas de bruit de poisson');
+    Math.random = () => 0; // belle prise
+    jeu.finish(s, { id: 'fish', arg: {} });
+    assert.deepEqual(played.at(-1), ['catch', { big: true }]);
+  } finally {
+    Math.random = random;
+  }
+  // Sans moteur de sons (essais, anciens appels), rien ne plante.
+  delete host.sound;
+  assert.doesNotThrow(() => createCampagne(host).finish(s, { id: 'water', arg: { source: 'riviere' } }));
 });
 
 test('sons : cadence des pas, voix des zombies et placement à gauche ou à droite', () => {
@@ -214,6 +271,20 @@ test('sons : les tampons de bruit bouclent sans saut et ne sont fabriqués qu\'u
   assert.ok(peak > 0.3 && peak < 1.2, 'des grillons audibles, sans saturer');
 });
 
+test('sons : le feu de camp est un tampon qui boucle, audible et sans valeur folle', () => {
+  const Ctx = fakeAudio();
+  const ctx = new Ctx();
+  const buf = synth.fireBuffer(ctx);
+  assert.equal(synth.fireBuffer(ctx), buf, 'fabriqué une seule fois');
+  const d = buf.getChannelData(0);
+  assert.equal(d.length, 176400);
+  let peak = 0, sum = 0;
+  for (let i = 0; i < d.length; i++) { assert.ok(Number.isFinite(d[i])); peak = Math.max(peak, Math.abs(d[i])); sum += d[i] * d[i]; }
+  assert.ok(peak > 0.3 && peak < 1.6, `crête ${peak}`);
+  assert.ok(Math.sqrt(sum / d.length) > 0.02, 'un fond audible');
+  assert.ok(Math.abs(d[0] - d[d.length - 1]) < 0.35, 'raccord de la boucle');
+});
+
 // ---------- Moteur ----------
 function engine(over = {}) {
   const Ctx = fakeAudio();
@@ -334,6 +405,21 @@ test('sons : la pluie, le vent et les grillons démarrent quand il le faut et s\
   assert.ok(!e.son.stats().loops.includes('rain') && !e.son.stats().loops.includes('wind'), 'les fonds inutiles s\'éteignent');
   e.son.silence();
   assert.deepEqual(e.son.stats().loops, []);
+});
+
+test('sons : le feu de camp du refuge crépite tant qu\'on est près, et s\'éteint quand on sort', async () => {
+  const e = engine();
+  e.gesture();
+  await tick();
+  e.son.update(0.016, frame({ indoor: true, fire: true }));
+  assert.ok(e.son.stats().loops.includes('fire'));
+  e.son.update(0.016, frame({ indoor: true, fire: true, weather: { kind: 'rain', intensity: 0.8, windKmh: 30, temperature: 12 } }));
+  assert.ok(e.son.stats().loops.includes('fire'), 'la pluie dehors ne couvre pas le feu');
+  for (let i = 0; i < 10; i++) e.son.update(1, frame({ indoor: false, fire: false }));
+  assert.ok(!e.son.stats().loops.includes('fire'), 'dehors, plus de crépitement');
+  e.son.update(0.016, frame({ indoor: true }));
+  assert.ok(!e.son.stats().loops.includes('fire'), 'sans feu allumé, pas de crépitement');
+  for (const name of ['splash', 'plop', 'cast', 'catch', 'pick', 'sizzle', 'ignite']) assert.equal(e.son.play(name, { big: true, deep: true, soft: true }), true, name);
 });
 
 test('sons : les zombies proches gémissent à tour de rôle, au plus quelques voix à la fois, aucun trop loin', async () => {

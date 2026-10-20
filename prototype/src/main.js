@@ -19,6 +19,7 @@ import { createCharacters } from './characters.js';
 import { shoot as fireShot, shotWave, SHOT, SHOT_TEXT } from './tir.js';
 import { createTirView } from './tir-view.js';
 import { createSon } from './son.js';
+import { actionSound } from './son-logic.js';
 import { surfaceUnder } from './son-sol.js';
 import { createAtmosphere } from './atmosphere.js';
 import { createInput } from './input.js';
@@ -534,6 +535,7 @@ const cars = createCarGame({
 const campagne = createCampagne({
   save, saveStore: { markDirty: () => saveStore.markDirty() }, toast: (...a) => toast(...a), floreView,
   openFinds: (...a) => openFinds(...a), addLoot, lootNotes: (res) => lootNotes(res), isGone: (id) => dismantledGone(id),
+  sound: (name, opts) => son.play(name, opts),
 });
 // Carte de conduite (#drive) : le cercle de portée, un point à toucher, « Partir ».
 const driveMap = createDriveMap({ root: $('drive'), cities: CITIES, onGo: (out) => { if (session) goDrive(session, out); } });
@@ -1583,7 +1585,7 @@ function step(s, inp, dt) {
   son.update(dt, {
     weather: w, isNight: s.isNight, daylight: atmosphere.state.daylight, density, indoor: indoors, sheltered, asleep: asleep(s),
     health: p.health, maxHealth: PLAYER.maxHealth, yaw: s.cameraYaw, player: p, zombies: s.director.zombies,
-    wet: w.kind === 'rain' || w.kind === 'storm',
+    wet: w.kind === 'rain' || w.kind === 'storm', fire: inside && !!r.base?.upgrades?.includes('feu'),
     surface: () => surfaceUnder(s.store, p.x, p.z, { indoor: indoors, snowing: w.kind === 'snow', fallback: density < 0.12 ? 'herbe' : 'bitume' }),
   });
   // 11. Champ de distances de la horde, calculé par morceaux.
@@ -1812,9 +1814,11 @@ function updateActions(s, inp, dt, before) {
   }
   const prev = a.t;
   a.t += dt;
-  // Bruit de l'action en cours, toutes les demi-secondes : frottements pour une fouille, hache ou marteau pour le reste.
-  if (Math.floor(a.t * 2) !== Math.floor(prev * 2) && a.id !== 'sleep') {
-    son.play(a.id === 'search' || a.id === 'room' ? 'rustle' : a.id === 'prop' && a.arg.kind === 'tree' ? 'chop' : 'tap');
+  // Bruit de l'action en cours : frottements pour une fouille ou une cueillette, clapotis pour l'eau, grésillement pour la cuisine,
+  // hache ou marteau pour le reste (son-logic.js : actionSound).
+  if (a.id !== 'sleep') {
+    const sound = actionSound(a, { cooking: a.id === 'craft' && RECIPES[a.arg]?.requires === 'feu' });
+    if (Math.floor(a.t / sound.every) !== Math.floor(prev / sound.every)) son.play(sound.name, sound.opts);
   }
   // Fouille et démontage font du bruit : les zombies proches l'entendent, deux fois par seconde.
   if (a.noise && Math.floor(a.t * 2) !== Math.floor(prev * 2)) s.director.alertAll(p, a.noise * s.mods.hearing);
@@ -1917,6 +1921,7 @@ function finishCraft(s, a) {
   const res = craft(a.arg, a.field ? fieldCtx(s) : craftCtx(s), s.survivor);
   toast(res.msg, 2.5, res.ok ? 'success' : '');
   if (res.ok) {
+    if (a.arg === 'feu') son.play('ignite');
     gainSkill(s, 'fabrication', craftXp(craftTime(a.arg)));
     saveStore.flush('fabrication');
   }

@@ -3918,6 +3918,20 @@ async function sonsScenario(device) {
   check(!!swung, `${tag} : un coup donné joue le bruit du geste`);
   await clearZombies(page);
 
+  // Refuge avec un feu de camp : il crépite dans la pièce (même sous la pluie qui étouffe le dehors) et se tait une fois dehors.
+  await debug(page, 'teleport', 1, 0);
+  await until(page, () => (window.__label('search') === null ? 1 : null), null, 10000);
+  const claim = await install(page, device, tag);
+  if (!check(!!claim, `${tag} : refuge installé pour le feu de camp`)) { await ctx.close(); return; }
+  check(await enterRefuge(page, device), `${tag} : entré au refuge`);
+  check(!(await stats()).loops.includes('fire'), `${tag} : sans feu de camp, rien ne crépite`);
+  await ev(page, () => { const b = window.__earthlife.session.refuge.base; if (!b.upgrades.includes('feu')) b.upgrades.push('feu'); });
+  const crackle = await until(page, () => window.__earthlife.son.stats().loops.includes('fire') ? 1 : null, null, 60000);
+  check(!!crackle, `${tag} : le feu de camp du refuge crépite`);
+  await leave(page, device);
+  const quiet = await until(page, () => window.__earthlife.son.stats().loops.includes('fire') ? null : 1, null, 60000);
+  check(!!quiet, `${tag} : dehors, le crépitement s'arrête`);
+
   // Coupé : la commande le dit, rien ne joue plus, le réglage est gardé sur l'appareil.
   await toggle();
   const b1 = await btn();

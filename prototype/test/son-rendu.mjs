@@ -144,6 +144,7 @@ const report = await page.evaluate(async () => {
   await scene('pluie-fine', 8, (son) => son.update(0.016, frame({ weather: { kind: 'rain', intensity: 0.3, windKmh: 8, temperature: 12 } })));
   await scene('nuit-campagne', 8, (son) => son.update(0.016, frame({ isNight: true, daylight: 0 })));
   await scene('calme-de-jour', 4, (son) => son.update(0.016, frame()));
+  await scene('feu-refuge', 6, (son) => son.update(0.016, frame({ indoor: true, fire: true })));
   await scene('voix', 4, (son) => {
     // Des rôdeurs à gauche de l'écran (la caméra regarde vers +z : la gauche est du côté de +x) ; pas de poursuite, donc pas de cœur qui bat.
     const horde = Array.from({ length: 8 }, (_, i) => ({ id: i, type: 'errant', state: 'wander', x: 6 + i, z: 2 + (i % 3), dead: 0 }));
@@ -167,6 +168,7 @@ const fmt = (s) => `crête ${s.peak.toFixed(2)}, rms ${s.rms.toFixed(3)}, durée
 const BAND = {
   boom: [30, 450], thunder: [60, 700], death: [30, 450], heartbeat: [30, 300], horn: [50, 450], hit: [80, 2500], chop: [80, 2800], hurt: [80, 1500],
   groan: [250, 1500], door: [80, 1800], bird: [2500, 7000], swing: [600, 5000], shot: [150, 3000], tic: [500, 2500], tap: [600, 4500],
+  splash: [400, 5000], plop: [300, 4500], cast: [250, 4500], catch: [400, 5000], pick: [1500, 5000], sizzle: [2000, 8000], ignite: [400, 4500],
 };
 for (const [name, s] of Object.entries(report.recipes)) {
   const band = BAND[name];
@@ -182,6 +184,7 @@ check(sc['orage-dedans'].rms < sc['orage-dehors'].rms * 0.6 && sc['orage-dedans'
 check(sc['pluie-fine'].rms > 0.005 && sc['pluie-fine'].rms < sc['orage-dehors'].rms, 'pluie fine : audible, plus douce que l\'orage');
 check(sc['nuit-campagne'].rms > 0.002 && sc['nuit-campagne'].centroid > 3500, 'nuit à la campagne : grillons aigus et discrets');
 check(sc['calme-de-jour'].rms < 0.0005 && sc['calme-de-jour'].loops.length === 0, 'ciel calme de jour : aucun fond');
+check(sc['feu-refuge'].rms > 0.003 && sc['feu-refuge'].peak <= 1 && sc['feu-refuge'].loops.includes('fire'), 'feu de camp au refuge : un crépitement audible qui ne couvre rien d\'autre');
 check(sc.combat.peak <= 1 && !sc.combat.nan && sc.combat.rms > 0.01, 'combat à dix zombies : audible et sans saturation');
 check(sc.voix.rms > 0.003 && sc.voix.rms > sc.voix.rmsRight * 1.3, 'voix : des zombies à gauche de l\'écran s\'entendent surtout à gauche');
 check(errors.length === 0, `aucune erreur dans la page${errors.length ? ` : ${errors.slice(0, 3).join(' | ')}` : ''}`);

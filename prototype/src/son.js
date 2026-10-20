@@ -9,10 +9,13 @@ import * as synth from './son-synth.js';
 const BUS = {
   step: 'steps', groan: 'voices', thunder: 'weather', bird: 'life',
   swing: 'fx', hit: 'fx', hurt: 'fx', bite: 'fx', trap: 'fx', shot: 'fx', door: 'fx', rustle: 'fx', tap: 'fx', chop: 'fx',
-  eat: 'fx', drink: 'fx', rip: 'fx', tic: 'fx', horn: 'fx', boom: 'fx', breach: 'fx', death: 'fx', heartbeat: 'fx',
+  eat: 'fx', drink: 'fx', rip: 'fx', tic: 'fx', splash: 'fx', plop: 'fx', cast: 'fx', catch: 'fx', pick: 'fx', sizzle: 'fx', ignite: 'fx', horn: 'fx', boom: 'fx', breach: 'fx', death: 'fx', heartbeat: 'fx',
 };
 // Écart minimal (s) entre deux départs du même son : un coup ne s'empile pas sur lui-même.
-const GAP = { hit: 0.06, swing: 0.1, step: 0.08, tic: 0.05, rustle: 0.12, tap: 0.1, bird: 0.15, hurt: 0.15, bite: 0.15, trap: 0.3, breach: 0.25, door: 0.4 };
+const GAP = {
+  hit: 0.06, swing: 0.1, step: 0.08, tic: 0.05, rustle: 0.12, tap: 0.1, bird: 0.15, hurt: 0.15, bite: 0.15, trap: 0.3, breach: 0.25, door: 0.4,
+  splash: 0.3, plop: 0.2, cast: 0.5, catch: 0.4, pick: 0.1, sizzle: 0.3, ignite: 0.5,
+};
 
 const noop = () => {};
 export const NULL_SON = Object.freeze({
@@ -140,6 +143,16 @@ export function createSon({ lowPower = false, storage = null, doc = globalThis.d
       src.start();
       return { src, gain };
     },
+    // Feu de camp du refuge : sur le bus des effets (le monde du dehors est étouffé à l'abri, pas le feu qui est dans la pièce).
+    fire(c) {
+      const src = c.createBufferSource();
+      src.buffer = synth.fireBuffer(c);
+      src.loop = true;
+      const gain = c.createGain(); gain.gain.value = 0;
+      src.connect(gain).connect(bus.fx);
+      src.start(0, Math.random() * 4);
+      return { src, gain };
+    },
   };
   function loopLevel(name, level, dt) {
     let l = loops[name];
@@ -176,7 +189,7 @@ export function createSon({ lowPower = false, storage = null, doc = globalThis.d
   }
 
   // ----- Chaque image de jeu. `f` : { weather, isNight, daylight, density, indoor, sheltered, asleep, health, maxHealth, yaw,
-  // player: { x, z, running, hidden }, zombies, surface() -> sol, wet }. Sans `f` (menu), tout se tait.
+  // player: { x, z, running, hidden }, zombies, surface() -> sol, wet, fire (feu de camp allumé dans la pièce) }. Sans `f` (menu), tout se tait.
   function update(dt, f) {
     if (!running()) return;
     const at = now();
@@ -196,6 +209,7 @@ export function createSon({ lowPower = false, storage = null, doc = globalThis.d
       wind.depth.gain.setTargetAtTime(0.35 * bed.wind * 0.42, at, 0.8);
     }
     loopLevel('crickets', life.crickets * 0.09, dt);
+    loopLevel('fire', f.fire ? SON.fire : 0, dt);
     bus.muffle.frequency.setTargetAtTime(bed.muffle > 0.5 ? 650 : bed.muffle > 0 ? 3200 : bus.nyquist, at, 0.25);
     bus.duck.gain.setTargetAtTime((f.asleep ? 0.4 : 1) * (1 - bed.hush * 0.25), at, 0.5);
     // Oiseaux.

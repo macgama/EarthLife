@@ -10,6 +10,7 @@ export const SON = {
   panSpread: 14,         // écart latéral (m) qui place un son tout à gauche ou tout à droite
   voices: 6,             // voix de zombies en même temps (4 sur téléphone)
   voicesLow: 4,
+  fire: 0.13,            // niveau du feu de camp du refuge
 };
 
 export const clamp = (v, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, v));
@@ -40,6 +41,19 @@ export function lifeBed(weather, { density = 0, daylight = 1, isNight = false, i
   const birds = daylight > 0.3 && temp > 2 ? rural * calm * clamp((daylight - 0.3) / 0.4) * room : 0;
   const crickets = isNight && temp > 10 ? rural * calm * clamp((temp - 10) / 8) * room : 0;
   return { birds, crickets };
+}
+
+// Son d'une action chronométrée (fouille, cueillette, puisage, pêche, cuisine...) : { name, opts, every }, un départ toutes les
+// `every` secondes tant que l'action dure. `cooking` : recette qui demande le feu de camp.
+export function actionSound(a, { cooking = false } = {}) {
+  switch (a?.id) {
+    case 'search': case 'room': case 'plant': return { name: 'rustle', every: 0.5 };
+    case 'water': return { name: 'splash', opts: { deep: a.arg?.source === 'puits' }, every: 0.9 };
+    case 'fish': return { name: 'plop', opts: { soft: true }, every: 1.4 };
+    case 'prop': return { name: a.arg?.kind === 'tree' ? 'chop' : 'tap', every: 0.5 };
+    case 'craft': return { name: cooking ? 'sizzle' : 'tap', every: 0.5 };
+    default: return { name: 'tap', every: 0.5 };
+  }
 }
 
 // Mètres à marcher avant le pas suivant.
