@@ -3625,17 +3625,20 @@ async function conduiteScenario(device) {
   const stopped = await until(page, () => (Math.abs(window.__earthlife.session.driving?.speed ?? 9) < 0.3 ? 1 : null), null, 120000);
   check(!!stopped, `${tag} : poussée relâchée : la voiture s'arrête`);
 
-  // 6. Contre un mur : un mur à 25 m ou plus est cherché autour, la voiture posée à 8 m devant, vitesse nulle, poussée en avant ;
+  // 6. Contre un mur : un mur de face à 25 m ou plus est cherché autour (la même distance sur trois lignes parallèles, à 1 m de part et d'autre :
+  // un mur large et droit, pas un coin ni un passage où la voiture glisserait), la voiture est posée à 8 m devant, vitesse nulle, poussée en avant ;
   // elle s'arrête sans entrer dans le mur.
   const edge = await ev(page, async () => {
     const { fits } = await import('/src/collision.js');
     const s = window.__earthlife.session, p = s.player, d = s.driving;
+    // Longueur libre à partir de (x, z) dans le sens a, avec le disque de la voiture (1,15 m : ce que moveWithCollisions fait passer ou non).
+    const free = (x, z, a) => { let n = 0; while (n < 160 && fits(s.grid, x + Math.sin(a) * n, z + Math.cos(a) * n, 1.15)) n++; return n; };
     let best = null;
     for (let k = 0; k < 72; k++) {
       const a = (k / 72) * Math.PI * 2;
-      let n = 0;
-      while (n < 160 && fits(s.grid, p.x + Math.sin(a) * n, p.z + Math.cos(a) * n, 1.2)) n++;
-      if (n >= 25 && n < 160 && (!best || Math.abs(n - 60) < Math.abs(best.n - 60))) best = { a, n };
+      const ns = [0, 1, -1].map((o) => free(p.x + Math.cos(a) * o, p.z - Math.sin(a) * o, a));
+      const n = ns[0];
+      if (n >= 25 && Math.max(...ns) < 160 && Math.max(...ns) - Math.min(...ns) <= 1 && (!best || Math.abs(n - 60) < Math.abs(best.n - 60))) best = { a, n };
     }
     if (!best) return null;
     Object.assign(p, { x: p.x + Math.sin(best.a) * (best.n - 8), z: p.z + Math.cos(best.a) * (best.n - 8), vx: 0, vz: 0 });
@@ -3645,7 +3648,7 @@ async function conduiteScenario(device) {
     window.__drv.inside = 0;
     return { x: p.x, z: p.z, a: best.a, n: best.n };
   });
-  if (!check(!!edge, `${tag} : un mur à plus de 25 m trouvé autour`)) { await ctx.close(); return; }
+  if (!check(!!edge, `${tag} : un mur de face à plus de 25 m trouvé autour`)) { await ctx.close(); return; }
   await page.keyboard.down('ArrowUp');
   const wallSpeed = await until(page, () => (window.__earthlife.session.driving?.speed > 3 ? 1 : null), null, 120000);
   const blocked = await until(page, ([x, z]) => {
