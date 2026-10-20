@@ -1,5 +1,6 @@
 // Saisons côté jeu (lot 1) : requêtes du compte à la saison (inscription, graine, tuiles, voisinages, maison, état,
-// évolution), abonnement à la ville commune et gestes par la connexion en ligne (message `sv`), gestes groupés.
+// évolution), abonnement à la ville commune et gestes par la connexion en ligne (message `sv`), gestes groupés. Niveau plein : le
+// serveur met le joueur dans la file (`wait`, puis `go` quand une place est gardée) ; `handlers.queue` le dit au jeu, `claim` et `leave` répondent.
 // Module sans DOM : online.js (`on`, `live`, `season`), fetch et les minuteurs lui sont prêtés (essais : test/saison.test.js).
 // La partie « ville miroir » (rangées, compteurs) est dans saison-miroir.js ; ici seulement le transport.
 import { SEASON } from './protocol.js';
@@ -32,6 +33,7 @@ export const SEASON_TEXT = {
   monde: 'Ce monde n\'est pas joignable pour l\'instant.',
   commune: 'La ville de la saison a changé : relance la partie.',
   complet: 'Ce niveau est complet : 100 joueurs en même temps. Réessaie plus tard.',
+  attente: 'Ta place gardée a expiré : touche « Rejoindre » pour te remettre dans la file.',
   annoncee: 'La ville annoncée pour ce niveau n\'a pas pu être préparée : réessaie dans un instant.',
   petite: 'Cette ville est trop petite pour une saison : choisis une commune d\'au moins 100 habitants.',
   abonnement: 'Tu n\'es plus connecté à la ville de la saison : réessaie dans un instant.',
@@ -141,6 +143,14 @@ export function createSeasonNet({
 
   function onSv(msg) {
     if (!sub) return;
+    // File d'attente : seulement pendant l'abonnement ; le délai de réponse est suspendu (la place peut venir dans plusieurs minutes).
+    if (msg.o === 'wait' || msg.o === 'go') {
+      const w = sub.wait;
+      if (!w) return;
+      if (w.h !== null) { clearT(w.h); w.h = null; }
+      sub.h.queue?.(msg.o === 'wait' ? { state: 'wait', rank: msg.rank, size: msg.size } : { state: 'go', ms: msg.ms });
+      return;
+    }
     if (sub.wait && (msg.o === 'in' || msg.o === 'no' || msg.o === 'full')) {
       const w = sub.wait;
       sub.wait = null;
@@ -156,7 +166,11 @@ export function createSeasonNet({
   }
   function onLink(live) {
     if (!sub) return;
-    if (!live) { sub.down = true; sub.ready = false; sub.h.lost?.(); return; }
+    if (!live) {
+      // Dans la file : la liaison tombée met fin à l'attente (le serveur garde le rang 60 s ; « Rejoindre » le retrouve).
+      if (sub.wait && sub.wait.h === null) { const w = sub.wait; sub.wait = null; w.resolve({ ok: false, why: 'reseau' }); return; }
+      sub.down = true; sub.ready = false; sub.h.lost?.(); return;
+    }
     if (sub.down) { sub.down = false; resync(); }
   }
 
@@ -166,15 +180,36 @@ export function createSeasonNet({
       if (!sub) return resolve({ ok: false, why: 'monde' });
       sub.ready = false;
       sub.buffer = [];
-      const w = { resolve };
-      w.h = setT(() => { if (sub?.wait === w) { sub.wait = null; resolve({ ok: false, why: 'delai' }); } }, R.subscribeMs);
+      const w = { resolve, h: null };
       sub.wait = w;
-      if (!online?.season?.({ o: 'in', c: sub.commune })) {
-        sub.wait = null;
-        clearT(w.h);
-        resolve({ ok: false, why: 'reseau' });
-      }
+      send(w);
     });
+  }
+  // Demande d'entrée (`q` : le client sait attendre) et délai de la réponse.
+  function send(w) {
+    if (w.h !== null) clearT(w.h);
+    w.h = setT(() => { if (sub?.wait === w) { sub.wait = null; w.resolve({ ok: false, why: 'delai' }); } }, R.subscribeMs);
+    if (!online?.season?.({ o: 'in', c: sub.commune, q: true })) {
+      sub.wait = null;
+      clearT(w.h);
+      w.resolve({ ok: false, why: 'reseau' });
+    }
+  }
+  // Une place est gardée pour le joueur (`go`) : il entre. Rend faux s'il n'attend plus.
+  function claim() {
+    if (!sub?.wait) return false;
+    send(sub.wait);
+    return true;
+  }
+  // Quitter la file (ou rendre la place gardée) : l'abonnement en cours se termine par { ok: false, why: 'annule' }.
+  function leave() {
+    const w = sub?.wait;
+    if (!w) return false;
+    sub.wait = null;
+    if (w.h !== null) clearT(w.h);
+    online?.season?.({ o: 'cancel' });
+    w.resolve({ ok: false, why: 'annule' });
+    return true;
   }
 
   // Abonnement puis état : les messages arrivés entre les deux sont rejoués s'ils sont plus récents que l'état.
@@ -246,7 +281,7 @@ export function createSeasonNet({
       if (!origin) return { ok: false, code: 'base' };
       return parse(await raw(url('progress'), { method: 'GET', cache: 'no-store', credentials: 'omit' }));
     },
-    adj, emit, flush, open, ready, close,
+    adj, emit, flush, open, ready, close, claim, leave,
     get enabled() { return !!origin; },
     get queued() { return queue.length; },
     get subscribed() { return !!sub?.ready; },
