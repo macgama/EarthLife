@@ -25,9 +25,16 @@ const TABLE = {
   hache: [{ bois: 1, ferraille: 2, ruban: 1 }, { hache: 1 }, null, 'etabli', null],
   recuperateur: [{ ferraille: 2, tissu: 1, ruban: 1 }, null, 'recuperateur', 'etabli', null],
   sirene: [{ ferraille: 2, clous: 2, ruban: 1 }, null, 'sirene', 'etabli', null],
+  // Vivre de la campagne (campagne.js) : la canne se fabrique dehors, le feu de camp au refuge sans établi, la cuisine demande le feu.
+  canne: [{ bois: 2, ruban: 1 }, { canne: 1 }, null, null, null],
+  feu: [{ bois: 3, ferraille: 1 }, null, 'feu', null, null],
+  griller_poisson: [{ poisson: 1 }, { poisson_cuit: 1 }, null, 'feu', null],
+  poeler_champignon: [{ champignon: 1 }, { champignon_cuit: 1 }, null, 'feu', null],
+  roti_legume: [{ legume: 1 }, { legume_cuit: 1 }, null, 'feu', null],
+  bouillir_eau: [{ eau_riviere: 1 }, { eau_bouillie: 1 }, null, 'feu', null],
 };
 
-test('les 15 recettes : coût exact, produit et conditions du tableau 3.3', () => {
+test('les 21 recettes : coût exact, produit et conditions du tableau 3.3 et de la campagne', () => {
   assert.deepEqual(Object.keys(RECIPES), Object.keys(TABLE));
   for (const [key, [needs, makes, upgrade, requires, plan]] of Object.entries(TABLE)) {
     const r = RECIPES[key];
@@ -169,7 +176,7 @@ test('l\'équipement fabriqué s\'équipe tout seul s\'il est meilleur', () => {
 
 test('onglet Fabriquer : une ligne par recette, coût comparé au stock', () => {
   const rows = recipeRows(ctxWith({ chest: { bois: 10, clous: 3 }, bag: { bois: 2, clous: 1 } }));
-  assert.equal(rows.length, 15);
+  assert.equal(rows.length, 21);
   const planches = rows.find((r) => r.key === 'planches');
   assert.deepEqual(planches, { key: 'planches', name: 'Planches', desc: 'Donne 1 planche', cost: '2 bois (12) · 1 clou (4)', time: 4, ok: true, why: '' });
   const piege = rows.find((r) => r.key === 'piege');
@@ -265,8 +272,8 @@ const field = (bag = {}, bagCap = 30) => ({ field: true, bag, bagCap, upgrades: 
 
 test('dehors : seules les recettes sans établi ni aménagement', () => {
   const keys = Object.keys(RECIPES).filter(fieldRecipe);
-  assert.deepEqual(keys, ['planches', 'piege', 'batte_cloutee', 'bandage', 'manteau', 'sac_ecolier', 'sac_randonnee', 'poncho', 'leurre']);
-  for (const key of ['plaque', 'hache', 'sac_renforce', 'etabli', 'recuperateur', 'sirene']) {
+  assert.deepEqual(keys, ['planches', 'piege', 'batte_cloutee', 'bandage', 'manteau', 'sac_ecolier', 'sac_randonnee', 'poncho', 'leurre', 'canne']);
+  for (const key of ['plaque', 'hache', 'sac_renforce', 'etabli', 'recuperateur', 'sirene', 'feu', 'griller_poisson', 'bouillir_eau']) {
     const full = { tissu: 9, ruban: 9, ferraille: 9, bois: 9, clous: 9 };
     assert.deepEqual(canCraft(key, field(full)), { ok: false, why: 'À faire au refuge' }, key);
   }

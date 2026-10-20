@@ -96,7 +96,8 @@
 //   seasonJoin({ accountId, season, level, nowMs }) → { ok: true, player } | { ok: false, player }   (le premier niveau gagne)
 //   seasonPlayerSet(accountId, season, patch)                    patch : commune, homeKey, homeLat, homeLon, seenMs, kills
 //   seasonCounts(season) → { [niveau]: inscrits }
-//   seasonDocs(world, commune?) → [{ commune, part, rev, data }] (une seule commune si donnée), seasonDocPut({ world, commune, part, rev, data, nowMs })
+//   seasonDocs(world, commune?) → [{ commune, part, rev, data }] (une seule commune si donnée), seasonDocPut({ world, commune, part, rev, data, nowMs }),
+//   seasonDocsPut({ world, commune, parts: [{ part, rev, data }], nowMs }) : plusieurs pièces d'une commune en une transaction
 //                                                               compare-et-écrit : écrit si rev = base (toujours si
 //                                                               force) ; crée (rev 1) si base = 0 et aucune ligne
 // Player = { id, tokenHash, name: [a, p, n], nameDay, nameChanges, createdOn, seenOn, hiddenUntil, bannedUntil }
@@ -632,6 +633,11 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
     async seasonDocPut({ world, commune, part, rev, data }) {
       guard();
       seasonDocs.set(`${world}|${commune}|${part}`, { world, commune, part, rev, data });
+    },
+    // Toutes les pièces d'une ville d'un coup (tout ou rien, comme la transaction de store-mysql.js).
+    async seasonDocsPut({ world, commune, parts }) {
+      guard();
+      for (const { part, rev, data } of parts) seasonDocs.set(`${world}|${commune}|${part}`, { world, commune, part, rev, data });
     },
   };
 }

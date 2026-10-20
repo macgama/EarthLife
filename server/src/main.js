@@ -74,7 +74,7 @@ const STORE_OPS = ['init', 'playerByTokenHash', 'createPlayer', 'touch', 'rename
   'createAccount', 'accountByEmailHash', 'accountById', 'setPassword', 'touchAccount', 'linkPlayer', 'playerById',
   'eraseAccount', 'inactiveAccounts', 'markWarned', 'countAccounts', 'createSession', 'sessionByTokenHash', 'touchSession',
   'dropSession', 'dropSessions', 'sessionsOf', 'putCode', 'takeCode', 'saveMeta', 'getSave', 'putSave',
-  'seasonGet', 'seasonCreate', 'seasonPlayer', 'seasonJoin', 'seasonPlayerSet', 'seasonCounts', 'seasonDocs', 'seasonDocPut'];
+  'seasonGet', 'seasonCreate', 'seasonPlayer', 'seasonJoin', 'seasonPlayerSet', 'seasonCounts', 'seasonDocs', 'seasonDocPut', 'seasonDocsPut'];
 
 async function makeStore(config, log) {
   if (config.store === 'memory') return createMemoryStore({ refugeDays: config.refugeDays, playerDays: config.playerDays });
