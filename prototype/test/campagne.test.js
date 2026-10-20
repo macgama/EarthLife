@@ -19,7 +19,7 @@ import { createFloreView } from '../src/flore-view.js';
 import { PETITS } from '../src/flore-geo.js';
 import { createWorldStore, addFeatures, buildPatch, chunkFeatures } from '../src/world.js';
 import { itemInfo } from '../src/trouvailles.js';
-import { ITEM_KIND, ITEM_ICON, ART } from '../src/art.js';
+import { ITEM_KIND, ITEM_ICON, ART, hasItemArt, itemArtUrl } from '../src/art.js';
 import { ICON_NAMES } from '../src/icons.js';
 
 const dateOf = (m) => new Date(2026, m - 1, 15);
@@ -151,9 +151,15 @@ test('objets de la campagne : valeurs de nourriture, cuit mieux que cru, moins q
     assert.ok(ITEMS[k].one && ITEMS[k].many, `${k} : singulier et pluriel`);
     assert.ok(ITEM_KEYS.includes(k), `${k} : gardé par la sauvegarde`);
     assert.ok(ITEM_KIND[k] && ICON_NAMES.includes(ITEM_ICON[k]), `${k} : famille et icône`);
-    assert.ok(ART.pending.has(k) && !ART.items.has(k), `${k} : pas d'image Artlist, icône au trait`);
+    assert.equal(hasItemArt(k), !ART.pending.has(k), `${k} : image Artlist livrée ou icône au trait, pas les deux`);
     assert.doesNotMatch(itemInfo(k), /undefined|NaN/, k);
   }
+  // Images Artlist livrées : une cueillette partagée par les trois crus, le poisson, la canne ; le reste garde l'icône au trait.
+  for (const k of ['baies', 'champignon', 'legume']) assert.match(itemArtUrl(k), /assets\/art\/items\/cueillette\.webp$/, k);
+  assert.match(itemArtUrl('poisson'), /items\/poisson\.webp$/);
+  assert.match(itemArtUrl('canne'), /items\/canne\.webp$/);
+  assert.match(itemArtUrl('puits'), /items\/puits\.webp$/, "image de l'eau du puits (notification)");
+  for (const k of ['champignon_cuit', 'legume_cuit', 'poisson_cuit', 'eau_riviere', 'eau_bouillie']) assert.equal(itemArtUrl(k), null, `${k} : icône au trait`);
   assert.equal(itemInfo('canne'), "Outil · permet de pêcher au bord de l'eau");
   assert.equal(itemInfo('eau_riviere'), 'Boire · +35 soif, rend malade : fais-la bouillir');
   assert.equal(itemInfo('poisson_cuit'), 'Manger · +34 faim');

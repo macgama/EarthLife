@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createSeasonNet, SEASON_NET } from '../src/net/season.js';
+import { createSeasonNet, SEASON_NET, SEASON_TEXT } from '../src/net/season.js';
 import {
   soloOps, seasonOps, applyRows, applyTile, adoptTiles, applyCounts, applyLent, resync, insideTiles, resumeHome,
 } from '../src/saison-miroir.js';
@@ -126,7 +126,7 @@ test('abonnement : état lu après `in`, messages arrivés entre les deux rejou�
   const got = [];
   const t = makeNet({ responses: [reply(200, { ok: true, rv: 10, ville: { key: 'c1' }, lent: {} })] });
   const p = t.net.open('c01283', { msg: (m) => got.push(m) });
-  assert.deepEqual(t.online.sent[0], { o: 'in', c: 'c01283' });
+  assert.deepEqual(t.online.sent[0], { o: 'in', c: 'c01283', q: true });
   assert.equal(t.online.listeners('sv'), 1);
   t.online.emit('sv', { t: 'sv', o: 'in', rv: 8 });
   // Entre l'abonnement et la lecture de l'état : mis de côté.
@@ -189,6 +189,56 @@ test('abonnement refusé ou muet : raison en clair', async () => {
   assert.equal((await down.net.open('c1')).why, 'reseau');
 });
 
+test('file d\'attente : `wait` suspend le délai et prévient le jeu, `go` aussi ; `claim` redemande l\'entrée, puis `in`', async () => {
+  const seen = [];
+  const t = makeNet({ responses: [reply(200, { ok: true, rv: 4, ville: { a: 1 } })] });
+  const p = t.net.open('c1', { queue: (q) => seen.push(q) });
+  assert.equal(t.timers.pending(), 1, 'délai de réponse armé');
+  t.online.emit('sv', { t: 'sv', o: 'wait', rank: 7, size: 23 });
+  assert.equal(t.timers.pending(), 0, 'plus de délai : la place peut venir dans plusieurs minutes');
+  t.online.emit('sv', { t: 'sv', o: 'wait', rank: 6, size: 22 });
+  t.online.emit('sv', { t: 'sv', o: 'go', ms: 120000 });
+  assert.deepEqual(seen, [{ state: 'wait', rank: 7, size: 23 }, { state: 'wait', rank: 6, size: 22 }, { state: 'go', ms: 120000 }]);
+  assert.equal(t.net.claim(), true);
+  assert.deepEqual(t.online.sent.at(-1), { o: 'in', c: 'c1', q: true });
+  assert.equal(t.timers.pending(), 1, 'délai de réponse réarmé pour l\'entrée');
+  t.online.emit('sv', { t: 'sv', o: 'in', rv: 3 });
+  const r = await p;
+  assert.deepEqual([r.ok, r.rv], [true, 4]);
+  // Après l'entrée, un `wait` égaré n'est ni mis de côté ni rendu au jeu.
+  t.net.ready(r.rv);
+  t.online.emit('sv', { t: 'sv', o: 'wait', rank: 1, size: 1 });
+  assert.equal(seen.length, 3);
+  assert.equal(t.net.claim(), false);
+});
+
+test('file d\'attente : `leave` envoie `cancel` et termine l\'abonnement par « annule » ; un délai échu après la place gardée dit « attente »', async () => {
+  const t = makeNet();
+  const p = t.net.open('c1', { queue: () => {} });
+  t.online.emit('sv', { t: 'sv', o: 'wait', rank: 2, size: 2 });
+  assert.equal(t.net.leave(), true);
+  assert.deepEqual(t.online.sent.at(-1), { o: 'cancel' });
+  assert.deepEqual(await p, { ok: false, why: 'annule' });
+  assert.equal(t.net.leave(), false);
+  const late = makeNet();
+  const q = late.net.open('c1', { queue: () => {} });
+  late.online.emit('sv', { t: 'sv', o: 'wait', rank: 1, size: 1 });
+  late.online.emit('sv', { t: 'sv', o: 'go', ms: 120000 });
+  late.online.emit('sv', { t: 'sv', o: 'no', why: 'attente' });
+  assert.deepEqual(await q, { ok: false, why: 'attente' });
+  assert.match(SEASON_TEXT.attente, /expiré/);
+});
+
+test('file d\'attente : la liaison qui tombe pendant l\'attente la termine (« reseau »), le serveur garde le rang', async () => {
+  const t = makeNet();
+  const p = t.net.open('c1', { queue: () => {}, lost: () => assert.fail('pas de reprise automatique dans la file') });
+  t.online.emit('sv', { t: 'sv', o: 'wait', rank: 3, size: 9 });
+  t.online.emit('link', false);
+  assert.deepEqual(await p, { ok: false, why: 'reseau' });
+  t.online.emit('link', true);
+  assert.equal(t.online.sent.filter((m) => m.o === 'in').length, 1, 'aucun nouvel `in` tout seul');
+});
+
 test('coupure : le jeu est prévenu, puis état relu, copie remplacée et zombies encore dehors redemandés', async () => {
   const events = [];
   const t = makeNet({ responses: [reply(200, { ok: true, rv: 1, ville: { a: 1 } }), reply(200, { ok: true, rv: 20, ville: { a: 2 }, lent: { [KEY]: 1 } })] });
@@ -207,7 +257,7 @@ test('coupure : le jeu est prévenu, puis état relu, copie remplacée et zombie
   assert.equal(t.net.subscribed, false);
   t.online.emit('link', true);
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(t.online.sent.at(-1), { o: 'in', c: 'c1' });
+  assert.deepEqual(t.online.sent.at(-1), { o: 'in', c: 'c1', q: true });
   t.online.emit('sv', { t: 'sv', o: 'in', rv: 19 });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
@@ -262,6 +312,17 @@ test('gestes du miroir : mêmes gestes que seul, plus l\'envoi au serveur et le 
   const solo = soloOps(miniVille());
   assert.equal(solo.lend(KEY, 2), 2);
   assert.deepEqual(solo.leases(), []);
+  // Habitant trouvé en fouillant : seul, il est sauvé ; en saison le serveur ne connaît pas encore ce geste, rien ne change.
+  const hidden = () => { const h = miniVille(); h.me = null; Object.assign(h.tiles['14/1/1'].b[KEY], { 3: 2, 4: 2 }); return h; };
+  const alone = hidden();
+  assert.equal(soloOps(alone).rescue(KEY), 1);
+  assert.equal(alone.saved, 1);
+  assert.equal(soloOps(alone).rescue('inconnu'), 0);
+  const waiting = hidden();
+  sent.length = 0;
+  assert.equal(seasonOps(waiting, { emit: (e) => sent.push(e) }).rescue(KEY), 0);
+  assert.equal(waiting.saved, 0);
+  assert.deepEqual(sent, []);
 });
 
 test('le serveur écrit dans la copie : rangées, tuiles, compteurs, prêts ; jamais `me`', () => {
