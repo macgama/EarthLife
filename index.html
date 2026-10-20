@@ -777,6 +777,9 @@ body.touch .chip:disabled .chip-icon { opacity: var(--o-disabled); }
 .small:active { transform: scale(.96); }
 .small:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
 body.show-mods #mods-toggle { border-color: var(--c-accent); color: var(--c-accent); }
+/* Sons : le bouton du bas à droite (et du haut en tactile) ; sur téléphone en portrait, une ligne de la fiche du lieu à la place (plus bas). */
+.sound-row { display: none; }
+#sound-toggle[hidden], .sound-row[hidden] { display: none !important; }
 /* Refuge : rouvre le panneau quand on est dedans et qu'il a été fermé. */
 #refuge-open .small-icon { color: var(--c-refuge); }
 /* Onglet en lecture seule (partie ouverte ailleurs) : rappel permanent, il rouvre la carte « Reprendre ici ». */
@@ -949,6 +952,10 @@ body.touch #controls { display: block; }
   #hud { --btn-item: 44px; --btn-run: 56px; --btn-attack: 76px; --mm-col: 0px; --card-w: calc(100vw - var(--hud-l) - var(--hud-r)); grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(var(--touch), auto) auto auto 1fr; gap: 0 var(--sp-2); }
   #leftcol { display: flex; flex-flow: row wrap; align-content: flex-start; align-items: flex-start; gap: 6px; grid-column: 1; grid-row: 3; position: relative; z-index: 2; margin-top: 6px; }
   #topbuttons { position: static; grid-column: 2; grid-row: 1; justify-self: end; }
+  /* Sons : pas de second bouton dans la barre du haut (retour de Gaël : trop de boutons), une ligne dans la fiche du lieu. */
+  #sound-toggle { display: none; }
+  .sound-row { display: flex; align-items: center; gap: var(--sp-2); width: 100%; min-height: var(--touch); margin-top: 6px; padding: 0 10px; border: 1px solid var(--c-line); border-radius: var(--r-sm); background: var(--c-panel); color: var(--c-text-2); font: var(--fw-semibold) var(--fs-sm) / 1 var(--font-display); letter-spacing: var(--ls-button); text-transform: uppercase; cursor: pointer; }
+  .sound-row[aria-pressed="false"] { color: var(--c-text-3); }
   /* La barre des jauges court jusqu'au menu : sa marge de droite laisse la place des boutons (un seul d'ordinaire ; Refuge
      et Non sauvegardé s'y ajoutent à l'occasion). */
   #vitals { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-content: center; gap: 0 var(--sp-3); box-sizing: border-box; min-height: var(--touch); margin: 0 calc(var(--touch) + var(--sp-2)) 0 0; padding: 6px var(--sp-3); }
@@ -1778,6 +1785,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <div class="cond-more">
       <div class="data" id="data-line"></div>
       <ul id="mods"></ul>
+      <button class="sound-row" id="sound-row" aria-pressed="true"><span class="small-icon" data-icon="son"></span><span class="sound-row-text">Sons activés</span></button>
     </div>
   </div>
   <div id="quest" class="pill">
@@ -1818,6 +1826,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
   <div id="topbuttons">
     <button class="small hidden" id="save-warn" aria-label="Cet onglet ne sauvegarde plus : reprendre ici"><span class="small-icon" data-icon="alerte"></span><span class="small-text">Non sauvegardé</span></button>
     <button class="small hidden" id="refuge-open" aria-label="Ouvrir le panneau du refuge"><span class="small-icon" data-icon="refuge"></span><span class="small-text">Refuge</span></button>
+    <button class="small" id="sound-toggle" aria-label="Couper les sons" aria-pressed="true"><span class="small-icon" data-icon="son"></span><span class="small-text">Sons</span></button>
     <button class="small" id="mods-toggle" aria-label="Effets et sources des données" aria-expanded="false"><span class="small-icon" data-icon="effets"></span><span class="small-text">Effets</span></button>
     <button class="small" id="quit" aria-label="Menu"><span class="small-icon" data-icon="menu"></span><span class="small-text">Menu</span></button>
   </div>

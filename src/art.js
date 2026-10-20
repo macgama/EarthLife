@@ -8,14 +8,19 @@ import { icon } from './icons.js';
 export const ART = {
   items: new Set([
     'conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette', 'bois', 'clous', 'ferraille', 'tissu', 'ruban', 'planche', 'plaque',
-    'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee', 'pistolet', 'fusil', 'balles', 'cartouches',
+    'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_ecolier', 'sac_randonnee', 'sac_renforce', 'pistolet', 'fusil', 'balles', 'cartouches',
+    'cueillette', 'poisson', 'canne', 'puits',
   ]),
   // Objets dont l'image n'est pas encore livrée (accord de Gaël pour les crédits Artlist) : ils gardent l'icône au trait.
-  pending: new Set(['bidon', 'batterie', 'sac_ecolier', 'sac_renforce', 'baies', 'champignon', 'legume', 'poisson', 'champignon_cuit', 'legume_cuit', 'poisson_cuit', 'eau_riviere', 'eau_bouillie', 'canne']),
+  pending: new Set(['bidon', 'batterie', 'champignon_cuit', 'legume_cuit', 'poisson_cuit', 'eau_riviere', 'eau_bouillie']),
   scenes: new Set(['horde', 'metro', 'tram', 'train', 'refuge', 'coop', 'victoire', 'terre', 'mort', 'facile', 'moyen', 'difficile']),
 };
 
 const base = (dir, name) => new URL(`../assets/art/${dir}/${name}.webp`, import.meta.url).href;
+
+// Objets qui partagent l'image d'un autre fichier : baies, champignons et légumes crus montrent la même cueillette.
+// `puits` n'est pas un objet du sac : son image sert à la notification de l'eau du puits (campagne-jeu.js).
+export const ITEM_ART = { baies: 'cueillette', champignon: 'cueillette', legume: 'cueillette' };
 
 // Famille d'un objet : donne la teinte de l'emplacement et l'icône de repli.
 // food faim, water soif, heal santé, warm chaleur, mat matériaux, tool arme ou piège, wear vêtement, pack sac, gun arme à feu,
@@ -50,8 +55,8 @@ const KIND_LABEL = {
 
 export const kindOf = (key) => ITEM_KIND[key] ?? 'mat';
 export const kindLabel = (key) => KIND_LABEL[kindOf(key)];
-export const hasItemArt = (key) => ART.items.has(key);
-export const itemArtUrl = (key) => (hasItemArt(key) ? base('items', key) : null);
+export const hasItemArt = (key) => ART.items.has(ITEM_ART[key] ?? key);
+export const itemArtUrl = (key) => (hasItemArt(key) ? base('items', ITEM_ART[key] ?? key) : null);
 export const hasScene = (name) => ART.scenes.has(name);
 export const sceneUrl = (name) => (hasScene(name) ? base('scenes', name) : null);
 
