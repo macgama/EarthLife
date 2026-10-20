@@ -1091,16 +1091,17 @@ body.touch #controls { display: block; }
   body.touch.panel-open #inventory { right: var(--hud-r); }
 }
 /* Téléphone étroit à l'horizontale (667 × 375, 640 × 360) : la rangée du sac empiéterait sur la zone du joystick
-   (45 % de gauche, input.js) ; elle passe en grille de 3 colonnes (2 rangées avec « Ouvrir » et les 4 puces) au-dessus de Frapper,
-   4 colonnes quand le leurre et le tir s'ajoutent (sinon une 3e rangée couvrirait les jauges).
+   (45 % de gauche, input.js) ; elle passe en grille 2 × 2 au-dessus de Frapper (3 colonnes avec le leurre).
    La colonne de gauche se resserre pour que la quête reste hors du cercle dégagé autour du joueur. */
 @media (max-height: 500px) and (orientation: landscape) and (max-width: 729px) {
   #hud { grid-template-columns: minmax(0, calc(50vw - 50px - var(--hud-l))) 1fr 224px; }
-  body.touch #inventory { display: grid; grid-template-columns: repeat(3, var(--btn-item)); right: var(--hud-r); bottom: calc(var(--hud-b) + 114px); }
-  body.touch #inventory:has(#use-lure:not(.hidden)):has(#use-shoot:not(.hidden)) { grid-template-columns: repeat(4, var(--btn-item)); }
-  /* La puce Fabriquer (absente sans ingrédients) se pose à gauche de Courir : la grille, déjà sur 2 rangées, couvrirait les jauges en
-     prenant une 3e rangée. */
-  body.touch #use-craft { position: fixed; right: calc(var(--hud-r) + 106px + var(--btn-run) + var(--sp-2)); bottom: calc(var(--hud-b) + 18px + (var(--btn-run) - var(--btn-item)) / 2); }
+  body.touch #inventory { display: grid; grid-template-columns: repeat(2, var(--btn-item)); right: var(--hud-r); bottom: calc(var(--hud-b) + 114px); }
+  body.touch #inventory:has(#use-lure:not(.hidden)) { grid-template-columns: repeat(3, var(--btn-item)); }
+  /* Les puces Fabriquer (absente sans ingrédients) et Ouvrir (le sac) se posent à gauche de Courir : la grille, déjà 2 × 2, couvrirait
+     les jauges en prenant une 3e rangée, ou la carte, elle, perdrait sa place à gauche de la grille. Ouvrir passe à gauche de Fabriquer
+     quand celle-ci est là. */
+  body.touch #use-craft, body.touch #bag-open { position: fixed; right: calc(var(--hud-r) + 106px + var(--btn-run) + var(--sp-2)); bottom: calc(var(--hud-b) + 18px + (var(--btn-run) - var(--btn-item)) / 2); }
+  body.touch:has(#use-craft:not(.hidden)) #bag-open { right: calc(var(--hud-r) + 106px + var(--btn-run) + var(--btn-item) + var(--sp-2) * 2); }
 }
 /* Ordinateur, panneau du refuge ouvert (tiroir de 420 px à droite) : le HUD se range à sa gauche. */
 @media (min-width: 1024px) and (min-height: 501px) {
