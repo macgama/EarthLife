@@ -2141,7 +2141,7 @@ await scenario('O28', 'salon du menu', async () => {
     return {
       tab: $('menu').dataset.tab, fronts: fronts.length, checked: fronts.filter((f) => f.getAttribute('aria-checked') === 'true').map((f) => f.dataset.level),
       names: fronts.map((f) => f.querySelector('.front-name')?.textContent), cta: $('salon-cta-label')?.textContent ?? null, ctaShown: shown($('salon-cta')),
-      play: shown($('play')), tabs: shown($('menu-tabs')), days: $('salon-days')?.textContent ?? '', card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null,
+      play: shown($('play')), share: shown($('share-game')), tabs: shown($('menu-tabs')), days: $('salon-days')?.textContent ?? '', card: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null,
       scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth,
       link: $('salon-link-text')?.textContent ?? null, note: $('salon-note')?.hidden === false ? $('salon-note').textContent : null,
     };
@@ -2161,6 +2161,9 @@ await scenario('O28', 'salon du menu', async () => {
   check(first.ok && first.v.names.join('|') === 'Facile|Moyen|Difficile' && first.v.cta === 'Rejoindre · Facile' && first.v.checked.join() === 'facile', `N : trois fronts, bouton « ${first.v?.cta} »`);
   check(first.ok && /^\d+ jours? restants?$/.test(first.v.days), `N : jours restants « ${first.v?.days} »`);
   await shot(N, 'o28-ordi-salon');
+  // « Partager le jeu » est aussi sur « À plusieurs » (src/partage.js), avant le gros bouton ; « Inviter ici » attend une partie ouverte.
+  const shareTab = await ev(N, () => { const g = document.getElementById('share-game'), c = document.getElementById('salon-cta'); return { before: Number(getComputedStyle(g.parentElement).order) < Number(getComputedStyle(c).order), invite: !document.getElementById('share-invite').hidden }; });
+  check(first.ok && first.v.share && shareTab.before && !shareTab.invite, `N : « Partager le jeu » sur « À plusieurs », « Inviter ici » caché sans partie (${JSON.stringify({ share: first.v?.share, ...shareTab })})`);
   await click(N, '#fronts .front[data-level="moyen"]');
   const moyen = await seen((v) => v.cta === 'Rejoindre · Moyen');
   check(moyen.ok && moyen.v.checked.join() === 'moyen', `N : « Moyen » touché, bouton « ${moyen.v?.cta} »`);

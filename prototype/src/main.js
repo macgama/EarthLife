@@ -76,7 +76,8 @@ import * as icons from './icons.js';
 import { createOnline, NULL_ONLINE, ONLINE, serverFromParams } from './online.js';
 import { FLAGS, nameOf, sectorOf } from './net/protocol.js';
 import { BUILD } from './net/build.js';
-import { zoneStatus, inviteCoords, removeZone, metersBetween as zoneMeters } from './privacy.js';
+import { zoneStatus, removeZone, metersBetween as zoneMeters } from './privacy.js';
+import { SHARE_TEXTS, gameUrl, inviteUrl, shareLink, shareNote } from './partage.js';
 import { REDUCED_LOOT, searchedLabel } from './shared-world.js';
 // Compte facultatif (spécification des comptes, 5.8) : partie sauvegardée sur le serveur, autre appareil.
 import { createAccount, NULL_ACCOUNT } from './account.js';
@@ -260,6 +261,8 @@ online.refuge(save.base?.id ?? null);
 icons.replaceIcons(document);
 const urlPlace = placeFromParams(params);
 if (urlPlace) picker.setPlace(urlPlace, { fly: false });
+// Arrivé par un lien « Inviter ici » (src/partage.js) : un mot d'accueil au menu jusqu'à la première partie.
+const arrivedByInvite = params.get('ami') === '1' && !!urlPlace;
 syncMenu();
 
 function placeFromParams(p) {
@@ -368,6 +371,7 @@ function syncMenu() {
   picker.setBag(save.dropBag ? { lat: save.dropBag.lat, lon: save.dropBag.lon } : null);
   renderSaveLine();
   renderOnlineMenu();
+  renderShareMenu();
 }
 
 // « Ton refuge : Habitation · Lyon · 3 ouvertures », bouton « Voir mon refuge », message de la sauvegarde.
@@ -645,7 +649,8 @@ $('online-toggle')?.addEventListener('change', (e) => {
   renderOnlineMenu();
 });
 $('online-rename')?.addEventListener('click', () => renameOnline());
-$('online-invite')?.addEventListener('click', () => inviteHere());
+$('share-game')?.addEventListener('click', () => shareGame());
+$('share-invite')?.addEventListener('click', () => inviteHere());
 $('online-mute')?.addEventListener('click', () => {
   online.setMuted(!online.muted());
   renderOnlineMenu();
@@ -3366,8 +3371,6 @@ function renderOnlineMenu() {
   const left = online.me?.left;
   const rename = $('online-rename');
   if (rename) rename.disabled = !live || left === 0;
-  const invite = $('online-invite');
-  if (invite) invite.hidden = !session?.player;
   const mute = $('online-mute');
   if (mute) {
     mute.setAttribute('aria-pressed', String(online.muted()));
@@ -3397,28 +3400,42 @@ async function renameOnline() {
   renderOnlineMenu();
 }
 
-// « Inviter quelqu'un ici » : lien de la position du personnage, arrondie à 50 m ; jamais depuis une zone privée
-// ni depuis la couronne anonyme (section 3.3).
+// Partager le jeu et inviter un ami (src/partage.js) : le bloc est sur la feuille du menu, jamais sur la barre du haut de l'écran de
+// jeu. « Inviter ici » a besoin d'un personnage.
+function renderShareMenu() {
+  const invite = $('share-invite');
+  if (invite) invite.hidden = !session?.player;
+  const hello = $('invite-note');
+  if (hello) hello.hidden = !arrivedByInvite || !!session;
+}
+
+function setShareNote({ text, warn }) {
+  const n = $('share-note');
+  if (!n) return;
+  n.textContent = text;
+  n.hidden = !text;
+  n.classList.toggle('warn', !!warn);
+}
+
+async function shareGame() {
+  const url = gameUrl(location);
+  setShareNote(shareNote(await shareLink(navigator, { title: SHARE_TEXTS.title, text: SHARE_TEXTS.game, url }), { url }));
+}
+
+// « Inviter ici » : lien de la position du personnage, arrondie à 50 m ; jamais depuis une zone privée ni depuis la couronne
+// anonyme (section 3.3). La feuille de partage s'ouvre dans le même geste, sans attente avant l'appel.
 async function inviteHere() {
   const s = session;
   if (!s?.player) return;
+  readZones();
   const ll = playerLatLon(s);
-  if (zoneStatus(zones, ll.lat, ll.lon).kind !== 'public') {
-    setOnlineNote("Pas d'invitation depuis une zone privée", true);
+  // Serveur local de test (?server=) gardé, pour inviter un second onglet.
+  const url = inviteUrl({ base: gameUrl(location), lat: ll.lat, lon: ll.lon, zones, server: serverParam && onlineOn ? serverParam : null });
+  if (!url) {
+    setShareNote({ text: SHARE_TEXTS.privateZone, warn: true });
     return;
   }
-  const c = inviteCoords(ll.lat, ll.lon);
-  const u = new URL(location.pathname, location.origin);
-  u.searchParams.set('lat', String(c.lat));
-  u.searchParams.set('lon', String(c.lon));
-  // Serveur local de test (?server=) gardé, pour inviter un second onglet.
-  if (serverParam && onlineOn) u.searchParams.set('server', serverParam);
-  try {
-    await navigator.clipboard.writeText(u.toString());
-    setOnlineNote('Lien copié : envoie-le pour jouer au même endroit');
-  } catch {
-    setOnlineNote(`Copie impossible ici. Le lien : ${u.toString()}`, true);
-  }
+  setShareNote(shareNote(await shareLink(navigator, { title: SHARE_TEXTS.title, text: SHARE_TEXTS.invite, url }), { url, invite: true }));
 }
 
 // « Mes statistiques » : les compteurs de la partie (save.profile) ; la carte met le jeu en pause le temps de la lecture.

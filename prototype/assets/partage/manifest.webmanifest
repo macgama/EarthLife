@@ -1,0 +1,16 @@
+{
+  "name": "EarthLife",
+  "short_name": "EarthLife",
+  "description": "Survie zombie sur la vraie Terre : les vraies rues de ta ville, la vraie météo du moment, des hordes de zombies.",
+  "lang": "fr",
+  "start_url": "../../",
+  "scope": "../../",
+  "display": "standalone",
+  "background_color": "#0a0d10",
+  "theme_color": "#0a0d10",
+  "icons": [
+    { "src": "icone-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icone-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icone-512-adaptable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
