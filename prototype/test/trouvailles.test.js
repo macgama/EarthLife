@@ -276,6 +276,47 @@ test('findHtml : sac plein, « Tout prendre » grisé avec son motif', () => {
   assert.match(html, /tv-full/);
 });
 
+test('mode sac : « Jeter » et « Reprendre », une seule colonne, rien à prendre', () => {
+  const s = survivor({ planches: 0, bois: 6, conserve: 2 });
+  const f = { title: 'Mon sac', kicker: '', sub: '', notes: [], ground: {}, mode: 'bag' };
+  const v = findView(s, f);
+  assert.equal(v.mode, 'bag');
+  assert.equal(v.kicker, 'Sac');
+  const bag = findView(s, f, selectSlot(s, f, null, 'bag', 'bois'));
+  assert.equal(bag.detail.move.label, 'Jeter ×6');
+  assert.equal(bag.detail.move.enabled, true);
+  const html = findHtml(v);
+  assert.match(html, /tv-bagmode/);
+  assert.doesNotMatch(html, /aria-label="Trouvé"|aria-label="Jeté"/);
+  assert.match(html, /data-tv="close">Fermer</);
+  assert.doesNotMatch(html, /Tout prendre|Tout reprendre|Laisser le reste/);
+  assert.match(html, /l'équiper ou le jeter/);
+  // un objet jeté va dans « Jeté », d'où il se reprend jusqu'à la fermeture
+  leave(s, f.ground, 'bois', 6);
+  const thrown = findView(s, f, selectSlot(s, f, null, 'ground', 'bois'));
+  assert.equal(thrown.detail.move.label, 'Reprendre ×6');
+  const html2 = findHtml(thrown);
+  assert.match(html2, /aria-label="Jeté"/);
+  assert.match(html2, /Tout reprendre/);
+  assert.equal(thrown.all.left, 6);
+});
+
+test('mode sac : le sac plein grise « Reprendre » avec son motif', () => {
+  const s = fill(survivor(), BAG_BASE);
+  const f = { title: 'Mon sac', ground: { conserve: 2 }, mode: 'bag' };
+  const v = findView(s, f, selectSlot(s, f, null, 'ground', 'conserve'));
+  assert.deepEqual([v.detail.move.enabled, v.detail.move.why], [false, WHY.full]);
+  assert.equal(v.all.enabled, false);
+});
+
+test('mode sac : textes du transfert et de la fermeture', () => {
+  assert.equal(movedText('leave', 'bois', 3, 'bag'), 'Jeté : 3 bois');
+  assert.equal(movedText('take', 'bois', 3, 'bag'), 'Repris : 3 bois');
+  assert.equal(movedText('leave', 'bois', 3), 'Laissé sur place : 3 bois');
+  assert.equal(leftText({ bois: 2, eau: 1 }, 'bag'), 'Jeté : 2 bois, 1 eau');
+  assert.equal(leftText({}, 'bag'), '');
+});
+
 test('gearOf : arme, vêtement et sac portés', () => {
   const s = survivor();
   assert.deepEqual(gearOf(s).map((g) => [g.slot, g.name]), [['weapon', 'Batte'], ['clothing', 'Veste légère'], ['pack', 'Sac de base']]);

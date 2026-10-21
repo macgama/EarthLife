@@ -484,7 +484,7 @@ const son = createSon({ lowPower, storage: localStore });
 if (SOUND_AUTOSTART) son.attach(window);
 const input = createInput(canvas, {
   stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'),
-  action2Button: $('action2'), useButtons: [...document.querySelectorAll('#inventory .chip')], autoRun: true,
+  action2Button: $('action2'), useButtons: [...document.querySelectorAll('#inventory .chip[data-use]')], autoRun: true,
   zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), wheelTargets: [$('mapbox')],
 });
 // Zoom gardé d'une partie et d'une visite à l'autre, hors de la sauvegarde (src/view.js) ; écrit 800 ms après le
@@ -631,6 +631,7 @@ document.addEventListener('keydown', (e) => {
 });
 $('quit').addEventListener('click', () => toMenu());
 $('refuge-open').addEventListener('click', () => { if (session?.refuge.inside) openPanel(session); });
+$('bag-open').addEventListener('click', () => toggleBag(session));
 $('save-home').addEventListener('click', () => {
   if (save.base) picker.setPlace(homePlace(), { fly: true });
 });
@@ -1428,7 +1429,7 @@ renderer.setAnimationLoop(() => {
 });
 
 // Touches d'interface : Échap (carte de jeu, puis carte des environs agrandie, puis panneau, puis sortie du refuge),
-// Tab (onglet suivant), B (replier, ou rouvrir le panneau au refuge), C (agrandir ou réduire la carte des environs).
+// Tab (onglet suivant), B (replier, ou rouvrir le panneau au refuge), C (agrandir ou réduire la carte des environs), I (le sac).
 function handleUiKeys(s, inp) {
   if (inp.escape) {
     if (finds.isOpen()) finds.close();
@@ -1440,6 +1441,7 @@ function handleUiKeys(s, inp) {
   }
   // Une carte de jeu qui attend une réponse garde la main : la carte des environs ne s'ouvre pas par-dessus.
   if (inp.map && !(card.isOpen() && cardInfo?.blocking) && !finds.isOpen()) minimap.toggle();
+  if (inp.bag) toggleBag(s);
   if (inp.tab) panel.nextTab();
   if (inp.fold) {
     if (panel.isOpen()) panel.toggleFold();
@@ -1970,6 +1972,28 @@ function openFinds(s, { title, found, kicker = '', sub = '', notes = [] }) {
     onClose: (left) => {
       if (session !== s) return;
       const text = findsLeftText(left);
+      if (text) toast(text, 3);
+      for (const t of findsToasts.splice(0)) toast(...t);
+    },
+  });
+}
+
+// Bouton « Sac » et touche I : la même fenêtre, sans butin (mode 'bag') : voir le sac et l'équipement, équiper, jeter. Ce qui est jeté
+// reste dans la colonne « Jeté » jusqu'à la fermeture (on peut le reprendre), puis il est perdu. Le jeu y est en pause, comme à une
+// trouvaille ; un second appui ferme. Fermée pendant le sommeil, une carte qui attend une réponse ou après la mort. Pendant une
+// fouille ou un trajet, l'action reprend à la fermeture.
+function toggleBag(s) {
+  if (finds.isOpen()) {
+    if (finds.mode() === 'bag') finds.close();
+    return;
+  }
+  if (!s?.player || s.ended || session !== s || (card.isOpen() && cardInfo?.blocking)) return;
+  if (asleep(s)) { toast('Tu dors : tu ne peux rien faire d\'autre', 1.5); return; }
+  finds.open(s, {
+    title: 'Mon sac', kicker: 'Inventaire', found: {}, mode: 'bag',
+    onClose: (left) => {
+      if (session !== s) return;
+      const text = findsLeftText(left, 'bag');
       if (text) toast(text, 3);
       for (const t of findsToasts.splice(0)) toast(...t);
     },
