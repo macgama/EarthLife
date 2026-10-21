@@ -2,6 +2,8 @@
 // porte et ce que l'on laisse sur place (le butin à côté des sacs, comme dans World of Warcraft). Trois parties : les règles des
 // transferts et la vue (pures, testées sous node), la page HTML (pure, textes échappés) et le contrôleur du DOM. Classes en tv-.
 // Chaque transfert s'applique tout de suite au sac du survivant : fermer ne valide rien, il laisse le reste sur place.
+// Le même écran sert de « Sac » (mode 'bag', bouton du jeu ou touche I) : sans butin, avec l'équipement porté ; « Jeter » pose l'objet dans
+// une liste « Jeté » d'où l'on peut le reprendre jusqu'à la fermeture, qui le perd.
 import { ITEMS, WEAPONS, FIREARMS, BAG_BASE, bagCapacity, bagUsed, wornKey, discardedBy, equipFrom, betterThanWorn, packSwapRefusal, addCount, takeCount, itemLabel, countsLabel, countsTotal } from './survival.js';
 import { icon } from './icons.js';
 import { itemSlot, injectArtStyle } from './art.js';
@@ -201,6 +203,7 @@ const stackOf = (s, key, n, selected, side) => ({
 // Vue de la fenêtre : { title, kicker, sub, notes, ground, bag, worn, used, cap, free, detail, all, done, msg, tone }.
 // `find` : { title, kicker, sub, notes, ground } ; `sel` : pile touchée ; `msg` : { text, tone } du dernier transfert.
 export function findView(s, find, sel = null, msg = null) {
+  const bagMode = find.mode === 'bag';
   const ground = keysOf(find.ground).map((k) => stackOf(s, k, find.ground[k], sel, 'ground'));
   const bag = keysOf(s.inventory).map((k) => stackOf(s, k, s.inventory[k], sel, 'bag'));
   const used = bagUsed(s), cap = bagCapacity(s), free = freeRoom(s);
@@ -215,7 +218,7 @@ export function findView(s, find, sel = null, msg = null) {
       have: sel.side === 'ground' ? find.ground[sel.key] ?? 0 : s.inventory[sel.key] ?? 0,
       n, max,
       move: {
-        label: `${sel.side === 'ground' ? 'Prendre' : 'Laisser'}${n > 1 ? ` ×${n}` : ''}`,
+        label: `${sel.side === 'ground' ? (bagMode ? 'Reprendre' : 'Prendre') : (bagMode ? 'Jeter' : 'Laisser')}${n > 1 ? ` ×${n}` : ''}`,
         enabled: max > 0, why: sel.side === 'ground' ? WHY.full : WHY.nothing,
       },
       equip: gear ? {
@@ -226,7 +229,7 @@ export function findView(s, find, sel = null, msg = null) {
   }
   const left = countsTotal(find.ground);
   return {
-    title: find.title, kicker: find.kicker || 'Fouille', sub: find.sub ?? '', notes: find.notes ?? [],
+    mode: bagMode ? 'bag' : 'find', title: find.title, kicker: find.kicker || (bagMode ? 'Sac' : 'Fouille'), sub: find.sub ?? '', notes: find.notes ?? [],
     ground, bag, worn: gearOf(s), used, cap, free, detail,
     all: { enabled: left > 0 && free > 0, left, why: WHY.full },
     done: left === 0,
@@ -235,15 +238,15 @@ export function findView(s, find, sel = null, msg = null) {
 }
 
 // Texte du transfert pour la ligne d'état de la fenêtre.
-export function movedText(kind, key, n) {
-  if (kind === 'take') return `Dans ton sac : ${itemLabel(key, n)}`;
-  if (kind === 'leave') return `Laissé sur place : ${itemLabel(key, n)}`;
+export function movedText(kind, key, n, mode = 'find') {
+  if (kind === 'take') return mode === 'bag' ? `Repris : ${itemLabel(key, n)}` : `Dans ton sac : ${itemLabel(key, n)}`;
+  if (kind === 'leave') return mode === 'bag' ? `Jeté : ${itemLabel(key, n)}` : `Laissé sur place : ${itemLabel(key, n)}`;
   return '';
 }
 
 // Ce qui reste sur place à la fermeture : « Laissé sur place : 2 conserves, 1 soda » (chaîne vide s'il ne reste rien).
-export function leftText(left) {
-  return countsTotal(left) ? `Laissé sur place : ${countsLabel(left)}` : '';
+export function leftText(left, mode = 'find') {
+  return countsTotal(left) ? `${mode === 'bag' ? 'Jeté' : 'Laissé sur place'} : ${countsLabel(left)}` : '';
 }
 
 // ---------- Page ----------
@@ -254,8 +257,8 @@ const slotHtml = (e) => {
     + `${itemSlot(e.key, { size: 52, count: e.n, lazy: false })}<span class="tv-name">${esc(e.name)}</span>${e.up ? '<b class="tv-badge">Mieux</b>' : ''}</button></li>`;
 };
 
-function detailHtml(d) {
-  if (!d) return '<p class="tv-hint">Touche un objet pour le prendre, le laisser ou l\'équiper.</p>';
+function detailHtml(d, mode = 'find') {
+  if (!d) return `<p class="tv-hint">${mode === 'bag' ? 'Touche un objet pour l\'équiper ou le jeter.' : 'Touche un objet pour le prendre, le laisser ou l\'équiper.'}</p>`;
   const stepper = d.max > 1
     ? `<div class="tv-qty" role="group" aria-label="Quantité"><button type="button" class="tv-step" data-tv="step" data-d="-1" aria-label="Un de moins"${d.n <= 1 ? ' disabled' : ''}>${icon('moins', { size: 18 })}</button>`
       + `<output class="tv-n" aria-live="polite">${esc(d.n)}</output><button type="button" class="tv-step" data-tv="step" data-d="1" aria-label="Un de plus"${d.n >= d.max ? ' disabled' : ''}>${icon('plus', { size: 18 })}</button></div>`
@@ -273,12 +276,16 @@ function detailHtml(d) {
 
 // Pied de la fenêtre : dernier message, détail de la pile touchée et boutons. Seul morceau refait quand la sélection change.
 export function footHtml(view) {
-  const primary = view.done
-    ? '<button type="button" class="tv-btn tv-primary" data-tv="close">Terminé</button>'
-    : `<button type="button" class="tv-btn tv-primary" data-tv="all"${view.all.enabled ? '' : ` disabled title="${esc(view.all.why)}"`}>Tout prendre</button>`
-      + '<button type="button" class="tv-btn" data-tv="close">Laisser le reste</button>';
+  const bag = view.mode === 'bag';
+  const primary = bag
+    ? '<button type="button" class="tv-btn tv-primary" data-tv="close">Fermer</button>'
+      + (view.all.left > 0 ? `<button type="button" class="tv-btn" data-tv="all"${view.all.enabled ? '' : ` disabled title="${esc(view.all.why)}"`}>Tout reprendre</button>` : '')
+    : view.done
+      ? '<button type="button" class="tv-btn tv-primary" data-tv="close">Terminé</button>'
+      : `<button type="button" class="tv-btn tv-primary" data-tv="all"${view.all.enabled ? '' : ` disabled title="${esc(view.all.why)}"`}>Tout prendre</button>`
+        + '<button type="button" class="tv-btn" data-tv="close">Laisser le reste</button>';
   return `<p class="tv-msg${view.tone ? ` tv-${esc(view.tone)}` : ''}" role="status" aria-live="polite">${esc(view.msg)}</p>`
-    + `<div class="tv-detail">${detailHtml(view.detail)}</div><div class="tv-btns">${primary}</div>`;
+    + `<div class="tv-detail">${detailHtml(view.detail, view.mode)}</div><div class="tv-btns">${primary}</div>`;
 }
 
 // HTML de la fenêtre (contenu de #finds). Pur : `view` vient de findView ; `enter` : la feuille arrive (animation d'entrée, une fois).
@@ -287,12 +294,18 @@ export function findHtml(view, { enter = false } = {}) {
   const pct = view.cap > 0 ? Math.min(100, Math.round((view.used / view.cap) * 100)) : 0;
   const worn = view.worn.map((g) => `<li class="tv-wear"><span class="tv-wear-k">${esc(g.label)}</span><span class="tv-wear-v">${esc(g.name)}</span><span class="tv-wear-d">${esc(g.detail)}</span></li>`).join('');
   const notes = view.notes.length ? `<ul class="tv-notes">${view.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : '';
-  return `<div class="tv-sheet${enter ? ' tv-enter' : ''}" role="dialog" aria-modal="true" aria-labelledby="tv-title" tabindex="-1">`
+  const bagMode = view.mode === 'bag';
+  // Sac : une seule colonne ; la liste « Jeté » ne s'ouvre au-dessus du sac que s'il y a quelque chose à reprendre.
+  const groundCol = bagMode
+    ? (view.ground.length
+      ? `<section class="tv-col" aria-label="Jeté"><h3 class="tv-h">Jeté<span class="tv-h-note">touche pour reprendre, perdu à la fermeture</span></h3>${grid(view.ground, '')}</section>`
+      : '')
+    : `<section class="tv-col" aria-label="Trouvé"><h3 class="tv-h">Trouvé<span class="tv-h-note">${view.done ? 'tout est pris' : 'ce que tu ne prends pas reste ici'}</span></h3>${grid(view.ground, 'Plus rien à prendre')}</section>`;
+  return `<div class="tv-sheet${bagMode ? ' tv-bagmode' : ''}${enter ? ' tv-enter' : ''}" role="dialog" aria-modal="true" aria-labelledby="tv-title" tabindex="-1">`
     + `<header class="tv-head"><div class="tv-head-text"><p class="tv-kicker">${esc(view.kicker)}</p><h2 class="tv-title" id="tv-title">${esc(view.title)}</h2>`
     + `${view.sub ? `<p class="tv-sub">${esc(view.sub)}</p>` : ''}</div>`
-    + `<button type="button" class="tv-x" data-tv="close" aria-label="Fermer : ce qui reste est laissé sur place">${icon('fermer', { size: 20 })}</button></header>`
-    + `${notes}<div class="tv-body">`
-    + `<section class="tv-col" aria-label="Trouvé"><h3 class="tv-h">Trouvé<span class="tv-h-note">${view.done ? 'tout est pris' : 'ce que tu ne prends pas reste ici'}</span></h3>${grid(view.ground, 'Plus rien à prendre')}</section>`
+    + `<button type="button" class="tv-x" data-tv="close" aria-label="${bagMode ? 'Fermer le sac' : 'Fermer : ce qui reste est laissé sur place'}">${icon('fermer', { size: 20 })}</button></header>`
+    + `${notes}<div class="tv-body">${groundCol}`
     + `<section class="tv-col" aria-label="Mon sac"><h3 class="tv-h">Mon sac<span class="tv-h-note tv-num${view.free === 0 ? ' tv-full' : ''}">${esc(view.used)}/${esc(view.cap)}</span></h3>`
     + `<div class="tv-gauge${view.free === 0 ? ' tv-full' : ''}" role="meter" aria-label="Places du sac" aria-valuemin="0" aria-valuemax="${esc(view.cap)}" aria-valuenow="${esc(view.used)}"><i style="width:${pct}%"></i></div>`
     + `<ul class="tv-worn" aria-label="Porté">${worn}</ul>${grid(view.bag, 'Sac vide')}</section></div>`
@@ -409,6 +422,8 @@ export const FINDS_CSS = `
   .tv-host { align-items: center; }
   .tv-sheet { max-height: min(100dvh - 32px, 680px); border-bottom: 1px solid ${T.line}; border-radius: ${T.rMd}; }
   .tv-body { grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; }
+  .tv-sheet.tv-bagmode { width: min(100%, 560px); }
+  .tv-bagmode .tv-body { grid-template-columns: minmax(0, 1fr); }
 }
 @keyframes tv-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes tv-rise { from { transform: translateY(16px); opacity: 0; } to { transform: none; opacity: 1; } }
@@ -427,8 +442,8 @@ function injectStyle(doc) {
 // ---------- DOM ----------
 
 // Fenêtre « Trouvé » dans `root` (l'élément #finds lui-même, vide et caché). `onChange()` : un transfert vient de changer le sac
-// (la sauvegarde est à écrire). open(survivor, { title, found, kicker, sub, notes, onClose }) rend false quand il n'y a rien à montrer ;
-// onClose(left) reçoit ce qui reste sur place. close() ferme (et appelle onClose) ; isOpen() ; view() : la vue courante et refresh() : la page
+// (la sauvegarde est à écrire). open(survivor, { title, found, kicker, sub, notes, mode, onClose }) rend false quand il n'y a rien à montrer
+// (jamais en mode 'bag', qui s'ouvre sans butin) ; onClose(left) reçoit ce qui reste sur place (en mode 'bag', ce qui a été jeté). close() ferme (et appelle onClose) ; isOpen() ; view() : la vue courante et refresh() : la page
 // refaite d'après le sac (essais : le sac a changé hors de la fenêtre).
 export function createFinds(root, { onChange = () => {}, now = () => performance.now() } = {}) {
   const doc = root.ownerDocument ?? document;
@@ -478,11 +493,11 @@ export function createFinds(root, { onChange = () => {}, now = () => performance
     st.msg = { text, tone };
   }
 
-  function open(s, { title, found, kicker = '', sub = '', notes = [], onClose = null } = {}) {
+  function open(s, { title, found, kicker = '', sub = '', notes = [], mode = 'find', onClose = null } = {}) {
     if (st) close();
     const ground = cleanFound(found);
-    if (!countsTotal(ground)) return false;
-    st = { s: s.survivor ?? s, find: { title, kicker, sub, notes, ground }, sel: null, msg: null, openedAt: now(), onClose };
+    if (mode !== 'bag' && !countsTotal(ground)) return false;
+    st = { s: s.survivor ?? s, find: { title, kicker, sub, notes, ground, mode }, sel: null, msg: null, openedAt: now(), onClose };
     root.hidden = false;
     render({ enter: true });
     root.querySelector('.tv-sheet')?.focus({ preventScroll: true });
@@ -523,7 +538,7 @@ export function createFinds(root, { onChange = () => {}, now = () => performance
       if (!sel) return;
       const r = sel.side === 'ground' ? take(st.s, st.find.ground, sel.key, sel.n) : leave(st.s, st.find.ground, sel.key, sel.n);
       if (!r.ok) { say(r.why, 'warn'); return; }
-      say(movedText(sel.side === 'ground' ? 'take' : 'leave', sel.key, r.moved), sel.side === 'ground' ? 'ok' : '');
+      say(movedText(sel.side === 'ground' ? 'take' : 'leave', sel.key, r.moved, st.find.mode), sel.side === 'ground' ? 'ok' : '');
       changed();
     },
     equip() {
@@ -531,7 +546,7 @@ export function createFinds(root, { onChange = () => {}, now = () => performance
       if (!sel) return;
       const r = equip(st.s, st.find.ground, sel.key, sel.side);
       if (!r.ok) { say(r.why, 'warn'); return; }
-      const back = r.back ? ` · ${ITEMS[r.back].name} ${sel.side === 'ground' ? 'remis parmi les objets trouvés' : 'dans ton sac'}` : '';
+      const back = r.back ? ` · ${ITEMS[r.back].name} ${sel.side === 'ground' ? (st.find.mode === 'bag' ? 'remis parmi les objets jetés' : 'remis parmi les objets trouvés') : 'dans ton sac'}` : '';
       say(`Équipé : ${ITEMS[sel.key].name}${r.discarded ? ` · ${ITEMS[r.discarded].name} usée jetée` : back}`, 'ok');
       changed();
     },
@@ -539,7 +554,7 @@ export function createFinds(root, { onChange = () => {}, now = () => performance
       const moved = takeAll(st.s, st.find.ground);
       const rest = countsTotal(st.find.ground);
       if (!countsTotal(moved)) { say(WHY.full, 'warn'); return; }
-      say(`Dans ton sac : ${countsLabel(moved)}${rest ? ` · il reste ${countsLabel(st.find.ground)}` : ''}`, rest ? 'warn' : 'ok');
+      say(`${st.find.mode === 'bag' ? 'Repris' : 'Dans ton sac'} : ${countsLabel(moved)}${rest ? ` · il reste ${countsLabel(st.find.ground)}` : ''}`, rest ? 'warn' : 'ok');
       changed();
     },
     close() {
@@ -557,5 +572,5 @@ export function createFinds(root, { onChange = () => {}, now = () => performance
     if (fn(el.dataset) !== false && st) render();
   });
 
-  return { open, close, isOpen: () => !!st, view, refresh: () => { if (st) render(); }, el: root };
+  return { open, close, isOpen: () => !!st, mode: () => st?.find.mode ?? null, view, refresh: () => { if (st) render(); }, el: root };
 }

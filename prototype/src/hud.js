@@ -116,7 +116,7 @@ export function createHud({ $, input }) {
   const el = {
     hud: $('hud'), hurt: $('hurt'), toast: $('toast'), toastText: $('toast-text'), toastIcon: $('toast-icon'),
     compass: $('compass'), compassDist: $('compass-dist'), quest: $('quest'), questDist: $('quest-dist'), questTimer: $('quest-timer'),
-    banner: $('horde-banner'), bannerText: $('horde-text'), moment: $('moment'), bag: $('bag-line'), bagCount: $('bag-count'),
+    banner: $('horde-banner'), bannerText: $('horde-text'), moment: $('moment'), bag: $('bag-line'), bagCount: $('bag-count'), bagOpen: $('bag-open'), bagOpenCount: $('bag-open-count'),
     base: $('base-line'), baseText: $('base-text'), gear: $('gear'),
     body: $('body'), bodyTemp: $('body-temp'), bodyState: $('body-state'), kills: $('kills'), killsCount: $('kills-count'),
     run: $('run'), stickBase: $('stick-base'), stickKnob: $('stick-knob'), stickHint: $('stick-hint'), refugeOpen: $('refuge-open'),
@@ -173,7 +173,7 @@ export function createHud({ $, input }) {
   let distHalf = 24;
   const st = {
     last: 0, prev: {}, counts: {}, kills: undefined, player: null, start: 0, hurt: undefined, hurtPrev: 0,
-    toastShown: false, toastTimer: 0, toastAge: 0, toastText: '', queue: [], online: '', wheel: '', chipKeys: {}, bannerKind: null, momentTimer: 0,
+    toastShown: false, toastTimer: 0, toastAge: 0, toastText: '', queue: [], online: '', wheel: '', chipKeys: {}, bannerKind: null, momentTimer: 0, bagLabel: '',
   };
 
   function flash(node, cls, ms) {
@@ -415,6 +415,13 @@ export function createHud({ $, input }) {
     const cap = bagCapacity(sv);
     setText(el.bagCount, `Sac ${used}/${cap}`);
     el.bag?.classList.toggle('full', used >= cap);
+    // Puce « Ouvrir » (sac) : la pastille compte les places prises, le nom accessible dit aussi la capacité ; pleine, elle passe en alerte.
+    if (el.bagOpen) {
+      setText(el.bagOpenCount, String(used));
+      el.bagOpen.classList.toggle('full', used >= cap);
+      const label = `Ouvrir le sac, ${used} places sur ${cap}${used >= cap ? ', plein' : ''}`;
+      if (label !== st.bagLabel) { st.bagLabel = label; el.bagOpen.setAttribute('aria-label', label); }
+    }
     setText(el.gear, gearText(sv));
     if (el.base) {
       el.base.classList.toggle('hidden', !info.baseLine);
