@@ -1184,6 +1184,18 @@ export function createRoom({
     send,
     setSeason(hooks) { seasonHooks = hooks ?? {}; },
 
+    // Où joue cet ami, pour son ami `viewerId` (friends.js, route where ; null si celui-ci n'a pas encore d'identité, donc rien de masqué).
+    // null s'il ne joue pas ou s'il a masqué `viewerId`.
+    // `pos` : sa position (micro-degrés exacts, à arrondir par l'appelant) seulement si le jeu la montrerait aux autres en ce moment
+    // (jamais depuis le menu, une zone privée, la couronne, un bâtiment, un refuge ni une position périmée) ; `world` : la ville de la
+    // saison où il joue, si le module des saisons la connaît. Rien n'est gardé.
+    presenceOf(playerId, viewerId) {
+      const o = byPlayer.get(playerId);
+      if (!o || o.state !== 'live' || (viewerId && o.blocked.has(viewerId))) return null;
+      const p = !o.crown && shown(o, now()) ? o.ps.pos : null;
+      return { pos: p ? { a: p.a, o: p.o } : null, world: p ? seasonHooks.world?.(o) ?? null : null };
+    },
+
     health() {
       return { ok: true, v: PROTOCOL, minClient: cfg.minClient, version: cfg.version, ws: !!cfg.ws, db: dbReady(),
         maintenance, invite: !!cfg.inviteCode, acct: !!cfg.accounts, online: worldCount(), now: now() };

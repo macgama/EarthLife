@@ -644,6 +644,15 @@ export function createMysqlStore({
         + 'WHERE f.a = ? OR f.b = ? ORDER BY f.since_day, f.fid', [bin(accountId), bin(accountId), bin(accountId)]);
       return r.map((x) => ({ fid: hex(x.fid), nm: x.name_a === null ? null : [x.name_a, x.name_p, x.name_n], since: x.since_day }));
     },
+    async friendPlayers(accountId) {
+      const id = bin(accountId);
+      const [list, me] = await Promise.all([
+        one('SELECT f.fid, o.player_id FROM el_friends f JOIN el_accounts o ON o.id = IF(f.a = ?, f.b, f.a) WHERE f.a = ? OR f.b = ?', [id, id, id]),
+        one('SELECT player_id FROM el_accounts WHERE id = ?', [id]),
+      ]);
+      return { mine: me.length && me[0].player_id ? hex(me[0].player_id) : null,
+        list: list.map((x) => ({ fid: hex(x.fid), pid: x.player_id ? hex(x.player_id) : null })) };
+    },
     async removeFriend({ accountId, fid }) {
       return tx(async (c) => {
         const f = await rows(c, 'SELECT a, b FROM el_friends WHERE fid = ? FOR UPDATE', [bin(fid)]);

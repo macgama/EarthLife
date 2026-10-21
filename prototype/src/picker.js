@@ -44,6 +44,9 @@ const pinSvg = (fill, glyph) => `<svg viewBox="0 0 34 46" width="30" height="41"
 const MAX_SEASON_PINS = 120;                      // 30 villes au plus par niveau (serveur), trois niveaux
 const SEASON_TONES = { ok: '#3fd08f', warn: '#ffc23d', danger: '#ff5d5d', idle: '#86929c' };
 const seasonSvg = (tone, letter) => pinSvg(SEASON_TONES[tone] ?? SEASON_TONES.warn, `<text x="17" y="22.2" text-anchor="middle" font-family="Chakra Petch, system-ui, sans-serif" font-size="13" font-weight="700" fill="#0a0d10">${letter}</text>`);
+// Repère d'ami (étape 2 des amis) : sarcelle, comme les autres survivants, avec un bonhomme.
+const MAX_FRIEND_PINS = 30;
+const FRIEND_SVG = pinSvg('#38c7c2', '<circle cx="17" cy="14" r="3.6" fill="#0a0d10"/><path d="M10.4 24.6c0-4.3 3-6.5 6.6-6.5s6.6 2.2 6.6 6.5z" fill="#0a0d10"/>');
 const HOME_SVG = pinSvg('#5fb7ff', '<path d="M17 9.8 10.2 16h2.3v7.2h9V16h2.3z" fill="#0a0d10"/><rect x="15.5" y="18.4" width="3" height="4.8" fill="#5fb7ff"/>');
 const BAG_SVG = pinSvg('#c58bff', '<path d="M14.4 9.6 17 11.6l2.6-2-.7 3.1h-3.8z" fill="#0a0d10"/><path d="M15.1 13.3c-2.4 1.3-3.8 3.6-3.8 6 0 2.6 2.4 4.1 5.7 4.1s5.7-1.5 5.7-4.1c0-2.4-1.4-4.7-3.8-6z" fill="#0a0d10"/>');
 // Étiquette « Ton refuge » à droite du repère (jetons du guide de style seulement) ; injectée au premier repère posé.
@@ -362,7 +365,7 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
   let spinning = false, ignoreClick = false;
   // Cadrage des villes de la saison (salon) : demandé avant que la carte soit prête ; le joueur a-t-il déjà bougé la carte ; la carte a-t-elle
   // quitté son lieu pour les villes ; qui prévenir quand on touche un repère de ville.
-  let frameWanted = null, userMoved = false, framedAway = false, seasonPinHandler = null;
+  let frameWanted = null, userMoved = false, framedAway = false, seasonPinHandler = null, friendPinHandler = null;
   let items = [], active = -1, debounce = 0;
   let suggestCtrl = null, searchCtrl = null, reverseCtrl = null;
   let mapNote = '', lastSheetH = 0, layoutFrame = 0;
@@ -835,6 +838,16 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
       el.addEventListener('click', pick);
       el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') pick(e); });
     }
+    // Un repère d'ami se touche pour ouvrir sa fiche (ou la liste, s'ils sont plusieurs au même endroit).
+    if (pin.kind.startsWith('ami-')) {
+      const { gid } = pin;
+      el.setAttribute('role', 'button');
+      el.tabIndex = 0;
+      el.classList.add('map-pin-hit');
+      const pick = (e) => { e.stopPropagation(); e.preventDefault(); friendPinHandler?.(gid); };
+      el.addEventListener('click', pick);
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') pick(e); });
+    }
     if (pin.tag) {
       const tag = document.createElement('span');
       tag.className = 'map-pin-tag';
@@ -842,7 +855,8 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
       tag.textContent = pin.tag;
       el.append(tag);
     }
-    return new gl.Marker({ element: el, anchor: 'bottom' });
+    // Un ami dans une ville de la saison se pose au-dessus du repère de la ville (même point).
+    return new gl.Marker({ element: el, anchor: 'bottom', offset: pin.lift ? [0, -34] : [0, 0] });
   }
 
   // Pose, déplace ou retire les repères ; rien tant que la carte n'est pas prête (mapReady les rejoue).
@@ -1075,6 +1089,29 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
       }
       for (const pin of pins) if (pin.kind.startsWith('saison-') && !keep.has(pin.kind)) pin.spot = null;
       syncPins();
+    },
+    // Amis en ligne dont on connaît la position (amis.js, friendPins) : [{ id, lat, lon, label, tag, lift? }] ; [] les retire tous.
+    setFriendPins(list) {
+      const keep = new Set();
+      for (const c of Array.isArray(list) ? list.slice(0, MAX_FRIEND_PINS) : []) {
+        const p = normalizePlace(c);
+        if (!p || typeof c.id !== 'string' || !/^[A-Za-z0-9_.~-]{1,100}$/.test(c.id)) continue;
+        const kind = `ami-${c.id}`;
+        keep.add(kind);
+        const tag = clean(c.tag).slice(0, 60);
+        const lift = c.id[0] === 's';
+        let pin = pinOf(kind);
+        if (!pin) { pin = { kind, gid: c.id, svg: FRIEND_SVG, tag, lift, spot: null, text: '', marker: null }; pins.push(pin); }
+        else if (pin.tag !== tag || pin.lift !== lift) { pin.marker?.remove(); pin.marker = null; pin.tag = tag; pin.lift = lift; }
+        pin.spot = { lat: p.lat, lon: p.lon };
+        pin.text = clean(c.label).slice(0, 120) || kind;
+      }
+      for (const pin of pins) if (pin.kind.startsWith('ami-') && !keep.has(pin.kind)) pin.spot = null;
+      syncPins();
+    },
+    // Appelé avec l'identifiant du lieu (celui de friendPins) quand on touche un repère d'ami.
+    setFriendPinHandler(fn) {
+      friendPinHandler = typeof fn === 'function' ? fn : null;
     },
     // Cadre la carte sur une ville de la saison ou sur toutes (framingOf du salon). `auto` : cadrage d'office, laissé de côté si le joueur a
     // déjà bougé la carte. Demandé avant que la carte soit prête, il est joué à son arrivée.

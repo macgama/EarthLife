@@ -52,7 +52,7 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright')
 const routes = (await load('prototype/test/fixtures/offline-routes.mjs')).default;
 const { startDevServer } = await load('server/dev.mjs');
 const { createBot } = await load('server/tools/bots.mjs');
-const { PROTOCOL, CLIENT_LEVEL, toE6, metersBetween, sectorOf } = await load('prototype/src/net/protocol.js');
+const { PROTOCOL, CLIENT_LEVEL, FLAGS, toE6, metersBetween, sectorOf } = await load('prototype/src/net/protocol.js');
 const { WebSocket } = createRequire(path.join(repo, 'server', 'package.json'))('ws');
 
 // Délai global : un essai bloqué ne doit pas tenir la CI.
@@ -2726,6 +2726,39 @@ await scenario('O33', 'file d\'attente d\'un niveau plein', async () => {
   }
 });
 
+// Aides partagées par O34 et O35 : ouvrir le jeu avec un compte déjà connecté (`U[n]` : { ses, email }), lire et presser les cartes d'amis.
+function friendsKit(U) {
+  const stateOf = (u) => JSON.stringify({ ses: u.ses, email: u.email, since: Date.now(), base: null, stamp: null, print: null, pending: null, conflict: false, syncedAt: null, notice: null });
+  const openAs = async (tag, device, n, query = '') => {
+    const t = await open(tag, device, accUrl() + query, { waitGame: false, before: (ctx) => {
+      ctx.addInitScript(acctProbe);
+      if (n) ctx.addInitScript(([k, s]) => { try { if (!localStorage.getItem(k)) localStorage.setItem(k, s); } catch { /* stockage refusé */ } }, [accKey(), stateOf(U[n])]);
+    } });
+    check((await accWait(t, (v) => v.menu, 60000)).ok, `${tag} : menu affiché`);
+    return t;
+  };
+  const cardWait = (t, title, timeout = 15000) => until(t, (x) => (document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent === x ? 1 : null), title, timeout);
+  const cardBtn = (t, id) => click(t, `#card:not(.hidden) [data-card-btn="${id}"]`);
+  const cardView = (t) => ev(t, () => {
+    const c = document.querySelector('#card:not(.hidden) .rp-card');
+    if (!c) return null;
+    const r = c.getBoundingClientRect();
+    return {
+      title: c.querySelector('.rp-card-title')?.textContent ?? '', text: c.innerText.replace(/\s+/g, ' ').trim(),
+      lines: [...c.querySelectorAll('.rp-card-line')].map((l) => l.innerText.replace(/\s+/g, ' ').trim()),
+      score: c.querySelector('.rp-card-score')?.textContent.trim() ?? null,
+      btns: [...c.querySelectorAll('[data-card-btn]')].map((b) => b.dataset.cardBtn),
+      fits: r.left >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight + 1, scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth,
+    };
+  });
+  const openFriends = async (t) => {
+    const shown = await until(t, () => { const b = document.getElementById('friends-block'); return b && !b.hidden ? 1 : null; }, null, 30000);
+    check(!!shown, `${t.tag} : le bouton « Mes amis » est au menu`);
+    await click(t, '#friends-open');
+  };
+  return { openAs, cardWait, cardBtn, cardView, openFriends };
+}
+
 // =====================================================================================================
 // O34 : « Mes amis » (cahier amis-et-echanges, étape 1) : trois comptes (A sur ordinateur, B sur téléphone, C par un lien).
 // Le code d'ami (carte, un seul usage, refus uniforme), la liste et les surnoms des deux côtés, le lien qui quitte la barre
@@ -2772,34 +2805,7 @@ await scenario('O34', 'amis : code, lien, liste, retrait et blocage', async () =
   const ids = {};
   for (const n of ['a', 'b', 'c']) ids[n] = await srv.accounts.debug.byEmail(U[n].email);
   check(!!ids.a?.playerId && !!ids.b?.playerId && !ids.c?.playerId, `serveur : identités de A et de B, pas de C (${!!ids.a?.playerId}, ${!!ids.b?.playerId}, ${!!ids.c?.playerId})`);
-  const stateOf = (u) => JSON.stringify({ ses: u.ses, email: u.email, since: Date.now(), base: null, stamp: null, print: null, pending: null, conflict: false, syncedAt: null, notice: null });
-  const openAs = async (tag, device, n, query = '') => {
-    const t = await open(tag, device, accUrl() + query, { waitGame: false, before: (ctx) => {
-      ctx.addInitScript(acctProbe);
-      if (n) ctx.addInitScript(([k, s]) => { try { if (!localStorage.getItem(k)) localStorage.setItem(k, s); } catch { /* stockage refusé */ } }, [accKey(), stateOf(U[n])]);
-    } });
-    check((await accWait(t, (v) => v.menu, 60000)).ok, `${tag} : menu affiché`);
-    return t;
-  };
-  const cardWait = (t, title, timeout = 15000) => until(t, (x) => (document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent === x ? 1 : null), title, timeout);
-  const cardBtn = (t, id) => click(t, `#card:not(.hidden) [data-card-btn="${id}"]`);
-  const cardView = (t) => ev(t, () => {
-    const c = document.querySelector('#card:not(.hidden) .rp-card');
-    if (!c) return null;
-    const r = c.getBoundingClientRect();
-    return {
-      title: c.querySelector('.rp-card-title')?.textContent ?? '', text: c.innerText.replace(/\s+/g, ' ').trim(),
-      lines: [...c.querySelectorAll('.rp-card-line')].map((l) => l.innerText.replace(/\s+/g, ' ').trim()),
-      score: c.querySelector('.rp-card-score')?.textContent.trim() ?? null,
-      btns: [...c.querySelectorAll('[data-card-btn]')].map((b) => b.dataset.cardBtn),
-      fits: r.left >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight + 1, scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth,
-    };
-  });
-  const openFriends = async (t) => {
-    const shown = await until(t, () => { const b = document.getElementById('friends-block'); return b && !b.hidden ? 1 : null; }, null, 30000);
-    check(!!shown, `${t.tag} : le bouton « Mes amis » est au menu`);
-    await click(t, '#friends-open');
-  };
+  const { openAs, cardWait, cardBtn, cardView, openFriends } = friendsKit(U);
   const CODE_RE = /^[A-Z2-9]{4}-[A-Z2-9]{4}$/;
   const A = await openAs('A (ordinateur, amis)', desktop, 'a');
   const B = await openAs('B (téléphone, amis)', mobile, 'b');
@@ -2942,6 +2948,170 @@ await scenario('O34', 'amis : code, lien, liste, retrait et blocage', async () =
     }
   } finally {
     for (const t of [A, B, C]) await closeAcc(t);
+  }
+});
+
+// =====================================================================================================
+// O35 : « Mes amis », étape 2 (voir ses amis sur la carte et les rejoindre) : A (ordinateur, navigateur) est ami de B, un joueur
+// simulé connecté avec son compte. Hors ligne puis en ligne avec position partagée (arrondie à ~55 m, jamais l'exacte), le repère
+// d'ami de la carte du menu, la fiche avec « Rejoindre » (la carte du menu va près de B), puis les cas où B ne montre pas où il est
+// (couronne, retour au menu, dans un bâtiment) ; B ne voit pas A comme un ami qui n'en est pas un (route sans amis).
+// =====================================================================================================
+await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', async () => {
+  const SERVER = `http://127.0.0.1:${srv.port}`;
+  const { nameOf: nick } = await load('prototype/src/net/protocol.js');
+  const post = async (route, body) => {
+    const r = await fetch(`${SERVER}${route}`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
+    return { status: r.status, body: await r.json() };
+  };
+  const U = {};
+  const { ACCOUNT_LIMITS: LIM } = await load('server/src/accounts.js');
+  const was = { codesPerIpHour: LIM.codesPerIpHour, coldCodesPerIpHour: LIM.coldCodesPerIpHour };
+  LIM.codesPerIpHour += 10;
+  LIM.coldCodesPerIpHour += 10;
+  try {
+    for (const n of ['a', 'b']) {
+      const u = U[n] = { email: `${n}.ou@exemple.test`, pw: `essai-ou-${n}-quai-78` };
+      await post('/v1/account/code', { v: 1, email: u.email, why: 'signup' });
+      const ver = await post('/v1/account/verify', { v: 1, email: u.email, code: srv.mailbox.lastCode(u.email), password: u.pw, tok: null, age: true });
+      u.ses = ver.body.ses;
+      check(ver.status === 200 && !!u.ses, `${n.toUpperCase()} : compte créé (${ver.status})`);
+    }
+  } finally {
+    Object.assign(LIM, was);
+  }
+  // B : un joueur simulé qui joue avec la session de son compte (hello `ses`), à un point de la partie libre à 6 km du départ de A.
+  const SPOT = { lat: 45.80023, lon: 4.90037 };                         // ni l'un ni l'autre n'est un multiple de 0,0005°
+  const mode = { an: 0, m: 0 };
+  const botB = (() => {
+    const u = new URL(srv.url);
+    const st = { welcomed: false, sid: 0 };
+    const ws = new WebSocket(`ws://${u.host}/v1/ws`, { headers: { Origin: ORIGIN, 'X-Forwarded-For': '10.35.0.2' } });
+    let seq = 0, t0 = 0, timer = null, on = true, jump = false;
+    const send = (m) => { if (ws.readyState === 1) ws.send(JSON.stringify(m)); };
+    // Comme le jeu (online.js, beat) : une position en partie, un `leave` au menu (le serveur oublie une session muette après 15 s), et le retour en partie est un saut (j).
+    const tick = () => {
+      if (!on) { send({ t: 'leave' }); return; }
+      send({ t: 'p', s: ++seq, ct: Math.round(performance.now() - t0), a: toE6(SPOT.lat), o: toE6(SPOT.lon), h: 0, m: mode.m, ...(mode.an ? { an: 1 } : {}), ...(jump ? { j: 1 } : {}) });
+      jump = false;
+    };
+    ws.on('open', () => { t0 = performance.now(); send({ t: 'hello', v: PROTOCOL, cl: CLIENT_LEVEL, ses: U.b.ses, c: 'dev' }); });
+    ws.on('message', (d) => { try { const m = JSON.parse(String(d)); if (m.t === 'welcome') { st.welcomed = true; st.sid = m.sid; } } catch { /* ignoré */ } });
+    ws.on('error', () => {});
+    return {
+      st,
+      // `play(false)` : retour au menu (leave, plus de position) ; `play(true)` : reprend les positions.
+      play(v) { if (v && !on) jump = true; on = v; if (!v) send({ t: 'leave' }); },
+      start() { timer = setInterval(tick, 250); },
+      stop() { clearInterval(timer); try { send({ t: 'leave' }); ws.close(1000); } catch { /* déjà fermé */ } },
+    };
+  })();
+  const accA = await srv.accounts.debug.byEmail(U.a.email);
+  const where = async () => (await post('/v1/friends/where', { v: 1, ses: U.a.ses })).body;
+  let A = null;
+  try {
+    for (let i = 0; i < 100 && !botB.st.welcomed; i++) await wait(100);
+    check(botB.st.welcomed, 'B (joueur simulé) : connecté avec la session de son compte');
+    // A et B deviennent amis (code de B, accepté par A) : par l'API, c'est l'affaire de O34.
+    const code = (await post('/v1/friends/code', { v: 1, ses: U.b.ses })).body.friendCode;
+    const j = await post('/v1/friends/join', { v: 1, ses: U.a.ses, code });
+    check(j.status === 200 && !!j.body.friend?.fid, `A : ami de B (${j.status})`);
+    const fid = j.body.friend.fid;
+    const idB = (await srv.accounts.debug.byEmail(U.b.email));
+    const nameB = nick((await srv.store.friendsOf(accA.accountId))[0].nm);
+    // ---- B joue, sans avoir encore envoyé de position : en ligne, sans position partagée ----
+    let w = (await where()).where?.find((e) => e.fid === fid);
+    check(w?.st === 1, `serveur : B connecté sans position → st 1 (${JSON.stringify(w)})`);
+    // ---- A ouvre « Mes amis » : B y est, sans « Rejoindre » ----
+    const K = friendsKit(U);
+    A = await K.openAs('A (ordinateur, amis en ligne)', desktop, 'a', '&friendPollMs=8000');
+    await K.openFriends(A);
+    check(!!(await K.cardWait(A, 'Mes amis (1/30)')), `A : carte « Mes amis (1/30) » ${A.errors.slice(0, 2).map((x) => x.text).join(' | ')}`);
+    const v0 = await K.cardView(A);
+    check(v0.text.includes(nameB) && /En ligne · position non partagée/.test(v0.text) && !v0.btns.includes('j0'), `A : « ${v0.lines[0]} », pas de « Rejoindre » (${v0.btns.join()})`);
+    check(/zone privée/.test(v0.text), 'A : la carte dit que la position n\'est partagée qu\'hors zone privée');
+    await K.cardBtn(A, 'close');
+    // ---- B commence à envoyer sa position : pour les amis, arrondie à 0,0005° ----
+    botB.start();
+    let rounded = null;
+    // Le serveur permet 30 lectures par minute et par session : la page de A en fait 7 ou 8, le scénario une toutes les 3 s.
+    for (let i = 0; i < 20 && !rounded; i++) {
+      await wait(3000);
+      const e = (await where()).where?.find((x) => x.fid === fid);
+      if (e?.st === 2) rounded = e;
+    }
+    check(!!rounded, `serveur : B en ligne avec position partagée → st 2 (${JSON.stringify(rounded)})`);
+    const near = rounded ? metersBetween({ lat: rounded.a / 1e6, lon: rounded.o / 1e6 }, SPOT) : 1e9;
+    check(rounded && rounded.a % 500 === 0 && rounded.o % 500 === 0 && (rounded.a !== toE6(SPOT.lat) || rounded.o !== toE6(SPOT.lon)) && near < 60, `serveur : position arrondie à 0,0005° (${rounded?.a}, ${rounded?.o}), à ${near.toFixed(0)} m de B`);
+    check(!JSON.stringify(await where()).includes(accA.accountId) && !JSON.stringify(await where()).includes(idB.playerId), 'serveur : ni identifiant de compte ni d\'identité dans la réponse');
+    // ---- le repère d'ami apparaît sur la carte du menu de A (lecture toutes les 8 s en essai) ----
+    const pin = await until(A, () => { const m = document.querySelector('.maplibregl-marker[class*="map-pin-ami-"]'); return m ? m.title || m.getAttribute('aria-label') : null; }, null, 90000, 300);
+    const pinTitle = pin || await ev(A, () => [...document.querySelectorAll('.maplibregl-marker.map-pin-hit')].map((m) => m.className + ' ' + m.title).join(' | '));
+    check(typeof pin === 'string' && pin.includes(nameB), `A : repère d'ami sur la carte du menu « ${pinTitle} »`);
+    await shot(A, 'o35-ordi-repere-ami');
+    // ---- toucher le repère : la fiche de B avec « Rejoindre » ----
+    await ev(A, () => document.querySelector('.maplibregl-marker[class*="map-pin-ami-"]').click());
+    check(!!(await K.cardWait(A, nameB)), `A : fiche de B « ${nameB} » depuis le repère`);
+    const v1 = await K.cardView(A);
+    check(/En ligne · en partie libre/.test(v1.text) && v1.btns.join() === 'join,remove,block,back', `A : fiche « ${v1.lines[1]} », boutons ${v1.btns.join()}`);
+    await shot(A, 'o35-ordi-fiche-rejoindre');
+    // ---- Rejoindre : la carte et le lieu du menu vont près de B (à 55 m près) ----
+    await K.cardBtn(A, 'join');
+    const placed = await until(A, ([lat, lon]) => {
+      const p = window.__earthlife.picker.getPlace();
+      return p && Math.abs(p.lat - lat) < 0.002 && Math.abs(p.lon - lon) < 0.002 ? { lat: p.lat, lon: p.lon } : null;
+    }, [SPOT.lat, SPOT.lon], 15000);
+    check(!!placed, `A : « Rejoindre » place le lieu du menu près de B (${placed?.lat?.toFixed(4)}, ${placed?.lon?.toFixed(4)})`);
+    check(!!placed && metersBetween(placed, SPOT) > 0 && metersBetween(placed, SPOT) < 60, `A : à ${placed ? metersBetween(placed, SPOT).toFixed(0) : '—'} m de B (arrondi de partage, jamais sa position exacte)`);
+    const tab = await ev(A, () => document.getElementById('menu').dataset.tab);
+    check(tab === 'libre', `A : onglet « Partie libre » (${tab})`);
+    await shot(A, 'o35-ordi-rejoindre');
+    // ---- B ne montre plus où il est : couronne, retour au menu, bâtiment ----
+    const stOf = async () => (await where()).where?.find((e) => e.fid === fid);
+    const waitSt = async (want, label) => {
+      let e = null;
+      for (let i = 0; i < 20; i++) { await wait(3000); e = await stOf(); if (e?.st === want) return e; }
+      check(false, `serveur : ${label} → st ${want} attendu (${JSON.stringify(e)})`);
+      return e;
+    };
+    mode.an = 1;
+    let e = await waitSt(1, 'B dans la couronne anonyme');
+    check(e?.st === 1 && e.a === undefined && e.o === undefined, 'serveur : couronne → aucune position');
+    mode.an = 0;
+    await waitSt(2, 'B hors couronne');
+    mode.m = FLAGS.inside;
+    e = await waitSt(1, 'B dans un bâtiment');
+    check(e?.a === undefined, 'serveur : bâtiment → aucune position');
+    mode.m = 0;
+    await waitSt(2, 'B ressorti');
+    botB.play(false);
+    e = await waitSt(1, 'B au menu');
+    check(e?.a === undefined && e?.lv === undefined, 'serveur : retour au menu → aucune position');
+    // A le voit : le repère disparaît et la fiche dit « position non partagée » (lecture suivante, 8 s en essai).
+    const gone = await until(A, () => (document.querySelector('.maplibregl-marker[class*="map-pin-ami-"]') ? null : 1), null, 40000, 300);
+    check(!!gone, 'A : le repère d\'ami disparaît de la carte quand B n\'a plus de position partagée');
+    await K.cardBtn(A, 'back').catch(() => {});
+    // ---- B revient, puis A retire l'amitié : plus rien (hors ligne) ----
+    botB.play(true);
+    await waitSt(2, 'B revenu en jeu');
+    // ---- Téléphone : la liste avec « Rejoindre » et « Gérer » sur la ligne de B tient dans l'écran (même compte, lectures d'ami rares) ----
+    const M = await K.openAs('A (téléphone, amis en ligne)', mobile, 'a', '&friendPollMs=60000');
+    try {
+      await K.openFriends(M);
+      check(!!(await K.cardWait(M, 'Mes amis (1/30)')), 'A (téléphone) : carte « Mes amis (1/30) »');
+      const vm = await K.cardView(M);
+      check(vm?.btns.includes('j0') && vm.btns.includes('f0') && vm.fits && vm.scrollW <= vm.innerW, `A (téléphone) : « Rejoindre » et « Gérer » sur la ligne, carte dans l'écran (${vm?.scrollW}/${vm?.innerW}) : ${vm?.lines[0]}`);
+      await shot(M, 'o35-tel-liste-rejoindre');
+    } finally {
+      await closeAcc(M);
+    }
+    const rm = await post('/v1/friends/remove', { v: 1, ses: U.a.ses, fid });
+    check(rm.body.ok === true, 'A : amitié retirée');
+    const after = await where();
+    check(after.ok && after.where.length === 0, `serveur : plus d'ami, plus de position (${JSON.stringify(after.where)})`);
+  } finally {
+    botB.stop();
+    await closeAcc(A);
   }
 });
 

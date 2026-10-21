@@ -481,6 +481,16 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       }
       return out.sort((x, y) => (x.since < y.since ? -1 : x.since > y.since ? 1 : x.fid < y.fid ? -1 : 1));
     },
+    // Identités des amis (pour friends.js, route where) : { mine, list: [{ fid, pid }] } ; pid null si l'ami n'a pas encore joué en ligne.
+    async friendPlayers(accountId) {
+      guard();
+      const list = [];
+      for (const f of friendships.values()) {
+        if (f.a !== accountId && f.b !== accountId) continue;
+        list.push({ fid: f.fid, pid: accounts.get(f.a === accountId ? f.b : f.a)?.playerId ?? null });
+      }
+      return { mine: accounts.get(accountId)?.playerId ?? null, list };
+    },
     async removeFriend({ accountId, fid }) {
       guard();
       const f = friendships.get(fid);
