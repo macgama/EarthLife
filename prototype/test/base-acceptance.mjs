@@ -1264,25 +1264,38 @@ async function screenDiet(page, tag) {
   check(!peekEnd.open && peekEnd.expanded !== 'true', `${tag} 8 bis : la fiche entrouverte se referme d'elle-même au bout de quelques secondes`);
 
   // Affiche d'un moment fort : dans la colonne de gauche, sous les puces, sans toucher la carte ni le sac.
-  const moment = await ev(page, () => {
+  const momentBox = () => ev(page, () => {
     const $ = (id) => document.getElementById(id);
     const m = $('moment');
     m.style.setProperty('--moment-art', 'url("assets/art/scenes/horde.webp")');
     m.querySelector('.moment-kicker').textContent = 'Alerte'; m.querySelector('.moment-title').textContent = 'Une horde approche';
     m.classList.remove('hidden'); m.style.animation = 'none';
     const rect = (e) => { const b = e.getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom }; };
+    const shown = (e) => getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0;
     const mm = rect(m), map = rect($('mapbox')), inv = rect($('inventory')), quest = rect($('quest')), cond = rect($('conditions'));
+    const others = [['ville', $('city-chip')], ['pastille', $('online-pill')]].filter(([, e]) => shown(e)).map(([n, e]) => [n, rect(e)]);
     m.classList.add('hidden'); m.style.animation = '';
     const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-    return { box: `${Math.round(mm.left)},${Math.round(mm.top)} → ${Math.round(mm.right)},${Math.round(mm.bottom)}`, h: Math.round(mm.bottom - mm.top), hits: [['carte', map], ['sac', inv], ['objectif', quest], ['météo', cond]].filter(([, b]) => hit(mm, b)).map(([n]) => n), inside: mm.left >= 0 && mm.right <= innerWidth };
+    return { box: `${Math.round(mm.left)},${Math.round(mm.top)} → ${Math.round(mm.right)},${Math.round(mm.bottom)}`, h: Math.round(mm.bottom - mm.top), hits: [['carte', map], ['sac', inv], ['objectif', quest], ['météo', cond], ...others].filter(([, b]) => hit(mm, b)).map(([n]) => n), inside: mm.left >= 0 && mm.right <= innerWidth };
   });
+  const moment = await momentBox();
   check(moment.inside && !moment.hits.length && moment.h <= 110, `${tag} 8 bis : affiche d'un moment fort ${moment.box} (${moment.h} px, 110 au plus), ${moment.hits.length ? `chevauche ${moment.hits.join(', ')}` : 'sans chevaucher la carte, le sac ni les puces'}`);
+  // Même affiche avec la puce de la ville et la pastille « En ligne » (la colonne de gauche à trois rangées).
+  await ev(page, () => {
+    const $ = (id) => document.getElementById(id);
+    $('city-saved').textContent = '29/475'; $('city-zombies').textContent = '108'; $('city-chip').hidden = false;
+    $('online-pill').removeAttribute('data-quiet');
+  });
+  await wait(200);
+  const momentFull = await momentBox();
+  check(momentFull.inside && !momentFull.hits.length && momentFull.h <= 110, `${tag} 8 bis : affiche d'un moment fort avec la puce de la ville et la pastille ${momentFull.box}, ${momentFull.hits.length ? `chevauche ${momentFull.hits.join(', ')}` : 'sans rien chevaucher'}`);
+  await shot(page, `${tag}-00-puces-ville-pastille`);
 
   // Remise en état.
   await ev(page, (k) => {
     const $ = (id) => document.getElementById(id);
     $('quest').className = k.cls; $('quest-stage').textContent = k.stage; $('quest-text').textContent = k.text;
-    $('city-meta').hidden = true; $('fiche').hidden = true;
+    $('city-meta').hidden = true; $('fiche').hidden = true; $('city-chip').hidden = true;
     $('online-pill').className = k.pill; if (k.pillQuiet) $('online-pill').setAttribute('data-quiet', ''); else $('online-pill').removeAttribute('data-quiet');
     $('quest').removeAttribute('aria-expanded');
     window.__earthlife.debug.freezeHud(false);
@@ -4093,6 +4106,35 @@ async function habitantsScenario(device) {
     const meta = await ev(page, () => document.getElementById('city-meta')?.firstElementChild?.textContent.replace(/\s+/g, ' ') ?? '');
     check(/Habitants sauvés 1 \//.test(meta), `${tag} : le compteur de la ville affiche « ${meta} »`);
   }
+  // Puce de la ville : sur téléphone en portrait, habitants sauvés / à sauver et zombies restants toujours à l'écran, sous la barre,
+  // sans toucher la carte ; ailleurs elle reste cachée (la quête porte déjà les compteurs).
+  const chip = await ev(page, () => {
+    const $ = (id) => document.getElementById(id);
+    const c = $('city-chip'), r = c.getBoundingClientRect(), v = $('vitals').getBoundingClientRect(), m = $('mapbox').getBoundingClientRect();
+    const st = window.__earthlife.session.city.stats();
+    return {
+      shown: !c.hidden && getComputedStyle(c).display !== 'none' && r.width > 0, h: Math.round(r.height), right: Math.round(r.right), underBar: r.top >= v.bottom,
+      beside: r.right <= m.left + 1 || r.bottom <= m.top || r.top >= m.bottom, saved: $('city-saved').textContent, zombies: $('city-zombies').textContent,
+      want: { saved: `${st.saved}/${st.toSave}`, zombies: String(st.zombies) }, label: c.getAttribute('aria-label'),
+    };
+  });
+  if (device === 'mobile') {
+    check(chip.shown && chip.h <= 44 && chip.underBar && chip.beside, `${tag} : puce de la ville de ${chip.h} px sous la barre, hors de la carte : « ${chip.saved} » sauvés, « ${chip.zombies} » zombies`);
+    check(chip.saved.replace(/\s/g, '') === chip.want.saved && chip.zombies.replace(/\s/g, '') === chip.want.zombies, `${tag} : la puce dit ${chip.want.saved} sauvés et ${chip.want.zombies} zombies (les vrais chiffres de la ville)`);
+    check(/habitants? sauvés?/.test(chip.label ?? '') && /zombies? restants?/.test(chip.label ?? ''), `${tag} : la puce se lit à voix haute : « ${chip.label} »`);
+    await shot(page, `${name}-puce-ville`);
+    await page.tap('#city-chip');
+    await wait(300);
+    const sheet = await ev(page, () => ({ open: document.getElementById('quest').classList.contains('open'), meta: getComputedStyle(document.getElementById('city-meta')).display !== 'none' }));
+    check(sheet.open && sheet.meta, `${tag} : un toucher sur la puce ouvre la fiche de la quête avec ses compteurs`);
+    await shot(page, `${name}-puce-ville-fiche`);
+    // Ouverte, la fiche couvre la puce : on la referme d'un toucher sur elle.
+    await page.tap('#quest');
+    await wait(300);
+    check(!(await ev(page, () => document.getElementById('quest').classList.contains('open'))), `${tag} : un toucher sur la fiche la referme`);
+  } else {
+    check(!chip.shown, `${tag} : puce de la ville cachée hors du téléphone en portrait`);
+  }
   await ev(page, () => { window.__earthlife.session.city.state.forceFind = false; });
 
   // Il se tient devant la porte du refuge.
@@ -4177,6 +4219,22 @@ async function habitantsScenario(device) {
     return drawn;
   });
   check(free === 0, `${tag} : en partie libre, aucun habitant dessiné (${free})`);
+
+  // Mort : la carte « Tu es tombé » résume la ville (habitants sauvés, zombies restants, pâtés libérés).
+  const want = await ev(page, () => { const st = window.__earthlife.session.city.stats(); return { saved: st.saved, toSave: st.toSave, zombies: st.zombies }; });
+  await ev(page, () => window.__earthlife.debug.hurt(200));
+  const death = await deathCard(page);
+  check(!!death && /Habitants sauvés/.test(death) && /Zombies restants/.test(death) && /Pâtés libérés/.test(death), `${tag} : carte « Tu es tombé » avec le résumé de la ville : ${death ?? 'pas de carte'}`);
+  const tiles = await ev(page, () => [...document.querySelectorAll('#card .rp-stat')].map((e) => `${e.querySelector('dt').textContent}=${e.querySelector('dd').textContent.replace(/\s/g, '')}`));
+  check(tiles.includes(`Habitants sauvés=${want.saved}/${want.toSave}`),
+    `${tag} : la carte donne ${want.saved} / ${want.toSave} habitants sauvés (${tiles.join(' · ')})`);
+  const fit = await ev(page, () => {
+    const c = document.querySelector('#card .rp-card'), r = c.getBoundingClientRect();
+    const b = [...c.querySelectorAll('.rp-cbtn')].map((e) => e.getBoundingClientRect());
+    return { inside: r.left >= 0 && r.right <= innerWidth + 0.5 && r.top >= 0 && r.bottom <= innerHeight + 0.5, buttons: b.length > 0 && b.every((x) => x.top >= 0 && x.bottom <= innerHeight + 0.5), h: Math.round(r.height), vh: innerHeight };
+  });
+  check(fit.inside && fit.buttons, `${tag} : la carte de mort (${fit.h} px) et ses boutons tiennent dans l'écran de ${fit.vh} px`);
+  await shot(page, `${name}-mort-ville`);
   await ctx.close();
 }
 
