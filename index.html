@@ -739,6 +739,10 @@ body:not(.touch) #inventory { display: grid; gap: var(--sp-1); padding: var(--sp
 .chip[data-use="lure"] { --chip-color: var(--c-accent); }
 .chip[data-use="shoot"] { --chip-color: var(--c-danger); }
 .chip[data-use="craft"] { --chip-color: var(--c-accent); }
+/* Puce « Ouvrir » (sac) : ouvre la fenêtre du sac (trouvailles.js, mode 'bag') ; le nombre est celui des places prises, ambre quand le sac est plein. */
+#bag-open { --chip-color: var(--c-bag); }
+#bag-open.full { --chip-color: var(--c-warn); border-color: var(--c-warn); }
+#bag-open.full .chip-count { color: var(--c-warn); }
 .chip-icon { display: inline-flex; color: var(--chip-color); }
 .chip-icon .icon { width: 18px; height: 18px; }
 /* Puce avec l'image de l'objet qu'elle utiliserait (src/hud.js) : l'image remplace l'icône. */
@@ -1093,9 +1097,11 @@ body.touch #controls { display: block; }
   #hud { grid-template-columns: minmax(0, calc(50vw - 50px - var(--hud-l))) 1fr 224px; }
   body.touch #inventory { display: grid; grid-template-columns: repeat(2, var(--btn-item)); right: var(--hud-r); bottom: calc(var(--hud-b) + 114px); }
   body.touch #inventory:has(#use-lure:not(.hidden)) { grid-template-columns: repeat(3, var(--btn-item)); }
-  /* La puce Fabriquer (5e, absente sans ingrédients) se pose à gauche de Courir : la grille, déjà 2 × 2, couvrirait les jauges en
-     prenant une 3e rangée. */
-  body.touch #use-craft { position: fixed; right: calc(var(--hud-r) + 106px + var(--btn-run) + var(--sp-2)); bottom: calc(var(--hud-b) + 18px + (var(--btn-run) - var(--btn-item)) / 2); }
+  /* Les puces Fabriquer (absente sans ingrédients) et Ouvrir (le sac) se posent à gauche de Courir : la grille, déjà 2 × 2, couvrirait
+     les jauges en prenant une 3e rangée, ou la carte, elle, perdrait sa place à gauche de la grille. Ouvrir passe à gauche de Fabriquer
+     quand celle-ci est là. */
+  body.touch #use-craft, body.touch #bag-open { position: fixed; right: calc(var(--hud-r) + 106px + var(--btn-run) + var(--sp-2)); bottom: calc(var(--hud-b) + 18px + (var(--btn-run) - var(--btn-item)) / 2); }
+  body.touch:has(#use-craft:not(.hidden)) #bag-open { right: calc(var(--hud-r) + 106px + var(--btn-run) + var(--btn-item) + var(--sp-2) * 2); }
 }
 /* Ordinateur, panneau du refuge ouvert (tiroir de 420 px à droite) : le HUD se range à sa gauche. */
 @media (min-width: 1024px) and (min-height: 501px) {
@@ -1598,6 +1604,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <dt><kbd>J</kbd><kbd>L</kbd> ou souris</dt><dd>Tourner la caméra</dd>
         <dt><kbd>+</kbd><kbd>−</kbd> ou molette</dt><dd>Zoomer, dézoomer</dd>
         <dt><kbd>C</kbd> ou clic sur la carte</dt><dd>Agrandir ou réduire la carte des environs</dd>
+        <dt><kbd>I</kbd></dt><dd>Ouvrir le sac : voir ce qu'il contient, équiper ou jeter</dd>
       </dl>
     </section>
     <section class="help-sec help-touch">
@@ -1610,7 +1617,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
         <li><span class="btn-icon" data-icon="frapper"></span><span><b>Frapper</b> et <b>Courir</b>&nbsp;: boutons en bas à droite</span></li>
         <li><span class="btn-icon" data-icon="fouiller"></span><span><b>Fouiller</b>, <b>entrer</b>, <b>clouer</b>&nbsp;: bouton au centre, près d'un bâtiment</span></li>
         <li><span class="btn-icon" data-icon="refuge"></span><span><b>En faire ton refuge</b>, <b>déménager</b>&nbsp;: bouton juste au-dessus, une fois le bâtiment fouillé</span></li>
-        <li><span class="btn-icon" data-icon="sac"></span><span><b>Sac</b>&nbsp;: touche un objet pour l'utiliser, un leurre pour le lancer, ou <b>Tirer</b> avec une arme à feu</span></li>
+        <li><span class="btn-icon" data-icon="sac"></span><span><b>Sac</b>&nbsp;: touche un objet pour l'utiliser, un leurre pour le lancer, ou <b>Tirer</b> avec une arme à feu&nbsp;; la première puce, le sac, l'ouvre en grand pour équiper ou jeter</span></li>
       </ul>
     </section>
     <section class="help-sec">
@@ -1819,6 +1826,7 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
   </div>
   <div id="inventory" role="group" aria-label="Sac">
     <div class="inv-head label"><span data-icon="sac"></span>Sac</div>
+    <button class="chip" id="bag-open" aria-label="Ouvrir le sac" title="Sac (I)"><span class="chip-icon" data-icon="sac"></span><span class="chip-name">Ouvrir</span><span class="chip-count num" id="bag-open-count">0</span><kbd class="chip-key">I</kbd></button>
     <button class="chip" data-use="eat" id="use-eat" aria-label="Manger"><span class="chip-icon" data-icon="manger"></span><span class="chip-name">Manger</span><span class="chip-count num">0</span><kbd class="chip-key">1</kbd></button>
     <button class="chip" data-use="drink" id="use-drink" aria-label="Boire"><span class="chip-icon" data-icon="boire"></span><span class="chip-name">Boire</span><span class="chip-count num">0</span><kbd class="chip-key">2</kbd></button>
     <button class="chip" data-use="heal" id="use-heal" aria-label="Soigner"><span class="chip-icon" data-icon="soigner"></span><span class="chip-name">Soigner</span><span class="chip-count num">0</span><kbd class="chip-key">3</kbd></button>
