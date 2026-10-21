@@ -3693,7 +3693,7 @@ function goToFriend(f) {
     return;
   }
   document.querySelector('#menu-tabs [data-tab="libre"]')?.click();
-  picker.setPlace({ lat: t.lat, lon: t.lon, name: 'Près de ton ami', area: '' });
+  picker.setPlace({ lat: t.lat, lon: t.lon, name: `Près de ${Array.isArray(f.nm) ? nameOf(f.nm) : 'ton ami'}`, area: '' });
 }
 
 // « Inviter un ami » : un nouveau code (l'ancien est remplacé), envoyé en lien par la feuille de partage du téléphone, sinon copié.

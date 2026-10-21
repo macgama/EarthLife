@@ -2756,7 +2756,7 @@ function friendsKit(U) {
     check(!!shown, `${t.tag} : le bouton « Mes amis » est au menu`);
     await click(t, '#friends-open');
   };
-  return { openAs, cardWait, cardBtn, cardView, openFriends };
+  return { stateOf, openAs, cardWait, cardBtn, cardView, openFriends };
 }
 
 // =====================================================================================================
@@ -2805,7 +2805,7 @@ await scenario('O34', 'amis : code, lien, liste, retrait et blocage', async () =
   const ids = {};
   for (const n of ['a', 'b', 'c']) ids[n] = await srv.accounts.debug.byEmail(U[n].email);
   check(!!ids.a?.playerId && !!ids.b?.playerId && !ids.c?.playerId, `serveur : identités de A et de B, pas de C (${!!ids.a?.playerId}, ${!!ids.b?.playerId}, ${!!ids.c?.playerId})`);
-  const { openAs, cardWait, cardBtn, cardView, openFriends } = friendsKit(U);
+  const { stateOf, openAs, cardWait, cardBtn, cardView, openFriends } = friendsKit(U);
   const CODE_RE = /^[A-Z2-9]{4}-[A-Z2-9]{4}$/;
   const A = await openAs('A (ordinateur, amis)', desktop, 'a');
   const B = await openAs('B (téléphone, amis)', mobile, 'b');
@@ -2847,7 +2847,7 @@ await scenario('O34', 'amis : code, lien, liste, retrait et blocage', async () =
     await cardBtn(B, 'list');
     check(!!(await cardWait(B, 'Mes amis (1/30)')), 'B : « Mes amis (1/30) »');
     const vB = await cardView(B);
-    check(vB.text.includes(nameA[0]) && /Ami depuis le/.test(vB.text) && vB.fits && vB.scrollW <= vB.innerW, `B : liste « ${vB.lines[0]} », carte dans l'écran du téléphone (${vB.scrollW}/${vB.innerW})`);
+    check(vB.text.includes(nameA[0]) && /en ligne|ami depuis le/i.test(vB.text) && vB.fits && vB.scrollW <= vB.innerW, `B : liste « ${vB.lines[0]} », carte dans l'écran du téléphone (${vB.scrollW}/${vB.innerW})`);
     await shot(B, 'o33-tel-liste');
     check(await srv.store.friendCodeOf(ids.a.accountId, Date.now()) === null, 'serveur : le code de A a servi, il n\'existe plus');
     // Le même code, rejoué par B (déjà amis) puis une saisie d'un code inventé : même refus, sans rien dire de l'autre joueur.
@@ -2899,7 +2899,7 @@ await scenario('O34', 'amis : code, lien, liste, retrait et blocage', async () =
     await cardBtn(A, 'back');
     check(!!(await cardWait(A, 'Mes amis (2/30)')), 'A : carte « Mes amis (2/30) »');
     const vA2 = await cardView(A);
-    check(vA2.lines.length === 2 && fa.every((f) => vA2.text.includes(label(f))), `A : les deux amis sont listés (${fa.map(label).join(', ')})`);
+    check(vA2.lines.filter((l) => /g[ée]rer/i.test(l)).length === 2 && fa.every((f) => vA2.text.includes(label(f))), `A : les deux amis sont listés (${fa.map(label).join(', ')})`);
     await shot(A, 'o33-ordi-amis-deux');
     const fidC = (await srv.store.friendsOf(ids.c.accountId))[0].fid;
     const iC = fa.findIndex((f) => f.fid === fidC);
@@ -3024,7 +3024,7 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
     check(w?.st === 1, `serveur : B connecté sans position → st 1 (${JSON.stringify(w)})`);
     // ---- A ouvre « Mes amis » : B y est, sans « Rejoindre » ----
     const K = friendsKit(U);
-    A = await K.openAs('A (ordinateur, amis en ligne)', desktop, 'a', '&friendPollMs=8000');
+    A = await K.openAs('A (ordinateur, amis en ligne)', desktop, 'a', '&friendPollMs=10000');
     await K.openFriends(A);
     check(!!(await K.cardWait(A, 'Mes amis (1/30)')), `A : carte « Mes amis (1/30) » ${A.errors.slice(0, 2).map((x) => x.text).join(' | ')}`);
     const v0 = await K.cardView(A);
@@ -3034,9 +3034,9 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
     // ---- B commence à envoyer sa position : pour les amis, arrondie à 0,0005° ----
     botB.start();
     let rounded = null;
-    // Le serveur permet 30 lectures par minute et par session : la page de A en fait 7 ou 8, le scénario une toutes les 3 s.
+    // Le serveur permet 30 lectures par minute et par session : la page de A en fait 6 ou 7 (toutes les 10 s), le scénario une toutes les 4 s.
     for (let i = 0; i < 20 && !rounded; i++) {
-      await wait(3000);
+      await wait(4000);
       const e = (await where()).where?.find((x) => x.fid === fid);
       if (e?.st === 2) rounded = e;
     }
@@ -3044,7 +3044,7 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
     const near = rounded ? metersBetween({ lat: rounded.a / 1e6, lon: rounded.o / 1e6 }, SPOT) : 1e9;
     check(rounded && rounded.a % 500 === 0 && rounded.o % 500 === 0 && (rounded.a !== toE6(SPOT.lat) || rounded.o !== toE6(SPOT.lon)) && near < 60, `serveur : position arrondie à 0,0005° (${rounded?.a}, ${rounded?.o}), à ${near.toFixed(0)} m de B`);
     check(!JSON.stringify(await where()).includes(accA.accountId) && !JSON.stringify(await where()).includes(idB.playerId), 'serveur : ni identifiant de compte ni d\'identité dans la réponse');
-    // ---- le repère d'ami apparaît sur la carte du menu de A (lecture toutes les 8 s en essai) ----
+    // ---- le repère d'ami apparaît sur la carte du menu de A (lecture toutes les 10 s en essai) ----
     const pin = await until(A, () => { const m = document.querySelector('.maplibregl-marker[class*="map-pin-ami-"]'); return m ? m.title || m.getAttribute('aria-label') : null; }, null, 90000, 300);
     const pinTitle = pin || await ev(A, () => [...document.querySelectorAll('.maplibregl-marker.map-pin-hit')].map((m) => m.className + ' ' + m.title).join(' | '));
     check(typeof pin === 'string' && pin.includes(nameB), `A : repère d'ami sur la carte du menu « ${pinTitle} »`);
@@ -3054,7 +3054,6 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
     check(!!(await K.cardWait(A, nameB)), `A : fiche de B « ${nameB} » depuis le repère`);
     const v1 = await K.cardView(A);
     check(/En ligne · en partie libre/.test(v1.text) && v1.btns.join() === 'join,remove,block,back', `A : fiche « ${v1.lines[1]} », boutons ${v1.btns.join()}`);
-    await shot(A, 'o35-ordi-fiche-rejoindre');
     // ---- Rejoindre : la carte et le lieu du menu vont près de B (à 55 m près) ----
     await K.cardBtn(A, 'join');
     const placed = await until(A, ([lat, lon]) => {
@@ -3070,7 +3069,7 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
     const stOf = async () => (await where()).where?.find((e) => e.fid === fid);
     const waitSt = async (want, label) => {
       let e = null;
-      for (let i = 0; i < 20; i++) { await wait(3000); e = await stOf(); if (e?.st === want) return e; }
+      for (let i = 0; i < 20; i++) { await wait(4000); e = await stOf(); if (e?.st === want) return e; }
       check(false, `serveur : ${label} → st ${want} attendu (${JSON.stringify(e)})`);
       return e;
     };
@@ -3087,7 +3086,7 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
     botB.play(false);
     e = await waitSt(1, 'B au menu');
     check(e?.a === undefined && e?.lv === undefined, 'serveur : retour au menu → aucune position');
-    // A le voit : le repère disparaît et la fiche dit « position non partagée » (lecture suivante, 8 s en essai).
+    // A le voit : le repère disparaît et la fiche dit « position non partagée » (lecture suivante, 10 s en essai).
     const gone = await until(A, () => (document.querySelector('.maplibregl-marker[class*="map-pin-ami-"]') ? null : 1), null, 40000, 300);
     check(!!gone, 'A : le repère d\'ami disparaît de la carte quand B n\'a plus de position partagée');
     await K.cardBtn(A, 'back').catch(() => {});
@@ -3102,6 +3101,11 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
       const vm = await K.cardView(M);
       check(vm?.btns.includes('j0') && vm.btns.includes('f0') && vm.fits && vm.scrollW <= vm.innerW, `A (téléphone) : « Rejoindre » et « Gérer » sur la ligne, carte dans l'écran (${vm?.scrollW}/${vm?.innerW}) : ${vm?.lines[0]}`);
       await shot(M, 'o35-tel-liste-rejoindre');
+      await K.cardBtn(M, 'f0');
+      check(!!(await K.cardWait(M, nameB)), 'A (téléphone) : fiche de B');
+      const vf = await K.cardView(M);
+      check(vf?.btns.join() === 'join,remove,block,back' && vf.fits && /En ligne · en partie libre/.test(vf.text), `A (téléphone) : fiche avec « Rejoindre » (${vf?.btns.join()}), dans l'écran`);
+      await shot(M, 'o35-tel-fiche-rejoindre');
     } finally {
       await closeAcc(M);
     }
