@@ -202,6 +202,7 @@ async function open(tag, device, url, { choice = 'on', proxy = false, blockWs = 
   const t = { tag, device, ctx, page: null, errors: [], requests: [], wsUrls: [], frames: [], sids: new Set(), link: null, proxy, blockWs, csp: null, lastJump: 0 };
   all.push(t);
   ctx.on('request', (r) => t.requests.push({ at: Date.now(), url: r.url(), method: r.method() }));
+  ctx.on('response', (r) => { if (r.status() === 429) note(`${t.tag} : 429 sur ${new URL(r.url()).pathname}`); });
   if (blockWs) await ctx.routeWebSocket(/.*/, (ws) => { t.wsUrls.push(ws.url()); ws.close(); });
   if (proxy) await relay(t);
   await ctx.addInitScript(recorder);
@@ -3011,6 +3012,10 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
   // d'autres, que ses sondages ne doivent pas leur voler (429 en console, O19).
   const sesT = (await post('/v1/account/login', { v: 1, email: U.a.email, password: U.a.pw, tok: null })).body.ses;
   check(!!sesT && sesT !== U.a.ses, 'A : une seconde session pour les sondages du scénario');
+  // Les pages de A et les sondages du scénario viennent tous de 127.0.0.1 : la limite par adresse (60 requêtes par minute, toutes routes des
+  // comptes) rendrait 429 à la page de A (« where », O19) ; relevée le temps du scénario, comme celle des codes plus haut.
+  const ipWas = LIM.ipPerMin;
+  LIM.ipPerMin = 1000;
   const where = async () => (await post('/v1/friends/where', { v: 1, ses: sesT })).body;
   let A = null;
   try {
@@ -3118,6 +3123,7 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
     const after = await where();
     check(after.ok && after.where.length === 0, `serveur : plus d'ami, plus de position (${JSON.stringify(after.where)})`);
   } finally {
+    LIM.ipPerMin = ipWas;
     botB.stop();
     await closeAcc(A);
   }
