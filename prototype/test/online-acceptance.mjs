@@ -3007,7 +3007,11 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
     };
   })();
   const accA = await srv.accounts.debug.byEmail(U.a.email);
-  const where = async () => (await post('/v1/friends/where', { v: 1, ses: U.a.ses })).body;
+  // Le scénario sonde `where` avec sa propre session de A (le plafond de 30 lectures par minute est par session) : les pages de A en font
+  // d'autres, que ses sondages ne doivent pas leur voler (429 en console, O19).
+  const sesT = (await post('/v1/account/login', { v: 1, email: U.a.email, password: U.a.pw, tok: null })).body.ses;
+  check(!!sesT && sesT !== U.a.ses, 'A : une seconde session pour les sondages du scénario');
+  const where = async () => (await post('/v1/friends/where', { v: 1, ses: sesT })).body;
   let A = null;
   try {
     for (let i = 0; i < 100 && !botB.st.welcomed; i++) await wait(100);
@@ -3034,7 +3038,7 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
     // ---- B commence à envoyer sa position : pour les amis, arrondie à 0,0005° ----
     botB.start();
     let rounded = null;
-    // Le serveur permet 30 lectures par minute et par session : la page de A en fait 6 ou 7 (toutes les 10 s), le scénario une toutes les 4 s.
+    // Le serveur permet 30 lectures par minute et par session ; le scénario sonde avec sa propre session, une lecture toutes les 4 s.
     for (let i = 0; i < 20 && !rounded; i++) {
       await wait(4000);
       const e = (await where()).where?.find((x) => x.fid === fid);
