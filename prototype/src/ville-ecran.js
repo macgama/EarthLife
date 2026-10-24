@@ -26,6 +26,13 @@ const NONE = 'Sans niveau, la partie reste libre (sans ville à sauver). Choisis
 const withTimeout = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const plural = (n, one, many) => `${groupDigits(n)} ${n > 1 ? many : one}`;
+// Chiffre court de la puce « ville » : 12 345 devient « 12,3 k », 2 161 000 « 2,2 M ».
+const shortCount = (n) => {
+  if (n < 10000) return groupDigits(n);
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '').replace('.', ',')} M`;
+  const k = n / 1000;
+  return `${(k < 100 ? k.toFixed(1).replace(/\.0$/, '') : String(Math.round(k))).replace('.', ',')} k`;
+};
 
 export function createCityGame(host) {
   const { document: doc, params, save, saveStore, store, communes, client, picker } = host;
@@ -198,6 +205,7 @@ export function createCityGame(host) {
     });
     seasonUi.pins = progress ? pinsOf(fronts) : [];
     picker.setSeasonCities?.(seasonUi.pins);
+    host.seasonCitiesChanged?.();
     // Le menu s'ouvre sur « À plusieurs » : la carte montre d'office où sont les villes (une fois par ouverture du menu, et pas si le
     // joueur a déjà bougé la carte).
     if (seasonUi.pins.length && !seasonUi.framed && $('menu')?.dataset.tab === 'saison' && !$('menu').classList.contains('hidden')) {
@@ -212,10 +220,11 @@ export function createCityGame(host) {
     return { key: c.key, name: typeof c.name === 'string' ? c.name : '', lat: c.place?.lat, lon: c.place?.lon };
   }
   // Repère de ville touché : le niveau et la ville sont choisis (le bouton dit où l'on va). Inscrit à un autre niveau : il ne change pas.
+  // → true si la ville est choisie ; false si le niveau n'existe pas ou si le joueur est inscrit à un autre niveau (la note du salon le dit).
   function selectCity(level, key) {
-    if (!FRONT_LEVELS.includes(level)) return;
+    if (!FRONT_LEVELS.includes(level)) return false;
     const enrolled = seasonUi.enrolled?.level ?? null;
-    if (enrolled && enrolled !== level) { seasonUi.note = 'Ton niveau est choisi pour la saison : il ne change plus.'; seasonUi.noteAt = Date.now(); syncSeason(); return; }
+    if (enrolled && enrolled !== level) { seasonUi.note = 'Ton niveau est choisi pour la saison : il ne change plus.'; seasonUi.noteAt = Date.now(); syncSeason(); return false; }
     if ($('menu')?.dataset.tab !== 'saison') doc.querySelector('#menu-tabs [data-tab="saison"]')?.click();
     const row = seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === key) ?? null;
     const ann = seasonUi.progress?.levels?.[level]?.announced;
@@ -225,6 +234,14 @@ export function createCityGame(host) {
     try { ls?.setItem('earthlife.front', level); } catch { /* stockage indisponible */ }
     syncSeason();
     picker.frameCities?.(framingOf(seasonUi.pins, level, key));
+    return true;
+  }
+  // Une ville de la saison telle que le serveur la donne (amis : où est un ami) : { name, lat?, lon? } ou null si elle n'est pas dans l'état des lieux.
+  function cityOf(level, key) {
+    const row = seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === key);
+    if (!row) return null;
+    const pin = seasonUi.pins.find((p) => p.level === level && p.key === key);
+    return { name: typeof row.name === 'string' ? row.name : '', ...(pin ? { lat: pin.lat, lon: pin.lon } : {}) };
   }
   // Lieu touché sur la carte ou cherché (main.js, picker.onChange) : sur « À plusieurs », c'est la ville voulue ; sur « Partie libre », un lieu de partie libre.
   function placeChosen(place) {
@@ -837,7 +854,46 @@ export function createCityGame(host) {
       if (l2.textContent !== t2) l2.textContent = t2;
       meta.hidden = false;
     }
+    cityChip(st);
     if (changed || force) host.renderConditions();
+  }
+
+  // Puce « ville » du téléphone en portrait : habitants sauvés / à sauver et zombies restants, en deux chiffres courts.
+  // Un chiffre qui change fait un petit bond (sauf demande de mouvement réduit).
+  function cityChip(st) {
+    const chip = $('city-chip');
+    if (!chip) return;
+    const saved = `${st.approx ? '~' : ''}${shortCount(st.saved)}/${shortCount(st.toSave)}`;
+    const zombies = shortCount(st.zombies);
+    for (const [id, text] of [['city-saved', saved], ['city-zombies', zombies]]) {
+      const el = $(id);
+      if (el.textContent === text) continue;
+      const had = el.textContent !== '';
+      el.textContent = text;
+      if (had && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        const val = el.parentElement;
+        val.classList.remove('pop');
+        void val.offsetWidth;
+        val.classList.add('pop');
+      }
+    }
+    chip.setAttribute('aria-label', `Ville : ${plural(st.saved, 'habitant sauvé', 'habitants sauvés')} sur ${groupDigits(st.toSave)}${st.approx ? ' (environ)' : ''}, ${plural(st.zombies, 'zombie restant', 'zombies restants')}`);
+    chip.hidden = false;
+  }
+
+  // Résumé de la ville pour la carte « Tu es tombé » : une section de compteurs ({ title, items }), ou null hors d'une ville à sauver.
+  function summary(s) {
+    const rt = s.city;
+    if (!rt) return null;
+    const st = rt.stats();
+    return {
+      title: `${rt.ville.name} · ${levelName(rt.ville.level)}`,
+      items: [
+        { label: 'Habitants sauvés', value: `${groupDigits(st.saved)} / ${groupDigits(st.toSave)}` },
+        { label: 'Zombies restants', value: groupDigits(st.zombies) },
+        { label: 'Pâtés libérés', value: `${st.free} / ${st.known}` },
+      ],
+    };
   }
 
   // Ligne et texte de la carte de mission quand aucune livraison n'est en cours.
@@ -1087,8 +1143,8 @@ export function createCityGame(host) {
   }
 
   return {
-    initMenu, syncMenu, playLabel, placeChosen, prepareLaunch, planTrip, landTrip, tripCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws, rescueFrom,
-    questText, homeGoal, onRefugeAction, onDeath, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
+    initMenu, syncMenu, playLabel, placeChosen, selectCity, cityOf, prepareLaunch, planTrip, landTrip, tripCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws, rescueFrom,
+    questText, homeGoal, onRefugeAction, onDeath, summary, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },
   };

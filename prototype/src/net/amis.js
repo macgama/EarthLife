@@ -3,7 +3,7 @@
 // le jeu et par le serveur : il n'importe que protocol.js. Mêmes règles des deux côtés.
 // Une amitié lie deux COMPTES ; elle a son propre identifiant `fid`, aléatoire, le même pour les deux amis et sans lien avec
 // leurs comptes ni leurs identités : c'est ce que le jeu nomme pour retirer ou bloquer un ami (jamais un identifiant de compte).
-import { PROTOCOL, TOKEN_RE, readJson, validName } from './protocol.js';
+import { PROTOCOL, SEASON, SEASON_COMMUNE, TOKEN_RE, readJson, validName } from './protocol.js';
 
 const DAY = 86400000;
 export const FRIEND_RULES = {
@@ -13,6 +13,10 @@ export const FRIEND_RULES = {
   joinFailsPerHour: 10,             // codes faux par compte et par heure, puis blocage
   joinLockMs: 900000,
   readsPerMin: 30,                  // lectures de la liste par session et par minute
+  // Étape 2 : où sont mes amis. Le jeu interroge toutes les 20 s tant que le menu est ouvert (6 par minute de 30 permises) ; une
+  // position n'est jamais donnée à mieux que 0,0005° (~55 m, comme le lien d'invitation) et jamais depuis une zone privée.
+  wherePollMs: 20000,
+  shareStepE6: 500,
 };
 // 32 signes sans 0, 1, I, O (confondus à la lecture) : 8 signes font 40 bits.
 export const FRIEND_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -42,6 +46,9 @@ export function showFriendCode(code) {
   return typeof code === 'string' && code.length === FRIEND_CODE_LEN ? `${code.slice(0, 4)}-${code.slice(4)}` : '';
 }
 
+// Position montrée à un ami : micro-degrés entiers arrondis au pas de partage (l'arrondi est fait par le serveur).
+export const shareE6 = (v) => Math.round(v / FRIEND_RULES.shareStepE6) * FRIEND_RULES.shareStepE6 || 0;
+
 // ---------- Corps des requêtes (lus par le serveur) ----------
 
 const fail = (why) => ({ ok: false, why });
@@ -55,7 +62,7 @@ function readBody(text) {
   return { o: r.obj, ses };
 }
 
-// list et code : { v, ses }. join : { v, ses, code }. remove et block : { v, ses, fid }.
+// list, code et where : { v, ses }. join : { v, ses, code }. remove et block : { v, ses, fid }.
 export function parseFriendsReq(kind, text) {
   const b = readBody(text);
   if (!b.o) return fail(b.why);
@@ -70,7 +77,7 @@ export function parseFriendsReq(kind, text) {
     if (typeof fid !== 'string' || !FID_RE.test(fid)) return fail('requete');
     return { ok: true, msg: { ...msg, fid } };
   }
-  if (kind === 'list' || kind === 'code') return { ok: true, msg };
+  if (kind === 'list' || kind === 'code' || kind === 'where') return { ok: true, msg };
   return fail('requete');
 }
 
@@ -85,7 +92,25 @@ function readFriend(v) {
   return { fid, nm: nm === null ? null : nm.slice(), since };
 }
 
-// Réponse d'une route d'amis → { ok, code?, retryMs?, friends?, pending?, max?, friend?, friendCode?, expiresMs? } ou null ;
+// Où est un ami (route where) : { fid, st, lv?, cm?, a?, o? } ; null si mal formé.
+// st : 0 ne joue pas (ou a bloqué), 1 joue sans que sa position soit partagée (menu, zone privée, couronne, bâtiment), 2 position partagée.
+// lv et cm (niveau et ville de la saison) et a et o (parties libres, micro-degrés) ne viennent qu'avec st 2, jamais ensemble.
+function readWhere(v) {
+  if (!isObj(v)) return null;
+  const fid = get(v, 'fid'), st = get(v, 'st');
+  if (typeof fid !== 'string' || !FID_RE.test(fid) || !inRange(st, 0, 2)) return null;
+  const out = { fid, st };
+  if (st < 2) return out;
+  const lv = get(v, 'lv'), cm = get(v, 'cm'), a = get(v, 'a'), o = get(v, 'o');
+  if (lv !== undefined || cm !== undefined) {
+    if (!SEASON.levels.includes(lv) || typeof cm !== 'string' || !SEASON_COMMUNE.test(cm) || a !== undefined || o !== undefined) return null;
+    return { ...out, lv, cm };
+  }
+  if (!inRange(a, -90000000, 90000000) || !inRange(o, -180000000, 180000000)) return null;
+  return { ...out, a, o };
+}
+
+// Réponse d'une route d'amis → { ok, code?, retryMs?, friends?, where?, pending?, max?, friend?, friendCode?, expiresMs? } ou null ;
 // jamais de clé inattendue (comme readAccountReply). `code` ne porte que le motif d'un refus ; `friendCode` est le code d'ami
 // en clair (8 signes), rendu une seule fois par la route code.
 export function readFriendsReply(text) {
@@ -106,6 +131,8 @@ export function readFriendsReply(text) {
   if (typeof friendCode === 'string' && FRIEND_CODE_RE.test(friendCode)) out.friendCode = friendCode;
   const list = get(o, 'friends');
   if (Array.isArray(list)) out.friends = list.slice(0, FRIEND_RULES.max).map(readFriend).filter(Boolean);
+  const where = get(o, 'where');
+  if (Array.isArray(where)) out.where = where.slice(0, FRIEND_RULES.max).map(readWhere).filter(Boolean);
   const pending = get(o, 'pending');
   if (isObj(pending) && safeMs(get(pending, 'expiresMs'))) out.pending = { expiresMs: get(pending, 'expiresMs') };
   const max = get(o, 'max');

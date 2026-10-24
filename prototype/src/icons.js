@@ -119,7 +119,7 @@ const ALIASES = {
   health: 'sante', stamina: 'endurance', food: 'faim', water: 'soif', body: 'temperature',
   run: 'courir', attack: 'frapper', shoot: 'tirer', search: 'fouiller', kills: 'zombie', quest: 'quete',
   clear: 'soleil', cloudy: 'nuages', rain: 'pluie', storm: 'orage', snow: 'neige', fog: 'brouillard', wind: 'vent',
-  jour: 'soleil', nuit: 'lune', crane: 'zombie',
+  jour: 'soleil', nuit: 'lune', crane: 'zombie', habitant: 'compte',
   'geste-0': 'geste-salut', 'geste-1': 'geste-ici', 'geste-2': 'geste-attention', 'geste-3': 'geste-merci',
   'geste-4': 'geste-suivre', 'geste-5': 'geste-aide', 'zone-privee': 'bouclier', 'en-ligne': 'antenne',
 };

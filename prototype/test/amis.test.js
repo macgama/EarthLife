@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  whereMap, orderFriends, presenceText, joinTarget, friendPins,
   FRIEND_TEXTS, PENDING_KEY, PENDING_TTL_MS, friendLink, codeFromParams, pendingFriend, friendErrorText, needAccountCard, friendsCard,
   friendCard, blockCard, inviteCard, enterCodeCard, acceptCard, addedCard,
 } from '../src/amis.js';
@@ -78,7 +79,7 @@ test('textes d\'erreur : un mot clair par refus, jamais le serveur', () => {
 // ---------- Cartes ----------
 
 const ids = (spec) => (spec.buttons ?? []).map((b) => b.id);
-const lineButtons = (spec) => (spec.lines ?? []).filter((l) => typeof l === 'object' && l.button).map((l) => l.button.id);
+const lineButtons = (spec) => (spec.lines ?? []).filter((l) => typeof l === 'object').flatMap((l) => l.buttons ?? (l.button ? [l.button] : [])).map((b) => b.id);
 
 test('cartes : chacune se rend (cardHtml), avec ses boutons et sans prix ni promesse de gratuité', () => {
   const nm = [1, 7, 27];
@@ -113,7 +114,7 @@ test('carte « Mes amis » : une ligne et un bouton par ami, surnom recomposé i
   assert.equal(spec.title, 'Mes amis (2/30)');
   assert.deepEqual(lineButtons(spec), ['f0', 'f1']);
   assert.equal(spec.lines[0].text, nameOf(nm));
-  assert.equal(spec.lines[0].sub, 'Ami depuis le 10 oct. 2026');
+  assert.equal(spec.lines[0].sub, 'Pas en ligne · ami depuis le 10 oct. 2026');
   assert.equal(spec.lines[1].text, FRIEND_TEXTS.noName);
   assert.deepEqual(ids(spec), ['invite', 'enter', 'close']);
   const empty = friendsCard({ friends: [] });
@@ -214,7 +215,69 @@ test('account.friends : trop d\'essais (délai rendu) ; session refusée = compt
 
 test('confidentialite.html cite les règles des amis (un changement de règle oblige à relire la page)', () => {
   const html = readFileSync(new URL('../confidentialite.html', import.meta.url), 'utf8').replace(/&nbsp;| | /g, ' ');
-  for (const phrase of [`${FRIEND_RULES.codeTtlMs / DAY} jours`, `${FRIEND_RULES.max} amis`, 'Mes amis', 'Bloquer', 'Retirer', 'jamais en clair']) {
+  for (const phrase of [`${FRIEND_RULES.codeTtlMs / DAY} jours`, `${FRIEND_RULES.max} amis`, 'Mes amis', 'Bloquer', 'Retirer', 'jamais en clair', '55 m', 'zone privée']) {
     assert.ok(html.includes(phrase), `« ${phrase} » absent de confidentialite.html`);
   }
+});
+
+// ---------- Étape 2 : où sont mes amis ----------
+
+const F1 = 'a'.repeat(32), F2 = 'b'.repeat(32), F3 = 'c'.repeat(32), F4 = 'd'.repeat(32), F5 = 'e'.repeat(32);
+const CITIES = { 'moyen/vulliens': { name: 'Vulliens', lat: 46.62, lon: 6.78 }, 'facile/essai': { name: 'Essai' } };
+const cityOf = (level, key) => CITIES[`${level}/${key}`] ?? null;
+const friends5 = [F1, F2, F3, F4, F5].map((fid, i) => ({ fid, nm: [i + 1, 7, 27], since: '2026-10-1' + i }));
+const WHERE = [
+  { fid: F1, st: 0 }, { fid: F2, st: 1 }, { fid: F3, st: 2, lv: 'moyen', cm: 'vulliens' },
+  { fid: F4, st: 2, a: 45758000, o: 4832000 }, { fid: F5, st: 2, lv: 'moyen', cm: 'vulliens' },
+];
+
+test('où sont-ils : texte de présence, qui est joignable, ordre de la liste', () => {
+  const where = whereMap(WHERE);
+  assert.equal(presenceText(undefined), 'Pas en ligne');
+  assert.equal(presenceText(where[F1]), 'Pas en ligne');
+  assert.equal(presenceText(where[F2]), 'En ligne · position non partagée');
+  assert.equal(presenceText(where[F3], cityOf), 'En ligne · à Vulliens (Moyen)');
+  assert.equal(presenceText(where[F3]), 'En ligne · en saison (Moyen)', 'ville inconnue du jeu');
+  assert.equal(presenceText(where[F4], cityOf), 'En ligne · en partie libre');
+  assert.equal(joinTarget(where[F1]), null);
+  assert.equal(joinTarget(where[F2]), null, 'position non partagée : rien à rejoindre');
+  assert.deepEqual(joinTarget(where[F3], cityOf), { kind: 'season', level: 'moyen', key: 'vulliens', name: 'Vulliens' });
+  assert.deepEqual(joinTarget(where[F4]), { kind: 'free', lat: 45.758, lon: 4.832 });
+  assert.equal(joinTarget({ fid: F4, st: 2 }), null, 'ni ville ni position');
+  // En ligne d'abord (position partagée avant les autres), les égaux dans l'ordre reçu.
+  assert.deepEqual(orderFriends(friends5, where).map((f) => f.fid), [F3, F4, F5, F2, F1]);
+  assert.deepEqual(orderFriends(friends5, {}).map((f) => f.fid), [F1, F2, F3, F4, F5]);
+  assert.deepEqual(whereMap(null), {});
+});
+
+test('carte « Mes amis » avec présence : Rejoindre seulement pour un ami joignable, Gérer pour tous', () => {
+  const where = whereMap(WHERE);
+  const ordered = orderFriends(friends5, where);
+  const spec = friendsCard({ friends: ordered, where, cityOf, max: 30 });
+  assert.deepEqual(lineButtons(spec), ['j0', 'f0', 'j1', 'f1', 'j2', 'f2', 'f3', 'f4']);
+  assert.deepEqual(spec.lines.slice(0, 5).map((l) => l.sub), [
+    'En ligne · à Vulliens (Moyen)', 'En ligne · en partie libre', 'En ligne · à Vulliens (Moyen)', 'En ligne · position non partagée',
+    'Pas en ligne · ami depuis le 10 oct. 2026',
+  ]);
+  assert.ok(spec.lines.some((l) => /zone privée/.test(l.text ?? l)), 'la confidentialité est dite');
+  const html = cardHtml(spec);
+  assert.equal((html.match(/data-card-btn="j\d"/g) ?? []).length, 3);
+  assert.ok(!/undefined|\[object|NaN/.test(html));
+  // Fiche : « Rejoindre » en premier quand on peut, rien de tel hors ligne ; la note passe devant.
+  assert.deepEqual(ids(friendCard({ ...friends5[2], w: where[F3], cityOf })), ['join', 'remove', 'block', 'back']);
+  assert.deepEqual(ids(friendCard({ ...friends5[1], w: where[F2], cityOf })), ['remove', 'block', 'back']);
+  assert.equal(friendCard({ ...friends5[0], w: where[F1], note: 'Ton niveau est choisi.' }).lines[0], 'Ton niveau est choisi.');
+  assert.ok(!/€|euro|gratuit|payant|prix/i.test(JSON.stringify(spec)));
+});
+
+test('repères d\'amis sur la carte : un par lieu, au nom de l\'ami ou « N amis », seulement avec une position connue', () => {
+  const pins = friendPins(friends5, whereMap(WHERE), cityOf);
+  assert.deepEqual(pins.map((p) => [p.id, p.lat, p.lon, p.tag, p.fids]), [
+    ['smoyen_vulliens', 46.62, 6.78, '2 amis', [F3, F5]],
+    ['l45758000_4832000', 45.758, 4.832, nameOf(friends5[3].nm), [F4]],
+  ]);
+  assert.equal(pins[1].label, `${nameOf(friends5[3].nm)} est en ligne`);
+  // Ville sans position connue (« facile/essai » n'a que son nom) ou inconnue : pas de repère.
+  assert.deepEqual(friendPins(friends5, whereMap([{ fid: F1, st: 2, lv: 'facile', cm: 'essai' }, { fid: F2, st: 2, lv: 'difficile', cm: 'ailleurs' }]), cityOf), []);
+  assert.deepEqual(friendPins([], {}, cityOf), []);
 });
