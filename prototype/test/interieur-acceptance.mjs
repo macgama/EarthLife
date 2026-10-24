@@ -203,7 +203,7 @@ async function scenario(device) {
   // Vue de dessus : la caméra se redresse et se met d'aplomb sur le plan, le noir s'ouvre ; la lampe éclaire le joueur, pas ce qui est loin
   // derrière lui. (La caméra et le noir s'ouvrent en 0,45 s de temps de jeu, bien plus sous swiftshader.)
   const top = await until(page, () => { const t = window.__earthlife.debug.interior()?.top; return t && t.k >= 0.99 && t.dark ? t : null; }, null, 90000);
-  check(!!top && top.pitch > 1.3 && top.pitch < 1.5 && top.dist < 28, `${tag} : caméra de dessus (tangage ${round(top?.pitch ?? 0)}, distance ${round(top?.dist ?? 0, 1)} m)`);
+  check(!!top && top.pitch > 1.3 && top.pitch < 1.5 && top.dist > 8 && top.dist < 48, `${tag} : caméra de dessus (tangage ${round(top?.pitch ?? 0)}, distance ${round(top?.dist ?? 0, 1)} m)`);
   check(!!top && top.lit > 0.9 && top.behind === 0, `${tag} : la lampe éclaire le joueur (${round(top?.lit ?? 0)}), rien à 6 m derrière lui (${round(top?.behind ?? 1)})`);
   const aligned = await until(page, () => {
     const s = window.__earthlife.session, f = s.interior.plan.frame, q = Math.PI / 2;
@@ -211,6 +211,24 @@ async function scenario(device) {
     return Math.min(d, q - d) < 0.02 ? Math.min(d, q - d) + 1e-9 : null;
   }, null, 60000) ?? 1;
   check(aligned < 0.02, `${tag} : la caméra est d'aplomb sur le plan (écart ${round(aligned, 3)} rad au quart de tour)`);
+  // Écran dégagé : jauges, sac et actions restent ; météo, objectif et carte se replient. Le bâtiment qui tient en entier à l'écran est cadré
+  // (la caméra vise son centre) ; sinon elle suit le joueur à la distance d'avant.
+  const hud = await ev(page, () => {
+    const vis = (id) => { const e = document.getElementById(id); return !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0; };
+    return { indoor: document.body.classList.contains('indoor'), vitals: vis('vitals'), conditions: vis('conditions'), quest: vis('quest'), minimap: vis('minimap'), online: vis('online-pill') };
+  });
+  check(hud.indoor && hud.vitals && !hud.conditions && !hud.quest && !hud.minimap && !hud.online, `${tag} : écran dégagé dans le bâtiment ${JSON.stringify(hud)}`);
+  check(!!top && top.need > 4 && top.need < 91 && (top.whole ? top.centered > 0.99 && top.dist >= top.need - 0.01 : top.centered < 0.01), `${tag} : ${top?.whole ? `bâtiment cadré en entier (distance ${round(top.dist, 1)} m pour ${round(top.need, 1)} m)` : `grand bâtiment : la caméra suit le joueur (${round(top?.dist ?? 0, 1)} m, il en faudrait ${round(top?.need ?? 0, 1)})`}`);
+  // Zoom dans le bâtiment : + rapproche, − éloigne, sans toucher à la distance gardée dehors ; limité à la vue du bâtiment.
+  const d0 = top.dist;
+  await page.keyboard.press('+'); await page.keyboard.press('+');
+  const near = await until(page, (d) => { const t = window.__earthlife.debug.interior()?.top; return t && t.dist < d - 1 && t.zoom < 1 ? t : null; }, d0, 90000);
+  check(!!near && near.want === top.want, `${tag} : « + » rapproche la caméra du bâtiment (${round(d0, 1)} → ${round(near?.dist ?? 0, 1)} m), zoom gardé dehors inchangé (${round(near?.want ?? 0, 1)})`);
+  await page.keyboard.press('-'); await page.keyboard.press('-'); await page.keyboard.press('-'); await page.keyboard.press('-');
+  const far = await until(page, (d) => { const t = window.__earthlife.debug.interior()?.top; return t && t.dist > d + 1 && t.zoom > 1 ? t : null; }, d0, 90000);
+  check(!!far && far.want === top.want && far.dist <= 48.001, `${tag} : « − » l'éloigne (${round(far?.dist ?? 0, 1)} m, plafond 48 m), zoom gardé dehors inchangé`);
+  await ev(page, () => { window.__earthlife.session.interiorZoom = 1; });
+  await until(page, (d) => { const t = window.__earthlife.debug.interior()?.top; return t && Math.abs(t.dist - d) < 0.3 ? true : null; }, d0, 90000);
   await wait(900);
   await shot(page, `${device}-02-entree`);
 
@@ -270,6 +288,8 @@ async function scenario(device) {
   const back = await until(page, () => { const s = window.__earthlife.session; return s.interiorK === 0 && s.yawBefore === undefined ? true : null; }, null, 90000);
   const yawBack = await ev(page, (y0) => { const s = window.__earthlife.session; return Math.abs(Math.atan2(Math.sin(s.cameraYaw - y0), Math.cos(s.cameraYaw - y0))); }, yaw0);
   check(!!back && yawBack < 0.02, `${tag} : la caméra retrouve son tangage et son cap d'avant l'entrée (écart ${round(yawBack, 3)} rad)`);
+  const hudOut = await ev(page, () => { const e = document.getElementById('conditions'); return { indoor: document.body.classList.contains('indoor'), conditions: getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0 }; });
+  check(!hudOut.indoor && hudOut.conditions, `${tag} : dehors, l'écran reprend ses pastilles ${JSON.stringify(hudOut)}`);
   const after = await ev(page, async () => {
     const s = window.__earthlife.session;
     const f = document.getElementById('fiche');

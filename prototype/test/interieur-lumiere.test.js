@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { LAB, buildPlan, labAt } from '../src/interieur.js';
 import {
   LUMIERE, LUMIERE_LAMPE, lumiereOf, blockersOf, castRay, castAll, sightAt, lightAt, markSeen, contactShade, outsideMask, alignedYaw, approachAngle, lampDir, toPlanUV,
+  CAMERA, footprintOf, fitDistance, fitView, indoorView, centerWeight,
 } from '../src/interieur-lumiere.js';
 
 const { WALL, FLOOR, DOOR, SHELL, OUT, FURN } = LAB;
@@ -159,6 +160,72 @@ test('coût : 256 rayons sur un plan réel en moins de 5 ms en moyenne, ombre de
   const t1 = performance.now();
   contactShade(plan);
   assert.ok(performance.now() - t1 < 60, `${(performance.now() - t1).toFixed(1)} ms`);
+});
+
+// ---------- Cadrage du bâtiment ----------
+
+// Bâtiment de `w` × `h` cases de 0,5 m au milieu d'une grille qui a deux cases de dehors tout autour ; `yaw0` tourne le plan dans le monde.
+function house(w, h, yaw0 = 0) {
+  const nu = w + 4, nv = h + 4, lab = new Uint8Array(nu * nv).fill(OUT);
+  for (let j = 2; j < nv - 2; j++) for (let i = 2; i < nu - 2; i++) lab[j * nu + i] = i === 2 || j === 2 || i === nu - 3 || j === nv - 3 ? WALL : FLOOR;
+  const c = Math.cos(yaw0), sn = Math.sin(yaw0);
+  return { nu, nv, size: nu * nv, cell: 0.5, u0: -1, v0: -1, lab, furn: [], frame: { ox: 100, oz: 50, ux: c, uz: -sn, vx: sn, vz: c } };
+}
+
+test("l'emprise du bâtiment ignore le dehors de la grille", () => {
+  const f = footprintOf(house(16, 20));
+  assert.deepEqual([f.u0, f.u1, f.v0, f.v1], [0, 8, 0, 10]);
+});
+
+test('fitDistance : un rectangle plus grand demande une caméra plus loin, un écran large plus près', () => {
+  const small = fitDistance(8, 8, 0.46), big = fitDistance(14, 20, 0.46), wide = fitDistance(14, 20, 1.6);
+  assert.ok(small < big && wide < big, `${small} ${big} ${wide}`);
+  assert.ok(small > 10 && small < 30, `maison de 8 m sur un téléphone : ${small}`);
+});
+
+test('fitView : au cap de la porte en bas, largeur = u, hauteur = v ; au quart de tour ils s\'échangent ; le centre est celui du bâtiment', () => {
+  const plan = house(20, 12); // 10 m le long de la façade, 6 m de profondeur
+  const a = fitView(plan, 0, 0.5), m = CAMERA.fitMargin;
+  // plan non tourné (ux = 1, vz = 1) et caméra vers +z : écran = (−x, z)
+  assert.ok(Math.abs(a.w - (10 + 2 * m)) < 1e-9 && Math.abs(a.h - (6 + 2 * m)) < 1e-9, `${a.w} × ${a.h}`);
+  assert.ok(Math.abs(a.cx - 105) < 1e-9 && Math.abs(a.cz - 53) < 1e-9, `${a.cx} ${a.cz}`);
+  const b = fitView(plan, Math.PI / 2, 0.5);
+  assert.ok(Math.abs(b.w - a.h) < 1e-9 && Math.abs(b.h - a.w) < 1e-9, `${b.w} × ${b.h}`);
+  assert.ok(Math.abs(b.cx - a.cx) < 1e-9 && Math.abs(b.cz - a.cz) < 1e-9, 'même centre');
+  assert.ok(b.need !== a.need, 'la distance suit le cap');
+  const tilted = fitView(house(20, 12, 0.6), 0.6, 0.5);
+  assert.ok(Math.abs(tilted.w - a.w) < 1e-6 && Math.abs(tilted.h - a.h) < 1e-6, 'plan tourné, caméra d\'aplomb : mêmes mesures');
+});
+
+test('indoorView : le bâtiment qui tient est cadré, le grand garde la distance d\'avant ; le zoom et les plafonds bornent', () => {
+  const base = 20.2, opt = { yaw: 0, aspect: 0.46, base };
+  const smallHouse = indoorView(house(16, 16), opt);
+  assert.ok(smallHouse.whole && smallHouse.dist >= CAMERA.fitMin && Math.abs(smallHouse.dist - Math.max(smallHouse.need, CAMERA.fitMin)) < 1e-9, JSON.stringify(smallHouse));
+  const hall = indoorView(house(60, 60), opt);
+  assert.ok(!hall.whole && hall.dist === base, `grand bâtiment : ${hall.dist}`);
+  const closer = indoorView(house(16, 16), { ...opt, zoom: 0.01 }), farther = indoorView(house(16, 16), { ...opt, zoom: 99 });
+  assert.ok(Math.abs(closer.dist - smallHouse.dist * CAMERA.zoomMin) < 1e-9 || closer.dist === CAMERA.distMin, `zoom au plus près : ${closer.dist}`);
+  assert.ok(Math.abs(farther.dist - smallHouse.dist * CAMERA.zoomMax) < 1e-9 || farther.dist === CAMERA.distMax, `zoom au plus loin : ${farther.dist}`);
+  assert.ok(indoorView(house(60, 60), { ...opt, zoom: 99 }).dist <= CAMERA.distMax, 'plafond absolu');
+  assert.equal(indoorView(house(16, 16), { ...opt, cap: 12 }).dist, 12, 'plafond de l\'alerte');
+});
+
+test('centerWeight : 1 tant que le bâtiment tient, 0 quand le zoom le dépasse, en douceur entre les deux', () => {
+  assert.equal(centerWeight(18, 20), 1);
+  assert.equal(centerWeight(20, 20), 1);
+  assert.equal(centerWeight(25, 20), 0);
+  const mid = [1.05, 1.07, 1.09].map((r) => centerWeight(r * 20, 20));
+  assert.ok(mid[0] > mid[1] && mid[1] > mid[2] && mid[0] < 1 && mid[2] > 0, mid.join(' '));
+});
+
+test('écran en paysage : le bâtiment cadré laisse la part des panneaux de droite, et la caméra vise à droite de son centre', () => {
+  const plan = house(20, 12);
+  const wide = indoorView(plan, { yaw: 0, aspect: 1.6, base: 20.2 }), noReserve = fitDistance(10 + 2 * CAMERA.fitMargin, 6 + 2 * CAMERA.fitMargin, 1.6);
+  assert.ok(wide.need > noReserve, `${wide.need} > ${noReserve}`);
+  // caméra vers +z : la droite de l'écran est −x ; le bâtiment est centré en x = 105
+  assert.ok(wide.cx < 105 - 0.5, `vise à droite du bâtiment (côté −x) : ${wide.cx}`);
+  const phone = indoorView(plan, { yaw: 0, aspect: 0.46, base: 20.2 });
+  assert.ok(Math.abs(phone.cx - 105) < 1e-9, `portrait : centré (${phone.cx})`);
 });
 
 test('lampe torche portée : la lampe porte plus loin et éclaire plus large, le reste ne change pas', () => {

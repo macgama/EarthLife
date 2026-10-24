@@ -42,7 +42,7 @@ import { ambushCount, ambushSpots, ambushText } from './embuscade.js';
 import { rollRoomLoot, roomAmbushCount, ambushSpotsIn, roomTitle, clearPlanCache } from './interieur.js';
 import { buildingResume, savedLine } from './reprise-batiment.js';
 import { createInteriorView } from './interieur-view.js';
-import { CAMERA as INTERIOR_CAMERA, alignedYaw, approachAngle } from './interieur-lumiere.js';
+import { CAMERA as INTERIOR_CAMERA, alignedYaw, approachAngle, indoorView, centerWeight } from './interieur-lumiere.js';
 import { createInteriorGame } from './interieur-jeu.js';
 import { PROP_KINDS, PROP_TEXTS, rollPropLoot, propTime, propLabel, propLootText, goneChecker } from './props.js';
 import { createFinds, leftText as findsLeftText } from './trouvailles.js';
@@ -1478,7 +1478,13 @@ function handleUiKeys(s, inp) {
 // Vue plafonnée (alerte, vague, bord du monde) : reculer ne change rien, s'approcher part de la distance vue.
 function applyZoom(s, inp) {
   const delta = inp.cameraZoomDelta;
-  if (!delta || (delta > 0 && s.zoomLimited)) return;
+  if (!delta) return;
+  if (s.indoor) { // dans un bâtiment, le zoom ne règle que la vue du bâtiment : la distance gardée dehors ne bouge pas
+    const z = Math.min(INTERIOR_CAMERA.zoomMax, Math.max(INTERIOR_CAMERA.zoomMin, (s.interiorZoom ?? 1) * Math.exp(delta)));
+    if (z !== (s.interiorZoom ?? 1)) { s.interiorZoom = z; syncZoomButtons(s); }
+    return;
+  }
+  if (delta > 0 && s.zoomLimited) return;
   const from = s.zoomLimited ? Math.min(s.zoomWant, s.zoomSeen) : s.zoomWant;
   const want = clampZoom(from * Math.exp(delta), lowPower);
   if (want === s.zoomWant) return;
@@ -1493,6 +1499,13 @@ function applyZoom(s, inp) {
 // raison dans son titre pendant l'alerte et la vague.
 function syncZoomButtons(s) {
   const zoomIn = $('zoom-in'), zoomOut = $('zoom-out');
+  if (s.indoor) {
+    const z = s.interiorZoom ?? 1;
+    zoomIn?.setAttribute('aria-disabled', String(z <= INTERIOR_CAMERA.zoomMin + 1e-6));
+    zoomOut?.setAttribute('aria-disabled', String(z >= INTERIOR_CAMERA.zoomMax - 1e-6));
+    zoomOut?.setAttribute('title', 'Dézoomer (−)');
+    return;
+  }
   zoomIn?.setAttribute('aria-disabled', String(s.zoomWant <= ZOOM.min + 1e-6));
   zoomOut?.setAttribute('aria-disabled', String(!!s.zoomLimited || s.zoomWant >= zoomMax(lowPower) - 1e-6));
   zoomOut?.setAttribute('title', s.zoomLimited === 'horde' ? 'Horde en approche : vue limitée' : 'Dézoomer (−)');
@@ -2996,8 +3009,22 @@ function syncScene(s, dt) {
   const ik = s.interiorK ?? 0;
   s.interiorK = reduce ? topWant : topWant > ik ? Math.min(1, ik + dt / INTERIOR_CAMERA.ease) : Math.max(0, ik - dt / INTERIOR_CAMERA.ease);
   const ie = s.interiorK * s.interiorK * (3 - 2 * s.interiorK);
-  const d = s.cameraDist * (1 - INTERIOR_CAMERA.shrink * ie), pitch = s.camPitchEff + (INTERIOR_CAMERA.pitch - s.camPitchEff) * ie;
-  s.camView = { dist: d, pitch };
+  // Bâtiment ouvert : l'écran se dégage (body.indoor), le zoom ne règle plus que la vue du bâtiment, remise à 1 à chaque entrée.
+  const indoor = topWant === 1;
+  if (indoor !== !!s.indoor) { s.indoor = indoor; s.interiorZoom = 1; syncZoomButtons(s); }
+  if (document.body.classList.contains('indoor') !== indoor) document.body.classList.toggle('indoor', indoor);
+  // Intérieur : le bâtiment entier est cadré à l'écran s'il tient (la caméra vise son centre), sinon elle suit le joueur à la distance d'avant ;
+  // à la sortie le plan est défait, la dernière vue (indoorKeep) finit de s'estomper.
+  let aim = s.indoorKeep;
+  if (s.interior?.plan && topWant) {
+    const plan = s.interior.plan;
+    const iv = indoorView(plan, { yaw: alignedYaw(plan.frame, s.cameraYaw), aspect: viewAspect, base: s.cameraDist * (1 - INTERIOR_CAMERA.shrink), zoom: s.interiorZoom ?? 1, cap: Math.min(s.zoomCap, s.edgeCap) });
+    const dist = s.indoorKeep?.target > 0 && s.interiorK > 0 ? smoothZoom(s.indoorKeep.target, iv.dist, dt, reduce) : iv.dist;
+    aim = s.indoorKeep ??= {};
+    aim.target = dist; aim.cx = iv.cx; aim.cz = iv.cz; aim.k = centerWeight(iv.need, dist); aim.need = iv.need; aim.whole = iv.whole;
+  } else if (!s.interiorK) aim = s.indoorKeep = undefined;
+  const d = aim ? s.cameraDist + (aim.target - s.cameraDist) * ie : s.cameraDist * (1 - INTERIOR_CAMERA.shrink * ie), pitch = s.camPitchEff + (INTERIOR_CAMERA.pitch - s.camPitchEff) * ie;
+  s.camView = { dist: d, pitch, need: aim?.need ?? null, whole: aim?.whole ?? null, centered: aim ? aim.k * ie : 0, zoom: s.interiorZoom ?? 1 };
   // Relief : la caméra suit la hauteur du sol sous le point visé, lissée (τ = 0,2 s : pas de sautillement sur les arêtes des
   // triangles du sol), et reste à 2 m au moins au-dessus du sol à sa verticale. Sans relief, tout est à y = 0 comme avant.
   const relief = !!s.grid.terrain?.enabled;
@@ -3009,7 +3036,8 @@ function syncScene(s, dt) {
   const gy = s.groundY;
   // Intérieur, écran en portrait : la caméra vise un peu devant le joueur, qui descend sous le bandeau du haut et laisse de la place à son cône.
   const lead = viewAspect < 1 ? INTERIOR_CAMERA.lead * ie * d : 0;
-  const ax = at.x + Math.sin(s.cameraYaw) * lead, az = at.z + Math.cos(s.cameraYaw) * lead;
+  const pull = aim ? aim.k * ie : 0; // part du centrage sur le bâtiment (0 : on suit le joueur)
+  const ax = (at.x + Math.sin(s.cameraYaw) * lead) * (1 - pull) + (aim?.cx ?? 0) * pull, az = (at.z + Math.cos(s.cameraYaw) * lead) * (1 - pull) + (aim?.cz ?? 0) * pull;
   camera.position.set(
     ax - Math.sin(s.cameraYaw) * Math.cos(pitch) * d,
     gy + 1.6 + Math.sin(pitch) * d,
@@ -4048,6 +4076,7 @@ const debug = DEBUG ? {
       entry: { x: plan.entry.ox, z: plan.entry.oz, ix: plan.entry.ix, iz: plan.entry.iz, nx: plan.entry.nx, nz: plan.entry.nz }, status: interior.status(s, b, plan),
       // Vue de dessus et noir : ouverture de la caméra (0 à 1), tangage et distance vus, noir ouvert, éclairement au joueur et à 6 m derrière lui.
       top: { k: s.interiorK ?? 0, pitch: s.camView?.pitch ?? null, dist: s.camView?.dist ?? null, yaw: s.cameraYaw, dark: interiorView.shadow.active,
+        need: s.camView?.need ?? null, whole: s.camView?.whole ?? null, centered: s.camView?.centered ?? 0, zoom: s.camView?.zoom ?? 1, want: s.zoomWant,
         lit: interiorView.shadow.lightAtWorld(s.player.x, s.player.z), behind: interiorView.shadow.lightAtWorld(s.player.x - Math.sin(s.player.yaw) * 6, s.player.z - Math.cos(s.player.yaw) * 6) },
     };
   },
