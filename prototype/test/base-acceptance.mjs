@@ -8,6 +8,8 @@
 // armes : pistolet et fusil (tir, munitions, bruit), ordinateur et téléphone ;
 // trajet : trajet entre stations, ordinateur et téléphone ; trajet:desktop ou trajet:mobile : un seul ;
 // voiture : voitures et carburant (réparer, siphonner, plein, trajet de Lyon à Pérouges), ordinateur et téléphone ;
+// conduite : (ou conduite:desktop, conduite:mobile) conduire dans les rues (30 km/h, essence, murs, zombies renversés, panne, réparation, sauvegarde) ;
+// elle est hors de la série complète : la CI la joue dans son propre travail, acceptance-conduite, comme la campagne ;
 // ecran : l'écran de jeu allégé du téléphone en portrait, seul sur une partie neuve ;
 // fabrication : fabriquer dehors (bouton, carte, durée, bruit, interruption) et les sacs de 36 et 60 places ;
 // partage : « Partager le jeu » et « Inviter ici » au menu, aperçu du lien, manifeste, arrivée d'un invité ; ordinateur et téléphone ;
@@ -3485,6 +3487,295 @@ async function voitureScenario(device) {
   await ctx.close();
 }
 
+// ---------- Conduire dans les rues ----------
+
+// Cahier voitures-et-carburant/, étape 5 : « Conduire dans les rues » depuis la carte de ta voiture, 30 km/h au plus, l'essence se
+// vide à 8 L aux 100 km, le moteur attire les zombies à 50 m, un zombie renversé use la voiture de 5 à 10 points, à 0 elle est en panne
+// et se répare à la ferraille ; la voiture s'arrête contre les murs, recule, et reste où on la quitte (sauvegardée).
+// Un couloir libre est cherché autour du point de départ ; la voiture y est posée et la caméra tournée dans son axe.
+const parkOwnCar = (page, { fuel, wear = 100, len = 40 }) => ev(page, async ([fuelL, wearP, need]) => {
+  const { fits } = await import('/src/collision.js');
+  const { session: s, save } = window.__earthlife;
+  const p = s.player;
+  let best = null;
+  for (let k = 0; k < 72; k++) {
+    const a = (k / 72) * Math.PI * 2;
+    let n = 0;
+    while (n < 120 && fits(s.grid, p.x + Math.sin(a) * n, p.z + Math.cos(a) * n, 1.4)) n++;
+    if (!best || n > best.n) best = { a, n };
+    if (n >= 120) break;
+  }
+  if (best.n < need) return { ok: false, n: best.n };
+  const ll = s.store.proj.toLatLon(p.x + Math.sin(best.a) * 1.6, p.z + Math.cos(best.a) * 1.6);
+  save.car = { lat: Math.round(ll.lat * 1e6) / 1e6, lon: Math.round(ll.lon * 1e6) / 1e6, yaw: Math.round(best.a * 1000) / 1000, fuel: fuelL, wear: wearP, from: 'essai', tint: 0x6b7f8f };
+  s.cameraYaw = best.a;
+  window.__earthlife.cars.sync(s, 0, true);
+  return { ok: true, a: best.a, n: best.n, x0: p.x, z0: p.z };
+}, [fuel, wear, len]);
+// Retour au point de départ du couloir (la voiture d'avant est restée contre un mur, au bout), puis voiture reposée dans le couloir.
+async function reparkAtStart(page, corridor, opts) {
+  await debug(page, 'teleport', corridor.x0, corridor.z0);
+  await clearZombies(page);
+  await wait(1500);
+  return parkOwnCar(page, opts);
+}
+// Un zombie immobile sur la trajectoire (en errant il sortirait du passage de la voiture), tenu en place jusqu'au choc.
+const pinZombie = (page, dist, yaw) => ev(page, ([d, ang]) => {
+  const { session: s } = window.__earthlife, p = s.player;
+  const z = s.director.spawnAt(p.x + Math.sin(ang) * d, p.z + Math.cos(ang) * d, 'errant', { free: true, test: true });
+  if (!z) return null;
+  const at = { x: z.x, z: z.z };
+  const hold = () => {
+    if (z.dead > 0 || z.health <= 0) return;
+    Object.assign(z, at);
+    z.state = 'wander';
+    requestAnimationFrame(hold);
+  };
+  requestAnimationFrame(hold);
+  return at;
+}, [dist, yaw]);
+const driveOf = (page) => ev(page, () => {
+  const s = window.__earthlife.session, car = window.__earthlife.save.car, d = s.driving;
+  return {
+    on: !!d, speed: d?.speed ?? 0, yaw: d?.yaw ?? null, x: s.player.x, z: s.player.z, fuel: car?.fuel ?? null, wear: car?.wear ?? null,
+    kills: window.__earthlife.save.profile.kills, health: s.player.health, e: s.menu?.primary?.id ?? null, r: s.menu?.secondary?.id ?? null,
+    label: window.__label('search'), label2: window.__label('action2'),
+  };
+});
+const cardText = (page) => ev(page, () => ({
+  title: document.querySelector('#card .rp-card-title')?.textContent ?? null,
+  text: document.getElementById('card').textContent.replace(/\s+/g, ' ').trim(),
+  buttons: [...document.querySelectorAll('#card [data-card-btn]')].map((b) => `${b.dataset.cardBtn}:${b.textContent.trim()}`),
+}));
+async function conduiteScenario(device) {
+  const tag = `${device === 'mobile' ? 'tél' : 'pc'} 21`;
+  const name = tag.replace(' ', '-');
+  const ctx = await newContext(device);
+  const page = await ctx.newPage();
+  watchErrors(page, device === 'mobile' ? 'tél' : 'pc');
+  await page.goto(START);
+  if (!check(await started(page), `${tag} : partie lancée`)) { await ctx.close(); return; }
+  await clearZombies(page);
+  await debug(page, 'give', { ferraille: 3 });
+
+  // 1. Ta voiture dans un couloir libre : la carte propose « Conduire dans les rues » en premier.
+  const corridor = await parkOwnCar(page, { fuel: 6 });
+  if (!check(corridor.ok, `${tag} : couloir libre de ${corridor.n} m autour du départ`)) { await ctx.close(); return; }
+  await until(page, () => window.__earthlife.session.menu?.primary?.id === 'owncar', null, 15000);
+  await wait(300);
+  await press(page, device, 'e', 'search');
+  await until(page, () => (document.querySelector('#card .rp-card-title')?.textContent === 'Ta voiture' ? 1 : null), null, 15000);
+  let card = await cardText(page);
+  check(card.buttons[0]?.startsWith('street:Conduire dans les rues') && card.buttons.some((b) => b.startsWith('drive:')) && card.buttons.at(-1).startsWith('close:'),
+    `${tag} : carte « Ta voiture » : ${card.buttons.join(' | ')}`);
+  await wait(400);
+  await shot(page, `${name}-carte-conduire`);
+
+  // 2. Monter : le joueur est au volant, E devient « Descendre », les boutons de combat disparaissent.
+  await ev(page, async () => {
+    const { fits } = await import('/src/collision.js');
+    const { DRIVE } = await import('/src/voiture.js');
+    const el = window.__earthlife;
+    const rec = window.__drv = { max: 0, min: 0, inside: 0, frames: 0, lures: [] };
+    const dir = el.session.director, orig = dir.lureAt.bind(dir);
+    dir.lureAt = (x, z, o) => { rec.lures.push(o?.radius ?? null); return orig(x, z, o); };
+    const loop = () => {
+      const s = el.session, d = s?.driving;
+      if (d) {
+        rec.frames++;
+        rec.max = Math.max(rec.max, d.speed);
+        rec.min = Math.min(rec.min, d.speed);
+        if (!fits(s.grid, s.player.x, s.player.z, DRIVE.radius - 0.1)) rec.inside++;
+      }
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  });
+  await hit(page, device, '#card [data-card-btn="street"]');
+  const mounted = await until(page, () => (window.__earthlife.session.driving ? 1 : null), null, 15000);
+  if (!check(!!mounted, `${tag} : au volant`)) { await ctx.close(); return; }
+  await until(page, () => window.__earthlife.session.menu?.primary?.id === 'leave', null, 15000);
+  await wait(300);
+  const seat = await ev(page, () => {
+    const vis = (id) => { const e = document.getElementById(id); return !!e && getComputedStyle(e).display !== 'none'; };
+    return { cls: document.body.classList.contains('driving'), attack: vis('attack'), run: vis('run'), label: window.__label('search'), card: !document.getElementById('card') || document.getElementById('card').hidden };
+  });
+  check(seat.cls && !seat.attack && !seat.run && seat.card, `${tag} : au volant : attaque et course cachées, carte fermée (« ${seat.label} »)`);
+  check(/^Descendre( \(E\))? · 0 km\/h · 6 L · 100 %$/.test(seat.label ?? ''), `${tag} : bouton E : « ${seat.label} »`);
+  const start = await driveOf(page);
+  check(!!(await toastSeen(page, 'Au volant', 15000)), `${tag} : notification « Au volant… »`);
+
+  // 3. Accélérer tout droit : 30 km/h au plus, dans l'axe du couloir, l'essence baisse, le moteur attire les zombies à 50 m.
+  await page.keyboard.down('ArrowUp');
+  const fast = await until(page, () => (window.__earthlife.session.driving?.speed > 7 ? window.__earthlife.session.driving.speed : null), null, 180000);
+  check(!!fast, `${tag} : la voiture prend de la vitesse (${fast ? round(fast, 2) : '?'} m/s)`);
+  await until(page, ([x, z]) => { const p = window.__earthlife.session.player; return Math.hypot(p.x - x, p.z - z) > 20 ? 1 : null; }, [start.x, start.z], 120000);
+  await shot(page, `${name}-roule`);
+  const run1 = await driveOf(page);
+  const rec1 = await ev(page, () => ({ ...window.__drv }));
+  const dist1 = Math.hypot(run1.x - start.x, run1.z - start.z);
+  const ang1 = Math.atan2(run1.x - start.x, run1.z - start.z);
+  check(rec1.max <= 30 / 3.6 + 0.01 && rec1.max > 6, `${tag} : vitesse maximale ${round(rec1.max * 3.6, 1)} km/h sur ${rec1.frames} images (30 km/h au plus)`);
+  check(Math.abs(Math.atan2(Math.sin(ang1 - corridor.a), Math.cos(ang1 - corridor.a))) < 0.15, `${tag} : roule dans l'axe du couloir (${round(ang1, 2)} rad pour ${round(corridor.a, 2)}), ${round(dist1, 1)} m`);
+  const used = start.fuel - run1.fuel;
+  check(used > 0 && Math.abs(used - dist1 * 0.00008) < dist1 * 0.00008 * 0.35 + 0.0003, `${tag} : essence : ${round(used, 4)} L pour ${round(dist1, 1)} m (8 L aux 100 km : ${round(dist1 * 0.00008, 4)})`);
+  check(rec1.lures.length >= 1 && rec1.lures.every((r) => r === 50), `${tag} : le moteur attire les zombies (${rec1.lures.length} appels, rayon ${[...new Set(rec1.lures)].join('/')} m)`);
+
+  // 4. Un zombie en travers : renversé (abattu), voiture usée de 5 à 10 points, le joueur ne perd rien.
+  const wear0 = run1.wear, hp0 = run1.health;
+  const z = await pinZombie(page, 16, run1.yaw ?? corridor.a);
+  check(!!z, `${tag} : un zombie 16 m devant`);
+  const hitDone = await until(page, () => { const s = window.__earthlife.session; const zs = s.director.zombies.filter((q) => q.tags?.test); return zs.length && zs.every((q) => q.dead > 0 || q.health <= 0) ? 1 : null; }, null, 180000);
+  const run2 = await driveOf(page);
+  check(!!hitDone && run2.kills === run1.kills + 1, `${tag} : zombie renversé (abattus ${run1.kills} → ${run2.kills})`);
+  const lost = wear0 - run2.wear;
+  check(lost >= 5 && lost <= 10, `${tag} : la voiture s'use de ${round(lost, 1)} points (5 à 10)`);
+  check(run2.health >= hp0 - 0.01, `${tag} : le joueur au volant ne perd pas de vie (${round(hp0, 1)} → ${round(run2.health, 1)})`);
+  check(!!(await toastSeen(page, 'Zombie renversé', 15000)), `${tag} : notification « Zombie renversé »`);
+  await shot(page, `${name}-renverse`);
+
+  // 5. Lâcher la poussée : la voiture ralentit et s'arrête.
+  await page.keyboard.up('ArrowUp');
+  const stopped = await until(page, () => (Math.abs(window.__earthlife.session.driving?.speed ?? 9) < 0.3 ? 1 : null), null, 120000);
+  check(!!stopped, `${tag} : poussée relâchée : la voiture s'arrête`);
+
+  // 6. Contre un mur : un mur de face à 25 m ou plus est cherché autour (la même distance sur trois lignes parallèles, à 1 m de part et d'autre :
+  // un mur large et droit, pas un coin ni un passage où la voiture glisserait), la voiture est posée à 8 m devant, vitesse nulle, poussée en avant ;
+  // elle s'arrête sans entrer dans le mur.
+  const edge = await ev(page, async () => {
+    const { fits } = await import('/src/collision.js');
+    const s = window.__earthlife.session, p = s.player, d = s.driving;
+    // Longueur libre à partir de (x, z) dans le sens a, avec le disque de la voiture (1,15 m : ce que moveWithCollisions fait passer ou non).
+    const free = (x, z, a) => { let n = 0; while (n < 160 && fits(s.grid, x + Math.sin(a) * n, z + Math.cos(a) * n, 1.15)) n++; return n; };
+    let best = null;
+    for (let k = 0; k < 72; k++) {
+      const a = (k / 72) * Math.PI * 2;
+      const ns = [0, 1, -1].map((o) => free(p.x + Math.cos(a) * o, p.z - Math.sin(a) * o, a));
+      const n = ns[0];
+      if (n >= 25 && Math.max(...ns) < 160 && Math.max(...ns) - Math.min(...ns) <= 1 && (!best || Math.abs(n - 60) < Math.abs(best.n - 60))) best = { a, n };
+    }
+    if (!best) return null;
+    Object.assign(p, { x: p.x + Math.sin(best.a) * (best.n - 8), z: p.z + Math.cos(best.a) * (best.n - 8), vx: 0, vz: 0 });
+    s.cameraYaw = best.a;
+    d.speed = 0;
+    d.yaw = best.a;
+    window.__drv.inside = 0;
+    return { x: p.x, z: p.z, a: best.a, n: best.n };
+  });
+  if (!check(!!edge, `${tag} : un mur de face à plus de 25 m trouvé autour`)) { await ctx.close(); return; }
+  await page.keyboard.down('ArrowUp');
+  const wallSpeed = await until(page, () => (window.__earthlife.session.driving?.speed > 3 ? 1 : null), null, 120000);
+  const blocked = await until(page, ([x, z]) => {
+    const s = window.__earthlife.session, d = s.driving;
+    return d && Math.abs(d.speed) < 0.4 && Math.hypot(s.player.x - x, s.player.z - z) > 3 ? { x: s.player.x, z: s.player.z } : null;
+  }, [edge.x, edge.z], 180000);
+  const rec2 = await ev(page, () => ({ ...window.__drv }));
+  const rolled = blocked ? Math.hypot(blocked.x - edge.x, blocked.z - edge.z) : null;
+  check(!!wallSpeed && !!blocked && rolled <= 8, `${tag} : le mur à ${edge.n} m : la voiture s'arrête après ${rolled === null ? '?' : round(rolled, 1)} m sur les 8 m laissés devant elle`);
+  check(rec2.inside === 0 && rec2.max <= 30 / 3.6 + 0.01, `${tag} : jamais dans le mur (${rec2.inside} images dedans), vitesse max ${round(rec2.max * 3.6, 1)} km/h`);
+  await shot(page, `${name}-mur`);
+  await page.keyboard.up('ArrowUp');
+
+  // 7. Marche arrière (3 m/s au plus), puis descendre.
+  await page.keyboard.down('ArrowDown');
+  const back = await until(page, () => (window.__earthlife.session.driving?.speed < -2 ? window.__earthlife.session.driving.speed : null), null, 120000);
+  const rec3 = await ev(page, () => ({ ...window.__drv }));
+  check(!!back && rec3.min >= -3.01, `${tag} : marche arrière à ${back ? round(Math.abs(back) * 3.6, 1) : '?'} km/h (3 m/s au plus : ${round(rec3.min, 2)})`);
+  await page.keyboard.up('ArrowDown');
+  await until(page, () => (Math.abs(window.__earthlife.session.driving?.speed ?? 9) < 0.3 ? 1 : null), null, 120000);
+  const before = await driveOf(page);
+  await press(page, device, 'e', 'search');
+  const out = await until(page, () => (!window.__earthlife.session.driving ? 1 : null), null, 15000);
+  check(!!out, `${tag} : descendu`);
+  await until(page, () => window.__earthlife.session.menu?.primary?.id === 'owncar', null, 15000);
+  const left = await ev(page, () => {
+    const s = window.__earthlife.session, car = window.__earthlife.save.car, p = s.player;
+    const at = s.store.proj.toLocal(car.lat, car.lon);
+    return { gap: Math.hypot(at.x - p.x, at.z - p.z), cls: document.body.classList.contains('driving'), car: { ...car }, label: window.__label('search') };
+  });
+  check(left.gap > 0.5 && left.gap <= 2.6 && !left.cls && /^Ta voiture/.test(left.label ?? ''), `${tag} : le joueur sort à ${round(left.gap, 1)} m de sa voiture, qui reste où elle est (« ${left.label} »)`);
+  check(left.car.fuel < 6 && Math.abs(left.car.fuel - before.fuel) < 0.0006 && Math.abs(left.car.wear - before.wear) < 0.06, `${tag} : essence ${round(left.car.fuel, 4)} L et état ${left.car.wear} % gardés dans la partie`);
+  await shot(page, `${name}-descendu`);
+  await clearZombies(page);
+
+  // 8. Plus d'essence : pas de conduite au réservoir vide ; panne sèche en route (descendu d'office).
+  // (La voiture est reposée dans un couloir libre : celle d'avant est arrêtée contre le mur.)
+  check((await reparkAtStart(page, corridor, { fuel: 0.02 })).ok, `${tag} : voiture reposée dans un couloir libre`);
+  await clearZombies(page);
+  await until(page, () => window.__earthlife.session.menu?.primary?.id === 'owncar', null, 15000);
+  await press(page, device, 'e', 'search');
+  await until(page, () => (document.querySelector('#card .rp-card-title')?.textContent === 'Ta voiture' ? 1 : null), null, 15000);
+  card = await cardText(page);
+  check(!card.buttons.some((b) => b.startsWith('street:')) && /Plus d’essence/.test(card.text), `${tag} : réservoir vide : pas de bouton de conduite (« ${card.text} »)`);
+  await hit(page, device, '#card [data-card-btn="close"]');
+  await until(page, () => document.getElementById('card').hidden || null, null, 5000);
+  await ev(page, () => { window.__earthlife.save.car.fuel = 0.4; });
+  await clearZombies(page);
+  await ev(page, () => window.__earthlife.cars.enter(window.__earthlife.session));
+  check(!!(await until(page, () => (window.__earthlife.session.driving ? 1 : null), null, 15000)), `${tag} : de nouveau au volant (0,4 L)`);
+  await ev(page, () => { window.__earthlife.save.car.fuel = 0.001; });
+  await page.keyboard.down('ArrowUp');
+  const dry = await until(page, () => (!window.__earthlife.session.driving ? 1 : null), null, 120000);
+  await page.keyboard.up('ArrowUp');
+  const dryState = await driveOf(page);
+  check(!!dry && dryState.fuel === 0 && !!(await toastSeen(page, 'Panne d’essence', 15000)), `${tag} : panne d'essence en route : descendu d'office, 0 L, « Panne d’essence… »`);
+
+  // 9. Voiture en panne (usure à 0) : plus de conduite, puis la ferraille la remet en état (R, 3 ferrailles pour 0 %).
+  check((await reparkAtStart(page, corridor, { fuel: 5, wear: 0.3 })).ok, `${tag} : voiture reposée dans un couloir libre`);
+  await clearZombies(page);
+  await ev(page, () => window.__earthlife.cars.enter(window.__earthlife.session));
+  check(!!(await until(page, () => (window.__earthlife.session.driving ? 1 : null), null, 15000)), `${tag} : au volant avec 0,3 point d'état`);
+  await page.keyboard.down('ArrowUp');
+  await until(page, () => (window.__earthlife.session.driving?.speed > 4 ? 1 : null), null, 120000);
+  await pinZombie(page, 14, (await driveOf(page)).yaw ?? corridor.a);
+  const broke = await until(page, () => (!window.__earthlife.session.driving ? 1 : null), null, 180000);
+  await page.keyboard.up('ArrowUp');
+  const brokeState = await driveOf(page);
+  check(!!broke && brokeState.wear === 0 && !!(await toastSeen(page, 'Ta voiture est en panne', 15000)), `${tag} : un zombie renversé achève la voiture : en panne, descendu d'office (« Ta voiture est en panne… »)`);
+  await clearZombies(page);
+  await until(page, () => window.__earthlife.session.menu?.primary?.id === 'owncar', null, 15000);
+  await press(page, device, 'e', 'search');
+  await until(page, () => (document.querySelector('#card .rp-card-title')?.textContent === 'Ta voiture' ? 1 : null), null, 15000);
+  card = await cardText(page);
+  check(!card.buttons.some((b) => b.startsWith('street:')) && /en panne/.test(card.text), `${tag} : carte d'une voiture en panne : pas de conduite (« ${card.text} »)`);
+  await hit(page, device, '#card [data-card-btn="close"]');
+  await until(page, () => document.getElementById('card').hidden || null, null, 5000);
+  await until(page, () => (window.__earthlife.session.menu?.secondary?.id === 'carwear' ? 1 : null), null, 15000);
+  await wait(400);
+  const fixMenu = await driveOf(page);
+  check(/^Réparer ta voiture( \(R\))? · 3 ferrailles · 8 s$/.test(fixMenu.label2 ?? ''), `${tag} : bouton « ${fixMenu.label2} »`);
+  await shot(page, `${name}-panne`);
+  const scrap0 = (await bagOf(page)).ferraille ?? 0;
+  await press(page, device, 'r', 'action2');
+  const fixAct = await until(page, () => (window.__earthlife.session.action?.id === 'carwear' ? window.__earthlife.session.action.time : null), null, 30000);
+  check(fixAct === 8, `${tag} : réparation de ${fixAct} s`);
+  await ev(page, () => { const a = window.__earthlife.session.action; if (a) a.t = a.time - 0.3; });
+  const fixedUp = await until(page, () => (window.__earthlife.save.car.wear === 100 ? 1 : null), null, 30000);
+  const scrap1 = (await bagOf(page)).ferraille ?? 0;
+  check(!!fixedUp && scrap0 - scrap1 === 3 && !!(await toastSeen(page, 'Ta voiture est remise en état', 90000)), `${tag} : voiture remise à 100 % pour 3 ferrailles (${scrap0} → ${scrap1}, dernières notifications : ${(await toastLog(page)).slice(-4).join(' | ')})`);
+
+  // 10. Sauvegarde : la voiture reste où on l'a laissée après un rechargement, et personne n'est au volant.
+  check((await reparkAtStart(page, corridor, { fuel: 5 })).ok, `${tag} : voiture reposée dans un couloir libre`);
+  await clearZombies(page);
+  await ev(page, () => window.__earthlife.cars.enter(window.__earthlife.session));
+  await until(page, () => (window.__earthlife.session.driving ? 1 : null), null, 15000);
+  await page.keyboard.down('ArrowUp');
+  await until(page, () => (window.__earthlife.session.driving?.speed > 4 ? 1 : null), null, 120000);
+  await page.keyboard.up('ArrowUp');
+  await until(page, () => (Math.abs(window.__earthlife.session.driving?.speed ?? 9) < 0.3 ? 1 : null), null, 120000);
+  await press(page, device, 'e', 'search');
+  await until(page, () => (!window.__earthlife.session.driving ? 1 : null), null, 15000);
+  const parked = await ev(page, () => ({ ...window.__earthlife.save.car }));
+  await ev(page, () => window.__earthlife.saveStore.markDirty());
+  await until(page, () => !window.__earthlife.saveStore.dirty, null, 15000);
+  await page.reload();
+  check(await started(page), `${tag} : partie reprise après le rechargement`);
+  const kept = await ev(page, () => ({ car: window.__earthlife.save.car && { ...window.__earthlife.save.car }, driving: !!window.__earthlife.session.driving, cls: document.body.classList.contains('driving') }));
+  check(!!kept.car && Math.abs(kept.car.lat - parked.lat) < 1e-5 && Math.abs(kept.car.lon - parked.lon) < 1e-5 && kept.car.yaw === parked.yaw && Math.abs(kept.car.fuel - parked.fuel) < 0.01 && !kept.driving && !kept.cls,
+    `${tag} : voiture relue à (${kept.car?.lat}, ${kept.car?.lon}), ${round(kept.car?.fuel ?? 0, 2)} L, état ${kept.car?.wear} %, personne au volant`);
+  await ctx.close();
+}
+
 // L'écran de jeu allégé du téléphone (screenDiet), seul sur une partie neuve (ONLY=ecran).
 async function ecranSeul() {
   const tag = 'tel';
@@ -4416,6 +4707,9 @@ try {
   } else if (only === 'voiture') {
     await voitureScenario('desktop');
     await voitureScenario('mobile');
+  } else if (only.startsWith('conduite')) {
+    if (only !== 'conduite:mobile') await conduiteScenario('desktop');
+    if (only !== 'conduite:desktop') await conduiteScenario('mobile');
   } else if (only === 'fabrication') {
     await fabricationScenario('desktop');
     await fabricationScenario('mobile');

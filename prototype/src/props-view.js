@@ -368,6 +368,20 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
     commit();
   }
 
+  // Déplace un objet affiché (ta voiture en route) : sa matrice est réécrite, rien d'autre ne change. Faux s'il n'est pas affiché.
+  function moveProp(id, x, z, gy, yaw) {
+    let moved = false;
+    for (const pl of pools) {
+      const slot = pl.slots.get(id);
+      if (slot === undefined) continue;
+      Object.assign(pl.props[slot], { x, z, gy, yaw });
+      writeMatrix(pl, slot);
+      moved = true;
+    }
+    if (moved) commit();
+    return moved;
+  }
+
   // Démonté : échelle 0 (gardé en mémoire si l'objet n'est pas affiché, pour le prochain setChunk).
   // Voiture affichée : sa tache d'huile apparaît (ou disparaît quand elle repousse).
   function setGone(id, gone = true) {
@@ -447,5 +461,5 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   // Matériaux d'arbres que la météo teinte (neige sur les feuillages, pluie sur tout) : voir scene.js, followTreeWeather.
   const treeMaterials = () => ({ crowns: species.map((e) => e.mat), trunks: [trunkMat] });
 
-  return { setChunk, dropChunk, setGone, alarm, update, dispose, stats, scaleOf, stains: stainList, treeMaterials, group };
+  return { setChunk, dropChunk, moveProp, setGone, alarm, update, dispose, stats, scaleOf, stains: stainList, treeMaterials, group };
 }

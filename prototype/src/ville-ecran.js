@@ -205,6 +205,7 @@ export function createCityGame(host) {
     });
     seasonUi.pins = progress ? pinsOf(fronts) : [];
     picker.setSeasonCities?.(seasonUi.pins);
+    host.seasonCitiesChanged?.();
     // Le menu s'ouvre sur « À plusieurs » : la carte montre d'office où sont les villes (une fois par ouverture du menu, et pas si le
     // joueur a déjà bougé la carte).
     if (seasonUi.pins.length && !seasonUi.framed && $('menu')?.dataset.tab === 'saison' && !$('menu').classList.contains('hidden')) {
@@ -219,10 +220,11 @@ export function createCityGame(host) {
     return { key: c.key, name: typeof c.name === 'string' ? c.name : '', lat: c.place?.lat, lon: c.place?.lon };
   }
   // Repère de ville touché : le niveau et la ville sont choisis (le bouton dit où l'on va). Inscrit à un autre niveau : il ne change pas.
+  // → true si la ville est choisie ; false si le niveau n'existe pas ou si le joueur est inscrit à un autre niveau (la note du salon le dit).
   function selectCity(level, key) {
-    if (!FRONT_LEVELS.includes(level)) return;
+    if (!FRONT_LEVELS.includes(level)) return false;
     const enrolled = seasonUi.enrolled?.level ?? null;
-    if (enrolled && enrolled !== level) { seasonUi.note = 'Ton niveau est choisi pour la saison : il ne change plus.'; seasonUi.noteAt = Date.now(); syncSeason(); return; }
+    if (enrolled && enrolled !== level) { seasonUi.note = 'Ton niveau est choisi pour la saison : il ne change plus.'; seasonUi.noteAt = Date.now(); syncSeason(); return false; }
     if ($('menu')?.dataset.tab !== 'saison') doc.querySelector('#menu-tabs [data-tab="saison"]')?.click();
     const row = seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === key) ?? null;
     const ann = seasonUi.progress?.levels?.[level]?.announced;
@@ -232,6 +234,14 @@ export function createCityGame(host) {
     try { ls?.setItem('earthlife.front', level); } catch { /* stockage indisponible */ }
     syncSeason();
     picker.frameCities?.(framingOf(seasonUi.pins, level, key));
+    return true;
+  }
+  // Une ville de la saison telle que le serveur la donne (amis : où est un ami) : { name, lat?, lon? } ou null si elle n'est pas dans l'état des lieux.
+  function cityOf(level, key) {
+    const row = seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === key);
+    if (!row) return null;
+    const pin = seasonUi.pins.find((p) => p.level === level && p.key === key);
+    return { name: typeof row.name === 'string' ? row.name : '', ...(pin ? { lat: pin.lat, lon: pin.lon } : {}) };
   }
   // Lieu touché sur la carte ou cherché (main.js, picker.onChange) : sur « À plusieurs », c'est la ville voulue ; sur « Partie libre », un lieu de partie libre.
   function placeChosen(place) {
@@ -1133,7 +1143,7 @@ export function createCityGame(host) {
   }
 
   return {
-    initMenu, syncMenu, playLabel, placeChosen, prepareLaunch, planTrip, landTrip, tripCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws, rescueFrom,
+    initMenu, syncMenu, playLabel, placeChosen, selectCity, cityOf, prepareLaunch, planTrip, landTrip, tripCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws, rescueFrom,
     questText, homeGoal, onRefugeAction, onDeath, summary, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },

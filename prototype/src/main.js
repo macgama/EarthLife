@@ -84,9 +84,9 @@ import { zoneStatus, removeZone, metersBetween as zoneMeters } from './privacy.j
 import { SHARE_TEXTS, gameUrl, inviteUrl, shareLink, shareNote } from './partage.js';
 import {
   FRIEND_TEXTS, friendLink, codeFromParams, pendingFriend, friendErrorText, needAccountCard, friendsCard, friendCard, blockCard,
-  inviteCard, enterCodeCard, acceptCard, addedCard,
+  inviteCard, enterCodeCard, acceptCard, addedCard, whereMap, orderFriends, joinTarget, friendPins,
 } from './amis.js';
-import { normFriendCode, showFriendCode } from './net/amis.js';
+import { normFriendCode, showFriendCode, FRIEND_RULES } from './net/amis.js';
 import { REDUCED_LOOT, searchedLabel } from './shared-world.js';
 // Compte facultatif (spécification des comptes, 5.8) : partie sauvegardée sur le serveur, autre appareil.
 import { createAccount, NULL_ACCOUNT } from './account.js';
@@ -166,6 +166,12 @@ const save = saveStore.save;
 const communes = createCommuneCache(localStore);
 const blocksClient = createResilientBlocks({ makeWorker: () => new Worker(new URL('./blocks-worker.js', import.meta.url), { type: 'module' }) });
 let city = null;
+// Où sont mes amis (étape 2, voir pollFriends) : déclaré ici, le salon des villes le lit dès sa première image.
+const friendsLive = { friends: [], where: {}, max: FRIEND_RULES.max, pending: null, listAt: 0, whereAt: 0, busy: false };
+const FRIEND_LIST_MS = 120000;
+// Essais (?debug=1&friendPollMs=3000) : lecture plus rapprochée, jamais sous 3 s (le serveur permet 30 lectures par minute).
+const FRIEND_POLL_MS = DEBUG ? Math.min(60000, Math.max(3000, Number(params.get('friendPollMs')) || FRIEND_RULES.wherePollMs)) : FRIEND_RULES.wherePollMs;
+const seasonCityOf = (level, key) => city?.cityOf?.(level, key) ?? null;
 // Saisons (net/season.js) : créé avec le jeu à plusieurs ; null sans lui.
 let seasonNet = null;
 // Ses propres démontages (72 h, sauvegarde) ; ceux des autres viennent du jeu en ligne.
@@ -193,8 +199,11 @@ city = createCityGame({
   // Saison : lus au moment du besoin (ils n'existent pas encore ici).
   get seasonNet() { return seasonNet; }, get account() { return account; }, get online() { return online; },
   openAccount: () => accountUi?.open('login'),
+  // Les villes de la saison viennent d'être relues : les repères d'amis qui s'y posent prennent leur place.
+  seasonCitiesChanged: () => refreshFriendPins(),
 });
 city.initMenu();
+picker.setFriendPinHandler?.((gid) => friendPinTapped(gid));
 
 // ---------- Jeu à plusieurs (online.js) ----------
 // ?online=0 : NULL_ONLINE, aucune requête. Sans ?server= local, le jeu parle au vrai serveur (ONLINE.enabledByDefault,
@@ -253,6 +262,7 @@ if (onlineOn) {
   online.on('session', () => account.sessionRefused());
   // Connexion ou déconnexion : le bloc « Saison 1 » du menu relit l'inscription.
   account.on('state', () => {
+    if (account.state !== 'in') resetFriendsLive();
     city.seasonChanged();
     // Connexion faite pour accepter une invitation d'ami : la carte revient quand le formulaire du compte s'est refermé.
     if (friendWait.get()) setTimeout(() => { renderFriendsMenu(); offerPendingFriend(); }, 800);
@@ -556,6 +566,14 @@ const cars = createCarGame({
   showCard: (...a) => showCard(...a), toast: (...a) => toast(...a), propsView, online, overlay: createRideOverlay(document),
   addLoot, lootNotes: (res) => lootNotes(res), gainSkill: (...a) => gainSkill(...a), craftXp,
   arrive: (place, arrival, season) => arriveByCar(place, arrival, season), openMap: (args) => driveMap.open(args), tripCities: () => city.tripCities(),
+  // Zombies renversés au volant : comptés comme des coups portés (profil, Combat).
+  runOver: (s, { hits, kills }) => {
+    if (kills) {
+      save.profile.kills += kills;
+      toast(kills > 1 ? `${kills} zombies renversés` : 'Zombie renversé', 1.2);
+    }
+    gainSkill(s, 'combat', hits * GAIN.hit + kills * GAIN.kill);
+  },
 });
 // Vivre de la campagne : cueillir ce qui est mûr, puiser au puits ou à la berge, pêcher (le feu de camp et la cuisine sont au refuge).
 const campagne = createCampagne({
@@ -1574,11 +1592,15 @@ function step(s, inp, dt) {
   // 6. Déplacement : immobile pendant une action dehors (caché au refuge, le joueur ne bouge pas).
   const before = { x: p.x, z: p.z };
   const still = s.action && (!s.action.inside || onTrip(s.action));
-  updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
-  addStep(save.profile, p.x - before.x, p.z - before.z, dt); // « Mes statistiques » : distance à pied et temps de jeu
-  if (p.running && !inside) {
-    const run = Math.hypot(p.x - before.x, p.z - before.z); // même règle que addStep : un saut (réveil, replacement) ne compte pas
-    if (run > 0 && run <= MAX_STEP_M) gainSkill(s, 'course', run * GAIN.runPerM);
+  if (s.driving) {
+    cars.drive(s, inp, dt, mods); // au volant (conduite.js) : ni pas, ni course, ni statistique de marche
+  } else {
+    updatePlayer(p, s.grid, still ? { ...inp, move: { x: 0, y: 0 } } : inp, s.cameraYaw, mods, dt);
+    addStep(save.profile, p.x - before.x, p.z - before.z, dt); // « Mes statistiques » : distance à pied et temps de jeu
+    if (p.running && !inside) {
+      const run = Math.hypot(p.x - before.x, p.z - before.z); // même règle que addStep : un saut (réveil, replacement) ne compte pas
+      if (run > 0 && run <= MAX_STEP_M) gainSkill(s, 'course', run * GAIN.runPerM);
+    }
   }
   // Intérieur ouvert : sortie détectée, toit effacé ou rendu, lueur du meuble à fouiller.
   interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches, daylight: atmosphere.state.daylight });
@@ -1587,7 +1609,7 @@ function step(s, inp, dt) {
   updateActions(s, inp, dt, before);
   updateFiche(s, dt);
   // 8. Attaque.
-  if (inp.attack && !p.hidden) attack(s);
+  if (inp.attack && !p.hidden && !s.driving) attack(s);
   // 9. Zombies : ordinaires sous le plafond de 60 (horde comprise), horde guidée par le champ de distances.
   const density = urbanDensity(s.grid, p.x, p.z);
   const desired = Math.max(0, Math.min(targetZombieCount(s.mods, density), 60 - r.hordeAlive()));
@@ -1619,7 +1641,7 @@ function step(s, inp, dt) {
   const indoors = inside || !!s.interior?.entered;
   son.update(dt, {
     weather: w, isNight: s.isNight, daylight: atmosphere.state.daylight, density, indoor: indoors, sheltered, asleep: asleep(s),
-    health: p.health, maxHealth: PLAYER.maxHealth, yaw: s.cameraYaw, player: p, zombies: s.director.zombies,
+    health: p.health, maxHealth: PLAYER.maxHealth, yaw: s.cameraYaw, player: s.driving ? { x: p.x, z: p.z, running: false, hidden: true } : p, zombies: s.director.zombies, // au volant : pas de bruit de pas
     wet: w.kind === 'rain' || w.kind === 'storm', fire: inside && !!r.base?.upgrades?.includes('feu'),
     surface: () => surfaceUnder(s.store, p.x, p.z, { indoor: indoors, snowing: w.kind === 'snow', fallback: density < 0.12 ? 'herbe' : 'bitume' }),
   });
@@ -1670,7 +1692,7 @@ const onTrip = (a) => a?.id === 'ride' || a?.id === 'drive';
 // Icône du bouton selon l'action (les objets du décor par leur sorte).
 const ACTION_ICONS = {
   search: 'fouiller', room: 'fouiller', door: 'refuge', enter: 'refuge', claim: 'refuge', move: 'refuge', exit: 'fleche', nail: 'marteau', repair: 'marteau',
-  plate: 'marteau', trap: 'piege', sleep: 'lune', craft: 'marteau', orphan: 'sac', tree: 'hache', car: 'cle', owncar: 'voiture', carfix: 'cle', siphon: 'bidon', bench: 'cle', nest: 'cle', flag: 'marteau',
+  plate: 'marteau', trap: 'piege', sleep: 'lune', craft: 'marteau', orphan: 'sac', tree: 'hache', car: 'cle', owncar: 'voiture', leave: 'voiture', carwear: 'cle', carfix: 'cle', siphon: 'bidon', bench: 'cle', nest: 'cle', flag: 'marteau',
   plant: 'feuille', water: 'boire', fish: 'canne',
 };
 // Libellé du bouton pendant l'action.
@@ -1754,6 +1776,7 @@ function takenBy(s, b) {
 function chooseActions(s) {
   const p = s.player, r = s.refuge;
   const touch = isTouch();
+  if (s.driving) return { primary: cars.leaveAction(s, touch), secondary: null, why: '' }; // au volant, E descend
   const near = r.inside ? null : buildingNear(s.grid, p.x, p.z, 1.6);
   const building = near === null ? null : s.store.buildings[near];
   const searched = building ? isSearched(s, building) : false;
@@ -1879,7 +1902,11 @@ function startAction(s, a) {
     cars.openCar(s);
     return;
   }
-  if (a.id === 'carfix' || a.id === 'siphon') {
+  if (a.id === 'leave') {
+    cars.leave(s);
+    return;
+  }
+  if (a.id === 'carfix' || a.id === 'carwear' || a.id === 'siphon') {
     const act = cars.begin(s, a, base);
     if (act) s.action = act;
     return;
@@ -1940,7 +1967,7 @@ function finishAction(s, a) {
   s.action = null;
   if (a.id === 'ride') ride.finish(s, a);
   else if (a.id === 'drive') cars.land(s, a);
-  else if (a.id === 'carfix' || a.id === 'siphon') cars.finish(s, a);
+  else if (a.id === 'carfix' || a.id === 'carwear' || a.id === 'siphon') cars.finish(s, a);
   else if (a.id === 'plant' || a.id === 'water' || a.id === 'fish') campagne.finish(s, a);
   else if (a.id === 'search') finishSearch(s, a);
   else if (a.id === 'room') finishRoom(s, a);
@@ -2294,6 +2321,7 @@ function attack(s) {
 function shootFirearm(s) {
   const p = s.player, sv = s.survivor;
   if (p.hidden) { toast('Pas de tir depuis le refuge', 1.5); return; }
+  if (s.driving) { toast('Pas de tir au volant', 1.5); return; }
   const fx = skillEffects(s);
   const res = fireShot(sv, p, s.director.zombies, s.grid, { fx });
   if (!res.ok) {
@@ -2724,6 +2752,7 @@ function onDeath(s) {
   s.downUntil = performance.now() + 10000;
   city.onDeath(s);
   cancelAction(s);
+  cars.abort(s); // mort au volant : la voiture reste là où elle est
   panel.close();
   son.silence();
   son.play('death');
@@ -2961,7 +2990,8 @@ function syncScene(s, dt) {
 
   // Joueur et zombies : marche, coups, éclairs, ombres de contact ; puis petite secousse de caméra
   // quand un coup porte ou qu'un zombie mord (aucune en mouvement réduit). Au refuge, le joueur est caché.
-  for (const m of playerMeshes) m.visible = !p.hidden;
+  for (const m of playerMeshes) m.visible = !p.hidden && !s.driving;
+  document.body.classList.toggle('driving', !!s.driving);
   s.sightAt = INTERIOR_DARK && s.interior?.entered ? interiorView.shadow.lightAtWorld : null; // zombies dans le noir : cachés
   characters.sync(s, dt, camera, atmosphere.state.daylight);
   tirView.update(dt, p, s.grid?.terrain?.enabled ? s.grid : null);
@@ -3599,6 +3629,53 @@ function renderFriendsMenu() {
   if (block) block.hidden = !onlineOn || account.state === 'off';
   // Invitation reçue par lien : proposée dès que le menu est là (un tour de boucle plus tard : la carte ne se pose pas au milieu d'un rendu).
   if (friendWait.get() && !friendOffered) setTimeout(offerPendingFriend, 0);
+  // Où sont mes amis : relu au menu toutes les 20 s (voir pollFriends).
+  if (block && !block.hidden) pollFriends();
+}
+
+// Où sont mes amis (étape 2) : la liste d'amis (relue au plus toutes les 2 min, ou sur demande) et leur présence (toutes les 20 s au menu,
+// jamais en partie, jamais onglet caché). Les repères d'amis de la carte du menu et la carte « Mes amis » s'en servent.
+function resetFriendsLive() {
+  Object.assign(friendsLive, { friends: [], where: {}, pending: null, listAt: 0, whereAt: 0 });
+  picker.setFriendPins?.([]);
+}
+
+function refreshFriendPins() {
+  picker.setFriendPins?.(account.state === 'in' ? friendPins(friendsLive.friends, friendsLive.where, seasonCityOf) : []);
+}
+
+// Relit la présence (et la liste si `list`). → { ok } ou le refus de la liste. Un seul appel à la fois ; un échec garde ce qu'on savait.
+async function loadFriends({ list = true } = {}) {
+  const live = friendsLive;
+  while (live.busy) await new Promise((r) => setTimeout(r, 50));
+  live.busy = true;
+  try {
+    const [l, w] = await Promise.all([list ? account.friends('list') : null, account.friends('where')]);
+    if (l?.ok) Object.assign(live, { friends: l.friends ?? [], max: l.max ?? FRIEND_RULES.max, pending: l.pending ?? null, listAt: Date.now() });
+    if (w.ok) { live.where = whereMap(w.where); live.whereAt = Date.now(); }
+    refreshFriendPins();
+    return l ?? w;
+  } finally {
+    live.busy = false;
+  }
+}
+
+function pollFriends() {
+  const live = friendsLive;
+  const now = Date.now();
+  if (live.busy || account.state !== 'in' || document.visibilityState === 'hidden' || $('menu').classList.contains('hidden')
+    || now - live.whereAt < FRIEND_POLL_MS) return;
+  const list = now - live.listAt > FRIEND_LIST_MS;
+  if (!list && !live.friends.length) { live.whereAt = now; return; }          // pas d'amis : rien à demander avant la prochaine lecture de la liste
+  live.whereAt = now;                                                          // pas de nouvel essai avant 20 s, même en cas d'échec
+  loadFriends({ list });
+}
+
+// Repère d'ami touché sur la carte : sa fiche s'il est seul à cet endroit, sinon la liste.
+function friendPinTapped(gid) {
+  const pin = friendPins(friendsLive.friends, friendsLive.where, seasonCityOf).find((p) => p.id === gid);
+  const f = pin?.fids.length === 1 ? friendsLive.friends.find((x) => x.fid === pin.fids[0]) : null;
+  if (f) showFriend(f); else showFriends();
 }
 
 // Montre une carte d'amis (marquée, pour ne pas en ouvrir une seconde par-dessus) ; Échap ferme.
@@ -3613,39 +3690,60 @@ async function showFriends(note = '', warn = false) {
     friendsShow(needAccountCard(), (id) => { if (id === 'account') accountUi?.open('login'); });
     return;
   }
-  const r = await account.friends('list');
+  const r = await loadFriends();
   if (!r.ok) {
     if (r.code === 'session') { friendsShow(needAccountCard(), (id) => { if (id === 'account') accountUi?.open('login'); }); return; }
     friendsShow(friendsCard({ friends: [], note: friendErrorText(r.code, r.retryMs), warn: true }), friendsButtons([]));
     return;
   }
-  const friends = r.friends ?? [];
-  friendsShow(friendsCard({ friends, max: r.max, pending: r.pending ?? null, note, warn, nowMs: Date.now() }), friendsButtons(friends));
+  const { where, max, pending } = friendsLive;
+  const friends = orderFriends(friendsLive.friends, where);
+  friendsShow(friendsCard({ friends, where, cityOf: seasonCityOf, max, pending, note, warn, nowMs: Date.now() }), friendsButtons(friends));
 }
 
 function friendsButtons(friends) {
   return (id) => {
     if (id === 'invite') { makeFriendCode(); return; }
     if (id === 'enter') { enterFriendCode(); return; }
-    const i = Number(/^f(\d+)$/.exec(id)?.[1]);
-    if (Number.isInteger(i) && friends[i]) showFriend(friends[i]);
+    const m = /^([fj])(\d+)$/.exec(id);
+    const f = m ? friends[Number(m[2])] : null;
+    if (!f) return;
+    if (m[1] === 'j') goToFriend(f); else showFriend(f);
   };
 }
 
-function showFriend(f) {
-  friendsShow(friendCard(f), async (id) => {
+function showFriend(f, note = '') {
+  const w = friendsLive.where[f.fid];
+  friendsShow(friendCard({ ...f, w, cityOf: seasonCityOf, note }), async (id) => {
     if (id === 'back') { showFriends(); return; }
+    if (id === 'join') { goToFriend(f); return; }
     if (id === 'remove') {
       const r = await account.friends('remove', { fid: f.fid });
+      friendsLive.listAt = 0;
       showFriends(r.ok ? 'Ami retiré.' : friendErrorText(r.code, r.retryMs), !r.ok);
     } else if (id === 'block') {
       friendsShow(blockCard(f.nm), async (bid) => {
         if (bid !== 'block') { showFriend(f); return; }
         const r = await account.friends('block', { fid: f.fid });
+        friendsLive.listAt = 0;
         showFriends(r.ok ? 'Ami bloqué : vous ne vous verrez plus.' : friendErrorText(r.code, r.retryMs), !r.ok);
       });
     }
   });
+}
+
+// « Rejoindre » : en saison, la ville de l'ami est choisie dans le salon (le bouton du salon dit alors où l'on va, et prévient si l'on
+// quitte sa ville) ; en partie libre, la carte va à son lieu arrondi (~55 m). Rien n'est lancé : le joueur appuie lui-même. La position
+// vient de la dernière lecture (au plus 20 s) ; l'ami a pu bouger, le serveur ne montre jamais d'où il est depuis une zone privée.
+function goToFriend(f) {
+  const t = joinTarget(friendsLive.where[f.fid], seasonCityOf);
+  if (!t) { showFriend(f, "Cet ami n'est plus joignable pour le moment."); return; }
+  if (t.kind === 'season') {
+    if (!city.selectCity(t.level, t.key)) showFriend(f, 'Ton niveau est choisi pour la saison : il ne change plus. Cet ami joue à un autre niveau.');
+    return;
+  }
+  document.querySelector('#menu-tabs [data-tab="libre"]')?.click();
+  picker.setPlace({ lat: t.lat, lon: t.lon, name: `Près de ${Array.isArray(f.nm) ? nameOf(f.nm) : 'ton ami'}`, area: '' });
 }
 
 // « Inviter un ami » : un nouveau code (l'ancien est remplacé), envoyé en lien par la feuille de partage du téléphone, sinon copié.
