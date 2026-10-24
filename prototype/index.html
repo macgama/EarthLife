@@ -1211,7 +1211,8 @@ body.driving #attack, body.driving #run, body.driving #use-shoot { display: none
 @media (max-width: 759px), (max-height: 500px) and (orientation: landscape) {
   #hud.map-bl { --mm-size: 96px; }
   #hud.map-bl #mapbox { flex-direction: row; align-items: flex-end; }
-  #hud.map-bl .zoom-btns { order: 2; flex-direction: column; }
+  #hud.map-bl .zoom-btns { order: 2; flex-flow: row wrap; align-content: flex-end; width: calc(2 * var(--touch) + 4px); gap: 4px; }
+  #hud.map-bl .zoom-btns #view-toggle { flex: 1 1 100%; }
   body:not(.touch) #hud.map-bl .zoom-btns { display: none; }
   #hud.map-bl.has-map #stick-hint { bottom: calc(var(--hud-b) + var(--mm-size) + 12px); }
 }

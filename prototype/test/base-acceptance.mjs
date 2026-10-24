@@ -1808,7 +1808,8 @@ const releaseHud = (page, keep) => ev(page, (k) => {
   window.__earthlife.debug.freezeHud(false);
 }, keep);
 
-// Garde-fou relancé, puis rectangles de #mapbox (et de ses enfants visibles) et des panneaux visibles.
+// Garde-fou relancé, puis rectangles de #mapbox (et de ses enfants visibles) et des panneaux visibles. Les chevauchements se comptent sur
+// les enfants (carte, boutons) : la boîte #mapbox porte aussi le coin vide à côté de la carte quand la colonne des boutons est plus haute (vue basse).
 const mapLayout = (page) => ev(page, () => {
   const st = window.__earthlife.debug.minimapFit();
   const vis = (e) => {
@@ -1844,7 +1845,7 @@ async function mapCorners(page, device, tag) {
       await frames(page, 2);
       const m = await mapLayout(page);
       const hits = [];
-      for (const a of m.parts) for (const b of m.others) if (overlap(a, b)) hits.push(`${a.id} × #${b.id}`);
+      for (const a of m.parts.slice(1)) for (const b of m.others) if (overlap(a, b)) hits.push(`${a.id} × #${b.id}`);
       let where = true;
       if (want && m.map) {
         const box = m.parts[0];
@@ -1892,7 +1893,7 @@ async function mapGuard(page, device, tag) {
     await frames(page, 2);
     const m = await mapLayout(page);
     const hits = [];
-    for (const a of m.parts) for (const b of m.others) if (overlap(a, b)) hits.push(`${a.id} × #${b.id}`);
+    for (const a of m.parts.slice(1)) for (const b of m.others) if (overlap(a, b)) hits.push(`${a.id} × #${b.id}`);
     const cls = await ev(page, () => document.getElementById('mapbox').className);
     const small = Math.floor(natural * 0.75);
     const ok = want === 'reduite'
@@ -1922,7 +1923,7 @@ async function mapCornerBl(page, tag) {
     await frames(page, 2);
     const m = await mapLayout(page);
     const hits = [];
-    for (const a of m.parts) for (const b of m.others) if (overlap(a, b)) hits.push(`${a.id} × #${b.id}`);
+    for (const a of m.parts.slice(1)) for (const b of m.others) if (overlap(a, b)) hits.push(`${a.id} × #${b.id}`);
     const box = m.parts[0];
     const where = !!box && near(box.left, m.edge.left, 2) && near(box.bottom, m.edge.bottom, 2);
     check(m.st.visible && m.st.corner === 'bas-gauche' && m.st.size === 96 && m.st.step === 'plein' && where && !hits.length,
