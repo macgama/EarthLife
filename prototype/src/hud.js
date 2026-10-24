@@ -221,11 +221,12 @@ export function createHud({ $, input }) {
   }
 
   // Boussole : une flèche par cible ({ kind, x, z, near }), autour du joueur, dans le repère de la caméra.
-  function compass(s, list) {
+  // dy : décalage vertical du joueur dans l'image (px, vue basse), le même que celui de la boussole (--anchor-dy).
+  function compass(s, list, dy = 0) {
     const p = s.player;
     const w = zone.w || window.innerWidth, h = zone.h || window.innerHeight;
     const side = Math.min(w, h);
-    const cx = zone.x + w / 2, cy = zone.y + h / 2;
+    const cx = zone.x + w / 2, cy = zone.y + h / 2 + dy;
     used.clear();
     placed.length = 0;
     for (const t of list ?? []) {
@@ -323,7 +324,7 @@ export function createHud({ $, input }) {
     if (!p) return;
     hurtVeil(p);
     tickToast(dt);
-    compass(s, info.arrows);
+    compass(s, info.arrows, info.anchorDy ?? 0);
     gestureWheel(info.wheel);
     actionButton(buttons.primary, info.primary, s.ended);
     const two = actionButton(buttons.secondary, info.secondary, s.ended);

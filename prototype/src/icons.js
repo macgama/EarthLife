@@ -86,6 +86,8 @@ const ICONS = {
   chevron: '<path d="M6 9l6 6 6-6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   moins: '<path d="M5 12h14"/>',
+  // Vue basse derrière le personnage : un cadre (la caméra) et la silhouette vue de dos.
+  'vue-basse': `<path d="M3.5 8V4.5H7M17 4.5h3.5V8M20.5 16v3.5H17M7 19.5H3.5V16"/><circle cx="12" cy="9.6" r="2.4"/><path d="M7.9 17.6a4.1 4.1 0 0 1 8.2 0"/>`,
 
   // Jeu à plusieurs : zone privée, connexion, et les 6 gestes (dans l'ordre de GESTURES, net/protocol.js).
   bouclier: `<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.2 7.5 9.5 4.3-1.3 7.5-4.9 7.5-9.5V6z"/><path d="M12 12.2V15"/>${dot(12, 10.6, 1.6)}`,
