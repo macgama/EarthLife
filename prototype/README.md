@@ -238,6 +238,14 @@ node test/camera-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobi
 
 Le script joue la caméra basse à Lyon, sur ordinateur puis sur téléphone : la vue de dessus reste celle du départ (champ 48°, découpe des murs, rien d'écrit dans les réglages), le bouton (touche G) passe en vue basse et le choix est gardé et relu après un rechargement, puis le retour rend la vue de dessus ; dos à un mur la perche se raccourcit et la caméra reste hors du bâtiment, puis reprend sa longueur ; sur téléphone, le pouce droit tourne et baisse la caméra, un pincement l'approche ; le recentrage ne bouge pas pour une poussée tout droit et suit une poussée un peu de côté ; des flèches montrent les zombies hors du champ (aucune en vue de dessus) ; sur ordinateur, le bouton + rapproche la caméra, un bâtiment ouvert la remet de dessus (le bouton reste enfoncé) et la vue basse revient dehors, et au volant elle recule puis revient derrière la voiture qui roule. La CI le lance dans son propre travail, `acceptance-camera` ; il bloque la publication.
 
+### Acceptation de la fenêtre « Habillement »
+
+```sh
+node test/habillement-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobile) ; captures dans browser-shots/habillement
+```
+
+Le script remplit le sac de pièces (bonnet, casques, blouson, pantalon, lampe, bouclier), ouvre « Habillement » (bouton du sac sur téléphone, touche H sur ordinateur), vérifie la pause du jeu, la tenue dans l'écran, des boutons et cases de 44 px au moins, puis porte les pièces une à une : effets cumulés, usure de douze morsures, « Retirer » (pièce intacte au sac, pièce entamée jetée), sauvegarde, mort (tout ce qui est porté tombe avec le sac, avec son usure) et reprise du sac. Une capture du personnage de près montre l'habillement porté. Règles dans `src/survival.js` (`ITEMS`, `gearStats`, `wearGuard`, `deathPenalty`), fenêtre dans `src/habillement.js`, silhouette dans `src/characters.js` (`dressLook`), lampe torche dans `src/interieur-lumiere.js` (`LUMIERE_LAMPE`) et `src/atmosphere.js` (`setLamp`).
+
 ## Organisation
 
 - `src/picker.js` : carte du monde du menu, recherche et choix du lieu

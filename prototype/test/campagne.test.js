@@ -216,17 +216,19 @@ test('eau de rivière : malade 45 s, un peu de santé perdu, qui ne tue pas ; l\
   assert.equal(SICK.floor, 10);
 });
 
-test('canne à pêche : butin des magasins de plein air, en fin de table', () => {
-  const line = LOOT.outdoor.at(-1);
-  assert.deepEqual(line, ['canne', 0.2, 1]);
+test('canne à pêche : butin des magasins de plein air, après les lignes d\'avant', () => {
+  const at = LOOT.outdoor.findIndex(([item]) => item === 'canne');
+  assert.deepEqual(LOOT.outdoor[at], ['canne', 0.2, 1]);
   assert.ok(rollLoot('outdoor', () => 0).canne >= 1);
   assert.equal(rollLoot('outdoor', () => 0.999999).canne, undefined);
-  // Les tirages d'avant sont intacts : une table sans la ligne rend le même butin pour la même suite.
+  // Les tirages d'avant sont intacts : une table sans la ligne rend le même butin pour la même suite (les lignes ajoutées après elle,
+  // comme l'habillement, sont mises de côté pour la comparaison).
   const seq = () => { let i = 0; return () => [0.3, 0.7, 0.1, 0.9, 0.5, 0.2, 0.8, 0.4, 0.6, 0.15][i++ % 10]; };
+  const later = LOOT.outdoor.splice(at + 1);
   const a = rollLoot('outdoor', seq());
-  const copy = LOOT.outdoor.pop();
+  const [canne] = LOOT.outdoor.splice(at, 1);
   const b = rollLoot('outdoor', seq());
-  LOOT.outdoor.push(copy);
+  LOOT.outdoor.push(canne, ...later);
   delete a.canne;
   assert.deepEqual(a, b);
 });

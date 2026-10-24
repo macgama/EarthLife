@@ -4,7 +4,7 @@
 // Chaque transfert s'applique tout de suite au sac du survivant : fermer ne valide rien, il laisse le reste sur place.
 // Le même écran sert de « Sac » (mode 'bag', bouton du jeu ou touche I) : sans butin, avec l'équipement porté ; « Jeter » pose l'objet dans
 // une liste « Jeté » d'où l'on peut le reprendre jusqu'à la fermeture, qui le perd.
-import { ITEMS, WEAPONS, FIREARMS, BAG_BASE, bagCapacity, bagUsed, wornKey, discardedBy, equipFrom, betterThanWorn, packSwapRefusal, addCount, takeCount, itemLabel, countsLabel, countsTotal } from './survival.js';
+import { ITEMS, WEAPONS, FIREARMS, BAG_BASE, SLOT_LABEL, GEAR_SLOTS, bagCapacity, bagUsed, wornKey, gearUses, discardedBy, equipFrom, betterThanWorn, packSwapRefusal, addCount, takeCount, itemLabel, countsLabel, countsTotal } from './survival.js';
 import { icon } from './icons.js';
 import { itemSlot, injectArtStyle } from './art.js';
 import { esc } from './panels.js';
@@ -108,13 +108,24 @@ export function equip(s, ground, key, side) {
 
 // ---------- Descriptions ----------
 
+// Effets d'une pièce d'habillement, en mots courts : « +12 °C », « −10 % de morsure », « mouillure ×0,5 », « éclaire plus loin ».
+export function gearEffects(it) {
+  const out = [];
+  if (it.warm) out.push(`+${it.warm} °C`);
+  if (it.guard) out.push(`−${Math.round(it.guard * 100)} % de morsure`);
+  if (it.wetMul) out.push(`mouillure ×${String(it.wetMul).replace('.', ',')}`);
+  if (it.light) out.push('éclaire plus loin');
+  if (it.durability) out.push(`${it.durability} morsures`);
+  return out;
+}
+
 // Une ligne sur l'effet de l'objet.
 export function itemInfo(key) {
   const it = ITEMS[key];
   if (!it) return '';
   if (it.equip === 'weapon') return `Arme · ${it.damage} dégâts · ${it.uses} coups`;
-  if (it.equip === 'clothing') return it.wetMul ? 'Vêtement · retient la pluie' : `Vêtement · +${it.warm} °C ressentis`;
   if (it.equip === 'bag') return `Sac · ${it.capacity} places`;
+  if (GEAR_SLOTS.includes(it.equip)) return `${SLOT_LABEL[it.equip]} · ${gearEffects(it).join(' · ')}`;
   if (it.gun) {
     const f = FIREARMS[key];
     return f ? `Arme à feu · ${f.damage} dégâts · portée ${f.range} m` : 'Arme à feu';
@@ -137,18 +148,31 @@ export function itemInfo(key) {
   return it.mat ? 'Matériau de fabrication' : '';
 }
 
-// Ce que le joueur porte, un emplacement par ligne : arme, vêtement, sac.
+// Ce que le joueur porte, un emplacement par ligne : main droite (arme), main gauche, tête, torse, pantalon et sac. `key` : l'objet porté
+// (null si rien) ; `uses` et `max` : morsures restantes et de départ d'une pièce qui s'use, coups restants d'une arme.
+const BARE = { offhand: 'Main libre', head: 'Tête nue', clothing: 'Veste légère', legs: 'Jean' };
 export function gearOf(s) {
   const weaponKey = s.weapon?.key ?? 'batte';
   const weapon = WEAPONS[weaponKey] ?? WEAPONS.batte;
-  const worn = weapon.uses && Number.isFinite(s.weapon?.uses) ? `${s.weapon.uses}/${weapon.uses} coups` : '';
-  const cloth = s.clothing ? ITEMS[s.clothing] : null;
+  const wuses = weapon.uses && Number.isFinite(s.weapon?.uses) ? s.weapon.uses : null;
   const pack = s.pack ? ITEMS[s.pack] : null;
-  return [
-    { slot: 'weapon', label: 'Arme', name: weapon.name, detail: [`${weapon.damage} dégâts`, worn].filter(Boolean).join(' · ') },
-    { slot: 'clothing', label: 'Vêtement', name: cloth?.name ?? 'Veste légère', detail: cloth ? (cloth.wetMul ? 'retient la pluie' : `+${cloth.warm} °C`) : 'léger' },
-    { slot: 'pack', label: 'Sac', name: pack?.name ?? 'Sac de base', detail: `${pack?.capacity ?? BAG_BASE} places` },
-  ];
+  const rows = [{
+    slot: 'weapon', label: SLOT_LABEL.weapon, key: weaponKey === 'batte' ? null : weaponKey, name: weapon.name,
+    detail: [`${weapon.damage} dégâts`, wuses !== null ? `${wuses}/${weapon.uses} coups` : ''].filter(Boolean).join(' · '),
+    uses: wuses, max: weapon.uses ?? null,
+  }];
+  for (const slot of ['offhand', 'head', 'clothing', 'legs']) {
+    const key = s[slot] && ITEMS[s[slot]] ? s[slot] : null;
+    const it = key ? ITEMS[key] : null;
+    const uses = key ? gearUses(s, slot) : null;
+    rows.push({
+      slot, label: SLOT_LABEL[slot], key, name: it?.name ?? BARE[slot],
+      detail: it ? [...gearEffects({ ...it, durability: 0 }), uses !== null ? `${uses}/${it.durability} morsures` : ''].filter(Boolean).join(' · ') : (slot === 'clothing' ? 'léger' : 'rien'),
+      uses, max: it?.durability ?? null,
+    });
+  }
+  rows.push({ slot: 'bag', label: SLOT_LABEL.bag, key: s.pack ?? null, name: pack?.name ?? 'Sac de base', detail: `${pack?.capacity ?? BAG_BASE} places`, uses: null, max: null });
+  return rows;
 }
 
 // « Tu portes : Batte · 50 dégâts » devant un équipement du même emplacement ; '' pour tout autre objet.
@@ -304,6 +328,7 @@ export function findHtml(view, { enter = false } = {}) {
   return `<div class="tv-sheet${bagMode ? ' tv-bagmode' : ''}${enter ? ' tv-enter' : ''}" role="dialog" aria-modal="true" aria-labelledby="tv-title" tabindex="-1">`
     + `<header class="tv-head"><div class="tv-head-text"><p class="tv-kicker">${esc(view.kicker)}</p><h2 class="tv-title" id="tv-title">${esc(view.title)}</h2>`
     + `${view.sub ? `<p class="tv-sub">${esc(view.sub)}</p>` : ''}</div>`
+    + `${bagMode ? `<button type="button" class="tv-dress" data-tv="dress" aria-label="Habillement : ce que je porte (H)">${icon('manteau', { size: 18 })}<span>Habillement</span></button>` : ''}`
     + `<button type="button" class="tv-x" data-tv="close" aria-label="${bagMode ? 'Fermer le sac' : 'Fermer : ce qui reste est laissé sur place'}">${icon('fermer', { size: 20 })}</button></header>`
     + `${notes}<div class="tv-body">${groundCol}`
     + `<section class="tv-col" aria-label="Mon sac"><h3 class="tv-h">Mon sac<span class="tv-h-note tv-num${view.free === 0 ? ' tv-full' : ''}">${esc(view.used)}/${esc(view.cap)}</span></h3>`
@@ -362,6 +387,8 @@ export const FINDS_CSS = `
 .tv-kicker { color: ${T.accent}; font: var(--fw-semibold, 600) var(--fs-2xs, 11px) / 1 ${T.display}; letter-spacing: var(--ls-label, .12em); text-transform: uppercase; }
 .tv-title { margin-top: 4px; color: ${T.text}; font: var(--fw-bold, 700) clamp(18px, 5.2vw, 24px) / var(--lh-tight, 1.1) ${T.display}; letter-spacing: var(--ls-title, .02em); text-transform: uppercase; overflow-wrap: anywhere; }
 .tv-sub { margin-top: 4px; color: ${T.text2}; font-size: var(--fs-sm, 13px); }
+.tv-dress { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: ${T.touch}; padding: 0 var(--sp-3, 12px); border: 1px solid ${T.lineStrong}; border-radius: ${T.rSm}; background: transparent; color: ${T.text}; cursor: pointer; touch-action: manipulation;
+  font: var(--fw-semibold, 600) var(--fs-xs, 12px) / 1 ${T.display}; letter-spacing: var(--ls-button, .08em); text-transform: uppercase; }
 .tv-x { flex: none; display: grid; place-items: center; width: ${T.touch}; height: ${T.touch}; padding: 0; border: 0; border-radius: ${T.rSm}; background: transparent; color: ${T.text2}; cursor: pointer; touch-action: manipulation; }
 .tv-notes { flex: none; margin: 0 var(--sp-4, 16px) var(--sp-2, 8px); padding: var(--sp-2, 8px) var(--sp-3, 12px); list-style: none; background: ${T.accentSoft}; border-left: 2px solid ${T.accent}; border-radius: ${T.rSm}; color: ${T.text}; font-size: var(--fs-sm, 13px); }
 .tv-body { display: grid; gap: var(--sp-4, 16px); flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: var(--sp-2, 8px) var(--sp-4, 16px) var(--sp-3, 12px); }
@@ -430,7 +457,7 @@ export const FINDS_CSS = `
 @media (prefers-reduced-motion: reduce) { .tv-host, .tv-sheet.tv-enter { animation: tv-fade ${T.fast} linear !important; } .tv-gauge > i { transition: none; } }
 `;
 
-function injectStyle(doc) {
+export function injectFindsStyle(doc) {
   if (!doc || doc.getElementById('tv-style')) return;
   const style = doc.createElement('style');
   style.id = 'tv-style';
@@ -442,12 +469,12 @@ function injectStyle(doc) {
 // ---------- DOM ----------
 
 // Fenêtre « Trouvé » dans `root` (l'élément #finds lui-même, vide et caché). `onChange()` : un transfert vient de changer le sac
-// (la sauvegarde est à écrire). open(survivor, { title, found, kicker, sub, notes, mode, onClose }) rend false quand il n'y a rien à montrer
+// (la sauvegarde est à écrire) ; `onDress()` : le bouton « Habillement » du sac a été touché. open(survivor, { title, found, kicker, sub, notes, mode, onClose }) rend false quand il n'y a rien à montrer
 // (jamais en mode 'bag', qui s'ouvre sans butin) ; onClose(left) reçoit ce qui reste sur place (en mode 'bag', ce qui a été jeté). close() ferme (et appelle onClose) ; isOpen() ; view() : la vue courante et refresh() : la page
 // refaite d'après le sac (essais : le sac a changé hors de la fenêtre).
-export function createFinds(root, { onChange = () => {}, now = () => performance.now() } = {}) {
+export function createFinds(root, { onChange = () => {}, onDress = () => {}, now = () => performance.now() } = {}) {
   const doc = root.ownerDocument ?? document;
-  injectStyle(doc);
+  injectFindsStyle(doc);
   root.classList.add('tv-host');
   root.hidden = true;
   let st = null;
@@ -559,6 +586,12 @@ export function createFinds(root, { onChange = () => {}, now = () => performance
     },
     close() {
       close();
+    },
+    // « Habillement » (mode sac) : le sac se ferme (ce qui est jeté est perdu, comme à la fermeture) puis la fenêtre d'habillement s'ouvre.
+    dress() {
+      close();
+      onDress();
+      return false;
     },
   };
 

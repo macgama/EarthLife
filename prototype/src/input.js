@@ -30,6 +30,7 @@ export function createInput(canvas, ui) {
     map: false,             // agrandir ou réduire la carte des environs (C)
     bag: false,             // ouvrir ou fermer le sac (I)
     view: false,            // passer de la vue de dessus à la vue basse derrière le personnage, ou l'inverse (G, bouton)
+    dress: false,           // ouvrir ou fermer l'habillement (H)
     touch: false,
     gesture: null,          // geste choisi dans la roue (0 à 5), pendant une image
     pick: null,             // { x, y } : clic ou toucher court sur la vue, pendant une image
@@ -74,6 +75,7 @@ export function createInput(canvas, ui) {
     if (e.code === 'KeyC') state.map = true;
     if (e.code === 'KeyI') state.bag = true;
     if (e.code === 'KeyG' && !e.ctrlKey && !e.metaKey && !e.altKey) state.view = true;
+    if (e.code === 'KeyH') state.dress = true;
     // + et − : Ctrl, Cmd ou Alt enfoncés, ils restent au zoom du navigateur.
     if (!e.ctrlKey && !e.metaKey && !e.altKey) {
       const dir = ZOOM_KEYS[e.key] ?? (e.code === 'NumpadAdd' ? -1 : e.code === 'NumpadSubtract' ? 1 : 0);
@@ -338,6 +340,7 @@ export function createInput(canvas, ui) {
     state.map = false;
     state.bag = false;
     state.view = false;
+    state.dress = false;
   }
 
   // Jeu à plusieurs actif ou non : la roue n'existe qu'en ligne.

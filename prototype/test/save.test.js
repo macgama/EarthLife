@@ -44,6 +44,10 @@ const EXAMPLE = {
     bag: { eau: 1, conserve: 1, planche: 1, leurre: 1 },
     weapon: { key: 'batte_cloutee', uses: 48 },
     clothing: null,
+    head: null,
+    legs: null,
+    offhand: null,
+    wear: {},
     pack: null,
   },
   where: { lat: 45.75712, lon: 4.83055, at: 1790881200000, inside: true },
@@ -275,7 +279,38 @@ test('bornes : arme et vêtement', () => {
   assert.equal(c('cape'), null);
   assert.equal(c('manteau'), 'manteau');
   assert.equal(c('poncho'), 'poncho');
+  assert.equal(c('blouson_cuir'), 'blouson_cuir');
+  assert.equal(c('bonnet'), null, 'un bonnet ne va pas au torse');
   assert.equal(c(null), null);
+});
+
+test('bornes : habillement (tête, pantalon, main gauche) et usure des pièces qui s\'usent', () => {
+  const g = (edit) => check((s) => edit(s.survivor)).save.survivor;
+  let sv = g((x) => { x.head = 'casque_chantier'; x.legs = 'pantalon_renforce'; x.offhand = 'bouclier_fortune'; x.clothing = 'gilet_renforce'; });
+  assert.deepEqual([sv.head, sv.legs, sv.offhand, sv.clothing], ['casque_chantier', 'pantalon_renforce', 'bouclier_fortune', 'gilet_renforce']);
+  assert.deepEqual(sv.wear, { head: 24, legs: 40, offhand: 20, clothing: 44 }, 'sans usure enregistrée : intactes');
+  sv = g((x) => { x.head = 'casque_chantier'; x.wear = { head: 7, legs: 3 }; });
+  assert.deepEqual(sv.wear, { head: 7 }, 'usure gardée, usure d\'un emplacement vide ignorée');
+  sv = g((x) => { x.head = 'casque_chantier'; x.wear = { head: 99 }; });
+  assert.equal(sv.wear.head, 24);
+  sv = g((x) => { x.head = 'casque_chantier'; x.wear = { head: 0 }; });
+  assert.equal(sv.wear.head, 1, 'une pièce portée a au moins une morsure à encaisser');
+  sv = g((x) => { x.head = 'bonnet'; x.legs = 'casque_chantier'; x.offhand = 'manteau'; x.wear = { head: 5 }; });
+  assert.deepEqual([sv.head, sv.legs, sv.offhand, sv.wear], ['bonnet', null, null, {}], 'pièce d\'un autre emplacement refusée, bonnet sans usure');
+  sv = g((x) => { x.wear = 'oups'; x.offhand = 'lampe_torche'; });
+  assert.deepEqual([sv.offhand, sv.wear], ['lampe_torche', {}]);
+  const w = (weapon) => check((s) => { s.survivor.weapon = weapon; }).save.survivor.weapon;
+  assert.deepEqual(w({ key: 'pied_de_biche', uses: 200 }), { key: 'pied_de_biche', uses: 80 });
+});
+
+test('sac tombé : les pièces portées à la mort gardent leur usure, le reste est ignoré', () => {
+  const d = (dropBag) => check((s) => { s.dropBag = { lat: 45.7571, lon: 4.8305, at: NOW - 1000, ...dropBag }; }).save.dropBag;
+  const bag = { eau: 1, casque_chantier: 1, manteau: 1, batte_cloutee: 1, bonnet: 1 };
+  assert.deepEqual(d({ bag, worn: { casque_chantier: 9, manteau: null, batte_cloutee: 41, bonnet: null } }).worn, { casque_chantier: 9, manteau: null, batte_cloutee: 41, bonnet: null });
+  assert.deepEqual(d({ bag, worn: { casque_chantier: 99, batte_cloutee: 0.5 } }).worn, { casque_chantier: 24, batte_cloutee: 60 });
+  assert.equal(d({ bag, worn: { casque_moto: 3, eau: null, batte: null } }).worn, undefined, 'absente du sac, pas une pièce, batte de base');
+  assert.equal(d({ bag, worn: 'oups' }).worn, undefined);
+  assert.equal(d({ bag }).worn, undefined);
 });
 
 test('bornes : base (identifiant, position, aire, hauteur, densité, décalage, atout, aménagements)', () => {
@@ -1691,6 +1726,7 @@ test('ancienne partie sans les champs nouveaux : chargée sans correction, avec 
   delete old.profile.playSec;
   delete old.profile.skills;
   delete old.survivor.pack;
+  for (const k of ['head', 'legs', 'offhand', 'wear']) delete old.survivor[k];
   delete old.car;
   const r = validateSave(old, NOW);
   assert.equal(r.ok, true);

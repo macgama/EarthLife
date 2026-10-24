@@ -94,7 +94,7 @@ const maxRand = () => { let i = 0; return () => (i++ % 2 ? 0.999 : 0); };
 test('nouveau survivant : sac de départ, batte de base, veste légère, fatigue 10', () => {
   assert.deepEqual(createSurvivor(), {
     food: 80, water: 80, bodyTemp: 37, wet: 0, fatigue: 10,
-    inventory: { eau: 1, conserve: 1 }, weapon: { key: 'batte', uses: null }, clothing: null, pack: null, warmth: 0,
+    inventory: { eau: 1, conserve: 1 }, weapon: { key: 'batte', uses: null }, clothing: null, head: null, legs: null, offhand: null, wear: {}, pack: null, warmth: 0,
   });
   assert.deepEqual(WEAPONS.batte, { name: 'Batte', damage: 50, uses: null });
   assert.equal(BAG_BASE, 30);
@@ -142,7 +142,8 @@ test('butin : les matériaux viennent des vrais lieux (tableau 3.2)', () => {
     assert.deepEqual(rollLoot(kind, () => 0.99), {}, kind);
   }
   assert.deepEqual(rollLoot('house', () => 0.99), {});
-  assert.deepEqual(rollLoot('hardware', maxRand()), { batte_cloutee: 1, chaufferette: 2, manteau: 1, clous: 6, ruban: 2, ferraille: 3, bois: 3, batterie: 1 });
+  assert.deepEqual(rollLoot('hardware', maxRand()), { batte_cloutee: 1, chaufferette: 2, manteau: 1, clous: 6, ruban: 2, ferraille: 3, bois: 3, batterie: 1,
+    casque_chantier: 1, pantalon_travail: 1, lampe_torche: 1, pied_de_biche: 1 });
   assert.equal(rollLoot('warehouse', () => 0).ferraille, 1, 'un entrepôt donne de la ferraille');
 });
 
@@ -274,8 +275,11 @@ test('équipement automatique : arme plus forte, vêtement si l\'emplacement est
   assert.equal(s.clothing, 'poncho');
   assert.equal(s.inventory.poncho, 1, 'le second poncho va au sac');
   addLoot(s, { manteau: 1 });
-  assert.equal(s.clothing, 'poncho', 'emplacement occupé : le manteau va au sac');
-  assert.equal(s.inventory.manteau, 1);
+  assert.equal(s.clothing, 'manteau', 'meilleure note que le poncho : le manteau se porte, le poncho retourne au sac');
+  assert.equal(s.inventory.poncho, 2);
+  addLoot(s, { poncho: 1 });
+  assert.equal(s.clothing, 'manteau', 'moins bon que le manteau : au sac');
+  assert.equal(s.inventory.poncho, 3);
 
   // Vers le coffre (fabrication) : l'objet remplacé va au coffre s'il est intact.
   const t = createSurvivor();
@@ -285,7 +289,7 @@ test('équipement automatique : arme plus forte, vêtement si l\'emplacement est
   assert.equal(equipOrStore(t, 'hache', chest), 'hache');
   assert.deepEqual(chest, { batte_cloutee: 1 });
   assert.equal(equipOrStore(t, 'manteau', chest), 'manteau');
-  assert.equal(equipOrStore(t, 'poncho', chest), null);
+  assert.equal(equipOrStore(t, 'poncho', chest), null, 'moins bon que le manteau');
   assert.deepEqual(chest, { batte_cloutee: 1, poncho: 1 });
   assert.deepEqual(t.inventory, { eau: 1, conserve: 1 }, 'le sac n\'est pas touché');
   // « Équiper » depuis le coffre : échange avec l'objet porté.
@@ -350,15 +354,14 @@ test('équiper puis rééquiper ne rend pas d\'usure', () => {
   assert.equal(equipFrom(h, 'hache', c2), false, 'la hache entamée n\'est plus là');
   assert.deepEqual(h.weapon, { key: 'batte_cloutee', uses: 60 });
 
-  // La pénalité de mort ne s'efface pas par un échange.
+  // La mort emporte l'arme avec le sac : la batte de base revient, la hache se porte sans rien rendre.
   const d = createSurvivor();
-  d.weapon = { key: 'batte_cloutee', uses: 60 };
+  d.weapon = { key: 'batte_cloutee', uses: 45 };
   const c3 = { hache: 1 };
   deathPenalty(d);
-  assert.deepEqual(d.weapon, { key: 'batte_cloutee', uses: 45 });
-  equipFrom(d, 'hache', c3);
-  assert.deepEqual(c3, {}, 'la batte abîmée est jetée');
-  assert.equal(equipFrom(d, 'batte_cloutee', c3), false);
+  assert.deepEqual(d.weapon, { key: 'batte', uses: null });
+  assert.equal(equipFrom(d, 'hache', c3), true);
+  assert.deepEqual(c3, {}, 'rien à rendre : la batte de base ne se range pas');
   assert.deepEqual(d.weapon, { key: 'hache', uses: 50 });
 
   // Une arme intacte fait l'aller-retour sans rien perdre ni gagner.
@@ -387,29 +390,28 @@ test('sac plein : 30 places, le surplus reste par terre', () => {
   assert.equal(bagUsed(s), 30);
 });
 
-test('mort : sac déposé au sol, arme abîmée de 25 %, vêtement gardé', () => {
+test('mort : le sac et tout ce qu\'on porte tombent, avec l\'usure de chaque pièce', () => {
   const s = createSurvivor();
   const bagRef = s.inventory;
   s.inventory.planche = 2;
   s.clothing = 'manteau';
+  s.head = 'casque_chantier';
+  s.wear = { head: 9 };
   equipOrStore(s, 'batte_cloutee');
+  s.weapon.uses = 41;
   const r = deathPenalty(s);
-  assert.deepEqual(r, { bag: { eau: 1, conserve: 1, planche: 2 }, lost: 15, broken: false });
+  assert.deepEqual(r, {
+    bag: { eau: 1, conserve: 1, planche: 2, manteau: 1, casque_chantier: 1, batte_cloutee: 1 },
+    worn: { manteau: null, casque_chantier: 9, batte_cloutee: 41 },
+  });
   assert.equal(s.inventory, bagRef, 'le sac est vidé sur place');
   assert.deepEqual(s.inventory, {});
-  assert.deepEqual(s.weapon, { key: 'batte_cloutee', uses: 45 });
-  assert.equal(s.clothing, 'manteau');
+  assert.deepEqual(s.weapon, { key: 'batte', uses: null });
+  assert.deepEqual([s.clothing, s.head, s.legs, s.offhand, s.pack], [null, null, null, null, null]);
+  assert.deepEqual(s.wear, {});
 
-  const h = createSurvivor();
-  equipOrStore(h, 'hache');
-  assert.equal(deathPenalty(h).lost, 13, 'hache : 12,5 arrondi vers le haut');
-  assert.equal(h.weapon.uses, 37);
   const b = createSurvivor();
-  assert.equal(deathPenalty(b).lost, 0, 'la batte de base ne s\'abîme pas');
-  const worn = createSurvivor();
-  worn.weapon = { key: 'batte_cloutee', uses: 10 };
-  assert.deepEqual(deathPenalty(worn), { bag: { eau: 1, conserve: 1 }, lost: 10, broken: true });
-  assert.deepEqual(worn.weapon, { key: 'batte', uses: null });
+  assert.deepEqual(deathPenalty(b), { bag: { eau: 1, conserve: 1 }, worn: {} }, 'la batte de base ne tombe pas');
 
   s.food = 10; s.water = 70; s.fatigue = 95;
   wakeAfterDeath(s);
@@ -609,7 +611,6 @@ test('carburant : la station-service donne un bidon, rarement un entrepôt ou un
   for (const [kind, item, chance] of [['industrial', 'bidon', 0.08], ['house', 'bidon', 0.04], ['industrial', 'batterie', 0.25], ['hardware', 'batterie', 0.35]]) {
     const row = LOOT[kind].find((r) => r[0] === item);
     assert.equal(row?.[1], chance, `${kind} : ${item}`);
-    assert.equal(LOOT[kind].at(-1)[0] === item || LOOT[kind].at(-2)[0] === item, true, `${kind} : ${item} en fin de table`);
     assert.equal(rollLoot(kind, () => chance + 0.001)[item], undefined);
   }
   // Un type inconnu ne tire ni bidon ni batterie.

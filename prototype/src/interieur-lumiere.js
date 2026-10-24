@@ -20,6 +20,10 @@ export const LUMIERE = Object.freeze({
   aoReach: 0.8,      // m : ombre de contact le long des murs et des meubles
 });
 
+// Avec une lampe torche à la main gauche (survival.js, `light`) : la lampe porte plus loin, éclaire plus large, le halo grandit un peu.
+export const LUMIERE_LAMPE = Object.freeze({ ...LUMIERE, range: 15, half: 0.72, ambient: 3.2 });
+export const lumiereOf = (lamp) => (lamp ? LUMIERE_LAMPE : LUMIERE);
+
 // Caméra dans un intérieur : tangage (rad, presque de dessus), part de la distance retirée, durée de l'approche (s), avance du point visé
 // devant le joueur (part de la distance, écran en portrait seulement). Cadrage du bâtiment (indoorView) : marge autour des murs (m),
 // le bâtiment est cadré en entier s'il tient à moins de `fitMax` fois la distance d'avant (sinon la caméra suit le joueur), sans

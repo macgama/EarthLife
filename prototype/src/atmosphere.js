@@ -23,6 +23,21 @@ export function createAtmosphere(scene, { lowPower }) {
   scene.add(torch, torch.target);
   const beam = torchBeam();
   scene.add(beam);
+  // Une lampe torche portée (survival.js, `light`) : la nuit, le faisceau est plus fort, plus large et porte plus loin.
+  const LAMP = { intensity: 1.6, distance: 58, angle: 0.74, beam: 1.3 };
+  let torchBase = 0, lampOn = false;
+  function applyTorch() {
+    torch.intensity = torchBase * (lampOn ? LAMP.intensity : 1);
+    torch.distance = lampOn ? LAMP.distance : 40;
+    torch.angle = lampOn ? LAMP.angle : 0.6;
+    beam.scale.setScalar(lampOn ? LAMP.beam : 1);
+    beam.visible = torch.intensity > 0 && !indoor;
+  }
+  function setLamp(on) {
+    if (lampOn === !!on) return;
+    lampOn = !!on;
+    applyTorch();
+  }
   // Halo autour du joueur la nuit, placé haut pour éclairer large sans brûler le personnage.
   const lantern = new THREE.PointLight(0xffd9a0, 0, 34, 1.3);
   scene.add(lantern);
@@ -116,9 +131,9 @@ export function createAtmosphere(scene, { lowPower }) {
     // Aube et crépuscule : le ciel orangé réchauffe aussi la lumière ambiante (soleil trop bas pour éclairer le sol).
     hemi.color.copy(colors.hemiNight).lerp(colors.hemiSky, state.daylight).lerp(colors.dusk, duskAmount * 0.4);
     hemi.groundColor.copy(colors.hemiGroundNight).lerp(colors.hemiGround, state.daylight).lerp(colors.dusk, duskAmount * 0.2);
-    torch.intensity = state.isNight || w.kind === 'fog' ? 32 : 0;
+    torchBase = state.isNight || w.kind === 'fog' ? 32 : 0;
+    applyTorch();
     // Cône visible : plus net dans la pluie et le brouillard (les gouttes accrochent la lumière).
-    beam.visible = torch.intensity > 0;
     beam.material.uniforms.uStrength.value = (state.isNight ? 0.16 : 0.1) * (wet || w.kind === 'fog' || w.kind === 'snow' ? 1.35 : 1);
     lantern.intensity = state.daylight < 0.4 ? 22 * (1 - state.daylight) : 0;
     // Pluie un peu moins blanche la nuit, pour ne pas griser toute la vue.
@@ -264,7 +279,7 @@ export function createAtmosphere(scene, { lowPower }) {
     groundMaterials = mats.map((m) => [m, m.color.getHex()]);
   }
 
-  return { state, setConditions, setView, update, endFrame, setGroundMaterials, setRelief, setIndoor };
+  return { state, setConditions, setView, update, endFrame, setGroundMaterials, setRelief, setIndoor, setLamp };
 }
 
 function flakeTexture() {

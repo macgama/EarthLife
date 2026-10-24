@@ -12,7 +12,7 @@ import { createChunkManager, VIEW_RADIUS, GROUND_DETAILS } from './chunks.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
   offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, bagCapacity, wornKey,
-  removePack, packSurplus, packSwapRefusal, PACK_REMOVE_FULL, SICK,
+  removePack, packSurplus, packSwapRefusal, PACK_REMOVE_FULL, SICK, FEMININE_ITEMS, GEAR_SLOTS, SLOT_LABEL, gearStats, wearGuard, recoverGear, heldOnGround,
 } from './survival.js';
 import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
 import { createCharacters } from './characters.js';
@@ -51,6 +51,7 @@ import { CAMERA as INTERIOR_CAMERA, alignedYaw, approachAngle, indoorView, cente
 import { createInteriorGame } from './interieur-jeu.js';
 import { PROP_KINDS, PROP_TEXTS, rollPropLoot, propTime, propLabel, propLootText, goneChecker } from './props.js';
 import { createFinds, leftText as findsLeftText } from './trouvailles.js';
+import { createDressing } from './habillement.js';
 import { createPropsView } from './props-view.js';
 import { createFloreView } from './flore-view.js';
 import { createBaseView } from './base-view.js';
@@ -620,7 +621,9 @@ const hud = createHud({ $, input });
 const card = createCard($('card'));
 let cardInfo = null; // { blocking, escape, onButton } de la carte affichée
 // Fenêtre « Trouvé » : le jeu y est en pause ; les notifications qui arrivent pendant qu'elle est ouverte attendent sa fermeture.
-const finds = createFinds($('finds'), { onChange: () => saveStore.markDirty() });
+const finds = createFinds($('finds'), { onChange: () => saveStore.markDirty(), onDress: () => openDressing(session) });
+// Fenêtre « Habillement » (habillement.js, touche H ou bouton du sac) : comme « Trouvé », le jeu y est en pause.
+const dressing = createDressing($('dressing'), { onChange: () => saveStore.markDirty(), onBag: () => toggleBag(session) });
 let findsToasts = [];
 const panel = createRefugePanel(document.body, { onAction: (action, arg) => onPanelAction(action, arg), onStats: () => showStats() });
 // Téléphone, en portrait ou à l'horizontale : panneau ouvert, « Sortir » et « Dormir » sont en pied de panneau.
@@ -1146,7 +1149,8 @@ function restoreCharacter(s) {
   sv.bag ??= {};
   s.player = createPlayer(s.start);
   s.survivor = createSurvivor();
-  Object.assign(s.survivor, { food: sv.food, water: sv.water, bodyTemp: sv.bodyTemp, wet: sv.wet, fatigue: sv.fatigue, clothing: sv.clothing ?? null, pack: sv.pack ?? null });
+  Object.assign(s.survivor, { food: sv.food, water: sv.water, bodyTemp: sv.bodyTemp, wet: sv.wet, fatigue: sv.fatigue, pack: sv.pack ?? null, wear: { ...sv.wear } });
+  for (const slot of GEAR_SLOTS) s.survivor[slot] = sv[slot] ?? null;
   s.survivor.inventory = sv.bag;
   s.survivor.weapon = { key: sv.weapon?.key ?? 'batte', uses: sv.weapon?.uses ?? null };
   s.player.health = Math.min(100, sv.health);
@@ -1190,8 +1194,9 @@ function copyLive(sv) {
   Object.assign(sv.survivor, {
     health: dead ? 0 : Math.max(1, Math.round(Math.min(100, p.health) * 10) / 10),
     food: v.food, water: v.water, bodyTemp: v.bodyTemp, wet: v.wet, fatigue: v.fatigue,
-    bag: v.inventory, weapon: { ...v.weapon }, clothing: v.clothing ?? null, pack: v.pack ?? null,
+    bag: v.inventory, weapon: { ...v.weapon }, pack: v.pack ?? null, wear: { ...v.wear },
   });
+  for (const slot of GEAR_SLOTS) sv.survivor[slot] = v[slot] ?? null;
   const ll = playerLatLon(s);
   const where = { lat: ll.lat, lon: ll.lon, at: Date.now(), inside: !!s.refuge?.inside };
   // Dans un autre bâtiment que le refuge (intérieur ouvert, joueur entré) : la reprise se fait dedans (reprise-batiment.js).
@@ -1425,7 +1430,7 @@ renderer.setAnimationLoop(() => {
   }
   if (s.player && onlineOn) onlineInput(s, inp);
   // Une carte qui attend une réponse (mort, livraison, missions, déménagement, absence) met le jeu en pause.
-  const blocked = (card.isOpen() && !!cardInfo?.blocking) || finds.isOpen();
+  const blocked = (card.isOpen() && !!cardInfo?.blocking) || finds.isOpen() || dressing.isOpen();
   if (!s.paused && !s.holdStep && !s.ended && s.player && !blocked) {
     const t0 = performance.now();
     step(s, inp, dt);
@@ -1468,7 +1473,8 @@ renderer.setAnimationLoop(() => {
 // Tab (onglet suivant), B (replier, ou rouvrir le panneau au refuge), C (agrandir ou réduire la carte des environs), I (le sac).
 function handleUiKeys(s, inp) {
   if (inp.escape) {
-    if (finds.isOpen()) finds.close();
+    if (dressing.isOpen()) dressing.close();
+    else if (finds.isOpen()) finds.close();
     else if (card.isOpen() && cardInfo?.blocking) pressCard(cardInfo.escape);
     else if (card.isOpen()) hideCard();
     else if (minimap.isOpen()) minimap.close();
@@ -1476,9 +1482,10 @@ function handleUiKeys(s, inp) {
     else if (s.refuge.inside && !s.action && !s.ended && !s.paused) runRefuge(s, { id: 'exit', arg: null });
   }
   // Une carte de jeu qui attend une réponse garde la main : la carte des environs ne s'ouvre pas par-dessus.
-  if (inp.map && !(card.isOpen() && cardInfo?.blocking) && !finds.isOpen()) minimap.toggle();
+  if (inp.map && !(card.isOpen() && cardInfo?.blocking) && !finds.isOpen() && !dressing.isOpen()) minimap.toggle();
   if (inp.bag) toggleBag(s);
   if (inp.view) toggleView(s);
+  if (inp.dress) toggleDressing(s);
   if (inp.tab) panel.nextTab();
   if (inp.fold) {
     if (panel.isOpen()) panel.toggleFold();
@@ -1690,7 +1697,9 @@ function step(s, inp, dt) {
     }
   }
   // Intérieur ouvert : sortie détectée, toit effacé ou rendu, lueur du meuble à fouiller.
-  interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches, daylight: atmosphere.state.daylight });
+  const lamp = gearStats(s.survivor).light; // lampe torche portée : elle porte plus loin, dehors la nuit et dans le noir des bâtiments
+  interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches, daylight: atmosphere.state.daylight, lamp });
+  atmosphere.setLamp(lamp);
   atmosphere.setIndoor(!!s.interior?.entered); // ni pluie, ni neige, ni cône de lampe de nuit sous un toit
   // 7. Boutons E et R.
   updateActions(s, inp, dt, before);
@@ -1700,6 +1709,7 @@ function step(s, inp, dt) {
   // 9. Zombies : ordinaires sous le plafond de 60 (horde comprise), horde guidée par le champ de distances.
   const density = urbanDensity(s.grid, p.x, p.z);
   const desired = Math.max(0, Math.min(targetZombieCount(s.mods, density), 60 - r.hordeAlive()));
+  p.guard = gearStats(s.survivor).guard; // part des dégâts de morsure évitée par l'habillement (game.js)
   const events = s.director.update(dt, p, s.mods, {
     isNight: s.isNight, desired, field: s.field, openings: r.directorOpenings(), centre: r.anchor(), steer: interior.steerOf(s),
   });
@@ -1708,10 +1718,19 @@ function step(s, inp, dt) {
     s.spottedRecently = 4;
   }
   s.spottedRecently = Math.max(0, (s.spottedRecently ?? 0) - dt);
-  if (events.some((e) => e.type === 'bitten')) {
+  const bites = events.filter((e) => e.type === 'bitten');
+  if (bites.length) {
     s.lastBite = 3;
     son.play('bite');
     if (s.action && !s.action.inside) cancelAction(s);
+    // Chaque morsure encaissée use une pièce de protection ; une pièce brisée est dite tout de suite.
+    for (let i = 0; i < bites.length; i++) {
+      const broken = wearGuard(s.survivor);
+      if (broken) {
+        toast(`${ITEMS[broken].name} ${FEMININE_ITEMS.has(broken) ? 'brisée' : 'brisé'}`, 3, 'danger');
+        saveStore.markDirty();
+      }
+    }
   }
   if (events.some((e) => e.type === 'trap')) son.play('trap');
   s.lastBite = Math.max(0, (s.lastBite ?? 0) - dt);
@@ -1772,8 +1791,6 @@ function step(s, inp, dt) {
 }
 
 // ---------- Actions (boutons E et R, 5.1 et 5.2) ----------
-// Objets au féminin, pour « laissées sur place » et « équipée ».
-const FEMININE_ITEMS = new Set(['conserve', 'barre', 'eau', 'ferraille', 'planche', 'plaque', 'chaufferette', 'batte_cloutee', 'hache']);
 // Trajet en cours (métro, tram, train ou voiture) : rien d'autre n'est possible, le joueur est caché.
 const onTrip = (a) => a?.id === 'ride' || a?.id === 'drive';
 // Icône du bouton selon l'action (les objets du décor par leur sorte).
@@ -2101,6 +2118,7 @@ function toggleBag(s) {
     if (finds.mode() === 'bag') finds.close();
     return;
   }
+  dressing.close(); // du sac à l'habillement et retour : l'un remplace l'autre
   if (!s?.player || s.ended || session !== s || (card.isOpen() && cardInfo?.blocking)) return;
   if (asleep(s)) { toast('Tu dors : tu ne peux rien faire d\'autre', 1.5); return; }
   finds.open(s, {
@@ -2114,9 +2132,29 @@ function toggleBag(s) {
   });
 }
 
+// Touche H et bouton « Habillement » du sac : ce que le survivant porte, et les pièces du sac qu'il peut y mettre. Même règles que le
+// sac : jeu en pause, fermée pendant le sommeil, devant une carte qui attend une réponse ou après la mort ; un second appui ferme.
+function openDressing(s) {
+  if (!s?.player || s.ended || session !== s || (card.isOpen() && cardInfo?.blocking)) return;
+  if (asleep(s)) { toast('Tu dors : tu ne peux rien faire d\'autre', 1.5); return; }
+  finds.close({ silent: true });
+  dressing.open(s, {
+    onClose: () => {
+      if (session !== s) return;
+      for (const t of findsToasts.splice(0)) toast(...t);
+    },
+  });
+}
+
+function toggleDressing(s) {
+  if (dressing.isOpen()) dressing.close();
+  else openDressing(s);
+}
+
 // Fermeture sans rien dire (retour au menu, changement de monde) : les notifications en attente sont abandonnées.
 function closeFinds() {
   finds.close({ silent: true });
+  dressing.close({ silent: true });
   findsToasts = [];
 }
 
@@ -2452,13 +2490,17 @@ function pickBag(s) {
   const packKey = Object.keys(d.bag).filter((k) => ITEMS[k]?.equip === 'bag' && d.bag[k] > 0)
     .sort((a, b) => ITEMS[b].capacity - ITEMS[a].capacity)[0];
   if (packKey && equipFrom(s.survivor, packKey, d.bag)) moved += 1;
-  for (const k of Object.keys(d.bag)) moved += moveItems(d.bag, s.survivor.inventory, k, d.bag[k], bagCapacity(s.survivor));
+  // Ce qu'on portait en mourant se remet en place s'il y a la place ; une pièce qui s'use, dont l'emplacement est pris, attend au sol.
+  moved += recoverGear(s.survivor, d);
+  const held = heldOnGround(d);
+  for (const k of Object.keys(d.bag)) if (!held.has(k)) moved += moveItems(d.bag, s.survivor.inventory, k, d.bag[k], bagCapacity(s.survivor));
   if (!countOf(d.bag)) save.dropBag = null;
+  else if (!Object.keys(d.worn ?? {}).length) delete d.worn;
   if (moved) {
     toast('Sac récupéré', 2.5, 'loot');
     saveStore.flush('sac');
   }
-  if (save.dropBag) toast(leftText(d.bag), 2);
+  if (save.dropBag) toast(held.size ? `Reste au sol : ${countsLabel(d.bag)}. Retire ce que tu portes au même emplacement pour le reprendre` : leftText(d.bag), 2.5);
 }
 
 // ---------- Refuge ----------
@@ -2633,7 +2675,8 @@ function refugeView(s) {
     })),
     chest: {
       head: `Coffre ${chestN}/${cap} · Sac ${bagN}/${bagMax}`,
-      gear: `Arme : ${weapon.name}${wear} · Vêtement : ${clothing} · Sac : ${sv.pack ? ITEMS[sv.pack]?.name ?? 'Sac de base' : 'Sac de base'}`,
+      gear: [`Arme : ${weapon.name}${wear}`, `Vêtement : ${clothing}`, ...['head', 'legs', 'offhand'].filter((slot) => sv[slot]).map((slot) => `${SLOT_LABEL[slot]} : ${ITEMS[sv[slot]].name}`),
+        `Sac : ${sv.pack ? ITEMS[sv.pack]?.name ?? 'Sac de base' : 'Sac de base'}`].join(' · '),
       rows,
       buttons: [
         { action: 'prepare', arg: null, label: 'Préparer le sac', enabled: bagN < bagMax, why: 'Sac plein' },
@@ -2845,18 +2888,15 @@ function onDeath(s) {
   son.play('death');
   p.carrying = false;
   const lines = [s.deathCause && !s.lastBite ? s.deathCause : 'Les zombies ont eu raison de toi.'];
-  const weaponKey = sv.weapon?.key;
   const pen = deathPenalty(sv);
   if (countOf(pen.bag)) {
     const ll = dropAt ? s.store.proj.toLatLon(dropAt.x, dropAt.z) : playerLatLon(s);
     if (save.dropBag) lines.push('Ton ancien sac est perdu');
     save.dropBag = { lat: ll.lat, lon: ll.lon, at: Date.now(), bag: pen.bag };
+    if (Object.keys(pen.worn).length) save.dropBag.worn = pen.worn;
     const near = placeNear(s, dropAt ?? p);
-    lines.push(near ? `Ton sac est resté près ${near} : la flèche violette t'y mène` : "Ton sac est resté là où tu es tombé : la flèche violette t'y mène");
-  }
-  if (pen.lost) {
-    const name = ITEMS[weaponKey]?.one ?? 'arme';
-    lines.push(pen.broken ? `Ta ${name} s'est brisée` : `Ta ${name} est abîmée (−${pen.lost} coups)`);
+    const gear = Object.keys(pen.worn).length ? 'Ton sac et ton équipement sont restés' : 'Ton sac est resté';
+    lines.push(near ? `${gear} près ${near} : la flèche violette t'y mène` : `${gear} là où tu es tombé : la flèche violette t'y mène`);
   }
   if (s.quest) {
     s.quest = null;
@@ -2885,6 +2925,7 @@ function showCard(spec, onButton = null, { escape = null } = {}) {
   if (info.blocking) {
     minimap.close();
     finds.close();
+    dressing.close();
   }
   card.show(spec, (id, value) => {
     if (cardInfo === info) cardInfo = null;
@@ -2909,7 +2950,7 @@ function pressCard(id) {
 function toast(text, seconds = 2, kind = '', counts = null) {
   if (!session) return;
   if (kind === 'loot') son.play('tic');
-  if (finds.isOpen()) { findsToasts.push([text, seconds, kind, counts]); return; }
+  if (finds.isOpen() || dressing.isOpen()) { findsToasts.push([text, seconds, kind, counts]); return; }
   hud.toast(text, seconds, kind, counts ? Object.keys(counts).filter((k) => counts[k] > 0) : null);
 }
 
@@ -4261,7 +4302,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, finds, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail, son } : {}),
+  saveStore, picker, renderer, finds, dressing, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail, son } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.

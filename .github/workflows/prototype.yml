@@ -79,6 +79,10 @@ jobs:
       - run: node test/trouvailles-acceptance.mjs browser-shots/trouvailles
         env:
           ROUTES: test/fixtures/offline-routes.mjs
+      # Fenêtre « Habillement » : tête, torse, pantalon et mains, effets, usure par morsure, chute et reprise à la mort ; téléphone et ordinateur.
+      - run: node test/habillement-acceptance.mjs browser-shots/habillement
+        env:
+          ROUTES: test/fixtures/offline-routes.mjs
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -96,6 +100,12 @@ jobs:
         with:
           name: captures-trouvailles
           path: prototype/browser-shots/trouvailles
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: captures-habillement
+          path: prototype/browser-shots/habillement
           retention-days: 14
 
   acceptance-campagne:
