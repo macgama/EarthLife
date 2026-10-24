@@ -524,7 +524,7 @@ function checkDroppedGear(raw, bag) {
   for (const [key, uses] of Object.entries(raw)) {
     if (!((bag[key] ?? 0) > 0)) continue;
     const slot = GEAR_SLOTS.find((sl) => Object.hasOwn(GEAR[sl], key));
-    const max = slot ? GEAR[slot][key] : WEAPON_USES[key];
+    const max = slot ? GEAR[slot][key] : Object.hasOwn(WEAPON_USES, key) ? WEAPON_USES[key] : undefined;
     if (max === undefined || key === 'batte') continue;
     if (max === null) out[key] = null;
     else if (finite(uses) && Number.isInteger(uses)) out[key] = Math.min(max, Math.max(1, uses));
