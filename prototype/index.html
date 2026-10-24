@@ -897,6 +897,9 @@ body.touch #controls { display: block; }
 .round-label { font: var(--fw-semibold) 10px / 1 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
 /* Au volant (conduite.js) : ni coup, ni course, ni tir ; E descend. */
 body.driving #attack, body.driving #run, body.driving #use-shoot { display: none; }
+/* Dans un bâtiment (vue de dessus, noir : src/main.js, syncScene) : l'écran se dégage. Restent les jauges, le sac, les actions et le zoom ;
+   météo, objectif, pastille en ligne et carte des environs reviennent à la sortie. */
+body.indoor #conditions, body.indoor #quest, body.indoor #online-pill, body.indoor #mapbox:not(.big) #minimap { display: none; }
 #attack { right: calc(var(--hud-r) + 10px); bottom: calc(var(--hud-b) + 18px); width: var(--btn-attack); height: var(--btn-attack); border: 2px solid color-mix(in srgb, var(--c-danger) 75%, transparent); background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--c-danger) 34%, transparent), var(--c-panel) 72%); }
 #attack .icon { width: 34px; height: 34px; }
 #attack::after { content: ''; position: absolute; z-index: -1; inset: -2px; border-radius: 50%; background: color-mix(in srgb, var(--c-danger) 50%, transparent); box-shadow: var(--glow-danger); opacity: 0; transition: opacity var(--t-fast) var(--ease-std); }

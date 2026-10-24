@@ -4,6 +4,7 @@
 // que ces fonctions disent éclairé, et les zombies cachés dans le noir le sont pour la même raison.
 // Tout se calcule dans le repère du plan (u le long de la façade de la porte, v vers l'intérieur), en mètres, comme interieur-view.js.
 import { LAB } from './interieur.js';
+import { groundCorners } from './view.js';
 
 const { WALL, FURN, SHELL, OUT } = LAB;
 
@@ -20,8 +21,16 @@ export const LUMIERE = Object.freeze({
 });
 
 // Caméra dans un intérieur : tangage (rad, presque de dessus), part de la distance retirée, durée de l'approche (s), avance du point visé
-// devant le joueur (part de la distance, écran en portrait seulement).
-export const CAMERA = Object.freeze({ pitch: 1.38, shrink: 0.28, ease: 0.45, lead: 0.12 });
+// devant le joueur (part de la distance, écran en portrait seulement). Cadrage du bâtiment (indoorView) : marge autour des murs (m),
+// le bâtiment est cadré en entier s'il tient à moins de `fitMax` fois la distance d'avant (sinon la caméra suit le joueur), sans
+// jamais passer sous `fitMin` (m) ; le zoom du joueur multiplie cette distance (`zoomMin` à `zoomMax`), bornée à `distMin`–`distMax` (m).
+export const CAMERA = Object.freeze({
+  pitch: 1.38, shrink: 0.28, ease: 0.45, lead: 0.12,
+  fitMargin: 1.2, fitMax: 1.75, fitMin: 11, zoomMin: 0.55, zoomMax: 1.9, distMin: 8, distMax: 48,
+  reserve: 0.2, // écran en paysage (largeur ≥ 1,2 × hauteur) : part de la largeur laissée aux panneaux de droite (jauges, sac)
+});
+
+const reserveOf = (aspect) => (aspect >= 1.2 ? CAMERA.reserve : 0);
 
 // ---------- Ce qui coupe la vue ----------
 
@@ -180,6 +189,83 @@ export function alignedYaw(frame, current) {
   const q = Math.PI / 2;
   const d = wrap(Math.atan2(frame.vx, frame.vz) - current);
   return current + d - Math.round(d / q) * q;
+}
+
+// ---------- Cadrage du bâtiment ----------
+
+const footCache = new WeakMap();
+
+// Emprise du bâtiment dans le repère du plan (m) : toutes les cases qui ne sont pas dehors (sol, murs, coque).
+export function footprintOf(plan) {
+  let f = footCache.get(plan);
+  if (f) return f;
+  const { nu, nv, cell, u0, v0, lab } = plan;
+  let i0 = nu, i1 = 0, j0 = nv, j1 = 0;
+  for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) if (lab[j * nu + i] !== OUT) { if (i < i0) i0 = i; if (i >= i1) i1 = i + 1; if (j < j0) j0 = j; if (j >= j1) j1 = j + 1; }
+  f = i1 > i0 && j1 > j0 ? { u0: u0 + i0 * cell, u1: u0 + i1 * cell, v0: v0 + j0 * cell, v1: v0 + j1 * cell } : { u0, u1: u0 + nu * cell, v0, v1: v0 + nv * cell };
+  footCache.set(plan, f);
+  return f;
+}
+
+// Distance de la caméra (m) à laquelle un rectangle `w` × `h` au sol, centré à l'écran, tient dans la zone vue (hauteur, et largeur à la
+// rangée la plus proche, la plus étroite) ; dichotomie sur groundCorners, qui grandit avec la distance.
+export function fitDistance(w, h, aspect, pitch = CAMERA.pitch) {
+  const fits = (d) => {
+    const { bottom, top } = groundCorners(d, pitch, aspect);
+    if (!bottom || !top || top.z - bottom.z < h) return false;
+    // le rectangle est centré à l'écran : son bord proche est à mi-hauteur sous le milieu de la zone vue
+    const mid = (top.z + bottom.z) / 2, near = bottom.x + ((top.x - bottom.x) * (mid - h / 2 - bottom.z)) / (top.z - bottom.z);
+    return near >= w / 2;
+  };
+  let lo = 4, hi = 90;
+  if (fits(lo)) return lo;
+  if (!fits(hi)) return hi;
+  for (let n = 0; n < 22; n++) { const mid = (lo + hi) / 2; if (fits(mid)) hi = mid; else lo = mid; }
+  return hi;
+}
+
+const viewCache = new WeakMap();
+
+// Bâtiment vu de dessus au cap `yaw` (celui de la caméra une fois d'aplomb) : distance qui le cadre en entier (marge comprise) et
+// centre dans le monde. Gardé par plan, recalculé quand l'écran ou le cap changent.
+export function fitView(plan, yaw, aspect, pitch = CAMERA.pitch) {
+  const kept = viewCache.get(plan);
+  if (kept && Math.abs(kept.yaw - yaw) < 0.001 && Math.abs(kept.aspect - aspect) < 0.005 && kept.pitch === pitch) return kept.value;
+  const f = footprintOf(plan), fr = plan.frame, sa = Math.sin(yaw), ca = Math.cos(yaw);
+  const rx = -ca, rz = sa; // à droite de l'écran ; vers le haut de l'écran : (sa, ca)
+  let r0 = Infinity, r1 = -Infinity, f0 = Infinity, f1 = -Infinity;
+  for (const [u, v] of [[f.u0, f.v0], [f.u1, f.v0], [f.u1, f.v1], [f.u0, f.v1]]) {
+    const x = fr.ox + u * fr.ux + v * fr.vx, z = fr.oz + u * fr.uz + v * fr.vz;
+    const r = x * rx + z * rz, q = x * sa + z * ca;
+    if (r < r0) r0 = r; if (r > r1) r1 = r; if (q < f0) f0 = q; if (q > f1) f1 = q;
+  }
+  const rc = (r0 + r1) / 2, qc = (f0 + f1) / 2, w = r1 - r0 + 2 * CAMERA.fitMargin, h = f1 - f0 + 2 * CAMERA.fitMargin;
+  const value = { w, h, cx: rc * rx + qc * sa, cz: rc * rz + qc * ca, need: fitDistance(w / (1 - reserveOf(aspect)), h, aspect, pitch) };
+  viewCache.set(plan, { yaw, aspect, pitch, value });
+  return value;
+}
+
+// Vue d'un intérieur : `base` est la distance d'avant (dehors, moins la part retirée). Si le bâtiment tient en entier à moins de
+// `fitMax` fois cette distance, la caméra le cadre (au plus près `fitMin`) ; sinon elle garde `base` et suit le joueur. `zoom` (pincement,
+// molette, boutons) multiplie le tout ; `cap` est le plafond de l'alerte et du bord du monde. Rend la distance, la distance qui cadre
+// tout le bâtiment et son centre.
+export function indoorView(plan, { yaw, aspect, base, zoom = 1, cap = Infinity, pitch = CAMERA.pitch }) {
+  const fit = fitView(plan, yaw, aspect, pitch);
+  const whole = fit.need <= base * CAMERA.fitMax;
+  const start = whole ? Math.max(fit.need, CAMERA.fitMin) : base;
+  const z = Math.max(CAMERA.zoomMin, Math.min(CAMERA.zoomMax, zoom));
+  const dist = Math.max(CAMERA.distMin, Math.min(Math.min(CAMERA.distMax, cap), start * z));
+  // La zone vue au sol n'est pas centrée sur le point visé (le haut en voit plus que le bas) : on recule le point visé d'autant.
+  // En paysage, il vise à droite du bâtiment, qui se place dans la part laissée libre à gauche des panneaux.
+  const { bottom, top } = groundCorners(dist, pitch, aspect), shift = bottom && top ? (top.z + bottom.z) / 2 : 0;
+  const side = bottom && top ? (reserveOf(aspect) / 2) * (bottom.x + top.x) : 0;
+  return { dist, need: fit.need, cx: fit.cx - Math.sin(yaw) * shift - Math.cos(yaw) * side, cz: fit.cz - Math.cos(yaw) * shift + Math.sin(yaw) * side, whole };
+}
+
+// Part (0 à 1) du centrage sur le bâtiment : entier : la caméra le vise ; sinon elle suit le joueur, en douceur entre les deux.
+export function centerWeight(need, dist) {
+  const t = Math.max(0, Math.min(1, ((need / dist) - 1.04) / 0.08));
+  return 1 - t * t * (3 - 2 * t);
 }
 
 // Aller vers `target` par le chemin le plus court, pas de `k` (0 à 1) de l'écart.
