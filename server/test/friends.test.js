@@ -9,9 +9,9 @@ import { createMailer } from '../src/mail.js';
 import { createMemoryStore } from '../src/store-memory.js';
 import { createRoom } from '../src/room.js';
 import {
-  FRIEND_RULES, FRIEND_ALPHABET, FRIEND_CODE_RE, FID_RE, normFriendCode, showFriendCode, parseFriendsReq, readFriendsReply,
+  FRIEND_RULES, FRIEND_ALPHABET, FRIEND_CODE_RE, FID_RE, normFriendCode, showFriendCode, parseFriendsReq, readFriendsReply, shareE6,
 } from '../../prototype/src/net/amis.js';
-import { TOKEN_RE } from '../../prototype/src/net/protocol.js';
+import { TOKEN_RE, FLAGS } from '../../prototype/src/net/protocol.js';
 
 const T0 = 1791640000000;
 const MIN = 60000, H = 3600000, DAY = 86400000;
@@ -50,10 +50,28 @@ function rig() {
     const r = await call('/v1/account/verify', { email, code: mailer.box.lastCode(email), password: PW, tok, age: true });
     assert.equal(r.status, 200, r.text);
     const d = await accounts.debug.byEmail(email);
-    return { ses: r.body.ses, email, accountId: d.accountId, playerId: d.playerId, name: player ? [n, n + 10, 20 + n] : null };
+    return { ses: r.body.ses, email, accountId: d.accountId, playerId: d.playerId, tok, name: player ? [n, n + 10, 20 + n] : null };
   }
   const ask = (m, route, extra = {}, opts) => call(`/v1/friends/${route}`, { ses: m.ses, ...extra }, opts);
-  return { clock, logs, store, room, accounts, call, member, ask };
+  // Joueur en jeu : session de compte ouverte (hello avec ses), puis une position (micro-degrés) ; `left` = retour au menu.
+  // `extra` : an (couronne), m (drapeaux de mouvement, 8 = dans un bâtiment). → { s, pos(a, o, extra), leave() }.
+  async function play(m, { a, o, extra = {} } = {}) {
+    const conn = { send() {}, close() {} };
+    const s = room.open(conn, { ip: '10.0.0.1' });
+    await room.receive(s, JSON.stringify({ t: 'hello', v: 1, cl: 1, ses: m.ses }));
+    const at0 = clock.t;
+    let seq = 0;
+    const me = {
+      s,
+      pos: (pa = a, po = o, ex = extra) => room.receive(s, JSON.stringify({ t: 'p', s: ++seq, ct: clock.t - at0, a: pa, o: po, h: 0, m: 0, ...ex })),
+      leave: () => room.receive(s, JSON.stringify({ t: 'leave' })),
+    };
+    // Avance l'horloge par pas de 250 ms en renvoyant la même position (4 Hz, comme le jeu) : fin des sauts et de l'invisibilité d'arrivée.
+    me.run = async (ms, ...args) => { for (let k = 0; k < ms; k += 250) { clock.t += 250; await me.pos(...args); room.tick(); } };
+    if (a !== undefined) { await me.pos(); await me.run(4000); }
+    return me;
+  }
+  return { clock, logs, store, room, accounts, call, member, ask, play };
 }
 
 // ---------- net/amis.js ----------
@@ -256,6 +274,96 @@ test('amis : retirer (sans effet sur l\'amitié d\'autrui), bloquer (masquage du
   assert.deepEqual((await w.ask(x, 'block', { fid: ax.fid })).body, { ok: true });
   assert.equal((await w.store.blocksOf(a.playerId)).size, 1);
   assert.ok(!(await w.ask(a, 'list')).body.friends.some((f) => f.fid === ax.fid));
+});
+
+test('net/amis.js : où sont mes amis (requête sans champ, réponse relue champ par champ, arrondi du partage)', () => {
+  assert.deepEqual(parseFriendsReq('where', JSON.stringify({ v: 1, ses: SES, fid: 'zz' })), { ok: true, msg: { v: 1, ses: SES } });
+  assert.equal(parseFriendsReq('where', JSON.stringify({ v: 1 })).ok, false);
+  assert.equal(shareE6(45757812), 45758000);
+  assert.equal(shareE6(-4832100), -4832000);
+  assert.equal(shareE6(0), 0);
+  assert.ok(Object.is(shareE6(-100), 0), 'jamais -0');
+  const f = ['a'.repeat(32), 'b'.repeat(32), 'c'.repeat(32), 'd'.repeat(32)];
+  const text = JSON.stringify({ ok: true, where: [
+    { fid: f[0], st: 0, a: 1, o: 2 },                                        // hors ligne : rien d'autre ne passe
+    { fid: f[1], st: 1, lv: 'facile', cm: 'vulliens' },
+    { fid: f[2], st: 2, lv: 'moyen', cm: 'vulliens' },
+    { fid: f[3], st: 2, a: 45758000, o: 4832000 },
+    { fid: f[3], st: 2, lv: 'moyen', cm: 'vulliens', a: 1, o: 2 },           // niveau et position ensemble : jeté
+    { fid: f[3], st: 2, lv: 'expert', cm: 'vulliens' },                       // niveau inconnu : jeté
+    { fid: f[3], st: 2, cm: 'vulliens' },                                     // ville sans niveau : jetée
+    { fid: f[3], st: 2, a: 91000000, o: 0 },                                  // latitude impossible : jetée
+    { fid: f[3], st: 2, a: 1.5, o: 2 },                                       // pas entiers : jetée
+    { fid: f[3], st: 3 }, { fid: 'x', st: 0 }, { st: 0 }, 'texte',
+  ] });
+  assert.deepEqual(readFriendsReply(text).where, [
+    { fid: f[0], st: 0 }, { fid: f[1], st: 1 }, { fid: f[2], st: 2, lv: 'moyen', cm: 'vulliens' }, { fid: f[3], st: 2, a: 45758000, o: 4832000 },
+  ]);
+});
+
+test('amis : où sont-ils — hors ligne, au menu, position partagée arrondie, couronne, bâtiment, position périmée, ville de saison, masqué', async () => {
+  const w = rig();
+  const a = await w.member(), b = await w.member(), c = await w.member({ player: false });
+  const pair = async (p, q) => (await w.ask(q, 'join', { code: (await w.ask(p, 'code')).body.friendCode })).body.friend;
+  const ab = await pair(a, b), ac = await pair(a, c);
+  const where = async (m = a) => {
+    const r = await w.ask(m, 'where');
+    assert.equal(r.status, 200, r.text);
+    assert.ok(!r.text.includes(a.accountId) && !r.text.includes(b.accountId) && !r.text.includes(a.playerId) && !r.text.includes(b.playerId), 'identifiant montré');
+    return Object.fromEntries(r.body.where.map((e) => [e.fid, e]));
+  };
+  const LA = 45757812, LO = 4832157;
+  // Personne en jeu : tous hors ligne, y compris l'ami sans identité.
+  assert.deepEqual(await where(), { [ab.fid]: { fid: ab.fid, st: 0 }, [ac.fid]: { fid: ac.fid, st: 0 } });
+  // En jeu mais pas encore de position : joue, sans position partagée.
+  const pb = await w.play(b);
+  assert.deepEqual((await where())[ab.fid], { fid: ab.fid, st: 1 });
+  // Position partagée : arrondie au pas de 0,0005°, jamais la position exacte.
+  await pb.run(4000, LA, LO);
+  assert.deepEqual((await where())[ab.fid], { fid: ab.fid, st: 2, a: 45758000, o: 4832000 });
+  // Côté de b, a n'apparaît pas tant qu'il ne joue pas, et b se voit lui-même hors de la liste de a seulement.
+  assert.equal((await where(b))[ab.fid].st, 0);
+  // Retour au menu : plus de position.
+  await pb.leave();
+  assert.deepEqual((await where())[ab.fid], { fid: ab.fid, st: 1 });
+  await pb.run(4000, LA, LO);
+  assert.equal((await where())[ab.fid].st, 2);
+  // Couronne anonyme : joue, sans position.
+  await pb.run(1000, LA, LO, { an: 1 });
+  assert.deepEqual((await where())[ab.fid], { fid: ab.fid, st: 1 });
+  await pb.run(4000, LA, LO, { an: 0 });
+  assert.equal((await where())[ab.fid].st, 2);
+  // Dans un bâtiment : sans position (drapeau « dedans », comme pour les autres joueurs).
+  await pb.run(1000, LA, LO, { m: FLAGS.inside });
+  assert.equal((await where())[ab.fid].st, 1, 'dans un bâtiment');
+  await pb.run(1000, LA, LO, { m: 0 });
+  assert.equal((await where())[ab.fid].st, 2);
+  // Position périmée (plus de 8 s sans nouvelle) : sans position.
+  w.clock.t += 9000;
+  assert.equal((await where())[ab.fid].st, 1, 'position périmée');
+  await pb.run(1000, LA, LO);
+  // Ville de saison : seulement le niveau et la ville, jamais la position.
+  w.room.setSeason({ world: (s) => (s === pb.s ? { level: 'moyen', commune: 'vulliens' } : null) });
+  assert.deepEqual((await where())[ab.fid], { fid: ab.fid, st: 2, lv: 'moyen', cm: 'vulliens' });
+  w.room.setSeason(null);
+  assert.equal((await where())[ab.fid].a, 45758000);
+  // Celui qui regarde n'a pas encore d'identité de jeu (compte sans partie en ligne) : il voit ses amis quand même.
+  const d = await w.member({ player: false });
+  const ad = (await pair(d, b));
+  const rd = await w.ask(d, 'where');
+  assert.deepEqual(rd.body.where, [{ fid: ad.fid, st: 2, a: 45758000, o: 4832000 }]);
+  assert.deepEqual((await w.ask(d, 'remove', { fid: ad.fid })).body, { ok: true });
+  // Un ami qui a masqué ce joueur paraît hors ligne.
+  pb.s.blocked.add(a.playerId);
+  assert.equal((await where())[ab.fid].st, 0);
+  pb.s.blocked.delete(a.playerId);
+  // Retirer l'amitié : plus rien. Session obligatoire. Même plafond de lectures que la liste (30 par minute).
+  assert.deepEqual((await w.ask(a, 'remove', { fid: ab.fid })).body, { ok: true });
+  assert.deepEqual(Object.keys(await where()), [ac.fid]);
+  assert.equal((await w.call('/v1/friends/where', { ses: 'B'.repeat(43) })).status, 401);
+  let last;
+  for (let i = 0; i < FRIEND_RULES.readsPerMin + 1; i++) last = await w.ask(a, 'where');
+  assert.equal(last.status, 429);
 });
 
 test('amis : effacer un compte efface ses amitiés et son code ; l\'export les donne ; rien de secret au journal', async () => {

@@ -786,11 +786,11 @@ export function createAccount({
       return { ok: true };
     },
 
-    // Amis (src/amis.js) : 'list', 'code', 'join' ({ code }), 'remove' ou 'block' ({ fid }), avec la session du compte. Réponse lue
+    // Amis (src/amis.js) : 'list', 'where' (où sont-ils), 'code', 'join' ({ code }), 'remove' ou 'block' ({ fid }), avec la session du compte. Réponse lue
     // champ par champ (net/amis.js) ; un refus rend { ok: false, code, retryMs? } (ami-code, ami-plein, trop, session…).
     async friends(op, { code: friendCode = null, fid = null } = {}) {
       if (!st) return { ok: false, code: 'session' };
-      if (!['list', 'code', 'join', 'remove', 'block'].includes(op)) return { ok: false, code: 'requete' };
+      if (!['list', 'where', 'code', 'join', 'remove', 'block'].includes(op)) return { ok: false, code: 'requete' };
       const ses = st.ses;
       const body = { v: PROTOCOL, ses };
       if (typeof friendCode === 'string') body.code = friendCode;

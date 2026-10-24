@@ -75,6 +75,67 @@ export function friendErrorText(code, retryMs = null) {
   }
 }
 
+// ---------- Où sont mes amis (étape 2) ----------
+
+const LEVEL_NAMES = { facile: 'Facile', moyen: 'Moyen', difficile: 'Difficile' };
+
+// Réponse `where` (liste) → { fid: { st, lv?, cm?, a?, o? } }.
+export function whereMap(list) {
+  const out = {};
+  for (const w of Array.isArray(list) ? list : []) if (w && typeof w.fid === 'string') out[w.fid] = w;
+  return out;
+}
+
+// Amis en ligne d'abord (position partagée avant les autres), puis dans l'ordre reçu (le plus ancien d'abord) : le même ordre sert à la carte
+// et aux boutons, qui nomment un ami par son rang.
+export function orderFriends(friends = [], where = {}) {
+  const rank = (f) => where[f.fid]?.st ?? 0;
+  return friends.map((f, i) => ({ f, i })).sort((x, y) => rank(y.f) - rank(x.f) || x.i - y.i).map((x) => x.f);
+}
+
+// Ce qu'on dit d'un ami sous son surnom. `cityOf(level, key)` → { name } d'une ville de la saison, si le jeu la connaît.
+export function presenceText(w, cityOf = () => null) {
+  if (!w || w.st === 0) return 'Pas en ligne';
+  if (w.st === 1) return 'En ligne · position non partagée';
+  if (w.lv) {
+    const name = cityOf(w.lv, w.cm)?.name;
+    return `En ligne · ${name ? `à ${name}` : 'en saison'} (${LEVEL_NAMES[w.lv] ?? w.lv})`;
+  }
+  return 'En ligne · en partie libre';
+}
+
+// Où « Rejoindre » mène : { kind: 'season', level, key, name } (la ville de sa saison), { kind: 'free', lat, lon } (le lieu arrondi de sa
+// partie libre, ~55 m), ou null (hors ligne, ou position non partagée : rien à rejoindre).
+export function joinTarget(w, cityOf = () => null) {
+  if (w?.st !== 2) return null;
+  if (w.lv) return { kind: 'season', level: w.lv, key: w.cm, name: cityOf(w.lv, w.cm)?.name ?? '' };
+  if (Number.isInteger(w.a) && Number.isInteger(w.o)) return { kind: 'free', lat: w.a / 1e6, lon: w.o / 1e6 };
+  return null;
+}
+
+// Repères d'amis pour la carte du menu : un par lieu (une ville de saison, ou un point de partie libre), avec ses amis ; seulement ceux
+// dont on connaît la position. → [{ id, lat, lon, label, tag, fids }]
+export function friendPins(friends = [], where = {}, cityOf = () => null) {
+  const groups = new Map();
+  for (const f of friends) {
+    const w = where[f.fid];
+    const t = joinTarget(w, cityOf);
+    if (!t) continue;
+    let spot = null, id = '';
+    if (t.kind === 'free') { spot = { lat: t.lat, lon: t.lon }; id = `l${w.a}_${w.o}`; }
+    else { const c = cityOf(t.level, t.key); if (Number.isFinite(c?.lat) && Number.isFinite(c?.lon)) { spot = { lat: c.lat, lon: c.lon }; id = `s${t.level}_${t.key}`; } }
+    if (!spot) continue;
+    const g = groups.get(id) ?? { id, ...spot, names: [], fids: [] };
+    g.names.push(nameText(f.nm));
+    g.fids.push(f.fid);
+    groups.set(id, g);
+  }
+  return [...groups.values()].map((g) => {
+    const who = g.names.length === 1 ? g.names[0] : `${g.names.length} amis`;
+    return { id: g.id, lat: g.lat, lon: g.lon, label: `${who} est en ligne`, tag: who, fids: g.fids };
+  });
+}
+
 // ---------- Cartes ----------
 
 const BACK = { id: 'back', label: 'Retour' };
@@ -97,12 +158,20 @@ export function needAccountCard({ invited = false } = {}) {
   };
 }
 
-// Liste des amis : une ligne par ami (touche = fiche), « Inviter un ami » et « J'ai un code ». `note` : ce qui vient de se passer.
-export function friendsCard({ friends = [], max = FRIEND_RULES.max, pending = null, note = '', warn = false, nowMs = Date.now() } = {}) {
-  const lines = friends.map((f, i) => ({
-    text: nameText(f.nm), sub: dayText(f.since) ? `Ami depuis le ${dayText(f.since)}` : '', button: { id: `f${i}`, label: 'Gérer' },
-  }));
+// Liste des amis, dans l'ordre d'orderFriends : une ligne par ami (« Rejoindre » s'il est joignable, « Gérer » ouvre sa fiche), puis
+// « Inviter un ami » et « J'ai un code ». `where` : où ils sont (whereMap) ; `note` : ce qui vient de se passer.
+export function friendsCard({ friends = [], where = {}, cityOf = () => null, max = FRIEND_RULES.max, pending = null, note = '', warn = false, nowMs = Date.now() } = {}) {
+  const lines = friends.map((f, i) => {
+    const w = where[f.fid];
+    const since = dayText(f.since) ? `ami depuis le ${dayText(f.since)}` : '';
+    const sub = w?.st > 0 ? presenceText(w, cityOf) : [presenceText(w), since].filter(Boolean).join(' · ');
+    const buttons = [];
+    if (joinTarget(w, cityOf)) buttons.push({ id: `j${i}`, label: 'Rejoindre', primary: true });
+    buttons.push({ id: `f${i}`, label: 'Gérer' });
+    return { text: nameText(f.nm), sub, buttons };
+  });
   if (!friends.length) lines.push("Pas encore d'amis. Envoie un lien à quelqu'un, ou entre le code qu'il t'a donné.");
+  else lines.push({ text: 'Tes amis te voient en ligne ; ils ne voient où tu es que quand ta position est partagée (jamais depuis une zone privée), à 55 m près.', off: true });
   if (pending && pending.expiresMs > nowMs) lines.push(`Un code est en attente (jusqu'au ${untilText(pending.expiresMs)}) : « Inviter un ami » en fait un nouveau.`);
   return {
     title: `Mes amis (${friends.length}/${max})`, tone: warn ? 'warn' : undefined, lines: note ? [note, ...lines] : lines, scroll: true,
@@ -110,16 +179,21 @@ export function friendsCard({ friends = [], max = FRIEND_RULES.max, pending = nu
   };
 }
 
-// Fiche d'un ami : retirer, bloquer.
-export function friendCard({ nm = null, since = null } = {}) {
+// Fiche d'un ami : où il est et « Rejoindre », retirer, bloquer. `note` : ce qui vient de se passer.
+export function friendCard({ nm = null, since = null, w = null, cityOf = () => null, note = '' } = {}) {
+  const buttons = [];
+  if (joinTarget(w, cityOf)) buttons.push({ id: 'join', label: 'Rejoindre', primary: true });
+  buttons.push({ id: 'remove', label: 'Retirer' }, { id: 'block', label: 'Bloquer' }, BACK);
   return {
-    title: nameText(nm),
+    title: nameText(nm), tone: note ? 'warn' : undefined,
     lines: [
+      note,
+      presenceText(w, cityOf),
       dayText(since) ? `Ami depuis le ${dayText(since)}` : '',
       'Retirer : vous n\'êtes plus amis. Un nouveau code vous réunira si vous le voulez.',
       'Bloquer : plus amis, et vous ne vous verrez plus en jeu, ni maintenant ni plus tard.',
     ],
-    buttons: [{ id: 'remove', label: 'Retirer' }, { id: 'block', label: 'Bloquer' }, BACK],
+    buttons,
   };
 }
 

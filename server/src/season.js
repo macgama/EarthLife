@@ -1088,7 +1088,9 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
 
   return {
     init, handle, admit, progress, flush, tick,
-    hooks: { message: onMessage, close: closed, tick },
+    hooks: { message: onMessage, close: closed, tick,
+      // Ville de saison où joue cette session (amis, route where) : { level, commune } ou null en partie libre.
+      world(s) { const w = subs.get(s)?.w; return w ? { level: w.level, commune: w.commune } : null; } },
     stats() {
       let online = 0;
       for (const w of worlds.values()) online += w.subs.size;
