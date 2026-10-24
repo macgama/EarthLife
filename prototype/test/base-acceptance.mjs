@@ -3791,7 +3791,7 @@ async function ecranSeul() {
 // ---------- Fabriquer dehors et sacs ----------
 
 // Le bouton « Fabriquer » de l'écran de jeu : caché sans de quoi fabriquer, il apparaît avec les ingrédients dans le sac.
-// La carte liste les recettes sans établi (10) ; une fabrication dehors dure la recette, fait du bruit, s'interrompt si l'on
+// La carte liste les recettes sans établi (17, dont les pièces d'habillement) ; une fabrication dehors dure la recette, fait du bruit, s'interrompt si l'on
 // frappe, prend ses ingrédients au sac seul et y dépose le produit ; un sac fabriqué se porte et change la place du sac.
 // Au refuge, le bouton est caché et le sac renforcé (60 places) demande l'établi.
 const craftChip = (page) => ev(page, () => {
@@ -3841,21 +3841,21 @@ async function fabricationScenario(device) {
   let chip = await craftChip(page);
   check(chip.hidden, `${tag} : bouton « Fabriquer » caché sans ingrédients`);
 
-  // Deux tissus : un bandage. Le bouton apparaît, avec 1 recette possible.
+  // Deux tissus : un bandage ou un bonnet. Le bouton apparaît, avec 2 recettes possibles.
   await debug(page, 'give', { tissu: 2 });
   await until(page, () => !document.getElementById('use-craft').classList.contains('hidden'), null, 5000);
   chip = await craftChip(page);
-  check(!chip.hidden && chip.count === '1' && /1 recette possible/.test(chip.label), `${tag} : bouton visible, ${chip.count} recette (« ${chip.label} »)`);
+  check(!chip.hidden && chip.count === '2' && /2 recettes possibles/.test(chip.label), `${tag} : bouton visible, ${chip.count} recette (« ${chip.label} »)`);
   await debug(page, 'give', { ruban: 1 });
-  await until(page, () => document.querySelector('#use-craft .chip-count').textContent === '2', null, 5000);
+  await until(page, () => document.querySelector('#use-craft .chip-count').textContent === '4', null, 5000);
 
-  // La carte : 10 recettes sans établi (ni feu de camp), celles que le sac permet d'abord ; rien qui demande l'établi.
+  // La carte : 17 recettes sans établi (ni feu de camp), celles que le sac permet d'abord ; rien qui demande l'établi.
   let { card, action, mul } = await craftOutside(page, device, 'bandage', `${name}-carte-fabriquer`);
   check(card?.title === 'Fabriquer', `${tag} : carte « ${card?.title} »`);
-  check(card?.lines.length === 10, `${tag} : ${card?.lines.length} recettes listées (les 10 sans établi ni feu)`);
+  check(card?.lines.length === 17, `${tag} : ${card?.lines.length} recettes listées (les 17 sans établi ni feu)`);
   const refugeOnly = (card?.lines ?? []).filter((l) => /Plaque|Hache|Établi|Sirène|Récupérateur|Sac renforcé|Feu de camp|Griller|Poêler|Rôtir|bouillir/.test(l));
   check(refugeOnly.length === 0, `${tag} : aucune recette d'établi dans la carte${refugeOnly.length ? ` (${refugeOnly.join(' | ')})` : ''}`);
-  check(card?.buttons.map(([id]) => id).join() === 'craft:bandage,craft:sac_ecolier', `${tag} : boutons ${card?.buttons.map(([id]) => id).join()}`);
+  check(card?.buttons.map(([id]) => id).join() === 'craft:bandage,craft:sac_ecolier,craft:bonnet,craft:chapeau_pluie', `${tag} : boutons ${card?.buttons.map(([id]) => id).join()}`);
   check(card?.buttons[0]?.[1] === 'Fabriquer · 3 s' && card?.buttons[1]?.[1] === 'Fabriquer · 8 s', `${tag} : durées « ${card?.buttons.map(([, t]) => t).join(' » « ')} »`);
 
   // Un bandage : 3 s de recette, bruit de 4 m (coudre), action « dehors ».
