@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import mysql from 'mysql2/promise';
 import { dayOf } from './rules.js';
+import { GIFT_RULES } from '../../prototype/src/net/amis.js';
 
 const DAY = 86400000, HOUR = 3600000;
 const SQL_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'sql');
@@ -75,6 +76,10 @@ const seasonPlayerOf = (r) => ({
 });
 // LIMIT écrit dans la requête (entier borné, jamais une valeur reçue) : mysql2 lie mal un LIMIT préparé.
 const limitOf = (n, max) => Math.max(1, Math.min(max, Math.floor(Number(n)) || 1));
+// Dépôt de la boîte (el_gifts) → { id, fid, items, madeMs, st } ; objets en JSON compact, clés rangées (comparaison de deux dépôts de même `gid`).
+const giftOf = (r) => ({ id: hex(r.id), fid: hex(r.fid), items: JSON.parse(r.items), madeMs: Number(r.made_ms), st: r.state });
+const canon = (items) => JSON.stringify(Object.fromEntries(Object.entries(items).sort(([x], [y]) => (x < y ? -1 : 1))));
+const GIFT_COLS = 'id, fid, items, made_ms, state';
 
 export function createMysqlStore({
   host, port = 3306, user, password, database, connectionLimit = 3, refugeDays = 30, playerDays = 180,
@@ -380,8 +385,9 @@ export function createMysqlStore({
         ['sessions', 'DELETE FROM el_sessions WHERE expires_ms <= ?', [nowMs]],
         ['codes', 'DELETE FROM el_codes WHERE expires_ms <= ? AND day < ?', [nowMs, dayOf(nowMs - DAY)]],
         ['friendCodes', 'DELETE FROM el_friend_codes WHERE expires_ms <= ?', [nowMs]],
+        ['gifts', 'DELETE FROM el_gifts WHERE state IN (1, 3) AND done_ms <= ?', [nowMs - GIFT_RULES.keepMs]],
       ];
-      const out = { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0 };
+      const out = { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0, gifts: 0 };
       const t0 = Date.now();
       let done = 0;
       for (const [k, sql, values] of steps) {
@@ -471,6 +477,8 @@ export function createMysqlStore({
         if (!a.length) return null;
         const playerId = hex(a[0].player_id);
         if (playerId) await c.execute('DELETE FROM el_players WHERE id = ?', [bin(playerId)]);
+        // Les dépôts que ce compte aurait reçus retournent à leurs donneurs ; les siens partent avec lui (clé étrangère en cascade).
+        await c.execute('UPDATE el_gifts SET state = 2 WHERE recipient = ? AND state = 0', [bin(id)]);
         await c.execute('DELETE FROM el_accounts WHERE id = ?', [bin(id)]);
         return { playerId };
       });
@@ -662,7 +670,66 @@ export function createMysqlStore({
         const acc = await rows(c, 'SELECT id, player_id FROM el_accounts WHERE id IN (?, ?)', [bin(a), bin(b)]);
         const player = (id) => hex(acc.find((x) => hex(x.id) === id)?.player_id);
         await c.execute('DELETE FROM el_friends WHERE fid = ?', [bin(fid)]);
+        await c.execute('UPDATE el_gifts SET state = 2 WHERE fid = ? AND state = 0', [bin(fid)]);    // retournent à leurs donneurs
         return { ok: true, mine: player(accountId) ?? null, theirs: player(a === accountId ? b : a) ?? null };
+      });
+    },
+
+    // Boîte de dépôt (étape 3). Le verrou de l'amitié met les dépôts d'un même couple l'un après l'autre (les plafonds se
+    // comptent sous verrou) ; un dépôt se lit puis se change sous le verrou de sa ligne.
+    async giveGift({ id, gid, accountId, fid, items, nowMs, today, rules }) {
+      return tx(async (c) => {
+        const f = await rows(c, 'SELECT a, b FROM el_friends WHERE fid = ? FOR UPDATE', [bin(fid)]);
+        if (!f.length) return { ok: false, why: 'none' };
+        const a = hex(f[0].a), b = hex(f[0].b);
+        if (a !== accountId && b !== accountId) return { ok: false, why: 'none' };
+        const other = a === accountId ? b : a;
+        const same = await rows(c, `SELECT ${GIFT_COLS} FROM el_gifts WHERE donor = ? AND gid = ?`, [bin(accountId), bin(gid)]);
+        if (same.length) {
+          const g = giftOf(same[0]);
+          return g.fid === fid && canon(g.items) === canon(items) ? { ok: true, gift: g, again: true } : { ok: false, why: 'none' };
+        }
+        const [u] = await rows(c, 'SELECT COALESCE(SUM(CASE WHEN state IN (0, 1) AND made_day = ? THEN n END), 0) AS day, '
+          + 'COALESCE(SUM(CASE WHEN state = 0 THEN n END), 0) AS pend, COALESCE(SUM(state = 0), 0) AS gifts '
+          + 'FROM el_gifts WHERE donor = ? AND recipient = ?', [today, bin(accountId), bin(other)]);
+        const n = Object.values(items).reduce((x, v) => x + v, 0);
+        if (Number(u.day) + n > rules.perDay || Number(u.pend) + n > rules.pending || Number(u.gifts) + 1 > rules.pendingGifts) return { ok: false, why: 'full' };
+        const clean = JSON.parse(canon(items));
+        await c.execute('INSERT INTO el_gifts (id, donor, gid, recipient, fid, items, n, made_ms, made_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [bin(id), bin(accountId), bin(gid), bin(other), bin(fid), JSON.stringify(clean), n, nowMs, today]);
+        return { ok: true, gift: { id, fid, items: clean, madeMs: nowMs, st: 0 } };
+      });
+    },
+    async boxOf(accountId, max) {
+      const n = limitOf(max, 1000), id = bin(accountId);
+      const [inc, out] = await Promise.all([
+        one(`SELECT ${GIFT_COLS} FROM el_gifts WHERE recipient = ? AND state = 0 ORDER BY made_ms, id LIMIT ${n}`, [id]),
+        one(`SELECT ${GIFT_COLS} FROM el_gifts WHERE donor = ? AND state IN (0, 2) ORDER BY made_ms, id LIMIT ${n}`, [id]),
+      ]);
+      return { incoming: inc.map(giftOf), outgoing: out.map(giftOf) };
+    },
+    async takeGift({ id, accountId, nowMs, keepMs }) {
+      return tx(async (c) => {
+        const r = await rows(c, `SELECT ${GIFT_COLS}, recipient, done_ms FROM el_gifts WHERE id = ? FOR UPDATE`, [bin(id)]);
+        if (!r.length || hex(r[0].recipient) !== accountId) return { ok: false };
+        const g = giftOf(r[0]);
+        if (g.st === 0) {
+          await c.execute('UPDATE el_gifts SET state = 1, done_ms = ? WHERE id = ?', [nowMs, bin(id)]);
+          return { ok: true, gift: { ...g, st: 1 } };
+        }
+        return g.st === 1 && nowMs - Number(r[0].done_ms) < keepMs ? { ok: true, gift: g, again: true } : { ok: false };
+      });
+    },
+    async recallGift({ id, accountId, nowMs, keepMs }) {
+      return tx(async (c) => {
+        const r = await rows(c, `SELECT ${GIFT_COLS}, donor, done_ms FROM el_gifts WHERE id = ? FOR UPDATE`, [bin(id)]);
+        if (!r.length || hex(r[0].donor) !== accountId) return { ok: false };
+        const g = giftOf(r[0]);
+        if (g.st === 0 || g.st === 2) {
+          await c.execute('UPDATE el_gifts SET state = 3, done_ms = ? WHERE id = ?', [nowMs, bin(id)]);
+          return { ok: true, gift: { ...g, st: 3 } };
+        }
+        return g.st === 3 && nowMs - Number(r[0].done_ms) < keepMs ? { ok: true, gift: g, again: true } : { ok: false };
       });
     },
 

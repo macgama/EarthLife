@@ -3130,6 +3130,114 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
 });
 
 // =====================================================================================================
+// O36 : « Mes amis », étape 3 (boîte de dépôt entre amis, serveur seul : le jeu ne l'appelle pas encore) : A dépose pour B, qui
+// retire une fois ; dépôt rejouable, reprise, amitié retirée qui rend, plafond du jour, un tiers qui ne peut rien ; aucun
+// identifiant de compte ni d'identité ni adresse dans les réponses
+// =====================================================================================================
+await scenario('O36', 'amis : boîte de dépôt (déposer, retirer, reprendre, plafonds)', async () => {
+  const SERVER = `http://127.0.0.1:${srv.port}`;
+  const post = async (route, body) => {
+    const r = await fetch(`${SERVER}${route}`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
+    return { status: r.status, body: await r.json() };
+  };
+  const { ACCOUNT_LIMITS: LIM } = await load('server/src/accounts.js');
+  const was = { codesPerIpHour: LIM.codesPerIpHour, coldCodesPerIpHour: LIM.coldCodesPerIpHour, ipPerMin: LIM.ipPerMin };
+  LIM.codesPerIpHour += 10;
+  LIM.coldCodesPerIpHour += 10;
+  // Une trentaine d'appels de plus par adresse en une minute, après ceux des pages de O34 et de O35.
+  LIM.ipPerMin = 1000;
+  try {
+    const U = {};
+    for (const n of ['a', 'b', 'c']) {
+      const u = U[n] = { email: `${n}.boite@exemple.test`, pw: `essai-boite-${n}-quai-79` };
+      await post('/v1/account/code', { v: 1, email: u.email, why: 'signup' });
+      const ver = await post('/v1/account/verify', { v: 1, email: u.email, code: srv.mailbox.lastCode(u.email), password: u.pw, tok: null, age: true });
+      u.ses = ver.body.ses;
+      check(ver.status === 200 && !!u.ses, `${n.toUpperCase()} : compte créé (${ver.status})`);
+    }
+    const ask = (n, kind, body = {}) => post(`/v1/friends/${kind}`, { v: 1, ses: U[n].ses, ...body });
+    const befriend = async (giver, taker) => {                            // `taker` fait un code, `giver` l'accepte
+      const code = (await ask(taker, 'code')).body.friendCode;
+      const j = await ask(giver, 'join', { code });
+      check(j.status === 200 && !!j.body.friend?.fid, `${giver.toUpperCase()} : ami de ${taker.toUpperCase()} (${j.status})`);
+      return j.body.friend.fid;
+    };
+    const fid = await befriend('a', 'b');
+    const give = (n, f, g, items) => ask(n, 'give', { fid: f, gid: g, items });
+    const g1 = 'a1'.repeat(16);
+    // ---- A dépose, le même dépôt renvoyé n'en fait pas deux ----
+    const d1 = await give('a', fid, g1, { conserve: 2, eau: 1 });
+    const gift1 = d1.body.gift;
+    check(d1.status === 200 && gift1?.st === 0 && gift1.items.conserve === 2 && gift1.items.eau === 1 && /^[0-9a-f]{32}$/.test(gift1.id) && !d1.body.gift.again,
+      `A : dépôt de 3 objets pour B (${d1.status}, ${JSON.stringify(d1.body)})`);
+    const d1b = await give('a', fid, g1, { conserve: 2, eau: 1 });
+    check(d1b.status === 200 && d1b.body.gift?.again === true && d1b.body.gift.id === gift1.id, `A : le même dépôt renvoyé rend le premier (again) : ${JSON.stringify(d1b.body)}`);
+    const boxA = (await ask('a', 'box')).body;
+    check(boxA.outgoing?.length === 1 && boxA.incoming?.length === 0, `A : un dépôt en attente côté donneur (${boxA.outgoing?.length}/${boxA.incoming?.length})`);
+    // ---- seuls les vivres et les matériaux, six sortes et 20 objets au plus ----
+    for (const [label, items] of [['une arme', { fusil: 1 }], ['aucune', {}], ['zéro', { eau: 0 }], ['21 objets', { eau: 21 }], ['7 sortes', { conserve: 1, barre: 1, baies: 1, eau: 1, soda: 1, bandage: 1, bois: 1 }], ['un nombre à virgule', { eau: 1.5 }]]) {
+      const r = await give('a', fid, `${(label.length + 10).toString(16)}`.padStart(2, '0').repeat(16), items);
+      check(r.status === 400 && r.body.ok === false, `A : dépôt refusé « ${label} » (${r.status})`);
+    }
+    // ---- B voit le dépôt, sans rien savoir de plus que ses objets et la date ----
+    const boxB = (await ask('b', 'box')).body;
+    check(boxB.incoming?.length === 1 && boxB.incoming[0].id === gift1.id && boxB.incoming[0].st === 0 && boxB.outgoing?.length === 0, `B : le dépôt de A attend (${boxB.incoming?.length})`);
+    const acc = {};
+    for (const n of ['a', 'b', 'c']) acc[n] = await srv.accounts.debug.byEmail(U[n].email);
+    const all = JSON.stringify([d1.body, boxA, boxB]);
+    const leaks = [acc.a.accountId, acc.b.accountId, acc.a.playerId, acc.b.playerId, U.a.email, U.b.email, U.a.ses, U.b.ses].filter((x) => x && all.includes(x));
+    check(leaks.length === 0 && Object.keys(gift1).sort().join() === 'fid,id,items,madeMs,st', `serveur : ni compte, ni identité, ni adresse, ni session dans les réponses (${leaks.length} trouvés ; champs ${Object.keys(gift1).join()})`);
+    // ---- un tiers ne peut rien : ni déposer chez eux, ni retirer, ni reprendre, ni voir ; le donneur ne retire pas son propre dépôt ----
+    check((await give('c', fid, 'c1'.repeat(16), { eau: 1 })).body.code === 'boite', 'C (ni ami ni concerné) : ne dépose pas dans une amitié qui n\'est pas la sienne');
+    check((await ask('c', 'take', { id: gift1.id })).body.code === 'boite' && (await ask('c', 'recall', { id: gift1.id })).body.code === 'boite', 'C : ne retire ni ne reprend le dépôt de A');
+    const boxC = (await ask('c', 'box')).body;
+    check(boxC.incoming?.length === 0 && boxC.outgoing?.length === 0, 'C : sa boîte est vide');
+    check((await ask('a', 'take', { id: gift1.id })).body.code === 'boite', 'A : ne retire pas son propre dépôt');
+    // ---- B retire : une fois ; rejoué, les mêmes objets (réponse perdue) ; A ne peut plus reprendre ----
+    const t1 = await ask('b', 'take', { id: gift1.id });
+    check(t1.status === 200 && t1.body.gift?.st === 1 && t1.body.gift.items.conserve === 2 && !t1.body.gift.again, `B : retire le dépôt (${t1.status}, ${JSON.stringify(t1.body.gift?.items)})`);
+    const t1b = await ask('b', 'take', { id: gift1.id });
+    check(t1b.status === 200 && t1b.body.gift?.again === true && t1b.body.gift.items.eau === 1, 'B : rejoué, il rend les mêmes objets (again), sans en redonner');
+    check((await ask('a', 'recall', { id: gift1.id })).body.code === 'boite', 'A : déjà retiré, pas de reprise');
+    const boxB2 = (await ask('b', 'box')).body;
+    check(boxB2.incoming.length === 0, 'B : plus rien en attente');
+    // ---- reprise par le donneur, puis l'ami ne peut plus retirer ----
+    const g2 = await give('a', fid, 'a2'.repeat(16), { bois: 1 });
+    const r2 = await ask('a', 'recall', { id: g2.body.gift.id });
+    check(r2.status === 200 && r2.body.gift?.st === 3, `A : reprend un dépôt resté en attente (${r2.status})`);
+    check((await ask('a', 'recall', { id: g2.body.gift.id })).body.gift?.again === true, 'A : reprise rejouée → again');
+    check((await ask('b', 'take', { id: g2.body.gift.id })).body.code === 'boite', 'B : un dépôt repris ne se retire plus');
+    // ---- l'amitié finit : le dépôt en attente est rendu à A (état 2), B ne peut plus le retirer ----
+    const g3 = await give('a', fid, 'a3'.repeat(16), { planche: 1 });
+    const rm = await ask('b', 'remove', { fid });
+    check(rm.body.ok === true, 'B : retire l\'amitié');
+    const boxA3 = (await ask('a', 'box')).body;
+    check(boxA3.outgoing.length === 1 && boxA3.outgoing[0].id === g3.body.gift.id && boxA3.outgoing[0].st === 2, `A : le dépôt est rendu (st ${boxA3.outgoing[0]?.st})`);
+    check((await ask('b', 'take', { id: g3.body.gift.id })).body.code === 'boite', 'B : plus d\'amitié, plus rien à retirer');
+    check((await give('a', fid, 'a4'.repeat(16), { eau: 1 })).body.code === 'boite', 'A : plus d\'amitié, plus de dépôt');
+    const r3 = await ask('a', 'recall', { id: g3.body.gift.id });
+    check(r3.status === 200 && r3.body.gift?.st === 3, `A : reprend le dépôt rendu (${r3.status})`);
+    // ---- plafond du jour : 20 objets par ami (ce qui est déjà retiré compte, ce qui est repris non) ----
+    const fid2 = await befriend('a', 'b');
+    check(fid2 !== fid, 'A et B : une nouvelle amitié (un autre identifiant)');
+    const big = await give('a', fid2, 'a5'.repeat(16), { conserve: 17 });
+    check(big.status === 200 && big.body.gift?.st === 0, `A : 17 objets de plus (3 déjà donnés ce jour : 20 en tout) (${big.status})`);
+    const over = await give('a', fid2, 'a6'.repeat(16), { eau: 1 });
+    check(over.status === 409 && over.body.code === 'boite-pleine', `A : un 21e objet le même jour est refusé (${over.status} ${over.body.code})`);
+    check((await ask('b', 'take', { id: big.body.gift.id })).status === 200, 'B : retire les 17 objets');
+    const still = await give('a', fid2, 'a7'.repeat(16), { eau: 1 });
+    check(still.status === 409 && still.body.code === 'boite-pleine', `A : retirer ne libère pas le plafond du jour (${still.status})`);
+    // ---- sans session, aucune route de la boîte ne répond ----
+    for (const kind of ['give', 'box', 'take', 'recall']) {
+      const r = await post(`/v1/friends/${kind}`, { v: 1, ses: 'x'.repeat(43), fid, gid: 'a1'.repeat(16), id: gift1.id, items: { eau: 1 } });
+      check(r.status === 401, `sans session : /${kind} refusée (${r.status})`);
+    }
+  } finally {
+    Object.assign(LIM, was);
+  }
+});
+
+// =====================================================================================================
 // O19 : toute la séance : aucune erreur de console, aucune exception, aucune violation de la politique de
 // sécurité (hors fenêtre de O12), aucune requête vers earthlife.needhelpapp.com (sauf F, voulue) ; K, L et M compris
 // (refus voulus des scénarios du compte tolérés dans leur fenêtre : netExpected)

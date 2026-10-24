@@ -16,7 +16,7 @@ const ACCOUNT_ROUTES = new Map([
   ...['code', 'verify', 'login', 'me', 'password', 'logout', 'delete', 'export'].map((r) => [`/v1/account/${r}`, 'account']),
   ['/v1/save/get', 'save'], ['/v1/save/put', 'save'],
   // Amis (friends.js, appelé par accounts.js) : mêmes limites et même compteur que les comptes.
-  ...['list', 'where', 'code', 'join', 'remove', 'block'].map((r) => [`/v1/friends/${r}`, 'account']),
+  ...['list', 'where', 'code', 'join', 'remove', 'block', 'give', 'box', 'take', 'recall'].map((r) => [`/v1/friends/${r}`, 'account']),
 ]);
 // Routes des saisons (season.js) : POST avec la session du compte ; GET /v1/season/progress est public (cache de 30 s).
 const SEASON_POST = new Map(['join', 'state', 'seed', 'enter', 'tile', 'adj', 'home'].map((r) => [`/v1/season/${r}`, r]));

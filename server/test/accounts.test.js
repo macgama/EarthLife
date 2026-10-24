@@ -624,7 +624,8 @@ test('export : format de 1.7, partie comprise, aucun champ secret ; 1 par minute
   const d = r.body.data;
   assert.equal(d.format, 'earthlife-donnees-v1');
   assert.equal(d.exporteLe, new Date(w.clock.t).toISOString());
-  assert.deepEqual(Object.keys(d).sort(), ['amis', 'compte', 'exporteLe', 'format', 'identite', 'partie']);
+  assert.deepEqual(Object.keys(d).sort(), ['amis', 'boite', 'compte', 'exporteLe', 'format', 'identite', 'partie']);
+  assert.deepEqual(d.boite, { recus: [], donnes: [] });
   assert.deepEqual(Object.keys(d.compte).sort(), ['appareils', 'creeLe', 'derniereActivite', 'email', 'prevenuLe']);
   assert.equal(d.compte.email, EMAIL);
   assert.equal(d.compte.appareils.length, 1);
