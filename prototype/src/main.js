@@ -84,9 +84,9 @@ import { zoneStatus, removeZone, metersBetween as zoneMeters } from './privacy.j
 import { SHARE_TEXTS, gameUrl, inviteUrl, shareLink, shareNote } from './partage.js';
 import {
   FRIEND_TEXTS, friendLink, codeFromParams, pendingFriend, friendErrorText, needAccountCard, friendsCard, friendCard, blockCard,
-  inviteCard, enterCodeCard, acceptCard, addedCard,
+  inviteCard, enterCodeCard, acceptCard, addedCard, whereMap, orderFriends, joinTarget, friendPins,
 } from './amis.js';
-import { normFriendCode, showFriendCode } from './net/amis.js';
+import { normFriendCode, showFriendCode, FRIEND_RULES } from './net/amis.js';
 import { REDUCED_LOOT, searchedLabel } from './shared-world.js';
 // Compte facultatif (spécification des comptes, 5.8) : partie sauvegardée sur le serveur, autre appareil.
 import { createAccount, NULL_ACCOUNT } from './account.js';
@@ -166,6 +166,12 @@ const save = saveStore.save;
 const communes = createCommuneCache(localStore);
 const blocksClient = createResilientBlocks({ makeWorker: () => new Worker(new URL('./blocks-worker.js', import.meta.url), { type: 'module' }) });
 let city = null;
+// Où sont mes amis (étape 2, voir pollFriends) : déclaré ici, le salon des villes le lit dès sa première image.
+const friendsLive = { friends: [], where: {}, max: FRIEND_RULES.max, pending: null, listAt: 0, whereAt: 0, busy: false };
+const FRIEND_LIST_MS = 120000;
+// Essais (?debug=1&friendPollMs=3000) : lecture plus rapprochée, jamais sous 3 s (le serveur permet 30 lectures par minute).
+const FRIEND_POLL_MS = DEBUG ? Math.min(60000, Math.max(3000, Number(params.get('friendPollMs')) || FRIEND_RULES.wherePollMs)) : FRIEND_RULES.wherePollMs;
+const seasonCityOf = (level, key) => city?.cityOf?.(level, key) ?? null;
 // Saisons (net/season.js) : créé avec le jeu à plusieurs ; null sans lui.
 let seasonNet = null;
 // Ses propres démontages (72 h, sauvegarde) ; ceux des autres viennent du jeu en ligne.
@@ -193,8 +199,11 @@ city = createCityGame({
   // Saison : lus au moment du besoin (ils n'existent pas encore ici).
   get seasonNet() { return seasonNet; }, get account() { return account; }, get online() { return online; },
   openAccount: () => accountUi?.open('login'),
+  // Les villes de la saison viennent d'être relues : les repères d'amis qui s'y posent prennent leur place.
+  seasonCitiesChanged: () => refreshFriendPins(),
 });
 city.initMenu();
+picker.setFriendPinHandler?.((gid) => friendPinTapped(gid));
 
 // ---------- Jeu à plusieurs (online.js) ----------
 // ?online=0 : NULL_ONLINE, aucune requête. Sans ?server= local, le jeu parle au vrai serveur (ONLINE.enabledByDefault,
@@ -253,6 +262,7 @@ if (onlineOn) {
   online.on('session', () => account.sessionRefused());
   // Connexion ou déconnexion : le bloc « Saison 1 » du menu relit l'inscription.
   account.on('state', () => {
+    if (account.state !== 'in') resetFriendsLive();
     city.seasonChanged();
     // Connexion faite pour accepter une invitation d'ami : la carte revient quand le formulaire du compte s'est refermé.
     if (friendWait.get()) setTimeout(() => { renderFriendsMenu(); offerPendingFriend(); }, 800);
@@ -3613,6 +3623,53 @@ function renderFriendsMenu() {
   if (block) block.hidden = !onlineOn || account.state === 'off';
   // Invitation reçue par lien : proposée dès que le menu est là (un tour de boucle plus tard : la carte ne se pose pas au milieu d'un rendu).
   if (friendWait.get() && !friendOffered) setTimeout(offerPendingFriend, 0);
+  // Où sont mes amis : relu au menu toutes les 20 s (voir pollFriends).
+  if (block && !block.hidden) pollFriends();
+}
+
+// Où sont mes amis (étape 2) : la liste d'amis (relue au plus toutes les 2 min, ou sur demande) et leur présence (toutes les 20 s au menu,
+// jamais en partie, jamais onglet caché). Les repères d'amis de la carte du menu et la carte « Mes amis » s'en servent.
+function resetFriendsLive() {
+  Object.assign(friendsLive, { friends: [], where: {}, pending: null, listAt: 0, whereAt: 0 });
+  picker.setFriendPins?.([]);
+}
+
+function refreshFriendPins() {
+  picker.setFriendPins?.(account.state === 'in' ? friendPins(friendsLive.friends, friendsLive.where, seasonCityOf) : []);
+}
+
+// Relit la présence (et la liste si `list`). → { ok } ou le refus de la liste. Un seul appel à la fois ; un échec garde ce qu'on savait.
+async function loadFriends({ list = true } = {}) {
+  const live = friendsLive;
+  while (live.busy) await new Promise((r) => setTimeout(r, 50));
+  live.busy = true;
+  try {
+    const [l, w] = await Promise.all([list ? account.friends('list') : null, account.friends('where')]);
+    if (l?.ok) Object.assign(live, { friends: l.friends ?? [], max: l.max ?? FRIEND_RULES.max, pending: l.pending ?? null, listAt: Date.now() });
+    if (w.ok) { live.where = whereMap(w.where); live.whereAt = Date.now(); }
+    refreshFriendPins();
+    return l ?? w;
+  } finally {
+    live.busy = false;
+  }
+}
+
+function pollFriends() {
+  const live = friendsLive;
+  const now = Date.now();
+  if (live.busy || account.state !== 'in' || document.visibilityState === 'hidden' || $('menu').classList.contains('hidden')
+    || now - live.whereAt < FRIEND_POLL_MS) return;
+  const list = now - live.listAt > FRIEND_LIST_MS;
+  if (!list && !live.friends.length) { live.whereAt = now; return; }          // pas d'amis : rien à demander avant la prochaine lecture de la liste
+  live.whereAt = now;                                                          // pas de nouvel essai avant 20 s, même en cas d'échec
+  loadFriends({ list });
+}
+
+// Repère d'ami touché sur la carte : sa fiche s'il est seul à cet endroit, sinon la liste.
+function friendPinTapped(gid) {
+  const pin = friendPins(friendsLive.friends, friendsLive.where, seasonCityOf).find((p) => p.id === gid);
+  const f = pin?.fids.length === 1 ? friendsLive.friends.find((x) => x.fid === pin.fids[0]) : null;
+  if (f) showFriend(f); else showFriends();
 }
 
 // Montre une carte d'amis (marquée, pour ne pas en ouvrir une seconde par-dessus) ; Échap ferme.
@@ -3627,39 +3684,60 @@ async function showFriends(note = '', warn = false) {
     friendsShow(needAccountCard(), (id) => { if (id === 'account') accountUi?.open('login'); });
     return;
   }
-  const r = await account.friends('list');
+  const r = await loadFriends();
   if (!r.ok) {
     if (r.code === 'session') { friendsShow(needAccountCard(), (id) => { if (id === 'account') accountUi?.open('login'); }); return; }
     friendsShow(friendsCard({ friends: [], note: friendErrorText(r.code, r.retryMs), warn: true }), friendsButtons([]));
     return;
   }
-  const friends = r.friends ?? [];
-  friendsShow(friendsCard({ friends, max: r.max, pending: r.pending ?? null, note, warn, nowMs: Date.now() }), friendsButtons(friends));
+  const { where, max, pending } = friendsLive;
+  const friends = orderFriends(friendsLive.friends, where);
+  friendsShow(friendsCard({ friends, where, cityOf: seasonCityOf, max, pending, note, warn, nowMs: Date.now() }), friendsButtons(friends));
 }
 
 function friendsButtons(friends) {
   return (id) => {
     if (id === 'invite') { makeFriendCode(); return; }
     if (id === 'enter') { enterFriendCode(); return; }
-    const i = Number(/^f(\d+)$/.exec(id)?.[1]);
-    if (Number.isInteger(i) && friends[i]) showFriend(friends[i]);
+    const m = /^([fj])(\d+)$/.exec(id);
+    const f = m ? friends[Number(m[2])] : null;
+    if (!f) return;
+    if (m[1] === 'j') goToFriend(f); else showFriend(f);
   };
 }
 
-function showFriend(f) {
-  friendsShow(friendCard(f), async (id) => {
+function showFriend(f, note = '') {
+  const w = friendsLive.where[f.fid];
+  friendsShow(friendCard({ ...f, w, cityOf: seasonCityOf, note }), async (id) => {
     if (id === 'back') { showFriends(); return; }
+    if (id === 'join') { goToFriend(f); return; }
     if (id === 'remove') {
       const r = await account.friends('remove', { fid: f.fid });
+      friendsLive.listAt = 0;
       showFriends(r.ok ? 'Ami retiré.' : friendErrorText(r.code, r.retryMs), !r.ok);
     } else if (id === 'block') {
       friendsShow(blockCard(f.nm), async (bid) => {
         if (bid !== 'block') { showFriend(f); return; }
         const r = await account.friends('block', { fid: f.fid });
+        friendsLive.listAt = 0;
         showFriends(r.ok ? 'Ami bloqué : vous ne vous verrez plus.' : friendErrorText(r.code, r.retryMs), !r.ok);
       });
     }
   });
+}
+
+// « Rejoindre » : en saison, la ville de l'ami est choisie dans le salon (le bouton du salon dit alors où l'on va, et prévient si l'on
+// quitte sa ville) ; en partie libre, la carte va à son lieu arrondi (~55 m). Rien n'est lancé : le joueur appuie lui-même. La position
+// vient de la dernière lecture (au plus 20 s) ; l'ami a pu bouger, le serveur ne montre jamais d'où il est depuis une zone privée.
+function goToFriend(f) {
+  const t = joinTarget(friendsLive.where[f.fid], seasonCityOf);
+  if (!t) { showFriend(f, "Cet ami n'est plus joignable pour le moment."); return; }
+  if (t.kind === 'season') {
+    if (!city.selectCity(t.level, t.key)) showFriend(f, 'Ton niveau est choisi pour la saison : il ne change plus. Cet ami joue à un autre niveau.');
+    return;
+  }
+  document.querySelector('#menu-tabs [data-tab="libre"]')?.click();
+  picker.setPlace({ lat: t.lat, lon: t.lon, name: `Près de ${Array.isArray(f.nm) ? nameOf(f.nm) : 'ton ami'}`, area: '' });
 }
 
 // « Inviter un ami » : un nouveau code (l'ancien est remplacé), envoyé en lien par la feuille de partage du téléphone, sinon copié.

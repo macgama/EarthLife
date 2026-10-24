@@ -81,11 +81,14 @@ async function seeded(w, { tiles = [TA, TB], n = 6 } = {}) {
   assert.equal((await a.call('/v1/season/seed', SEED)).body.created, true);
   await a.send({ o: 'in', c: SEED.key });
   assert.equal(a.sv('in').length, 1);
+  // Les amis (route where) lisent la ville où joue une session : abonnée, puis plus rien une fois levée.
+  assert.deepEqual(w.seasons.hooks.world(a.s), { level: 'facile', commune: SEED.key });
   for (const [i, tk] of tiles.entries()) {
     const r = await a.call('/v1/season/tile', { t: tk, pates: pates(n, i), nb: chain(n), l: false });
     assert.equal(r.body.ok, true, JSON.stringify(r.body));
   }
   await a.send({ o: 'out' });
+  assert.equal(w.seasons.hooks.world(a.s), null);
   a.inbox.length = 0;
   return a;
 }
