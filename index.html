@@ -673,6 +673,14 @@ select, button { font: inherit; }
 .quest-val.low, #quest .timer.low { color: var(--c-danger); }
 #quest .timer.low { animation: hud-pulse 1s var(--ease-std) infinite; }
 #quest.explore .quest-pips, #quest.explore .meta, #quest.no-target .meta, #quest.no-timer .quest-timer-val { display: none; }
+/* Puce de la ville : seulement sur téléphone en portrait (bloc plus bas) ; ailleurs, la quête porte déjà les compteurs. */
+#city-chip { display: none; }
+.city-val { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
+.city-val .icon { width: 16px; height: 16px; flex: none; }
+.city-val .num { color: var(--c-text); font-size: var(--fs-md); }
+#city-saved-val { color: var(--c-success); }
+#city-zombies-val { color: var(--c-danger); }
+.city-val.pop { animation: hud-pop var(--t-base) var(--ease-out); }
 /* Sauver sa ville : compteurs (zombies restants, habitants sauvés, pâtés libérés) puis la ligne du pâté où l'on est. */
 #quest.city .quest-pips { display: none; }
 #fiche { margin-top: var(--sp-1); padding-top: var(--sp-1); border-top: 1px solid var(--c-line); font-size: var(--fs-xs); line-height: 1.35; }
@@ -1007,12 +1015,17 @@ body.driving #attack, body.driving #run, body.driving #use-shoot { display: none
   #quest.open #quest-text { -webkit-line-clamp: 4; }
   #quest .quest-head::after { content: ''; flex: none; width: 6px; height: 6px; margin: -3px 2px 0 auto; border-right: 2px solid var(--c-text-3); border-bottom: 2px solid var(--c-text-3); transform: rotate(45deg); transition: transform var(--t-fast) var(--ease-std); }
   #quest.open .quest-head::after { margin-top: 3px; transform: rotate(-135deg); }
+  /* Puce de la ville (habitants sauvés / à sauver, zombies restants) : toujours visible dans une ville à sauver ; un toucher
+     ouvre la fiche de la quête (compteurs, pâtés). Elle passe à la ligne sous les deux autres puces, à côté de la carte. */
+  #city-chip:not([hidden]) { flex: 0 1 auto; display: flex; align-items: center; gap: var(--sp-3); min-width: 0; max-width: 100%; height: 40px; margin: 0; padding: 0 10px; box-sizing: border-box; overflow: hidden; pointer-events: auto; cursor: pointer; }
   #online-pill { flex: 0 1 auto; margin: 0; }
   #online-pill[data-quiet] { display: none; }
   /* Affiche d'un moment fort : plus petite (3 : 1), à gauche sous les puces (et le bandeau de horde), hors de la colonne
      de la carte et au-dessus de la tête du joueur. */
   #moment { top: calc(var(--hud-t, 12px) + 150px); left: var(--hud-l); width: calc(100vw - var(--hud-l) - var(--hud-r) - var(--mm-col) - var(--sp-2)); transform: none; }
   #moment.show { animation-name: moment-in-left; }
+  /* Avec la puce de la ville et la pastille « En ligne » visibles, la colonne des puces compte trois rangées : l'affiche descend d'autant. */
+  #hud:has(#city-chip:not([hidden])):has(#online-pill:not(.hidden):not([data-quiet])) #moment { top: calc(var(--hud-t, 12px) + 200px); }
   @media (prefers-reduced-motion: reduce) { #moment.show { animation-name: moment-fade; } }
   .moment-art { aspect-ratio: 3 / 1; }
   .moment-text { padding-top: 18px; }
@@ -1808,6 +1821,11 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <!-- Fiche du bâtiment tout près (src/fiche.js) : nom, fouille, état de la zone. -->
     <div id="fiche" hidden aria-live="polite"><div class="fiche-title" id="fiche-title"></div><ul id="fiche-lines"></ul></div>
     <div class="meta"><span class="quest-val"><span data-icon="cible"></span><span class="sr-only">Distance :</span><span class="num" id="quest-dist"></span></span><span class="quest-val quest-timer-val"><span data-icon="horloge"></span><span class="sr-only">Temps restant :</span><span class="timer num" id="quest-timer"></span></span></div>
+  </div>
+  <!-- Puce de la ville (ville-ecran.js) : habitants sauvés / à sauver et zombies restants, cachée hors d'une ville à sauver. Téléphone en portrait seulement : ailleurs, la quête porte déjà ces chiffres. -->
+  <div id="city-chip" class="pill" hidden role="button" tabindex="0" aria-controls="quest">
+    <span class="city-val" id="city-saved-val"><span data-icon="habitant"></span><span class="sr-only">Habitants sauvés :</span><span class="num" id="city-saved"></span></span>
+    <span class="city-val" id="city-zombies-val"><span data-icon="zombie"></span><span class="sr-only">Zombies restants :</span><span class="num" id="city-zombies"></span></span>
   </div>
   <!-- Pastille du jeu en ligne (hud.js) : cachée en solo. -->
   <div id="online-pill" class="pill hidden" data-tone="off"><span id="online-pill-icon" data-icon="antenne"></span><span id="online-pill-text"></span></div>

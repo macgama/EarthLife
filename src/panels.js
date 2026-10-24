@@ -179,13 +179,13 @@ export function panelParts(view, ui = {}) {
   return { html, sig, leaves };
 }
 
-// Ligne de carte : texte, ou { text, button: { id, label, primary? } } (missions avec « Accepter »).
+// Ligne de carte : texte, ou { text, button: { id, label, primary? } } (missions avec « Accepter »), ou { text, buttons: [...] } (amis : « Rejoindre », « Gérer »).
 function cardButton(b, extra = '') {
   return `<button type="button" class="rp-cbtn${b.primary ? ' rp-cbtn-primary' : ''}${extra}" data-card-btn="${esc(b.id)}">${esc(b.label)}</button>`;
 }
 
 // HTML d'une carte (#card). spec = { title, lines, score?, buttons, autoHideMs?, tone?, art?, scroll? } ; une ligne objet :
-// { text, sub?, off?, button? } (sub : second texte en petit, off : ligne estompée, scroll : carte qui défile si l'écran est bas) ; art : nom d'une scène de
+// { text, sub?, off?, button?, buttons? } (sub : second texte en petit, off : ligne estompée, scroll : carte qui défile si l'écran est bas) ; art : nom d'une scène de
 // art.js, montrée en bandeau en haut de la carte (rien si l'image n'est pas livrée).
 // tone : 'success' (livraison, vague repoussée), 'danger' (mort, échec), 'warn' ; sinon accent orange.
 export function cardHtml(spec = {}) {
@@ -194,7 +194,8 @@ export function cardHtml(spec = {}) {
   const lines = (spec.lines ?? []).filter((l) => l !== null && l !== undefined && l !== '').map((l) => {
     if (typeof l === 'object') {
       const sub = l.sub ? `<small class="rp-card-sub">${esc(l.sub)}</small>` : '';
-      return `<li class="rp-card-line rp-card-choice${l.off ? ' rp-card-off' : ''}"><span>${esc(l.text)}${sub}</span>${l.button ? cardButton(l.button, ' rp-cbtn-line') : ''}</li>`;
+      const bs = (l.buttons ?? (l.button ? [l.button] : [])).map((b) => cardButton(b, ' rp-cbtn-line')).join('');
+      return `<li class="rp-card-line rp-card-choice${l.off ? ' rp-card-off' : ''}"><span>${esc(l.text)}${sub}</span>${bs}</li>`;
     }
     return `<li class="rp-card-line">${esc(l)}</li>`;
   }).join('');
