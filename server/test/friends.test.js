@@ -10,6 +10,7 @@ import { createMemoryStore } from '../src/store-memory.js';
 import { createRoom } from '../src/room.js';
 import {
   FRIEND_RULES, FRIEND_ALPHABET, FRIEND_CODE_RE, FID_RE, normFriendCode, showFriendCode, parseFriendsReq, readFriendsReply, shareE6,
+  GIFT_RULES, GIFT_KEYS, readItems, giftTotal,
 } from '../../prototype/src/net/amis.js';
 import { TOKEN_RE, FLAGS } from '../../prototype/src/net/protocol.js';
 
@@ -372,10 +373,17 @@ test('amis : effacer un compte efface ses amitiés et son code ; l\'export les d
   const made = (await w.ask(a, 'code')).body;
   const joined = (await w.ask(b, 'join', { code: made.friendCode })).body.friend;
   const pending = (await w.ask(b, 'code')).body;
-  const exp = await w.call('/v1/account/export', { ses: b.ses });
+  // La boîte de dépôt aussi est exportée : les objets en attente (reçus ou donnés), sans identifiant de dépôt ni d'amitié.
+  const dep = await w.ask(a, 'give', { fid: joined.fid, gid: gid(90), items: { eau: 2, bois: 1 } });
+  assert.equal(dep.status, 200, dep.text);
+  const day = new Date(w.clock.t).toISOString();
+  const exp = await w.call('/v1/account/export', { ses: b.ses }), expA = await w.call('/v1/account/export', { ses: a.ses });
   assert.equal(exp.status, 200);
   assert.deepEqual(exp.body.data.amis, [{ depuisLe: '2026-10-10', surnom: a.name }]);
   assert.ok(!exp.text.includes(joined.fid) && !exp.text.includes(a.accountId), 'ni identifiant d\'amitié ni de compte dans l\'export');
+  assert.deepEqual(exp.body.data.boite, { recus: [{ deposeLe: day, objets: { eau: 2, bois: 1 } }], donnes: [] });
+  assert.deepEqual(expA.body.data.boite, { recus: [], donnes: [{ deposeLe: day, objets: { eau: 2, bois: 1 }, rendu: false }] });
+  assert.ok(!exp.text.includes(dep.body.gift.id) && !expA.text.includes(dep.body.gift.id) && !expA.text.includes(joined.fid), 'ni identifiant de dépôt ni d\'amitié dans l\'export');
   const del = await w.call('/v1/account/delete', { ses: b.ses, password: PW });
   assert.equal(del.status, 200, del.text);
   assert.deepEqual((await w.ask(a, 'list')).body.friends, []);
@@ -403,4 +411,158 @@ test('amis : mesures (compteurs remis à zéro à chaque lecture) et tables de l
   assert.deepEqual([s2.amisCodes, s2.amisAjouts, s2.amisRefus, s2.amisBlocages], [0, 0, 0, 0]);
   assert.ok(FRIEND_RULES.codeTtlMs === 7 * DAY);
   await w.accounts.purge(w.clock.t + 3 * H);                                 // ne casse pas avec les tables d'amis
+});
+
+// ---------- Étape 3 : la boîte de dépôt ----------
+
+const gid = (k) => sha256(`depot-${k}`).slice(0, 32);
+
+test('net/amis.js : boîte de dépôt (vivres et matériaux seulement, requêtes et réponses relues champ par champ)', () => {
+  assert.equal(new Set(GIFT_KEYS).size, GIFT_KEYS.length);
+  for (const k of ['pistolet', 'fusil', 'balles', 'cartouches', 'sac_ecolier', 'sac_randonnee', 'sac_renforce', 'batte_cloutee', 'hache', 'manteau', 'poncho',
+    'bidon', 'chaufferette', 'canne', 'piege', 'leurre', '__proto__', 'constructor', 'toString']) assert.ok(!GIFT_KEYS.includes(k), k);
+  for (const k of ['conserve', 'eau', 'bandage', 'bois', 'poisson_cuit', 'batterie']) assert.ok(GIFT_KEYS.includes(k), k);
+  assert.deepEqual(readItems({ eau: 1, conserve: 2 }), { eau: 1, conserve: 2 });
+  assert.equal(giftTotal(readItems({ eau: 1, conserve: 2 })), 3);
+  const bad = [{}, [], null, 'eau', { pistolet: 1 }, { eau: 0 }, { eau: -1 }, { eau: 1.5 }, { eau: '2' }, { eau: 21 }, { eau: 11, bois: 10 },
+    { conserve: 1, barre: 1, eau: 1, soda: 1, bois: 1, clous: 1, tissu: 1 }, JSON.parse('{"__proto__":{"x":1}}'), { eau: true }];
+  for (const v of bad) assert.equal(readItems(v), null, JSON.stringify(v));
+  assert.equal(readItems({ eau: 20 }).eau, 20);
+  const items = { eau: 1 };
+  assert.notEqual(readItems(items), items, 'jamais l\'objet reçu');
+  // Requêtes.
+  const FID = 'a'.repeat(32), GID = 'b'.repeat(32);
+  const body = (o) => JSON.stringify({ v: 1, ses: SES, ...o });
+  assert.deepEqual(parseFriendsReq('give', body({ fid: FID, gid: GID, items: { eau: 2 }, extra: 1 })).msg, { v: 1, ses: SES, fid: FID, gid: GID, items: { eau: 2 } });
+  for (const o of [{ gid: GID, items: { eau: 1 } }, { fid: FID, items: { eau: 1 } }, { fid: FID, gid: GID }, { fid: FID, gid: GID, items: {} },
+    { fid: FID, gid: GID, items: { pistolet: 1 } }, { fid: FID, gid: 'zz', items: { eau: 1 } }, { fid: 'zz', gid: GID, items: { eau: 1 } }]) {
+    assert.deepEqual(parseFriendsReq('give', body(o)), { ok: false, why: 'requete' }, JSON.stringify(o));
+  }
+  for (const kind of ['take', 'recall']) {
+    assert.deepEqual(parseFriendsReq(kind, body({ id: GID })).msg, { v: 1, ses: SES, id: GID });
+    assert.equal(parseFriendsReq(kind, body({})).why, 'requete');
+    assert.equal(parseFriendsReq(kind, body({ id: 'x' })).why, 'requete');
+  }
+  assert.deepEqual(parseFriendsReq('box', body({ id: GID })).msg, { v: 1, ses: SES });
+  // Réponses.
+  const gift = { id: GID, fid: FID, items: { eau: 2 }, madeMs: T0, st: 0 };
+  assert.deepEqual(readFriendsReply(JSON.stringify({ ok: true, gift: { ...gift, again: true, x: 1 }, y: 1 })), { ok: true, gift: { ...gift, again: true } });
+  assert.deepEqual(readFriendsReply(JSON.stringify({ ok: true, gift: { ...gift, again: 'oui' } })).gift, gift, 'again : true seulement');
+  assert.equal(readFriendsReply(JSON.stringify({ ok: true, gift: { ...gift, items: { pistolet: 1 } } })).gift, undefined);
+  assert.equal(readFriendsReply(JSON.stringify({ ok: true, gift: { ...gift, st: 4 } })).gift, undefined);
+  assert.equal(readFriendsReply(JSON.stringify({ ok: true, gift: { ...gift, id: 'x' } })).gift, undefined);
+  const box = readFriendsReply(JSON.stringify({ ok: true, incoming: [gift, { id: 1 }], outgoing: [{ ...gift, st: 2 }] }));
+  assert.deepEqual([box.incoming.length, box.outgoing.map((g) => g.st)], [1, [2]]);
+  for (const code of ['boite', 'boite-pleine']) assert.equal(readFriendsReply(JSON.stringify({ ok: false, code })).code, code);
+  assert.equal(GIFT_RULES.perDay, 20);
+  assert.equal(GIFT_RULES.pending, 40);
+});
+
+test('amis : boîte de dépôt — dépôt rejouable, retrait unique par l\'ami, reprise, plafonds, amitié retirée ou bloquée, compte effacé', async () => {
+  const w = rig();
+  const a = await w.member(), b = await w.member(), c = await w.member(), d = await w.member();
+  const pair = async (p, q) => (await w.ask(q, 'join', { code: (await w.ask(p, 'code')).body.friendCode })).body.friend;
+  const ab = await pair(a, b), ac = await pair(a, c), ad = await pair(a, d);
+  const give = (m, fid, k, items, extra = {}) => w.ask(m, 'give', { fid, gid: gid(k), items, ...extra });
+  // Un dépôt : le dépôt rendu dit son contenu, son amitié et son état ; jamais d'identifiant de compte ni d'identité.
+  const r1 = await give(a, ab.fid, 1, { eau: 1, conserve: 2 });
+  assert.equal(r1.status, 200, r1.text);
+  const g1 = r1.body.gift;
+  assert.deepEqual(g1, { id: g1.id, fid: ab.fid, items: { conserve: 2, eau: 1 }, madeMs: T0, st: 0 });
+  assert.match(g1.id, FID_RE);
+  // Rejoué (réponse perdue) : le même dépôt avec `again`, rien de plus ; autre contenu avec la même clé : refus.
+  assert.deepEqual((await give(a, ab.fid, 1, { eau: 1, conserve: 2 })).body, { ok: true, gift: { ...g1, again: true } });
+  assert.deepEqual([(await give(a, ab.fid, 1, { eau: 5 })).status, (await give(a, ab.fid, 1, { eau: 5 })).body.code], [403, 'boite']);
+  // Refus : un objet interdit (requête invalide), l'amitié d'un autre, une amitié inconnue, pas de session.
+  assert.deepEqual([(await give(a, ab.fid, 2, { pistolet: 1 })).status, (await give(a, ab.fid, 2, { pistolet: 1 })).body.code], [400, 'requete']);
+  assert.deepEqual((await give(c, ab.fid, 3, { eau: 1 })).body, { ok: false, code: 'boite' });
+  assert.deepEqual((await give(a, 'e'.repeat(32), 3, { eau: 1 })).body, { ok: false, code: 'boite' });
+  assert.deepEqual((await w.call('/v1/friends/give', { ses: SES, fid: ab.fid, gid: gid(3), items: { eau: 1 } })).body, { ok: false, code: 'session' });
+  // La boîte : B voit le dépôt à retirer, A le voit parmi ceux qu'il a donnés ; personne d'autre n'en voit rien.
+  assert.deepEqual((await w.ask(b, 'box')).body, { ok: true, incoming: [g1], outgoing: [] });
+  assert.deepEqual((await w.ask(a, 'box')).body, { ok: true, incoming: [], outgoing: [g1] });
+  assert.deepEqual((await w.ask(c, 'box')).body, { ok: true, incoming: [], outgoing: [] });
+  // Retrait : pas le donneur, pas un tiers, pas un dépôt inconnu ; l'ami une fois, puis les mêmes objets avec `again`.
+  for (const m of [a, c]) assert.deepEqual([(await w.ask(m, 'take', { id: g1.id })).status, (await w.ask(m, 'take', { id: g1.id })).body.code], [403, 'boite']);
+  assert.deepEqual((await w.ask(b, 'take', { id: 'd'.repeat(32) })).body, { ok: false, code: 'boite' });
+  const t1 = await w.ask(b, 'take', { id: g1.id });
+  assert.deepEqual(t1.body, { ok: true, gift: { ...g1, st: 1 } });
+  assert.deepEqual((await w.ask(b, 'take', { id: g1.id })).body, { ok: true, gift: { ...g1, st: 1, again: true } });
+  assert.deepEqual((await w.ask(b, 'box')).body.incoming, [], 'retiré : plus à attendre');
+  assert.deepEqual((await w.ask(a, 'box')).body.outgoing, []);
+  assert.equal((await w.ask(a, 'recall', { id: g1.id })).body.code, 'boite', 'déjà retiré : pas de reprise');
+  w.clock.t += 8 * DAY;
+  assert.equal((await w.ask(b, 'take', { id: g1.id })).body.code, 'boite', 'garde de 7 jours échue');
+  // Plafonds : 20 objets par jour (le retrait compte), puis 40 en attente, puis 10 dépôts en attente.
+  assert.equal((await give(a, ab.fid, 10, { bois: 20 })).status, 200);
+  const full = await give(a, ab.fid, 11, { bois: 1 });
+  assert.deepEqual([full.status, full.body], [409, { ok: false, code: 'boite-pleine' }]);
+  w.clock.t += DAY;
+  assert.equal((await give(a, ab.fid, 12, { bois: 20 })).status, 200);                      // 40 en attente
+  w.clock.t += DAY;
+  assert.equal((await give(a, ab.fid, 13, { bois: 1 })).body.code, 'boite-pleine', '40 objets en attente');
+  for (let k = 0; k < 10; k++) assert.equal((await give(a, ac.fid, 20 + k, { eau: 1 })).status, 200);
+  assert.equal((await give(a, ac.fid, 30, { eau: 1 })).body.code, 'boite-pleine', '10 dépôts en attente');
+  // Reprise par le donneur d'un dépôt en attente : les objets lui reviennent, rejouable, plus retirable par l'ami.
+  const pend = (await w.ask(a, 'box')).body.outgoing.find((g) => g.fid === ac.fid);
+  const rc = await w.ask(a, 'recall', { id: pend.id });
+  assert.deepEqual(rc.body, { ok: true, gift: { ...pend, st: 3 } });
+  assert.deepEqual((await w.ask(a, 'recall', { id: pend.id })).body.gift.again, true);
+  assert.equal((await w.ask(c, 'take', { id: pend.id })).body.code, 'boite');
+  assert.equal((await w.ask(c, 'recall', { id: pend.id })).body.code, 'boite', 'un tiers ne reprend rien');
+  // Amitié retirée : les dépôts en attente retournent à leurs donneurs, qui les reprennent ; l'ami ne les retire plus.
+  const toC = (await w.ask(c, 'box')).body.incoming;
+  assert.equal(toC.length, 9);
+  assert.deepEqual((await w.ask(c, 'remove', { fid: ac.fid })).body, { ok: true });
+  assert.deepEqual((await w.ask(c, 'box')).body.incoming, []);
+  assert.equal((await w.ask(c, 'take', { id: toC[0].id })).body.code, 'boite');
+  const back = (await w.ask(a, 'box')).body.outgoing.filter((g) => g.fid === ac.fid);
+  assert.deepEqual([back.length, back.every((g) => g.st === 2)], [9, true]);
+  const rb = await w.ask(a, 'recall', { id: back[0].id });
+  assert.deepEqual([rb.status, rb.body.gift.st], [200, 3]);
+  // Amitié bloquée : de même (et le dépôt rendu est celui du donneur, quel que soit celui qui bloque).
+  assert.equal((await give(a, ad.fid, 40, { conserve: 3 })).status, 200);
+  assert.equal((await give(d, ad.fid, 41, { barre: 2 })).status, 200);
+  assert.deepEqual((await w.ask(d, 'block', { fid: ad.fid })).body, { ok: true });
+  assert.deepEqual([(await w.ask(a, 'box')).body.outgoing.filter((g) => g.fid === ad.fid).map((g) => g.st)], [[2]]);
+  assert.deepEqual([(await w.ask(d, 'box')).body.outgoing.map((g) => g.st)], [[2]]);
+  assert.equal((await w.ask(d, 'take', { id: (await w.ask(d, 'box')).body.outgoing[0].id })).body.code, 'boite', 'un dépôt à soi n\'est pas à retirer');
+  assert.equal((await give(a, ad.fid, 42, { eau: 1 })).body.code, 'boite', 'plus d\'amitié, plus de dépôt');
+  // Compte effacé : les dépôts qu'il aurait reçus retournent à leurs donneurs.
+  const e = await w.member();
+  const ae = await pair(a, e);
+  assert.equal((await give(a, ae.fid, 50, { clous: 4 })).status, 200);
+  const del = await w.call('/v1/account/delete', { ses: e.ses, password: PW });
+  assert.equal(del.status, 200, del.text);
+  const afterDel = (await w.ask(a, 'box')).body.outgoing.filter((g) => g.fid === ae.fid);
+  assert.deepEqual(afterDel.map((g) => [g.items, g.st]), [[{ clous: 4 }, 2]]);
+  // Réponses sans identifiant de compte ni d'identité ; au journal, des actions seulement.
+  const texts = [r1.text, t1.text, rc.body && JSON.stringify(rc.body), JSON.stringify((await w.ask(a, 'box')).body)];
+  for (const text of texts) for (const m of [a, b, c, d]) assert.ok(!text.includes(m.accountId) && !text.includes(m.playerId), 'identifiant montré');
+  const journal = w.logs.join('\n');
+  for (const secret of [g1.id, ab.fid, ac.fid, gid(1), a.accountId, b.accountId, a.ses, b.ses, 'conserve']) assert.ok(!journal.includes(secret), 'secret au journal');
+  assert.match(journal, /boite-depot/);
+  assert.match(journal, /boite-retrait/);
+  assert.match(journal, /boite-reprise/);
+  const st = w.accounts.stats();
+  assert.ok(st.boiteDepots === 16 && st.boitePrises === 1 && st.boiteReprises === 2, JSON.stringify(st));
+});
+
+test('amis : boîte de dépôt — trente lectures par minute et par session, session obligatoire, corps mal formés', async () => {
+  const w = rig();
+  const a = await w.member(), b = await w.member();
+  const ab = (await w.ask(b, 'join', { code: (await w.ask(a, 'code')).body.friendCode })).body.friend;
+  for (const route of ['give', 'box', 'take', 'recall']) {
+    const none = await w.call(`/v1/friends/${route}`, { ses: 'zz' });
+    assert.deepEqual([none.status, none.body.code], [400, 'requete'], route);
+  }
+  assert.equal((await w.call('/v1/friends/give', 'pas du json')).status, 400);
+  const huge = await w.ask(a, 'give', { fid: ab.fid, gid: gid(1), items: { eau: 1 }, pad: 'x'.repeat(2000) });
+  assert.deepEqual([huge.status, huge.body.code], [413, 'taille'], 'corps de plus de 1 Kio');
+  for (let k = 0; k < 30; k++) assert.equal((await w.ask(a, 'box')).status, 200);
+  const slow = await w.ask(a, 'give', { fid: ab.fid, gid: gid(2), items: { eau: 1 } });
+  assert.deepEqual([slow.status, slow.body.code], [429, 'trop'], 'la 31e lecture de la minute (les deux requêtes mal formées ne comptent pas)');
+  assert.equal((await w.ask(a, 'box')).status, 429);
+  w.clock.t += MIN;
+  assert.equal((await w.ask(a, 'box')).status, 200);
 });

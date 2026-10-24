@@ -16,6 +16,7 @@ import {
   parseSavePutReq, passwordProblem,
 } from '../../prototype/src/net/account.js';
 import { PROTOCOL } from '../../prototype/src/net/protocol.js';
+import { GIFT_RULES } from '../../prototype/src/net/amis.js';
 import { createFriends } from './friends.js';
 import { PASSWORD_PARAMS, hashPassword, verifyPassword, needsRehash, createHashQueue } from './password.js';
 import { mailCode, mailPasswordChanged, mailDeleted, mailInactive, DEFAULT_GAME_URL } from './mail-texts.js';
@@ -502,9 +503,9 @@ export function createAccounts({
     const account = await store.accountById(sess.accountId);
     if (!account) return noSession();
     const t = now();
-    const [list, save, player, amis] = await Promise.all([
+    const [list, save, player, amis, box] = await Promise.all([
       store.sessionsOf(account.id), store.getSave(account.id), account.playerId ? store.exportPlayer(account.playerId) : null,
-      store.friendsOf(account.id),
+      store.friendsOf(account.id), store.boxOf(account.id, GIFT_RULES.listMax),
     ]);
     let partie = null;
     if (save) {
@@ -524,6 +525,10 @@ export function createAccounts({
         identite: player ? { surnom: player.nm, creeeLe: player.createdOn, vueLe: player.seenOn, refuge: player.refuge,
           masquages: player.blocks, signalementsFaits: player.reports } : null,
         amis: amis.map((f) => ({ depuisLe: f.since, surnom: f.nm })),
+        boite: {
+          recus: box.incoming.map((g) => ({ deposeLe: iso(g.madeMs), objets: g.items })),
+          donnes: box.outgoing.map((g) => ({ deposeLe: iso(g.madeMs), objets: g.items, rendu: g.st === 2 })),
+        },
         partie,
       },
     });

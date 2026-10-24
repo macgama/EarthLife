@@ -63,6 +63,22 @@
 //   removeFriend({ accountId, fid }) → { ok: true, mine, theirs } | { ok: false }
 //                                                               supprime l'amitié ; mine et theirs : identités des deux
 //                                                               comptes (ou null), pour un blocage
+// Boîte de dépôt (cahier « Amis », étape 3) : un dépôt = { id, fid, items: { clé: n }, madeMs, st } ; st 0 en attente, 1 retiré par
+// l'ami, 2 rendu (amitié finie ou compte de l'ami effacé), 3 repris par le donneur.
+//   giveGift({ id, gid, accountId, fid, items, nowMs, today, rules }) → { ok: true, gift, again? } | { ok: false, why }
+//                                                               une transaction : l'amitié `fid` doit être à ce compte ; même
+//                                                               `gid` du même donneur = même dépôt (again) ; why : 'none',
+//                                                               'full' (rules.perDay par jour et par ami, rules.pending objets
+//                                                               et rules.pendingGifts dépôts en attente)
+//   boxOf(accountId, max) → { incoming: [gift], outgoing: [gift] }   reçus en attente ; donnés en attente ou rendus ; les plus
+//                                                               anciens d'abord, `max` par sens
+//   takeGift({ id, accountId, nowMs, keepMs }) → { ok: true, gift, again? } | { ok: false }
+//                                                               l'ami destinataire retire un dépôt en attente ; déjà retiré
+//                                                               depuis moins de keepMs : les mêmes objets, again
+//   recallGift({ id, accountId, nowMs, keepMs }) → { ok: true, gift, again? } | { ok: false }
+//                                                               le donneur reprend un dépôt en attente ou rendu ; même règle
+//   retirer un ami (removeFriend) ou effacer le compte du destinataire rend ses dépôts en attente (état 2) ; effacer le compte
+//   du donneur efface ses dépôts ; purge efface les dépôts retirés ou repris depuis plus de keepMs.
 // Sessions :
 //   createSession({ tokenHash, accountId, nowMs, expiresMs, today, max, pwHash = null }) → { dropped: [hash], stale? }
 //                                                               sessions échues du compte retirées ; au-delà de max,
@@ -106,6 +122,7 @@
 // Session = { tokenHash, accountId, playerId, createdMs, seenOn, expiresMs }
 // Identifiants et empreintes en hexadécimal (BINARY en base) ; jours « AAAA-MM-JJ ».
 import { dayOf } from './rules.js';
+import { GIFT_RULES } from '../../prototype/src/net/amis.js';
 
 const DAY = 86400000, HOUR = 3600000;
 const copy = (o) => (o ? { ...o, name: o.name ? o.name.slice() : o.name } : null);
@@ -134,6 +151,7 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
   // Amis.
   const friendCodes = new Map();  // id du compte → { codeHash, madeMs, expiresMs }
   const friendships = new Map();  // fid → { fid, a, b, sinceDay } (a < b, ids de comptes)
+  const gifts = new Map();        // id → { id, donor, gid, recipient, fid, items, n, madeMs, madeDay, state, doneMs }
   // Saisons.
   const seasons = new Map();      // id → { id, name, startMs, endMs }
   const seasonPlayers = new Map(); // 'compte:saison' → joueur de saison
@@ -181,6 +199,9 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
     if (a) { a.seenOn = today; a.warnedOn = null; }
   }
   const pairOf = (x, y) => (x < y ? [x, y] : [y, x]);
+  const giftOf = (g) => ({ id: g.id, fid: g.fid, items: { ...g.items }, madeMs: g.madeMs, st: g.state });
+  const canon = (items) => JSON.stringify(Object.fromEntries(Object.entries(items).sort(([x], [y]) => (x < y ? -1 : 1))));
+  const byAge = (x, y) => x.madeMs - y.madeMs || (x.id < y.id ? -1 : 1);
   const friendCount = (accountId) => {
     let n = 0;
     for (const f of friendships.values()) if (f.a === accountId || f.b === accountId) n++;
@@ -342,7 +363,7 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
     // est passé de plus d'un jour. Une identité rattachée à un compte n'est jamais effacée par la règle des 180 jours.
     async purge(nowMs) {
       guard();
-      const out = { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0 };
+      const out = { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0, gifts: 0 };
       for (const [k, m] of marks) if (m.untilMs <= nowMs) { removeMark(k); out.marks++; }
       const playerCut = dayOf(nowMs - playerDays * DAY), refugeCut = dayOf(nowMs - refugeDays * DAY);
       for (const [id, p] of players) if (p.seenOn < playerCut && !accountOf.has(id) && erasePlayer(id)) out.players++;
@@ -353,6 +374,7 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       const codeCut = dayOf(nowMs - DAY);
       for (const [h, c] of codes) if (c.expiresMs <= nowMs && c.day < codeCut) { codes.delete(h); out.codes++; }
       for (const [id, c] of friendCodes) if (c.expiresMs <= nowMs) { friendCodes.delete(id); out.friendCodes++; }
+      for (const [id, g] of gifts) if ((g.state === 1 || g.state === 3) && g.doneMs + GIFT_RULES.keepMs <= nowMs) { gifts.delete(id); out.gifts++; }
       return out;
     },
 
@@ -410,6 +432,10 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       saves.delete(id);
       friendCodes.delete(id);
       for (const [fid, f] of friendships) if (f.a === id || f.b === id) friendships.delete(fid);
+      for (const [gid, g] of gifts) {
+        if (g.donor === id) gifts.delete(gid);                          // ses dépôts partent avec lui
+        else if (g.recipient === id && g.state === 0) g.state = 2;      // ceux qu'il aurait reçus retournent à leurs donneurs
+      }
       for (const k of [...seasonPlayers.keys()]) if (k.startsWith(`${id}:`)) seasonPlayers.delete(k);
       byEmail.delete(a.emailHash);
       accounts.delete(id);
@@ -496,7 +522,56 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       const f = friendships.get(fid);
       if (!f || (f.a !== accountId && f.b !== accountId)) return { ok: false };
       friendships.delete(fid);
+      for (const g of gifts.values()) if (g.fid === fid && g.state === 0) g.state = 2;      // les dépôts en attente retournent à leurs donneurs
       return { ok: true, mine: accounts.get(accountId)?.playerId ?? null, theirs: accounts.get(f.a === accountId ? f.b : f.a)?.playerId ?? null };
+    },
+
+    // ---------- Boîte de dépôt ----------
+
+    async giveGift({ id, gid, accountId, fid, items, nowMs, today, rules }) {
+      guard();
+      const f = friendships.get(fid);
+      if (!f || (f.a !== accountId && f.b !== accountId)) return { ok: false, why: 'none' };
+      const other = f.a === accountId ? f.b : f.a;
+      if (!accounts.has(accountId) || !accounts.has(other)) return { ok: false, why: 'none' };
+      for (const g of gifts.values()) {
+        if (g.donor === accountId && g.gid === gid) {
+          return g.fid === fid && canon(g.items) === canon(items) ? { ok: true, gift: giftOf(g), again: true } : { ok: false, why: 'none' };
+        }
+      }
+      let day = 0, pend = 0, pendGifts = 0;
+      for (const g of gifts.values()) {
+        if (g.donor !== accountId || g.recipient !== other) continue;
+        if ((g.state === 0 || g.state === 1) && g.madeDay === today) day += g.n;
+        if (g.state === 0) { pend += g.n; pendGifts++; }
+      }
+      const n = Object.values(items).reduce((a, v) => a + v, 0);
+      if (day + n > rules.perDay || pend + n > rules.pending || pendGifts + 1 > rules.pendingGifts) return { ok: false, why: 'full' };
+      const g = { id, donor: accountId, gid, recipient: other, fid, items: { ...items }, n, madeMs: nowMs, madeDay: today, state: 0, doneMs: null };
+      gifts.set(id, g);
+      return { ok: true, gift: giftOf(g) };
+    },
+    async boxOf(accountId, max) {
+      guard();
+      const all = [...gifts.values()].sort(byAge);
+      return {
+        incoming: all.filter((g) => g.recipient === accountId && g.state === 0).slice(0, max).map(giftOf),
+        outgoing: all.filter((g) => g.donor === accountId && (g.state === 0 || g.state === 2)).slice(0, max).map(giftOf),
+      };
+    },
+    async takeGift({ id, accountId, nowMs, keepMs }) {
+      guard();
+      const g = gifts.get(id);
+      if (!g || g.recipient !== accountId) return { ok: false };
+      if (g.state === 0) { g.state = 1; g.doneMs = nowMs; return { ok: true, gift: giftOf(g) }; }
+      return g.state === 1 && nowMs - g.doneMs < keepMs ? { ok: true, gift: giftOf(g), again: true } : { ok: false };
+    },
+    async recallGift({ id, accountId, nowMs, keepMs }) {
+      guard();
+      const g = gifts.get(id);
+      if (!g || g.donor !== accountId) return { ok: false };
+      if (g.state === 0 || g.state === 2) { g.state = 3; g.doneMs = nowMs; return { ok: true, gift: giftOf(g) }; }
+      return g.state === 3 && nowMs - g.doneMs < keepMs ? { ok: true, gift: giftOf(g), again: true } : { ok: false };
     },
 
     // ---------- Sessions ----------

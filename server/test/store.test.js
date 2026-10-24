@@ -24,7 +24,7 @@ const th = (n) => (n + 1000).toString(16).padStart(64, 'a');
 const ipHash = (n) => n.toString(16).padStart(64, 'c');
 const day = (ms) => dayOf(ms);
 const TEST_DB = process.env.EARTHLIFE_TEST_DB || '';
-const TABLES = ['el_friends', 'el_friend_codes', 'el_season_players', 'el_season_docs', 'el_seasons', 'el_codes', 'el_saves', 'el_sessions', 'el_accounts', 'el_reports', 'el_blocks', 'el_refuges', 'el_ip_bans', 'el_marks',
+const TABLES = ['el_gifts', 'el_friends', 'el_friend_codes', 'el_season_players', 'el_season_docs', 'el_seasons', 'el_codes', 'el_saves', 'el_sessions', 'el_accounts', 'el_reports', 'el_blocks', 'el_refuges', 'el_ip_bans', 'el_marks',
   'el_players', 'el_meta'];
 const eh = (n) => n.toString(16).padStart(64, 'e');            // empreinte d'adresse
 const sh = (n) => n.toString(16).padStart(64, '5');            // empreinte de session
@@ -248,7 +248,7 @@ for (const B of BACKENDS) {
       await s.banIp(ipHash(1), now);
       await s.banIp(ipHash(2), now + 1);
       const out = await s.purge(now);
-      assert.deepEqual(out, { marks: 2, refuges: 1, players: 1, reports: 1, bans: 1, sessions: 0, codes: 0, friendCodes: 0 });
+      assert.deepEqual(out, { marks: 2, refuges: 1, players: 1, reports: 1, bans: 1, sessions: 0, codes: 0, friendCodes: 0, gifts: 0 });
       assert.deepEqual((await s.activeMarks(0)).map((x) => x.target), ['c3_3']);
       assert.deepEqual((await s.refuges()).map((x) => x.owner), [id(3)]);
       assert.equal(await s.exportPlayer(id(1)), null);
@@ -257,7 +257,7 @@ for (const B of BACKENDS) {
       assert.deepEqual(await s.reportStats(id(2), 0, now + DAY), { distinctOldEnough: 1 });
       assert.deepEqual(await s.reportStats(id(3), 0, now + DAY), { distinctOldEnough: 0 });
       assert.deepEqual([...(await s.ipBans()).keys()], [ipHash(2)]);
-      assert.deepEqual(await s.purge(now), { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0 });
+      assert.deepEqual(await s.purge(now), { marks: 0, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0, gifts: 0 });
     });
 
     test('la salle sur ce magasin : identité, refuge écrit puis relu au redémarrage', async () => {
@@ -655,6 +655,87 @@ for (const B of BACKENDS) {
       assert.deepEqual(await join(74, eh(14), { nowMs: T0 }), { ok: false, why: 'none' }, 'ligne retirée par la purge');
     });
 
+    test('boîte de dépôt : dépôt rejouable, plafonds, retrait unique, reprise, amitié retirée ou compte effacé rendent, purge', async () => {
+      const s = await make();
+      for (const n of [81, 82, 83]) await s.createAccount({ id: id(n), emailHash: eh(n), emailBox: box(n), pwHash: 'x', today: day(T0) });
+      const befriend = async (x, y, f) => {
+        await s.putFriendCode({ accountId: id(x), codeHash: eh(f), nowMs: T0, expiresMs: T0 + DAY });
+        const r = await s.joinFriend({ codeHash: eh(f), accountId: id(y), fid: id(500 + f), nowMs: T0, max: 30, today: day(T0) });
+        assert.equal(r.ok, true);
+        return id(500 + f);
+      };
+      const fAB = await befriend(81, 82, 21), fAC = await befriend(81, 83, 22);
+      const rules = { perDay: 20, pending: 40, pendingGifts: 10 };
+      const keepMs = 7 * DAY;
+      const give = (donor, fid, g, items, extra = {}) => s.giveGift({ id: id(900 + g), gid: id(800 + g), accountId: id(donor), fid, items, nowMs: T0, today: day(T0), rules, ...extra });
+      // Dépôt rejouable : le même `gid` du même donneur rend le même dépôt ; autre contenu ou autre amitié : refus.
+      const g1 = await give(81, fAB, 1, { eau: 1, conserve: 2 });
+      assert.deepEqual(g1, { ok: true, gift: { id: id(901), fid: fAB, items: { conserve: 2, eau: 1 }, madeMs: T0, st: 0 } });
+      assert.deepEqual(await give(81, fAB, 1, { conserve: 2, eau: 1 }, { id: id(999) }), { ok: true, gift: g1.gift, again: true }, 'rejoué : le même dépôt, rien de plus');
+      assert.deepEqual(await give(81, fAB, 1, { conserve: 3 }, { id: id(999) }), { ok: false, why: 'none' }, 'même gid, autre contenu');
+      assert.deepEqual(await give(81, fAC, 1, { conserve: 2, eau: 1 }, { id: id(999) }), { ok: false, why: 'none' }, 'même gid, autre ami');
+      assert.deepEqual(await give(83, fAB, 2, { bois: 1 }), { ok: false, why: 'none' }, 'pas son amitié');
+      assert.deepEqual(await give(81, id(77), 2, { bois: 1 }), { ok: false, why: 'none' }, 'amitié inconnue');
+      const back = await give(82, fAB, 1, { bandage: 1 }, { id: id(950) });                                       // même gid qu'un autre donneur : un autre dépôt
+      assert.equal(back.ok, true);
+      assert.notEqual(back.gift.id, g1.gift.id);
+      // Plafonds : 20 objets par jour (retirés compris), 40 en attente, 10 dépôts en attente.
+      assert.equal((await give(81, fAB, 3, { bois: 17 })).ok, true);                             // 3 + 17 = 20 aujourd'hui
+      assert.deepEqual(await give(81, fAB, 4, { bois: 1 }), { ok: false, why: 'full' }, 'jour plein');
+      const day2 = { nowMs: T0 + DAY, today: day(T0 + DAY) };
+      assert.equal((await give(81, fAB, 5, { clous: 20 }, day2)).ok, true);                      // 40 en attente
+      assert.deepEqual(await give(81, fAB, 6, { clous: 1 }, day2), { ok: false, why: 'full' }, 'jour plein encore (20)');
+      const day3 = { nowMs: T0 + 2 * DAY, today: day(T0 + 2 * DAY) };
+      assert.deepEqual(await give(81, fAB, 6, { clous: 1 }, day3), { ok: false, why: 'full' }, '40 objets en attente');
+      for (let k = 0; k < 10; k++) assert.equal((await give(81, fAC, 10 + k, { eau: 1 })).ok, true, `dépôt ${k + 1} chez 83`);
+      assert.deepEqual(await give(81, fAC, 30, { eau: 1 }), { ok: false, why: 'full' }, '10 dépôts en attente');
+      // La boîte : reçus en attente, donnés en attente, les plus anciens d'abord.
+      const b82 = await s.boxOf(id(82), 100);
+      assert.deepEqual(b82.incoming.map((g) => g.id), [id(901), id(903), id(905)]);
+      assert.deepEqual(b82.outgoing.map((g) => [g.id, g.st]), [[back.gift.id, 0]]);
+      assert.equal((await s.boxOf(id(82), 2)).incoming.length, 2, 'limitée à max');
+      assert.deepEqual((await s.boxOf(id(81), 100)).incoming.map((g) => g.id), [back.gift.id]);
+      // Retrait : seulement par le destinataire, une fois ; rejoué dans la garde, les mêmes objets (again) ; puis plus rien.
+      const take = (n, g, ms = T0) => s.takeGift({ id: id(900 + g), accountId: id(n), nowMs: ms, keepMs });
+      assert.deepEqual(await take(81, 1), { ok: false }, 'le donneur ne retire pas son propre dépôt');
+      assert.deepEqual(await take(83, 1), { ok: false }, 'ni un tiers');
+      assert.deepEqual(await s.takeGift({ id: id(12345), accountId: id(82), nowMs: T0, keepMs }), { ok: false }, 'dépôt inconnu');
+      assert.deepEqual(await take(82, 1), { ok: true, gift: { ...g1.gift, st: 1 } });
+      assert.deepEqual(await take(82, 1, T0 + DAY), { ok: true, gift: { ...g1.gift, st: 1 }, again: true });
+      assert.deepEqual(await take(82, 1, T0 + keepMs), { ok: false }, 'garde échue');
+      assert.deepEqual((await s.boxOf(id(82), 100)).incoming.map((g) => g.id), [id(903), id(905)], 'retiré : plus à attendre');
+      assert.deepEqual(await give(81, fAB, 1, { conserve: 2, eau: 1 }, { id: id(999) }), { ok: true, gift: { ...g1.gift, st: 1 }, again: true }, 'rejoué après retrait');
+      // Reprise : seulement par le donneur, en attente (ou rendu) ; pas un dépôt déjà retiré.
+      const recall = (n, g, ms = T0) => s.recallGift({ id: id(900 + g), accountId: id(n), nowMs: ms, keepMs });
+      assert.deepEqual(await recall(82, 3), { ok: false }, 'pas le donneur');
+      assert.deepEqual(await recall(81, 1), { ok: false }, 'déjà retiré par l\'ami');
+      const r3 = await recall(81, 3);
+      assert.deepEqual(r3.gift.st, 3);
+      assert.deepEqual(await recall(81, 3, T0 + DAY), { ok: true, gift: r3.gift, again: true });
+      assert.deepEqual(await take(82, 3), { ok: false }, 'repris : plus à retirer');
+      // Amitié retirée : les dépôts en attente des deux sens sont rendus à leurs donneurs (et ne se retirent plus).
+      assert.deepEqual(await s.removeFriend({ accountId: id(82), fid: fAB }), { ok: true, mine: null, theirs: null });
+      assert.deepEqual((await s.boxOf(id(82), 100)).incoming, [], 'plus rien à retirer');
+      const out81 = (await s.boxOf(id(81), 100)).outgoing.filter((g) => g.fid === fAB);
+      assert.deepEqual(out81.map((g) => [g.id, g.st]), [[id(905), 2]], 'rendu à 81');
+      assert.deepEqual((await s.boxOf(id(82), 100)).outgoing.map((g) => [g.id, g.st]), [[back.gift.id, 2]], 'et celui de 82 à 82');
+      assert.deepEqual(await take(82, 5), { ok: false }, 'rendu : l\'ami ne le retire plus');
+      assert.equal((await recall(81, 5)).gift.st, 3, 'le donneur le reprend');
+      assert.deepEqual(await give(81, fAB, 40, { eau: 1 }), { ok: false, why: 'none' }, 'plus d\'amitié');
+      // Compte du destinataire effacé : ses dépôts reçus sont rendus ; compte du donneur effacé : ses dépôts partent.
+      await s.createAccount({ id: id(84), emailHash: eh(84), emailBox: box(84), pwHash: 'x', today: day(T0) });
+      const fAD = await befriend(84, 81, 23);
+      assert.equal((await s.giveGift({ id: id(990), gid: id(890), accountId: id(81), fid: fAD, items: { eau: 2 }, nowMs: T0, today: day(T0), rules })).ok, true);
+      assert.equal((await s.giveGift({ id: id(991), gid: id(891), accountId: id(84), fid: fAD, items: { eau: 3 }, nowMs: T0, today: day(T0), rules })).ok, true);
+      await s.eraseAccount(id(84));
+      assert.deepEqual((await s.boxOf(id(81), 100)).outgoing.filter((g) => g.fid === fAD).map((g) => [g.id, g.st]), [[id(990), 2]], 'reçu par un compte effacé : rendu');
+      assert.deepEqual((await s.boxOf(id(81), 100)).incoming.filter((g) => g.fid === fAD), [], 'celui de 84 est parti avec lui');
+      // Purge : les dépôts retirés ou repris depuis plus de la garde.
+      assert.equal((await s.purge(T0 + keepMs - 1)).gifts, 0);
+      assert.ok((await s.purge(T0 + keepMs + 2 * DAY)).gifts >= 2, 'dépôt 1 (retiré) et 3 (repris)');
+      assert.deepEqual(await take(82, 1, T0 + 3 * DAY), { ok: false }, 'ligne purgée');
+    });
+
     test('fin de la suite', async () => {
       if (store) await store.close();
       store = null;
@@ -665,7 +746,7 @@ for (const B of BACKENDS) {
 // ---------- Hors suite (sans MariaDB) ----------
 
 test('schéma 002 : appliqué après 001, quatre tables utf8mb4 puis la version 2', () => {
-  assert.deepEqual(SCHEMA_FILES.map((f) => f.split(/[\\/]/).pop()), ['001-init.sql', '002-comptes.sql', '003-saisons.sql', '004-amis.sql']);
+  assert.deepEqual(SCHEMA_FILES.map((f) => f.split(/[\\/]/).pop()), ['001-init.sql', '002-comptes.sql', '003-saisons.sql', '004-amis.sql', '005-boite.sql']);
   const st = splitSql(fs.readFileSync(SCHEMA_FILES[1], 'utf8'));
   assert.equal(st.length, 5);
   assert.deepEqual(st.slice(0, 4).map((s) => /^CREATE TABLE IF NOT EXISTS (el_\w+)/.exec(s)?.[1]), ['el_accounts', 'el_sessions', 'el_saves', 'el_codes']);
@@ -697,7 +778,19 @@ test('schéma 004 : code d\'ami et amitiés (effacés avec le compte), puis la v
   assert.equal((st[1].match(/ON DELETE CASCADE/g) ?? []).length, 2, 'les deux comptes de la paire');
 });
 
-test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001 à 004 (tables, schéma 4, données gardées)',
+test('schéma 005 : boîte de dépôt (les dépôts d\'un compte partent avec lui, ceux qu\'il reçoit sont rendus), puis la version 5', () => {
+  const st = splitSql(fs.readFileSync(SCHEMA_FILES[4], 'utf8'));
+  assert.equal(st.length, 2);
+  assert.match(st[0], /^CREATE TABLE IF NOT EXISTS el_gifts/);
+  assert.match(st[0], /ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$/);
+  for (const s of st) assert.ok(!s.includes('--') && !s.includes('«'), s.slice(0, 60));
+  assert.equal(st[1], "UPDATE el_meta SET v = '5' WHERE k = 'schema' AND CAST(v AS UNSIGNED) < 5");
+  assert.match(st[0], /UNIQUE KEY by_gid \(donor, gid\)/);
+  assert.match(st[0], /FOREIGN KEY \(donor\) REFERENCES el_accounts\(id\) ON DELETE CASCADE/);
+  assert.equal((st[0].match(/FOREIGN KEY/g) ?? []).length, 1, 'pas de clé étrangère sur le destinataire ni sur l\'amitié : leur fin rend les dépôts');
+});
+
+test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001 à 005 (tables, schéma 5, données gardées)',
   { skip: TEST_DB ? false : 'EARTHLIFE_TEST_DB absente' }, async () => {
     await dropAll();
     const db = dbFromUrl(TEST_DB);
@@ -717,7 +810,7 @@ test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001
         assert.ok(await s.playerByTokenHash(th(1)), 'identité gardée');
         await s.close();
       }
-      assert.equal(await meta(), '4');
+      assert.equal(await meta(), '5');
       assert.deepEqual(await tables(), [...TABLES].sort());
     } finally {
       await admin.end();
@@ -977,7 +1070,7 @@ test('purge longue : lot par lot (chaque DELETE a son délai), compte juste, jam
   };
   // 60 lots de 5 000 à 20 ms : 1,2 s en tout, bien au-delà du délai d'un lot (200 ms).
   const full = await run({ lots: 60, latencyMs: 20 });
-  assert.deepEqual(full.r, { marks: 300000, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0 });
+  assert.deepEqual(full.r, { marks: 300000, refuges: 0, players: 0, reports: 0, bans: 0, sessions: 0, codes: 0, friendCodes: 0, gifts: 0 });
   assert.equal(full.d.calls.filter((c) => c.sql.startsWith('DELETE FROM el_marks')).length, 61);
   assert.deepEqual(full.logs, [{ e: 'base', etat: 'connectee' }]);
   // Budget de la purge dépassé : ce qui est fait est compté, le reste attend la purge suivante.

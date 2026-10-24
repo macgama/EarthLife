@@ -10,7 +10,10 @@ import {
 } from '../src/amis.js';
 import { cardHtml } from '../src/panels.js';
 import { createAccount, NULL_ACCOUNT, ACCOUNT_KEYS } from '../src/account.js';
-import { parseFriendsReq, FRIEND_RULES } from '../src/net/amis.js';
+import { parseFriendsReq, FRIEND_RULES, GIFT_RULES, GIFT_KEYS } from '../src/net/amis.js';
+import { ITEM_KIND } from '../src/art.js';
+import { ITEMS } from '../src/survival.js';
+import { ITEM_KEYS } from '../src/save.js';
 import { nameOf } from '../src/net/protocol.js';
 
 const T0 = 1791640000000;
@@ -147,7 +150,7 @@ function friendsRig({ answer } = {}) {
   const fetchImpl = async (target, opts) => {
     const path = new URL(target).pathname;
     calls.push({ path, body: opts.body });
-    const m = /^\/v1\/friends\/(list|code|join|remove|block)$/.exec(path);
+    const m = /^\/v1\/friends\/(list|where|code|join|remove|block|give|box|take|recall)$/.exec(path);
     if (!m) return { status: 503, text: async () => '{"ok":false}' };
     const r = parseFriendsReq(m[1], opts.body);
     const out = r.ok ? answer(m[1], r.msg) : { status: 400, body: { ok: false, code: r.why } };
@@ -200,6 +203,42 @@ test('account.friends : les cinq routes, corps relus par le serveur, réponses r
   assert.equal(r.account.state, 'in', 'un refus d\'ami ne ferme pas le compte');
 });
 
+test('account.friends : la boîte de dépôt (give, box, take, recall), corps relus par le serveur, réponses relues champ par champ', async () => {
+  const gift = { id: 'e'.repeat(32), fid: FID, items: { eau: 2 }, madeMs: T0, st: 0 };
+  const r = friendsRig({
+    answer: (kind, msg) => {
+      switch (kind) {
+        case 'give': return msg.gid === 'b'.repeat(32) ? { body: { ok: true, gift } } : { status: 409, body: { ok: false, code: 'boite-pleine' } };
+        case 'box': return { body: { ok: true, incoming: [gift], outgoing: [{ ...gift, st: 2 }, { id: 3 }] } };
+        case 'take': return msg.id === gift.id ? { body: { ok: true, gift: { ...gift, st: 1 }, accountId: 'secret' } } : { status: 403, body: { ok: false, code: 'boite' } };
+        case 'recall': return { body: { ok: true, gift: { ...gift, st: 3, again: true } } };
+        default: return { body: { ok: true } };
+      }
+    },
+  });
+  await r.account.start();
+  assert.deepEqual(await r.account.friends('give', { fid: FID, gid: 'b'.repeat(32), items: { eau: 2 } }), { ok: true, gift });
+  assert.deepEqual(await r.account.friends('give', { fid: FID, gid: 'c'.repeat(32), items: { eau: 2 } }), { ok: false, code: 'boite-pleine' });
+  assert.deepEqual(await r.account.friends('box'), { ok: true, incoming: [gift], outgoing: [{ ...gift, st: 2 }] });
+  assert.deepEqual(await r.account.friends('take', { id: gift.id }), { ok: true, gift: { ...gift, st: 1 } });
+  assert.deepEqual(await r.account.friends('take', { id: 'f'.repeat(32) }), { ok: false, code: 'boite' });
+  assert.deepEqual(await r.account.friends('recall', { id: gift.id }), { ok: true, gift: { ...gift, st: 3, again: true } });
+  assert.deepEqual(await r.account.friends('give', { fid: FID, gid: 'b'.repeat(32), items: { pistolet: 1 } }), { ok: false, code: 'requete' }, 'le serveur refuse un objet interdit');
+  const sent = JSON.parse(r.friendCalls()[0].body);
+  assert.deepEqual([sent.fid, sent.gid, sent.items], [FID, 'b'.repeat(32), { eau: 2 }]);
+  assert.equal(r.account.state, 'in');
+  assert.match(friendErrorText('boite'), /plus là/);
+  assert.match(friendErrorText('boite-pleine'), new RegExp(`${GIFT_RULES.perDay} objets par jour`));
+});
+
+test('boîte de dépôt : seuls les vivres et les matériaux se donnent (liste vérifiée contre les familles d\'objets du jeu)', () => {
+  const allowed = new Set(['food', 'water', 'heal', 'mat']);
+  const expected = Object.keys(ITEM_KIND).filter((k) => allowed.has(ITEM_KIND[k]) && ITEM_KEYS.includes(k)).sort();
+  assert.deepEqual([...GIFT_KEYS].sort(), expected);
+  for (const k of GIFT_KEYS) assert.ok(ITEMS[k], `${k} est un objet du jeu`);
+  for (const k of GIFT_KEYS) assert.ok(!ITEMS[k].equip && !ITEMS[k].gun && !ITEMS[k].ammo && !ITEMS[k].fuel, `${k} : ni équipement, ni arme, ni munition, ni carburant`);
+});
+
 test('account.friends : trop d\'essais (délai rendu) ; session refusée = compte quitté, partie gardée', async () => {
   let mode = 'trop';
   const r = friendsRig({
@@ -216,6 +255,13 @@ test('account.friends : trop d\'essais (délai rendu) ; session refusée = compt
 test('confidentialite.html cite les règles des amis (un changement de règle oblige à relire la page)', () => {
   const html = readFileSync(new URL('../confidentialite.html', import.meta.url), 'utf8').replace(/&nbsp;| | /g, ' ');
   for (const phrase of [`${FRIEND_RULES.codeTtlMs / DAY} jours`, `${FRIEND_RULES.max} amis`, 'Mes amis', 'Bloquer', 'Retirer', 'jamais en clair', '55 m', 'zone privée']) {
+    assert.ok(html.includes(phrase), `« ${phrase} » absent de confidentialite.html`);
+  }
+});
+
+test('confidentialite.html cite les règles de la boîte de dépôt (un changement de plafond ou de garde oblige à relire la page)', () => {
+  const html = readFileSync(new URL('../confidentialite.html', import.meta.url), 'utf8').replace(/&nbsp;| | /g, ' ');
+  for (const phrase of ['boîte de dépôt', `${GIFT_RULES.perDay} objets par jour`, `${GIFT_RULES.pending} en attente`, `${GIFT_RULES.keepMs / DAY} jours`, 'vivres et des matériaux', 'journal du serveur', 'fichier d\'export']) {
     assert.ok(html.includes(phrase), `« ${phrase} » absent de confidentialite.html`);
   }
 });
