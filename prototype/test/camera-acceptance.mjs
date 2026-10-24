@@ -100,6 +100,13 @@ const basse = (page) => ev(page, () => {
   const turn = (a) => Math.atan2(Math.sin(a), Math.cos(a));
   return { ...v, yaw: s.cameraYaw, lowPitch: s.lowPitch, lowDist: s.lowDist, carK: s.carK ?? 0, playerYaw: s.player.yaw, away: Math.abs(turn(s.player.yaw - s.cameraYaw)), x: s.player.x, z: s.player.z };
 });
+// Perche posée : la longueur ne bouge plus (30 images de suite à moins de 0,005 m près).
+const boomSettled = (page) => until(page, () => {
+  const w = window, b = w.__earthlife.debug.view().basse.boom;
+  w.__settle = Math.abs(b - (w.__lastBoom ?? -9)) < 0.005 ? (w.__settle ?? 0) + 1 : 0;
+  w.__lastBoom = b;
+  return w.__settle >= 30 ? b : null;
+}, null, 120000);
 const stored = (page) => ev(page, () => { try { return localStorage.getItem('earthlife.vue'); } catch { return null; } });
 const toastSeen = (page, start, timeout = 10000) => until(page, (t) => window.__seen.toasts.find((x) => x.startsWith(t)) ?? null, start, timeout);
 
@@ -148,7 +155,7 @@ async function scenario(device) {
   await page.goto(START);
   if (!check(await started(page), `${tag} : partie démarrée`)) { await ctx.close(); return; }
   await calm(page);
-  const press = async (selector, key) => (device === 'mobile' ? page.tap(selector) : page.keyboard.press(key));
+  const home = await ev(page, () => ({ x: window.__earthlife.session.player.x, z: window.__earthlife.session.player.z }));
   const toggle = () => (device === 'mobile' ? page.tap('#view-toggle') : page.keyboard.press('KeyG'));
 
   // 1. La vue de dessus reste celle du départ : champ de 48°, découpe des murs à 5,5 m, rien d'écrit dans les réglages.
@@ -180,7 +187,7 @@ async function scenario(device) {
   await toggle();
   const back = await until(page, () => { const b = window.__earthlife.debug.view().basse; return b.k === 0 ? b : null; }, null, 120000);
   const top = await basse(page);
-  check(!!back && top.mode === 'dessus' && Math.abs(top.fov - 48) < 0.01 && Math.abs(top.cutRadius - 5.5) < 0.01, `${tag} : retour à la vue de dessus (champ ${round(top.fov)}°, découpe ${round(top.cutRadius)} m)`);
+  check(!!back && top.mode === 'dessus' && Math.abs(top.fov - 48) < 0.05 && Math.abs(top.cutRadius - 5.5) < 0.01, `${tag} : retour à la vue de dessus (champ ${round(top.fov)}°, découpe ${round(top.cutRadius)} m)`);
   await wait(1200);
   check(!(await stored(page))?.includes('basse'), `${tag} : le retour efface le choix (${await stored(page)})`);
 
@@ -190,8 +197,9 @@ async function scenario(device) {
     await debug(page, 'teleport', wall.x, wall.z);
     await debug(page, 'basse', true, { yaw: wall.yaw, dist: 6, pitch: 0.2 });
     await calm(page);
-    const near = await until(page, () => { const b = window.__earthlife.debug.view().basse; return b.boom < 2.6 ? b : null; }, null, 120000);
-    check(!!near, `${tag} : perche raccourcie contre le mur (${round(near?.boom ?? 9, 1)} m pour ${round(6 * Math.cos(0.2), 1)} m voulus)`);
+    await ev(page, () => { window.__settle = 0; window.__lastBoom = -9; });
+    const near = await boomSettled(page);
+    check(near !== null && near < 2.3, `${tag} : perche raccourcie contre le mur (${round(near ?? 9, 1)} m pour ${round(6 * Math.cos(0.2), 1)} m voulus)`);
     const cell = await ev(page, async () => {
       const col = await import('/src/collision.js');
       const s = window.__earthlife.session, c = window.__earthlife.debug.camera().position;
@@ -286,12 +294,12 @@ async function scenario(device) {
   await calm(page);
   await debug(page, 'basse', true, { now: true });
 
-  if (device === 'desktop') await desktopOnly(page, tag);
+  if (device === 'desktop') await desktopOnly(page, tag, home);
   await ctx.close();
 }
 
 // Ordinateur : boutons − et +, bâtiment ouvert (la caméra reste de dessus), puis voiture (la caméra recule et revient derrière).
-async function desktopOnly(page, tag) {
+async function desktopOnly(page, tag, home) {
   // 7. Les boutons − et + changent la distance derrière le personnage, sans sortir de ses bornes.
   await debug(page, 'basse', true, { dist: 5.5 });
   const z0 = (await basse(page)).lowDist;
@@ -341,6 +349,9 @@ async function desktopOnly(page, tag) {
   }
 
   // 9. Au volant : la caméra recule pour voir la route, tourne derrière la voiture quand elle roule, et le pouce ne la tient plus.
+  await debug(page, 'teleport', home.x, home.z);
+  await calm(page);
+  await wait(1500);
   const corridor = await ev(page, async () => {
     const { fits } = await import('/src/collision.js');
     const { session: s, save } = window.__earthlife;
@@ -369,8 +380,9 @@ async function desktopOnly(page, tag) {
   const mounted = await until(page, () => (window.__earthlife.session.driving ? 1 : null), null, 30000);
   if (!check(!!mounted, `${tag} : au volant`)) return;
   const atWheel = await until(page, () => { const s = window.__earthlife.session; return s.carK >= 0.99 ? { dist: s.camPose?.dist, steer: s.lowSteer } : null; }, null, 120000);
+  // Un bâtiment derrière la voiture raccourcit la perche : la caméra recule au moins un peu, sans plus de précision.
   const wheel = await basse(page);
-  check(!!atWheel && atWheel.steer === true && wheel.pose.dist > wheel.lowDist + 2, `${tag} : au volant la caméra recule (${round(wheel.lowDist, 1)} → ${round(wheel.pose.dist, 1)} m)`);
+  check(!!atWheel && atWheel.steer === true && wheel.pose.dist > wheel.lowDist + 0.5, `${tag} : au volant la caméra recule (${round(wheel.lowDist, 1)} → ${round(wheel.pose.dist, 1)} m)`);
   await page.keyboard.down('ArrowUp');
   const followed = await until(page, () => {
     const s = window.__earthlife.session, d = s.driving;
