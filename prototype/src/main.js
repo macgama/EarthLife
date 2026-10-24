@@ -703,8 +703,11 @@ $('quest').addEventListener('click', () => {
   setQuestOpen(open);
   if (open && phonePortrait.matches) setModsOpen(false);
 });
+// Puce de la ville (habitants sauvés / zombies restants) : ouvre ou ferme la même fiche que l'objectif (compteurs et pâtés).
+$('city-chip').addEventListener('click', () => { if (phonePortrait.matches) $('quest').click(); });
+$('city-chip').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('city-chip').click(); } });
 document.addEventListener('pointerdown', (e) => {
-  if (!phonePortrait.matches || e.target.closest?.('#quest, #conditions')) return;
+  if (!phonePortrait.matches || e.target.closest?.('#quest, #conditions, #city-chip')) return;
   if (!questPeek && $('quest').classList.contains('open')) setQuestOpen(false);
   if (document.body.classList.contains('show-mods')) setModsOpen(false);
 }, true);
@@ -1284,6 +1287,7 @@ function disposeSession() {
   minimap.reset(null);
   city.detach(session);
   $('city-meta').hidden = true;
+  $('city-chip').hidden = true;
   session = null;
 }
 
@@ -2773,8 +2777,10 @@ function onDeath(s) {
   }
   save.profile.deaths += 1;
   saveStore.flush('mort');
+  // Dans une ville à sauver, l'état de la ville d'un coup d'œil : habitants sauvés, zombies restants, pâtés libérés.
+  const town = city.summary(s);
   showCard({
-    title: 'Tu es tombé', tone: 'danger', art: 'mort', lines,
+    title: 'Tu es tombé', tone: 'danger', art: 'mort', lines, stats: town ? [town] : undefined,
     buttons: [{ id: 'wake', label: r.base && s.store.source === 'tiles' ? 'Se réveiller au refuge' : 'Repartir', primary: true }, { id: 'menu', label: 'Menu' }],
   }, (id) => {
     if (session !== s) return;
