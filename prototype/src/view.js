@@ -136,20 +136,31 @@ export function edgeCap(base, pitchWant, aspect, low = false) {
 export const effectiveAspect = (aspect, shift, w) => aspect * (1 + (2 * Math.abs(shift)) / Math.max(1, w));
 
 // Réglage gardé dans localStorage['earthlife.vue'], hors de la sauvegarde de partie (schéma strict de save.js).
-// Borné à la plage de l'ordinateur : main.js le borne encore à celle de l'appareil (clampZoom).
+// Borné à la plage de l'ordinateur : main.js le borne encore à celle de l'appareil (clampZoom). La vue basse (camera-basse.js) y garde
+// son choix ('basse' ; 'dessus' est le défaut et n'est pas écrit), sa distance et son tangage, bornés à leur tour par main.js.
 export function readViewPrefs(storage) {
   try {
-    const zoom = Number(JSON.parse(storage?.getItem(VIEW_PREFS_KEY) ?? 'null')?.zoom);
-    return { zoom: Number.isFinite(zoom) ? clamp(zoom, ZOOM.min, ZOOM.max) : ZOOM.base };
+    const raw = JSON.parse(storage?.getItem(VIEW_PREFS_KEY) ?? 'null');
+    const zoom = Number(raw?.zoom), dist = Number(raw?.dist), pitch = Number(raw?.pitch);
+    return {
+      zoom: Number.isFinite(zoom) ? clamp(zoom, ZOOM.min, ZOOM.max) : ZOOM.base,
+      mode: raw?.mode === 'basse' ? 'basse' : 'dessus',
+      dist: raw?.dist != null && Number.isFinite(dist) ? dist : null,
+      pitch: raw?.pitch != null && Number.isFinite(pitch) ? pitch : null,
+    };
   } catch {
-    return { zoom: ZOOM.base };
+    return { zoom: ZOOM.base, mode: 'dessus', dist: null, pitch: null };
   }
 }
 
-export function writeViewPrefs(storage, { zoom }) {
+export function writeViewPrefs(storage, { zoom, mode, dist, pitch }) {
   if (!storage) return false;
   try {
-    storage.setItem(VIEW_PREFS_KEY, JSON.stringify({ zoom: Math.round(zoom * 10) / 10 }));
+    const out = { zoom: Math.round(zoom * 10) / 10 };
+    if (mode === 'basse') out.mode = 'basse';
+    if (Number.isFinite(dist)) out.dist = Math.round(dist * 10) / 10;
+    if (Number.isFinite(pitch)) out.pitch = Math.round(pitch * 100) / 100;
+    storage.setItem(VIEW_PREFS_KEY, JSON.stringify(out));
     return true;
   } catch {
     return false;

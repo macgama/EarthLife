@@ -12,7 +12,7 @@ import { createChunkManager, VIEW_RADIUS, GROUND_DETAILS } from './chunks.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
   offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, bagCapacity, wornKey,
-  removePack, packSurplus, packSwapRefusal, PACK_REMOVE_FULL, SICK,
+  removePack, packSurplus, packSwapRefusal, PACK_REMOVE_FULL, SICK, FEMININE_ITEMS, GEAR_SLOTS, SLOT_LABEL, gearStats, wearGuard, recoverGear, heldOnGround,
 } from './survival.js';
 import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
 import { createCharacters } from './characters.js';
@@ -27,6 +27,11 @@ import {
   ZOOM, clampZoom, zoomMax, pitchFloor, viewRadius, waveCap, edgeCap, smoothZoom, effectiveAspect, readViewPrefs,
   writeViewPrefs,
 } from './view.js';
+import {
+  BASSE, clampBasseDist, clampBassePitch, approachK, boomLimit, boomSmooth, lowPose, blendPose, recenterDelta, followDelta, flankAlerts,
+  halfFovH,
+} from './camera-basse.js';
+import { createFlancs } from './flancs.js';
 import { PLAYER, createPlayer, createZombieDirector, updatePlayer, playerAttack, urbanDensity, targetZombieCount } from './game.js';
 import {
   planDelivery, questText, updateQuest, currentTarget, placeWith, refugeQuest, offerMissions, questReward, missionLine,
@@ -42,10 +47,11 @@ import { ambushCount, ambushSpots, ambushText } from './embuscade.js';
 import { rollRoomLoot, roomAmbushCount, ambushSpotsIn, roomTitle, clearPlanCache } from './interieur.js';
 import { buildingResume, savedLine } from './reprise-batiment.js';
 import { createInteriorView } from './interieur-view.js';
-import { CAMERA as INTERIOR_CAMERA, alignedYaw, approachAngle } from './interieur-lumiere.js';
+import { CAMERA as INTERIOR_CAMERA, alignedYaw, approachAngle, indoorView, centerWeight } from './interieur-lumiere.js';
 import { createInteriorGame } from './interieur-jeu.js';
 import { PROP_KINDS, PROP_TEXTS, rollPropLoot, propTime, propLabel, propLootText, goneChecker } from './props.js';
 import { createFinds, leftText as findsLeftText } from './trouvailles.js';
+import { createDressing } from './habillement.js';
 import { createPropsView } from './props-view.js';
 import { createFloreView } from './flore-view.js';
 import { createBaseView } from './base-view.js';
@@ -482,10 +488,12 @@ const softRender = (() => {
 })();
 const groundDetail = GROUND_DETAILS.includes(params.get('sol')) ? params.get('sol') : softRender ? 'plat' : lowPower ? 'simple' : 'fin';
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000);
+const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000); // champ : FOV_TOP, plus large en vue basse
 // Caméra isométrique, comme Project Zomboid, Dysmantle ou HumanitZ ; sa distance (zoom) et son tangage plancher : ZOOM
 // de src/view.js.
 const CAM = { pitch: 1.0, minPitch: 0.6, maxPitch: 1.35, steep: 1.3 };
+// Champ vertical de la vue de dessus (°) et rayon de la découpe des murs (m, scene.js) : la vue basse les change (camera-basse.js).
+const FOV_TOP = 48, CUT_RADIUS = 5.5;
 const SEARCH_TIME = 2.2;
 const BUILDING_LABELS = { house: 'Habitation', retail: 'Commerce', commercial: 'Bureaux', industrial: 'Entrepôt', school: 'École', station: 'Gare', pharmacy: 'Pharmacie', clinic: 'Clinique', hospital: 'Hôpital', supermarket: 'Supermarché', convenience: 'Épicerie', fuel: 'Station-service', hardware: 'Quincaillerie', police: 'Commissariat', fire_station: 'Caserne de pompiers' };
 const atmosphere = createAtmosphere(scene, { lowPower });
@@ -495,13 +503,17 @@ if (SOUND_AUTOSTART) son.attach(window);
 const input = createInput(canvas, {
   stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'),
   action2Button: $('action2'), useButtons: [...document.querySelectorAll('#inventory .chip[data-use]')], autoRun: true,
-  zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), wheelTargets: [$('mapbox')],
+  zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), viewToggle: $('view-toggle'), wheelTargets: [$('mapbox')],
 });
 // Zoom gardé d'une partie et d'une visite à l'autre, hors de la sauvegarde (src/view.js) ; écrit 800 ms après le
 // dernier changement.
 const viewStorage = (() => { try { return window.localStorage; } catch { return null; } })();
 const viewPrefs = readViewPrefs(viewStorage);
+// ?vue=basse ou ?vue=dessus : la vue de cette visite (essais), gardée ensuite comme un choix du bouton.
+if (params.get('vue') === 'basse' || params.get('vue') === 'dessus') viewPrefs.mode = params.get('vue');
 let viewPrefsTimer = 0;
+// Flèches sur le bord de l'écran vers les zombies hors du champ, en vue basse (src/flancs.js).
+const flancs = createFlancs($('flancs'), { max: BASSE.flancs.max });
 // Aspect effectif de la vue (tiroir ouvert : décalée, un côté va plus loin), pour le zoom et le brouillard ; vue donnée
 // au brouillard à chaque image (le même objet, sans allocation).
 let viewAspect = 1;
@@ -609,7 +621,9 @@ const hud = createHud({ $, input });
 const card = createCard($('card'));
 let cardInfo = null; // { blocking, escape, onButton } de la carte affichée
 // Fenêtre « Trouvé » : le jeu y est en pause ; les notifications qui arrivent pendant qu'elle est ouverte attendent sa fermeture.
-const finds = createFinds($('finds'), { onChange: () => saveStore.markDirty() });
+const finds = createFinds($('finds'), { onChange: () => saveStore.markDirty(), onDress: () => openDressing(session) });
+// Fenêtre « Habillement » (habillement.js, touche H ou bouton du sac) : comme « Trouvé », le jeu y est en pause.
+const dressing = createDressing($('dressing'), { onChange: () => saveStore.markDirty(), onBag: () => toggleBag(session) });
 let findsToasts = [];
 const panel = createRefugePanel(document.body, { onAction: (action, arg) => onPanelAction(action, arg), onStats: () => showStats() });
 // Téléphone, en portrait ou à l'horizontale : panneau ouvert, « Sortir » et « Dormir » sont en pied de panneau.
@@ -628,6 +642,8 @@ const mapSource = () => mapInfo(session);
 let hudFrozen = false;
 // Champ de la caméra : une horde n'apparaît jamais à l'écran.
 const frustum = new THREE.Frustum();
+const anchorAt = new THREE.Vector3();
+let anchorShown = 0;
 const frustumMatrix = new THREE.Matrix4();
 const probe = new THREE.Sphere(new THREE.Vector3(), 1.2);
 const beaconNormal = [0, 1, 0];
@@ -1133,7 +1149,8 @@ function restoreCharacter(s) {
   sv.bag ??= {};
   s.player = createPlayer(s.start);
   s.survivor = createSurvivor();
-  Object.assign(s.survivor, { food: sv.food, water: sv.water, bodyTemp: sv.bodyTemp, wet: sv.wet, fatigue: sv.fatigue, clothing: sv.clothing ?? null, pack: sv.pack ?? null });
+  Object.assign(s.survivor, { food: sv.food, water: sv.water, bodyTemp: sv.bodyTemp, wet: sv.wet, fatigue: sv.fatigue, pack: sv.pack ?? null, wear: { ...sv.wear } });
+  for (const slot of GEAR_SLOTS) s.survivor[slot] = sv[slot] ?? null;
   s.survivor.inventory = sv.bag;
   s.survivor.weapon = { key: sv.weapon?.key ?? 'batte', uses: sv.weapon?.uses ?? null };
   s.player.health = Math.min(100, sv.health);
@@ -1177,8 +1194,9 @@ function copyLive(sv) {
   Object.assign(sv.survivor, {
     health: dead ? 0 : Math.max(1, Math.round(Math.min(100, p.health) * 10) / 10),
     food: v.food, water: v.water, bodyTemp: v.bodyTemp, wet: v.wet, fatigue: v.fatigue,
-    bag: v.inventory, weapon: { ...v.weapon }, clothing: v.clothing ?? null, pack: v.pack ?? null,
+    bag: v.inventory, weapon: { ...v.weapon }, pack: v.pack ?? null, wear: { ...v.wear },
   });
+  for (const slot of GEAR_SLOTS) sv.survivor[slot] = v[slot] ?? null;
   const ll = playerLatLon(s);
   const where = { lat: ll.lat, lon: ll.lon, at: Date.now(), inside: !!s.refuge?.inside };
   // Dans un autre bâtiment que le refuge (intérieur ouvert, joueur entré) : la reprise se fait dedans (reprise-batiment.js).
@@ -1321,6 +1339,10 @@ function buildSession(place, origin, home, store, grid, loader, chunks, start, l
     zoomWant: clampZoom(viewPrefs.zoom, lowPower), cameraDist: clampZoom(viewPrefs.zoom, lowPower),
     viewRadius: ZOOM.radius, covered: ZOOM.radius, coveredFog: ZOOM.radius, zoomCap: Infinity, edgeCap: Infinity,
     zoomGoal: clampZoom(viewPrefs.zoom, lowPower), zoomLimited: '', zoomSeen: clampZoom(viewPrefs.zoom, lowPower),
+    // Vue basse (camera-basse.js) : choix du joueur ('dessus' ou 'basse'), part de la vue basse (0 à 1), distance et tangage voulus,
+    // perche (m au sol), temps depuis que le pouce droit a touché la caméra.
+    viewMode: viewPrefs.mode, lowK: viewPrefs.mode === 'basse' ? 1 : 0, lowDist: clampBasseDist(viewPrefs.dist ?? NaN, lowPower),
+    lowPitch: clampBassePitch(viewPrefs.pitch ?? NaN), boomH: 0, lookIdle: 9, lowSteer: false,
     isNight: false, nextPrefetch: 0, actionMul: 1, respawnedAt: null, lastPanel: 0,
     // Compétences (skills.js) : durées de fouille et de fabrication à multiplier, saison jouée (null hors saison).
     searchMul: 1, craftMul: 1, seasonId: null,
@@ -1332,6 +1354,7 @@ function buildSession(place, origin, home, store, grid, loader, chunks, start, l
   // Autres survivants : module chargé à la première partie en ligne (rien en solo).
   if (onlineOn) ensureOthersView();
   syncZoomButtons(session);
+  syncViewButton(session);
   atmosphere.state.onLightning = () => {
     if (!session?.player) return;
     session.director.alertAll(session.player, 60);
@@ -1397,7 +1420,7 @@ renderer.setAnimationLoop(() => {
   if (onlineOn && !menuEl.classList.contains('hidden') && frameNow - menuOnlineAt > 500) renderOnlineMenu();
   if (!session) return;
   // Pendant le menu (carte du monde), la scène 3D est cachée : inutile de la dessiner.
-  if (!menuEl.classList.contains('hidden')) { input.consume(); return; }
+  if (!menuEl.classList.contains('hidden')) { input.consume(); flancs.clear(); return; }
   const s = session;
   const inp = input.poll();
   if (s.player) {
@@ -1407,7 +1430,7 @@ renderer.setAnimationLoop(() => {
   }
   if (s.player && onlineOn) onlineInput(s, inp);
   // Une carte qui attend une réponse (mort, livraison, missions, déménagement, absence) met le jeu en pause.
-  const blocked = (card.isOpen() && !!cardInfo?.blocking) || finds.isOpen();
+  const blocked = (card.isOpen() && !!cardInfo?.blocking) || finds.isOpen() || dressing.isOpen();
   if (!s.paused && !s.holdStep && !s.ended && s.player && !blocked) {
     const t0 = performance.now();
     step(s, inp, dt);
@@ -1450,7 +1473,8 @@ renderer.setAnimationLoop(() => {
 // Tab (onglet suivant), B (replier, ou rouvrir le panneau au refuge), C (agrandir ou réduire la carte des environs), I (le sac).
 function handleUiKeys(s, inp) {
   if (inp.escape) {
-    if (finds.isOpen()) finds.close();
+    if (dressing.isOpen()) dressing.close();
+    else if (finds.isOpen()) finds.close();
     else if (card.isOpen() && cardInfo?.blocking) pressCard(cardInfo.escape);
     else if (card.isOpen()) hideCard();
     else if (minimap.isOpen()) minimap.close();
@@ -1458,8 +1482,10 @@ function handleUiKeys(s, inp) {
     else if (s.refuge.inside && !s.action && !s.ended && !s.paused) runRefuge(s, { id: 'exit', arg: null });
   }
   // Une carte de jeu qui attend une réponse garde la main : la carte des environs ne s'ouvre pas par-dessus.
-  if (inp.map && !(card.isOpen() && cardInfo?.blocking) && !finds.isOpen()) minimap.toggle();
+  if (inp.map && !(card.isOpen() && cardInfo?.blocking) && !finds.isOpen() && !dressing.isOpen()) minimap.toggle();
   if (inp.bag) toggleBag(s);
+  if (inp.view) toggleView(s);
+  if (inp.dress) toggleDressing(s);
   if (inp.tab) panel.nextTab();
   if (inp.fold) {
     if (panel.isOpen()) panel.toggleFold();
@@ -1471,21 +1497,77 @@ function handleUiKeys(s, inp) {
 // Vue plafonnée (alerte, vague, bord du monde) : reculer ne change rien, s'approcher part de la distance vue.
 function applyZoom(s, inp) {
   const delta = inp.cameraZoomDelta;
-  if (!delta || (delta > 0 && s.zoomLimited)) return;
+  if (!delta) return;
+  if (s.indoor) { // dans un bâtiment, le zoom ne règle que la vue du bâtiment : la distance gardée dehors ne bouge pas
+    const z = Math.min(INTERIOR_CAMERA.zoomMax, Math.max(INTERIOR_CAMERA.zoomMin, (s.interiorZoom ?? 1) * Math.exp(delta)));
+    if (z !== (s.interiorZoom ?? 1)) { s.interiorZoom = z; syncZoomButtons(s); }
+    return;
+  }
+  // Vue basse : le zoom change la distance derrière le personnage (aucun plafond de horde ou de bord : la vue basse a son brouillard).
+  if (lowActive(s)) {
+    const want = clampBasseDist(s.lowDist * Math.exp(delta), lowPower);
+    if (want === s.lowDist) return;
+    s.lowDist = viewPrefs.dist = want;
+    syncZoomButtons(s);
+    savePrefsLater();
+    return;
+  }
+  if (delta > 0 && s.zoomLimited) return;
   const from = s.zoomLimited ? Math.min(s.zoomWant, s.zoomSeen) : s.zoomWant;
   const want = clampZoom(from * Math.exp(delta), lowPower);
   if (want === s.zoomWant) return;
   s.zoomWant = want;
   syncZoomButtons(s);
   viewPrefs.zoom = want;
+  savePrefsLater();
+}
+
+// Réglage de la vue (zoom, vue basse) écrit 800 ms après le dernier changement.
+function savePrefsLater() {
   clearTimeout(viewPrefsTimer);
   viewPrefsTimer = setTimeout(() => writeViewPrefs(viewStorage, viewPrefs), 800);
+}
+
+// La vue basse (camera-basse.js) est choisie et rien ne la remplace : au refuge et dans un bâtiment ouvert, la caméra reste de dessus
+// (le noir de la lampe est un plan posé à hauteur de mur, que seule une vue de dessus montre).
+const lowActive = (s) => s.viewMode === 'basse' && !s.refuge.inside && !(INTERIOR_DARK && s.interior?.entered);
+
+// Bouton de la vue (et touche G) : bascule entre la vue de dessus et la vue basse, gardée d'une visite à l'autre.
+function toggleView(s) {
+  s.viewMode = s.viewMode === 'basse' ? 'dessus' : 'basse';
+  viewPrefs.mode = s.viewMode;
+  savePrefsLater();
+  syncViewButton(s);
+  syncZoomButtons(s);
+  if (s.viewMode === 'basse' && !lowActive(s)) toast('La vue basse reprend dehors.', 2);
+}
+
+function syncViewButton(s) {
+  const on = s.viewMode === 'basse';
+  const btn = $('view-toggle');
+  btn?.setAttribute('aria-pressed', String(on));
+  btn?.setAttribute('title', on ? 'Vue de dessus (G)' : 'Vue basse derrière le personnage (G)');
+  btn?.setAttribute('aria-label', on ? 'Revenir à la vue de dessus' : 'Vue basse derrière le personnage');
+  document.body.classList.toggle('vue-basse', on);
 }
 
 // Boutons − et + : estompés en butée (aria-disabled, ils gardent le focus) ; − aussi quand la vue est plafonnée, avec la
 // raison dans son titre pendant l'alerte et la vague.
 function syncZoomButtons(s) {
   const zoomIn = $('zoom-in'), zoomOut = $('zoom-out');
+  if (s.indoor) {
+    const z = s.interiorZoom ?? 1;
+    zoomIn?.setAttribute('aria-disabled', String(z <= INTERIOR_CAMERA.zoomMin + 1e-6));
+    zoomOut?.setAttribute('aria-disabled', String(z >= INTERIOR_CAMERA.zoomMax - 1e-6));
+    zoomOut?.setAttribute('title', 'Dézoomer (−)');
+    return;
+  }
+  if (lowActive(s)) {
+    zoomIn?.setAttribute('aria-disabled', String(s.lowDist <= BASSE.dist.min + 1e-6));
+    zoomOut?.setAttribute('aria-disabled', String(s.lowDist >= (lowPower ? BASSE.dist.maxLow : BASSE.dist.max) - 1e-6));
+    zoomOut?.setAttribute('title', 'Dézoomer (−)');
+    return;
+  }
   zoomIn?.setAttribute('aria-disabled', String(s.zoomWant <= ZOOM.min + 1e-6));
   zoomOut?.setAttribute('aria-disabled', String(!!s.zoomLimited || s.zoomWant >= zoomMax(lowPower) - 1e-6));
   zoomOut?.setAttribute('title', s.zoomLimited === 'horde' ? 'Horde en approche : vue limitée' : 'Dézoomer (−)');
@@ -1539,7 +1621,19 @@ function step(s, inp, dt) {
     s.yawBefore = undefined;
     s.cameraYaw += inp.cameraYawDelta;
   }
-  if (inp.cameraPitchDelta && !topDown) {
+  // Vue basse : le pouce droit tourne la caméra (côté) et la baisse ou la monte (haut-bas) ; au repos, elle revient lentement derrière
+  // le personnage qui avance tout droit, ou derrière la voiture au volant.
+  const lowOn = lowActive(s) && !topDown;
+  s.lookIdle = inp.cameraYawDelta || inp.cameraPitchDelta ? 0 : Math.min(60, s.lookIdle + dt);
+  if (lowOn && s.lowK > 0.5 && s.yawBefore === undefined && !p.hidden) {
+    s.cameraYaw += s.driving
+      ? followDelta({ yaw: s.cameraYaw, heading: s.driving.yaw, speed: s.driving.speed, idle: s.lookIdle, dt })
+      : recenterDelta({ mx: inp.move.x, my: inp.move.y, speed: Math.hypot(p.vx ?? 0, p.vz ?? 0), idle: s.lookIdle, dt });
+  }
+  if (inp.cameraPitchDelta && lowOn) {
+    s.lowPitch = viewPrefs.pitch = clampBassePitch(s.lowPitch + inp.cameraPitchDelta);
+    savePrefsLater();
+  } else if (inp.cameraPitchDelta && !topDown) {
     const floor = r.inside ? CAM.minPitch : Math.max(CAM.minPitch, pitchFloor(s.cameraDist, lowPower));
     s.cameraPitch = Math.min(CAM.maxPitch, Math.max(floor, Math.max(s.cameraPitch, floor) + inp.cameraPitchDelta));
   }
@@ -1603,7 +1697,9 @@ function step(s, inp, dt) {
     }
   }
   // Intérieur ouvert : sortie détectée, toit effacé ou rendu, lueur du meuble à fouiller.
-  interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches, daylight: atmosphere.state.daylight });
+  const lamp = gearStats(s.survivor).light; // lampe torche portée : elle porte plus loin, dehors la nuit et dans le noir des bâtiments
+  interior.update(s, dt, { time: performance.now() / 1000, reduceMotion: characters.reduceMotion.matches, daylight: atmosphere.state.daylight, lamp });
+  atmosphere.setLamp(lamp);
   atmosphere.setIndoor(!!s.interior?.entered); // ni pluie, ni neige, ni cône de lampe de nuit sous un toit
   // 7. Boutons E et R.
   updateActions(s, inp, dt, before);
@@ -1613,6 +1709,7 @@ function step(s, inp, dt) {
   // 9. Zombies : ordinaires sous le plafond de 60 (horde comprise), horde guidée par le champ de distances.
   const density = urbanDensity(s.grid, p.x, p.z);
   const desired = Math.max(0, Math.min(targetZombieCount(s.mods, density), 60 - r.hordeAlive()));
+  p.guard = gearStats(s.survivor).guard; // part des dégâts de morsure évitée par l'habillement (game.js)
   const events = s.director.update(dt, p, s.mods, {
     isNight: s.isNight, desired, field: s.field, openings: r.directorOpenings(), centre: r.anchor(), steer: interior.steerOf(s),
   });
@@ -1621,10 +1718,19 @@ function step(s, inp, dt) {
     s.spottedRecently = 4;
   }
   s.spottedRecently = Math.max(0, (s.spottedRecently ?? 0) - dt);
-  if (events.some((e) => e.type === 'bitten')) {
+  const bites = events.filter((e) => e.type === 'bitten');
+  if (bites.length) {
     s.lastBite = 3;
     son.play('bite');
     if (s.action && !s.action.inside) cancelAction(s);
+    // Chaque morsure encaissée use une pièce de protection ; une pièce brisée est dite tout de suite.
+    for (let i = 0; i < bites.length; i++) {
+      const broken = wearGuard(s.survivor);
+      if (broken) {
+        toast(`${ITEMS[broken].name} ${FEMININE_ITEMS.has(broken) ? 'brisée' : 'brisé'}`, 3, 'danger');
+        saveStore.markDirty();
+      }
+    }
   }
   if (events.some((e) => e.type === 'trap')) son.play('trap');
   s.lastBite = Math.max(0, (s.lastBite ?? 0) - dt);
@@ -1685,8 +1791,6 @@ function step(s, inp, dt) {
 }
 
 // ---------- Actions (boutons E et R, 5.1 et 5.2) ----------
-// Objets au féminin, pour « laissées sur place » et « équipée ».
-const FEMININE_ITEMS = new Set(['conserve', 'barre', 'eau', 'ferraille', 'planche', 'plaque', 'chaufferette', 'batte_cloutee', 'hache']);
 // Trajet en cours (métro, tram, train ou voiture) : rien d'autre n'est possible, le joueur est caché.
 const onTrip = (a) => a?.id === 'ride' || a?.id === 'drive';
 // Icône du bouton selon l'action (les objets du décor par leur sorte).
@@ -2014,6 +2118,7 @@ function toggleBag(s) {
     if (finds.mode() === 'bag') finds.close();
     return;
   }
+  dressing.close(); // du sac à l'habillement et retour : l'un remplace l'autre
   if (!s?.player || s.ended || session !== s || (card.isOpen() && cardInfo?.blocking)) return;
   if (asleep(s)) { toast('Tu dors : tu ne peux rien faire d\'autre', 1.5); return; }
   finds.open(s, {
@@ -2027,9 +2132,29 @@ function toggleBag(s) {
   });
 }
 
+// Touche H et bouton « Habillement » du sac : ce que le survivant porte, et les pièces du sac qu'il peut y mettre. Même règles que le
+// sac : jeu en pause, fermée pendant le sommeil, devant une carte qui attend une réponse ou après la mort ; un second appui ferme.
+function openDressing(s) {
+  if (!s?.player || s.ended || session !== s || (card.isOpen() && cardInfo?.blocking)) return;
+  if (asleep(s)) { toast('Tu dors : tu ne peux rien faire d\'autre', 1.5); return; }
+  finds.close({ silent: true });
+  dressing.open(s, {
+    onClose: () => {
+      if (session !== s) return;
+      for (const t of findsToasts.splice(0)) toast(...t);
+    },
+  });
+}
+
+function toggleDressing(s) {
+  if (dressing.isOpen()) dressing.close();
+  else openDressing(s);
+}
+
 // Fermeture sans rien dire (retour au menu, changement de monde) : les notifications en attente sont abandonnées.
 function closeFinds() {
   finds.close({ silent: true });
+  dressing.close({ silent: true });
   findsToasts = [];
 }
 
@@ -2365,13 +2490,17 @@ function pickBag(s) {
   const packKey = Object.keys(d.bag).filter((k) => ITEMS[k]?.equip === 'bag' && d.bag[k] > 0)
     .sort((a, b) => ITEMS[b].capacity - ITEMS[a].capacity)[0];
   if (packKey && equipFrom(s.survivor, packKey, d.bag)) moved += 1;
-  for (const k of Object.keys(d.bag)) moved += moveItems(d.bag, s.survivor.inventory, k, d.bag[k], bagCapacity(s.survivor));
+  // Ce qu'on portait en mourant se remet en place s'il y a la place ; une pièce qui s'use, dont l'emplacement est pris, attend au sol.
+  moved += recoverGear(s.survivor, d);
+  const held = heldOnGround(d);
+  for (const k of Object.keys(d.bag)) if (!held.has(k)) moved += moveItems(d.bag, s.survivor.inventory, k, d.bag[k], bagCapacity(s.survivor));
   if (!countOf(d.bag)) save.dropBag = null;
+  else if (!Object.keys(d.worn ?? {}).length) delete d.worn;
   if (moved) {
     toast('Sac récupéré', 2.5, 'loot');
     saveStore.flush('sac');
   }
-  if (save.dropBag) toast(leftText(d.bag), 2);
+  if (save.dropBag) toast(held.size ? `Reste au sol : ${countsLabel(d.bag)}. Retire ce que tu portes au même emplacement pour le reprendre` : leftText(d.bag), 2.5);
 }
 
 // ---------- Refuge ----------
@@ -2546,7 +2675,8 @@ function refugeView(s) {
     })),
     chest: {
       head: `Coffre ${chestN}/${cap} · Sac ${bagN}/${bagMax}`,
-      gear: `Arme : ${weapon.name}${wear} · Vêtement : ${clothing} · Sac : ${sv.pack ? ITEMS[sv.pack]?.name ?? 'Sac de base' : 'Sac de base'}`,
+      gear: [`Arme : ${weapon.name}${wear}`, `Vêtement : ${clothing}`, ...['head', 'legs', 'offhand'].filter((slot) => sv[slot]).map((slot) => `${SLOT_LABEL[slot]} : ${ITEMS[sv[slot]].name}`),
+        `Sac : ${sv.pack ? ITEMS[sv.pack]?.name ?? 'Sac de base' : 'Sac de base'}`].join(' · '),
       rows,
       buttons: [
         { action: 'prepare', arg: null, label: 'Préparer le sac', enabled: bagN < bagMax, why: 'Sac plein' },
@@ -2758,18 +2888,15 @@ function onDeath(s) {
   son.play('death');
   p.carrying = false;
   const lines = [s.deathCause && !s.lastBite ? s.deathCause : 'Les zombies ont eu raison de toi.'];
-  const weaponKey = sv.weapon?.key;
   const pen = deathPenalty(sv);
   if (countOf(pen.bag)) {
     const ll = dropAt ? s.store.proj.toLatLon(dropAt.x, dropAt.z) : playerLatLon(s);
     if (save.dropBag) lines.push('Ton ancien sac est perdu');
     save.dropBag = { lat: ll.lat, lon: ll.lon, at: Date.now(), bag: pen.bag };
+    if (Object.keys(pen.worn).length) save.dropBag.worn = pen.worn;
     const near = placeNear(s, dropAt ?? p);
-    lines.push(near ? `Ton sac est resté près ${near} : la flèche violette t'y mène` : "Ton sac est resté là où tu es tombé : la flèche violette t'y mène");
-  }
-  if (pen.lost) {
-    const name = ITEMS[weaponKey]?.one ?? 'arme';
-    lines.push(pen.broken ? `Ta ${name} s'est brisée` : `Ta ${name} est abîmée (−${pen.lost} coups)`);
+    const gear = Object.keys(pen.worn).length ? 'Ton sac et ton équipement sont restés' : 'Ton sac est resté';
+    lines.push(near ? `${gear} près ${near} : la flèche violette t'y mène` : `${gear} là où tu es tombé : la flèche violette t'y mène`);
   }
   if (s.quest) {
     s.quest = null;
@@ -2798,6 +2925,7 @@ function showCard(spec, onButton = null, { escape = null } = {}) {
   if (info.blocking) {
     minimap.close();
     finds.close();
+    dressing.close();
   }
   card.show(spec, (id, value) => {
     if (cardInfo === info) cardInfo = null;
@@ -2822,7 +2950,7 @@ function pressCard(id) {
 function toast(text, seconds = 2, kind = '', counts = null) {
   if (!session) return;
   if (kind === 'loot') son.play('tic');
-  if (finds.isOpen()) { findsToasts.push([text, seconds, kind, counts]); return; }
+  if (finds.isOpen() || dressing.isOpen()) { findsToasts.push([text, seconds, kind, counts]); return; }
   hud.toast(text, seconds, kind, counts ? Object.keys(counts).filter((k) => counts[k] > 0) : null);
 }
 
@@ -2864,7 +2992,7 @@ function hudInfo(s) {
   }
   const text = graceText(s, r.bannerText());
   return {
-    primary, secondary, arrows, target,
+    primary, secondary, arrows, target, anchorDy: s.anchorDy ?? 0,
     banner: text ? { text, alert: r.phase === 'alerte' } : null,
     // Ville de secours : le refuge n'y est pas, pas de ligne.
     baseLine: r.base && s.store.source === 'tiles' ? r.statusLine({ player: p }) : '',
@@ -2955,8 +3083,22 @@ function syncScene(s, dt) {
   const ik = s.interiorK ?? 0;
   s.interiorK = reduce ? topWant : topWant > ik ? Math.min(1, ik + dt / INTERIOR_CAMERA.ease) : Math.max(0, ik - dt / INTERIOR_CAMERA.ease);
   const ie = s.interiorK * s.interiorK * (3 - 2 * s.interiorK);
-  const d = s.cameraDist * (1 - INTERIOR_CAMERA.shrink * ie), pitch = s.camPitchEff + (INTERIOR_CAMERA.pitch - s.camPitchEff) * ie;
-  s.camView = { dist: d, pitch };
+  // Bâtiment ouvert : l'écran se dégage (body.indoor), le zoom ne règle plus que la vue du bâtiment, remise à 1 à chaque entrée.
+  const indoor = topWant === 1;
+  if (indoor !== !!s.indoor) { s.indoor = indoor; s.interiorZoom = 1; syncZoomButtons(s); }
+  if (document.body.classList.contains('indoor') !== indoor) document.body.classList.toggle('indoor', indoor);
+  // Intérieur : le bâtiment entier est cadré à l'écran s'il tient (la caméra vise son centre), sinon elle suit le joueur à la distance d'avant ;
+  // à la sortie le plan est défait, la dernière vue (indoorKeep) finit de s'estomper.
+  let aim = s.indoorKeep;
+  if (s.interior?.plan && topWant) {
+    const plan = s.interior.plan;
+    const iv = indoorView(plan, { yaw: alignedYaw(plan.frame, s.cameraYaw), aspect: viewAspect, base: s.cameraDist * (1 - INTERIOR_CAMERA.shrink), zoom: s.interiorZoom ?? 1, cap: Math.min(s.zoomCap, s.edgeCap) });
+    const dist = s.indoorKeep?.target > 0 && s.interiorK > 0 ? smoothZoom(s.indoorKeep.target, iv.dist, dt, reduce) : iv.dist;
+    aim = s.indoorKeep ??= {};
+    aim.target = dist; aim.cx = iv.cx; aim.cz = iv.cz; aim.k = centerWeight(iv.need, dist); aim.need = iv.need; aim.whole = iv.whole;
+  } else if (!s.interiorK) aim = s.indoorKeep = undefined;
+  const d = aim ? s.cameraDist + (aim.target - s.cameraDist) * ie : s.cameraDist * (1 - INTERIOR_CAMERA.shrink * ie), pitch = s.camPitchEff + (INTERIOR_CAMERA.pitch - s.camPitchEff) * ie;
+  s.camView = { dist: d, pitch, need: aim?.need ?? null, whole: aim?.whole ?? null, centered: aim ? aim.k * ie : 0, zoom: s.interiorZoom ?? 1 };
   // Relief : la caméra suit la hauteur du sol sous le point visé, lissée (τ = 0,2 s : pas de sautillement sur les arêtes des
   // triangles du sol), et reste à 2 m au moins au-dessus du sol à sa verticale. Sans relief, tout est à y = 0 comme avant.
   const relief = !!s.grid.terrain?.enabled;
@@ -2968,16 +3110,39 @@ function syncScene(s, dt) {
   const gy = s.groundY;
   // Intérieur, écran en portrait : la caméra vise un peu devant le joueur, qui descend sous le bandeau du haut et laisse de la place à son cône.
   const lead = viewAspect < 1 ? INTERIOR_CAMERA.lead * ie * d : 0;
-  const ax = at.x + Math.sin(s.cameraYaw) * lead, az = at.z + Math.cos(s.cameraYaw) * lead;
+  const pull = aim ? aim.k * ie : 0; // part du centrage sur le bâtiment (0 : on suit le joueur)
+  const ax = (at.x + Math.sin(s.cameraYaw) * lead) * (1 - pull) + (aim?.cx ?? 0) * pull, az = (at.z + Math.cos(s.cameraYaw) * lead) * (1 - pull) + (aim?.cz ?? 0) * pull;
+  // Vue basse (camera-basse.js) : la pose de dessus (d, pitch) glisse vers une pose derrière le personnage, à 3 ou 8 m et à peine
+  // au-dessus de l'horizon, selon la part s.lowK (0 : comme avant). La perche se raccourcit devant un mur et la caméra monte d'autant.
+  // Les murs ne sont plus découpés (ils le sont pour une caméra de dessus) ; le champ s'élargit, le brouillard suit (fogView.low).
+  const lowWant = lowActive(s) ? 1 : 0;
+  s.lowK = approachK(s.lowK, lowWant, dt, { reduce });
+  if (!!lowWant !== s.lowShown) { s.lowShown = !!lowWant; syncZoomButtons(s); }
+  s.lowSteer = lowWant === 1 && s.lowK > 0.5;
+  let pose = { dist: d, pitch, fov: FOV_TOP, aim: 1.6, above: 2, short: 0, k: 0 };
+  let basse = null;
+  if (s.lowK > 0) {
+    // Au volant, la caméra recule et monte un peu (s.carK) : la carrosserie ne cache pas la route.
+    s.carK = approachK(s.carK ?? 0, s.driving ? 1 : 0, dt, { reduce });
+    const wantD = clampBasseDist(s.lowDist, lowPower) + s.carK * BASSE.follow.dist, wantP = s.lowPitch + s.carK * BASSE.follow.pitch;
+    const wantH = wantD * Math.cos(wantP);
+    s.boomH = boomSmooth(s.boomH, lowWant ? boomLimit(s.grid, at.x, at.z, s.cameraYaw, wantH) : wantH, dt, reduce);
+    basse = lowPose({ dist: wantD, pitch: wantP, aspect: camera.aspect, limit: s.boomH });
+    pose = blendPose(pose, basse, s.lowK);
+  }
+  if (Math.abs(camera.fov - pose.fov) > 0.02) { camera.fov = pose.fov; camera.updateProjectionMatrix(); }
+  s.camPose = pose;
   camera.position.set(
-    ax - Math.sin(s.cameraYaw) * Math.cos(pitch) * d,
-    gy + 1.6 + Math.sin(pitch) * d,
-    az - Math.cos(s.cameraYaw) * Math.cos(pitch) * d,
+    ax - Math.sin(s.cameraYaw) * Math.cos(pose.pitch) * pose.dist,
+    gy + pose.aim + Math.sin(pose.pitch) * pose.dist,
+    az - Math.cos(s.cameraYaw) * Math.cos(pose.pitch) * pose.dist,
   );
-  if (relief) camera.position.y = Math.max(camera.position.y, groundAt(s.grid, camera.position.x, camera.position.z) + 2);
-  camera.lookAt(ax, gy + 1.6, az);
+  if (relief) camera.position.y = Math.max(camera.position.y, groundAt(s.grid, camera.position.x, camera.position.z) + pose.above);
+  const ahead = pose.short * BASSE.lookAhead; // perche raccourcie : le regard passe devant le personnage
+  camera.lookAt(ax + Math.sin(s.cameraYaw) * ahead, gy + pose.aim, az + Math.cos(s.cameraYaw) * ahead);
   cutaway.player.value.set(at.x, gy + 1.2, at.z);
   cutaway.camera.value.copy(camera.position);
+  cutaway.radius.value = CUT_RADIUS * (1 - pose.k);
   // Brouillard : même voile autour du joueur à toute distance, ramené devant le premier sol non construit visible. Le
   // trou le plus proche est rattrapé tout de suite et ne se relâche qu'en douceur (τ = 0,3 s). Au refuge, la caméra vise
   // le bâtiment alors que le monde est construit autour du joueur : l'écart est retiré du rayon couvert.
@@ -2986,11 +3151,14 @@ function syncScene(s, dt) {
   const off = Math.hypot(at.x - p.x, at.z - p.z);
   fogView.dist = d; fogView.pitch = pitch; fogView.aspect = viewAspect; fogView.radius = s.viewRadius;
   fogView.covered = s.coveredFog - off;
+  fogView.low = pose.k; fogView.danger = danger;
+  if (basse) { fogView.lowDist = basse.dist; fogView.lowPitch = basse.pitch; fogView.lowFov = basse.fov; }
   atmosphere.setView(fogView);
 
   // Joueur et zombies : marche, coups, éclairs, ombres de contact ; puis petite secousse de caméra
   // quand un coup porte ou qu'un zombie mord (aucune en mouvement réduit). Au refuge, le joueur est caché.
-  for (const m of playerMeshes) m.visible = !p.hidden && !s.driving;
+  // Vue basse : le personnage disparaît quand la perche est si courte que son dos remplirait l'écran (dos au mur).
+  for (const m of playerMeshes) m.visible = !p.hidden && !s.driving && !(pose.k > 0.5 && pose.dist < 1.5);
   document.body.classList.toggle('driving', !!s.driving);
   s.sightAt = INTERIOR_DARK && s.interior?.entered ? interiorView.shadow.lightAtWorld : null; // zombies dans le noir : cachés
   characters.sync(s, dt, camera, atmosphere.state.daylight);
@@ -3001,6 +3169,20 @@ function syncScene(s, dt) {
   frustumMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   frustum.setFromProjectionMatrix(frustumMatrix);
 
+  // Boussole et roue des gestes sont centrées sur le personnage, qui descend dans l'image en vue basse (variable CSS --anchor-dy).
+  s.anchorDy = 0;
+  if (pose.k > 0) {
+    anchorAt.set(at.x, gy + 1, at.z).project(camera);
+    s.anchorDy = Math.round(pose.k * (((1 - anchorAt.y) / 2) * window.innerHeight - window.innerHeight / 2));
+  }
+  if (s.anchorDy !== anchorShown) {
+    anchorShown = s.anchorDy;
+    document.documentElement.style.setProperty('--anchor-dy', `${anchorShown}px`);
+  }
+  // Vue basse : flèches sur le bord de l'écran vers les zombies que le champ ne montre pas.
+  if (pose.k > 0.6 && !r.inside && !p.hidden && !s.ended) {
+    flancs.update(flankAlerts({ x: p.x, z: p.z, yaw: s.cameraYaw, half: halfFovH(pose.fov, camera.aspect), zombies: s.director.zombies }), window.innerWidth, window.innerHeight);
+  } else flancs.clear();
   syncBase(s, dt);
   propsView.update(dt);
   if (onlineOn) {
@@ -4007,6 +4189,7 @@ const debug = DEBUG ? {
       entry: { x: plan.entry.ox, z: plan.entry.oz, ix: plan.entry.ix, iz: plan.entry.iz, nx: plan.entry.nx, nz: plan.entry.nz }, status: interior.status(s, b, plan),
       // Vue de dessus et noir : ouverture de la caméra (0 à 1), tangage et distance vus, noir ouvert, éclairement au joueur et à 6 m derrière lui.
       top: { k: s.interiorK ?? 0, pitch: s.camView?.pitch ?? null, dist: s.camView?.dist ?? null, yaw: s.cameraYaw, dark: interiorView.shadow.active,
+        need: s.camView?.need ?? null, whole: s.camView?.whole ?? null, centered: s.camView?.centered ?? 0, zoom: s.camView?.zoom ?? 1, want: s.zoomWant,
         lit: interiorView.shadow.lightAtWorld(s.player.x, s.player.z), behind: interiorView.shadow.lightAtWorld(s.player.x - Math.sin(s.player.yaw) * 6, s.player.z - Math.cos(s.player.yaw) * 6) },
     };
   },
@@ -4030,7 +4213,26 @@ const debug = DEBUG ? {
       want: s.zoomWant, dist: s.cameraDist, pitch: s.camPitchEff, radius: s.viewRadius, covered: s.covered, coveredFog: s.coveredFog,
       cap: s.zoomCap, edgeCap: s.edgeCap, goal: s.zoomGoal, limited: s.zoomLimited,
       aspect: viewAspect, visibility: atmosphere.state.visibility, fog: { near: scene.fog.near, far: scene.fog.far },
+      basse: {
+        mode: s.viewMode, k: s.lowK, dist: s.lowDist, pitch: s.lowPitch, boom: s.boomH, steer: s.lowSteer, idle: s.lookIdle,
+        pose: s.camPose ? { dist: s.camPose.dist, pitch: s.camPose.pitch, fov: s.camPose.fov, k: s.camPose.k } : null,
+        fov: camera.fov, cutRadius: cutaway.radius.value,
+      },
     };
+  },
+  // Vue basse : choix (true : basse, false : de dessus), avec now la caméra y est tout de suite ; dist, pitch et yaw au choix.
+  basse(on, { now = true, dist, pitch, yaw } = {}) {
+    const s = session;
+    if (!s) return null;
+    s.viewMode = on ? 'basse' : 'dessus';
+    viewPrefs.mode = s.viewMode;
+    if (Number.isFinite(dist)) s.lowDist = clampBasseDist(dist, lowPower);
+    if (Number.isFinite(pitch)) s.lowPitch = clampBassePitch(pitch);
+    if (Number.isFinite(yaw)) s.cameraYaw = yaw;
+    if (now) s.lowK = lowActive(s) ? 1 : 0;
+    syncViewButton(s);
+    syncZoomButtons(s);
+    return debug.view();
   },
   // Distance voulue (bornée à l'appareil) ; avec now, la caméra y est tout de suite (le tangage suit à l'image suivante).
   zoom(d, { now = false } = {}) {
@@ -4100,7 +4302,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, finds, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail, son } : {}),
+  saveStore, picker, renderer, finds, dressing, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail, son } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.

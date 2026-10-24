@@ -287,7 +287,9 @@ export function createCarGame(host) {
     let want = null;
     if (len > 0.1) {
       const mx = len > 1 ? inp.move.x / len : inp.move.x, my = len > 1 ? inp.move.y / len : inp.move.y;
-      const sin = Math.sin(s.cameraYaw), cos = Math.cos(s.cameraYaw);
+      // Vue basse (camera-basse.js) : la caméra suit la voiture, la poussée se lit par rapport à son cap (en avant : tout droit).
+      const ref = s.lowSteer ? d.yaw : s.cameraYaw;
+      const sin = Math.sin(ref), cos = Math.cos(ref);
       want = { m: Math.min(1, len), heading: Math.atan2(-mx * cos + my * sin, mx * sin + my * cos) };
     }
     Object.assign(d, driveStep(d, want, dt, mods.traction ?? 1));

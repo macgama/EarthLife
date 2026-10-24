@@ -20,6 +20,18 @@ const TABLE = {
   sac_randonnee: [{ tissu: 3, ruban: 2 }, { sac_randonnee: 1 }, null, null, null],
   sac_renforce: [{ tissu: 6, ruban: 3, ferraille: 2 }, { sac_renforce: 1 }, null, 'etabli', null],
   poncho: [{ tissu: 2, ruban: 2 }, { poncho: 1 }, null, null, null],
+  // Habillement : le chaud et l'imperméable se cousent dehors, la protection (casque, pantalon et gilet renforcés, pied-de-biche) demande l'établi.
+  bonnet: [{ tissu: 2 }, { bonnet: 1 }, null, null, null],
+  chapeau_pluie: [{ tissu: 2, ruban: 1 }, { chapeau_pluie: 1 }, null, null, null],
+  collant_thermique: [{ tissu: 3 }, { collant_thermique: 1 }, null, null, null],
+  pantalon_pluie: [{ tissu: 3, ruban: 2 }, { pantalon_pluie: 1 }, null, null, null],
+  pantalon_travail: [{ tissu: 3, ruban: 1 }, { pantalon_travail: 1 }, null, null, null],
+  bouclier_fortune: [{ planche: 2, clous: 2, ruban: 1 }, { bouclier_fortune: 1 }, null, null, null],
+  lampe_torche: [{ batterie: 1, ferraille: 1, ruban: 1 }, { lampe_torche: 1 }, null, null, null],
+  casque_chantier: [{ plaque: 1, tissu: 1, ruban: 1 }, { casque_chantier: 1 }, null, 'etabli', null],
+  pantalon_renforce: [{ tissu: 3, ferraille: 2, ruban: 2 }, { pantalon_renforce: 1 }, null, 'etabli', null],
+  gilet_renforce: [{ tissu: 4, plaque: 2, ruban: 2 }, { gilet_renforce: 1 }, null, 'etabli', null],
+  pied_de_biche: [{ ferraille: 3, clous: 1 }, { pied_de_biche: 1 }, null, 'etabli', null],
   leurre: [{ ferraille: 1, ruban: 1 }, { leurre: 1 }, null, null, null],
   etabli: [{ bois: 4, clous: 3, ferraille: 2 }, null, 'etabli', null, 'etabli'],
   hache: [{ bois: 1, ferraille: 2, ruban: 1 }, { hache: 1 }, null, 'etabli', null],
@@ -34,7 +46,7 @@ const TABLE = {
   bouillir_eau: [{ eau_riviere: 1 }, { eau_bouillie: 1 }, null, 'feu', null],
 };
 
-test('les 21 recettes : coût exact, produit et conditions du tableau 3.3 et de la campagne', () => {
+test('les 32 recettes : coût exact, produit et conditions du tableau 3.3 et de la campagne', () => {
   assert.deepEqual(Object.keys(RECIPES), Object.keys(TABLE));
   for (const [key, [needs, makes, upgrade, requires, plan]] of Object.entries(TABLE)) {
     const r = RECIPES[key];
@@ -176,7 +188,7 @@ test('l\'équipement fabriqué s\'équipe tout seul s\'il est meilleur', () => {
 
 test('onglet Fabriquer : une ligne par recette, coût comparé au stock', () => {
   const rows = recipeRows(ctxWith({ chest: { bois: 10, clous: 3 }, bag: { bois: 2, clous: 1 } }));
-  assert.equal(rows.length, 21);
+  assert.equal(rows.length, 32);
   const planches = rows.find((r) => r.key === 'planches');
   assert.deepEqual(planches, { key: 'planches', name: 'Planches', desc: 'Donne 1 planche', cost: '2 bois (12) · 1 clou (4)', time: 4, ok: true, why: '' });
   const piege = rows.find((r) => r.key === 'piege');
@@ -272,7 +284,8 @@ const field = (bag = {}, bagCap = 30) => ({ field: true, bag, bagCap, upgrades: 
 
 test('dehors : seules les recettes sans établi ni aménagement', () => {
   const keys = Object.keys(RECIPES).filter(fieldRecipe);
-  assert.deepEqual(keys, ['planches', 'piege', 'batte_cloutee', 'bandage', 'manteau', 'sac_ecolier', 'sac_randonnee', 'poncho', 'leurre', 'canne']);
+  assert.deepEqual(keys, ['planches', 'piege', 'batte_cloutee', 'bandage', 'manteau', 'sac_ecolier', 'sac_randonnee', 'poncho',
+    'bonnet', 'chapeau_pluie', 'collant_thermique', 'pantalon_pluie', 'pantalon_travail', 'bouclier_fortune', 'lampe_torche', 'leurre', 'canne']);
   for (const key of ['plaque', 'hache', 'sac_renforce', 'etabli', 'recuperateur', 'sirene', 'feu', 'griller_poisson', 'bouillir_eau']) {
     const full = { tissu: 9, ruban: 9, ferraille: 9, bois: 9, clous: 9 };
     assert.deepEqual(canCraft(key, field(full)), { ok: false, why: 'À faire au refuge' }, key);
@@ -347,13 +360,13 @@ test('sac renforcé : 60 places, à fabriquer au refuge avec un établi', () => 
 });
 
 test('dehors : bruit (coudre 4 m, marteler 12 m) et recettes possibles', () => {
-  assert.deepEqual(['bandage', 'manteau', 'sac_ecolier', 'sac_randonnee', 'poncho'].map(craftNoise), [4, 4, 4, 4, 4]);
-  assert.deepEqual(['planches', 'piege', 'batte_cloutee', 'leurre'].map(craftNoise), [12, 12, 12, 12]);
+  assert.deepEqual(['bandage', 'manteau', 'sac_ecolier', 'sac_randonnee', 'poncho', 'bonnet', 'collant_thermique'].map(craftNoise), [4, 4, 4, 4, 4, 4, 4]);
+  assert.deepEqual(['planches', 'piege', 'batte_cloutee', 'leurre', 'bouclier_fortune', 'lampe_torche'].map(craftNoise), [12, 12, 12, 12, 12, 12]);
   assert.equal(craftNoise('inconnue'), 0);
   assert.equal(fieldReady({}), 0);
   assert.equal(fieldReady(null), 0);
-  // 2 tissus : le bandage ; 2 tissus et 1 ruban : bandage et sac d'écolier ; l'établi et la plaque ne comptent jamais.
-  assert.equal(fieldReady({ tissu: 2 }), 1);
-  assert.equal(fieldReady({ tissu: 2, ruban: 1 }), 2);
+  // 2 tissus : le bandage et le bonnet ; 2 tissus et 1 ruban : en plus le sac d'écolier et le chapeau de pluie ; l'établi et la plaque ne comptent jamais.
+  assert.equal(fieldReady({ tissu: 2 }), 2);
+  assert.equal(fieldReady({ tissu: 2, ruban: 1 }), 4);
   assert.equal(fieldReady({ bois: 4, clous: 3, ferraille: 3 }), 3, 'planches, piège, batte cloutée ; pas la plaque ni l\'établi');
 });

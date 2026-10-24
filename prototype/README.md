@@ -86,6 +86,7 @@ Règles et lecteurs partagés avec le serveur dans `src/net/amis.js`, textes et 
 | Courir | Maj | Bouton Courir, ou joystick poussé au bout |
 | Frapper | Espace ou clic | Bouton Frapper |
 | Caméra | Glisser la souris, J et L | Glisser à droite de l'écran |
+| Vue basse derrière le personnage (ou retour à la vue de dessus) | G, bouton à côté de − et + | Bouton à côté de − et + (caché sur les écrans trop bas, comme − et +) |
 | Zoomer, dézoomer | Molette, + et −, boutons + et − | Pincer à deux doigts, boutons + et − |
 | Carte des environs : agrandir, réduire | C, ou clic sur la carte | Toucher la carte |
 | Action principale : entrer dans un bâtiment, fouiller, entrer au refuge, sortir, clouer, démonter, abattre, cueillir, puiser, pêcher, ouvrir « Ta voiture », descendre de voiture | E, contre un mur ou près de l'objet | Bouton centré en bas |
@@ -98,6 +99,8 @@ Règles et lecteurs partagés avec le serveur dans `src/net/amis.js`, textes et 
 | Manger, boire, se soigner, se réchauffer | 1, 2, 3, 4 | Boutons du sac |
 
 Une action chronométrée (fouille, clouage, démontage) s'arrête si on bouge, si on frappe ou si on est mordu.
+
+**Vue basse.** Par défaut la caméra est de dessus. Le bouton « vue basse » (touche G) la descend derrière le personnage, à la troisième personne (style GTA) : champ de 66° en portrait et 56° sur un écran large (48° de dessus), 5,5 m derrière le joueur et un peu au-dessus de l'horizon ; la bascule dure 0,6 s, les murs ne sont plus découpés, le brouillard se règle sur la nouvelle vue (même visibilité qu'en vue de dessus, jamais plus que le monde construit, 52 m au plus pendant l'alerte et la vague). Le choix est gardé d'une visite à l'autre (`localStorage['earthlife.vue']`, clé `mode`), `?vue=basse` ou `?vue=dessus` le force pour une visite. Pouce droit (ou souris) : de côté la caméra tourne, de haut en bas elle se baisse ou se monte, le pincement (ou − et +) la rapproche (2,8 à 12 m, 9 m au plus sur téléphone). Elle revient lentement derrière le personnage quand le pouce gauche pousse presque tout droit (pas pile : un pouce qui dérive ne tourne pas la caméra) et que le pouce droit est au repos ; au volant elle recule de 4 m et suit le cap de la voiture toute seule. Contre un mur, la perche se raccourcit (la caméra monte et le regard passe devant le personnage, qui disparaît si elle est trop courte). Les zombies hors du champ montrent une flèche sur le bord de l'écran (en chasse à 20 m, errants à 8 m, quatre au plus). Dans un bâtiment ouvert et au refuge, la caméra reste de dessus (le noir « Bullet Echo » est un plan à hauteur de lampe) : la vue basse reprend dehors. Règles pures dans `src/camera-basse.js` (perche, pose, brouillard, recentrage, flèches), dessin des flèches dans `src/flancs.js`, tests dans `test/camera-basse.test.js` et `test/camera-acceptance.mjs` (`ONLY=desktop` ou `mobile`).
 
 La carte des environs tourne avec la caméra (le haut de la carte est le regard, le « N » marque le nord) ; elle montre les rues, le bâti et l'eau déjà chargés, le joueur, le refuge, la mission, le sac perdu, les zombies proches et les fronts de la horde. Elle est en bas à gauche sur ordinateur et tablette ; sur téléphone tactile, en haut à droite sous les jauges, pour laisser le coin du joystick au pouce gauche. La constante `PHONE_MAP_CORNER` de `src/minimap.js` (`'haut-droite'` ou `'bas-gauche'`) choisit ce coin ; agrandie, la carte va en haut à droite à l'horizontale dans les deux cas. Sur un téléphone en portrait, la place dépend de la hauteur visible sous les barres du navigateur : 120 px et boutons dessous à partir de 780 px (735 sans leurre), puis 72 px (64 sur un écran étroit) avec les boutons à sa droite, sans boutons quand la colonne du sac monte jusqu'à eux (700 px avec le leurre, 645 sans ; le pincement reste), et rien sous 624 px (iPhone SE dans Safari : pas de place au-dessus des notifications).
 
@@ -229,6 +232,22 @@ node test/trouvailles-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou
 
 Le script fouille un bâtiment de Lyon depuis sa façade (butin tiré d'une graine fixée avec `debug.lootSeed`, `?trouve=1`), sur ordinateur puis sur téléphone : la fenêtre s'ouvre, le sac n'a rien reçu et le jeu est en pause (la faim ne baisse pas), la fenêtre tient dans l'écran sans défilement horizontal, boutons et cases de 44 px au moins, butin au-dessus du sac (téléphone) ou à sa gauche ; la batte cloutée est signalée « Mieux », choisie, puis portée ; une pile entière entre dans le sac ; le sac plein grise « Prendre » et « Tout prendre » avec son motif, laisser des planches libère des places que le sélecteur de quantité règle ; « Laisser le reste » (ou Échap) ferme, la notification dit ce qui reste et le jeu reprend ; une seconde fouille se vide d'un « Tout prendre » et se ferme sur « Terminé ». La puce « Ouvrir » : première puce du sac, sans recouvrir un autre bouton, la pastille compte les places prises ; elle ouvre la fenêtre en une colonne et en pause, jette une pile, la reprend, en jette une autre ; la fermeture perd ce qui reste jeté et le dit, la touche I ouvre et Échap ferme sur ordinateur. La CI le lance après l'acceptation des intérieurs ; il bloque la publication.
 
+### Acceptation de la vue basse
+
+```sh
+node test/camera-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobile) ; captures dans browser-shots/camera
+```
+
+Le script joue la caméra basse à Lyon, sur ordinateur puis sur téléphone : la vue de dessus reste celle du départ (champ 48°, découpe des murs, rien d'écrit dans les réglages), le bouton (touche G) passe en vue basse et le choix est gardé et relu après un rechargement, puis le retour rend la vue de dessus ; dos à un mur la perche se raccourcit et la caméra reste hors du bâtiment, puis reprend sa longueur ; sur téléphone, le pouce droit tourne et baisse la caméra, un pincement l'approche ; le recentrage ne bouge pas pour une poussée tout droit et suit une poussée un peu de côté ; des flèches montrent les zombies hors du champ (aucune en vue de dessus) ; sur ordinateur, le bouton + rapproche la caméra, un bâtiment ouvert la remet de dessus (le bouton reste enfoncé) et la vue basse revient dehors, et au volant elle recule puis revient derrière la voiture qui roule. La CI le lance dans son propre travail, `acceptance-camera` ; il bloque la publication.
+
+### Acceptation de la fenêtre « Habillement »
+
+```sh
+node test/habillement-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobile) ; captures dans browser-shots/habillement
+```
+
+Le script remplit le sac de pièces (bonnet, casques, blouson, pantalon, lampe, bouclier), ouvre « Habillement » (bouton du sac sur téléphone, touche H sur ordinateur), vérifie la pause du jeu, la tenue dans l'écran, des boutons et cases de 44 px au moins, puis porte les pièces une à une : effets cumulés, usure de douze morsures, « Retirer » (pièce intacte au sac, pièce entamée jetée), sauvegarde, mort (tout ce qui est porté tombe avec le sac, avec son usure) et reprise du sac. Une capture du personnage de près montre l'habillement porté. Règles dans `src/survival.js` (`ITEMS`, `gearStats`, `wearGuard`, `deathPenalty`), fenêtre dans `src/habillement.js`, silhouette dans `src/characters.js` (`dressLook`), lampe torche dans `src/interieur-lumiere.js` (`LUMIERE_LAMPE`) et `src/atmosphere.js` (`setLamp`).
+
 ## Organisation
 
 - `src/picker.js` : carte du monde du menu, recherche et choix du lieu
@@ -251,6 +270,7 @@ Le script fouille un bâtiment de Lyon depuis sa façade (butin tiré d'une grai
 - `src/trouvailles.js` : fenêtre « Trouvé » et fenêtre du sac (butin d'une fouille face au sac, ou le sac seul : prendre, laisser, jeter, équiper ; règles et page pures, contrôleur du DOM)
 - `src/scene.js`, `src/atmosphere.js` : rendu Three.js, façades et fenêtres, balise de quête, ciel, pluie, neige, éclairs
 - `src/minimap.js` : carte des environs (canvas 2D tourné avec la caméra, fond dessiné par tranches dans un cache, repères, garde-fou qui l'écarte des autres panneaux, carte agrandie)
+- `src/camera-basse.js`, `src/flancs.js` : vue basse derrière le personnage (pose, perche contre les murs, brouillard, recentrage, suivi de la voiture) et flèches vers les zombies hors du champ
 - `src/view.js` : zoom de la caméra (de 18 à 72 m, 56 m sur téléphone), tangage plancher, rayon construit et brouillard qui cache le bord du monde, réglage gardé (`localStorage['earthlife.vue']`)
 - `src/characters.js` : joueur et zombies low-poly animés (un seul appel de dessin pour tous les zombies), ombres de contact
 - `src/icons.js` : icônes de l'interface (SVG au trait, `data-icon` dans la page)
