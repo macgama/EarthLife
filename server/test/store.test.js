@@ -617,6 +617,12 @@ for (const B of BACKENDS) {
       assert.deepEqual(await join(73, eh(5)), { ok: true, fid: id(573), other: id(71) });
       assert.deepEqual((await s.friendsOf(id(71))).map((f) => [f.fid, f.nm]), [[id(572), [2, 14, 27]], [id(573), null]]);
       assert.deepEqual(await s.friendsOf(id(73)), [{ fid: id(573), nm: [1, 7, 27], since: day(T0) }]);
+      // Identités des amis (route where) : la sienne et celle de chaque ami, null pour un compte sans identité.
+      const fp = async (n) => { const r = await s.friendPlayers(id(n)); return { mine: r.mine, list: r.list.sort((x, y) => (x.fid < y.fid ? -1 : 1)) }; };
+      assert.deepEqual(await fp(71), { mine: id(1), list: [{ fid: id(572), pid: id(2) }, { fid: id(573), pid: null }] });
+      assert.deepEqual(await fp(73), { mine: null, list: [{ fid: id(573), pid: id(1) }] });
+      assert.deepEqual(await fp(74), { mine: id(3), list: [] });
+      assert.deepEqual(await s.friendPlayers(id(99)), { mine: null, list: [] }, 'compte inconnu');
       // Identités masquées l'une pour l'autre : pas d'amitié, le code reste valable.
       await s.addBlock(id(1), id(3), day(T0));
       await put(71, eh(6));

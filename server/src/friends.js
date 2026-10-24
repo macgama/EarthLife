@@ -1,10 +1,10 @@
-// Amis (cahier « Amis, jouer ensemble et se partager des sacs », étape 1) : routes /v1/friends/{list,code,join,remove,block}.
+// Amis (cahier « Amis, jouer ensemble et se partager des sacs », étape 1) : routes /v1/friends/{list,where,code,join,remove,block} (where : étape 2).
 // Appelé par accounts.js, dont il partage la session (auth), les réponses de refus et les tables de limites : une amitié lie
 // deux COMPTES, et seul un compte connecté peut en avoir. Ne connaît ni http ni MariaDB (le magasin est injecté).
 // Jamais au journal : code d'ami, identifiant de compte, d'identité ou d'amitié, surnom.
 // Rien n'est dit de l'autre joueur à celui qui se trompe : code inconnu, périmé, déjà pris, de soi-même, d'un joueur masqué ou
 // d'un compte qui a 30 amis, c'est la même réponse 'ami-code' (comme les comptes, 2.7 : pas d'énumération).
-import { parseFriendsReq, FRIEND_RULES as R, FRIEND_ALPHABET } from '../../prototype/src/net/amis.js';
+import { parseFriendsReq, FRIEND_RULES as R, FRIEND_ALPHABET, shareE6 } from '../../prototype/src/net/amis.js';
 import { dayOf } from './rules.js';
 
 const MIN = 60000, HOUR = 3600000;
@@ -42,6 +42,26 @@ export function createFriends({
     if (slow) return slow;
     const [friends, pending] = await Promise.all([store.friendsOf(s.sess.accountId), store.friendCodeOf(s.sess.accountId, now())]);
     return ok({ friends, pending, max: R.max });
+  }
+
+  // Où sont mes amis (menu, toutes les 20 s) : pour chacun, ne joue pas (0), joue sans position partagée (1) ou position partagée (2).
+  // Position partagée = celle que le jeu montrerait aux autres joueurs à cet instant (room.presenceOf : ni menu, ni zone privée,
+  // ni couronne, ni bâtiment) ; elle est arrondie à ~55 m, et en saison on ne donne que la ville. Un ami qui a bloqué ce joueur
+  // paraît hors ligne ; un ami sans identité aussi. Rien n'est gardé ni journalisé.
+  async function where(text) {
+    const s = await session('where', text);
+    if (s.out) return s.out;
+    const slow = throttled(s.sess);
+    if (slow) return slow;
+    const { mine, list } = await store.friendPlayers(s.sess.accountId);
+    const out = list.map(({ fid, pid }) => {
+      const p = pid ? room?.presenceOf?.(pid, mine) : null;                // `mine` null : pas encore d'identité, donc rien de masqué
+      if (!p) return { fid, st: 0 };
+      if (!p.pos) return { fid, st: 1 };
+      if (p.world) return { fid, st: 2, lv: p.world.level, cm: p.world.commune };
+      return { fid, st: 2, a: shareE6(p.pos.a), o: shareE6(p.pos.o) };
+    });
+    return ok({ where: out });
   }
 
   // Un nouveau code remplace le précédent (un seul à la fois) ; rendu en clair cette fois seulement, il n'est gardé que haché.
@@ -124,7 +144,7 @@ export function createFriends({
   }
 
   return {
-    routes: { '/v1/friends/list': list, '/v1/friends/code': code, '/v1/friends/join': join, '/v1/friends/remove': remove, '/v1/friends/block': block },
+    routes: { '/v1/friends/list': list, '/v1/friends/where': where, '/v1/friends/code': code, '/v1/friends/join': join, '/v1/friends/remove': remove, '/v1/friends/block': block },
     tables: [reads, codes, joinFails, ipFails],
     // Compteurs depuis l'appel précédent, puis remise à zéro (mesures de 5 minutes d'accounts.stats).
     stats() {
