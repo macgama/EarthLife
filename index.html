@@ -881,6 +881,8 @@ body.touch #controls { display: block; }
 .round { position: absolute; isolation: isolate; display: grid; place-items: center; align-content: center; gap: 3px; border-radius: 50%; color: var(--c-text); pointer-events: auto; touch-action: none; transition: transform var(--t-fast) var(--ease-std); }
 .round-icon { display: inline-flex; }
 .round-label { font: var(--fw-semibold) 10px / 1 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
+/* Au volant (conduite.js) : ni coup, ni course, ni tir ; E descend. */
+body.driving #attack, body.driving #run, body.driving #use-shoot { display: none; }
 #attack { right: calc(var(--hud-r) + 10px); bottom: calc(var(--hud-b) + 18px); width: var(--btn-attack); height: var(--btn-attack); border: 2px solid color-mix(in srgb, var(--c-danger) 75%, transparent); background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--c-danger) 34%, transparent), var(--c-panel) 72%); }
 #attack .icon { width: 34px; height: 34px; }
 #attack::after { content: ''; position: absolute; z-index: -1; inset: -2px; border-radius: 50%; background: color-mix(in srgb, var(--c-danger) 50%, transparent); box-shadow: var(--glow-danger); opacity: 0; transition: opacity var(--t-fast) var(--ease-std); }
