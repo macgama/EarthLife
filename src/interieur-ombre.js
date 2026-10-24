@@ -5,7 +5,7 @@
 // zombies, autres survivants) l'est parce que ce plan le recouvre. Construit à « Entrer », défait à la sortie.
 import * as THREE from 'three';
 import {
-  LUMIERE, blockersOf, castAll, markSeen, contactShade, outsideMask, lampDir, toPlanUV, approachAngle, lightAt,
+  LUMIERE, lumiereOf, blockersOf, castAll, markSeen, contactShade, outsideMask, lampDir, toPlanUV, approachAngle, lightAt,
 } from './interieur-lumiere.js';
 
 const HEIGHT = 1.25;     // m : le plan sombre, au-dessus des cloisons (1,1 m), à hauteur des murs de façade (1,5 m)
@@ -115,7 +115,7 @@ export function createShadow(scene) {
     scene.add(mesh);
     return {
       plan, blockers: blockersOf(plan), mesh, geo, material, visTex, visData, seenTex, seenData,
-      lamp: { u: 0, v: 0, dir: 0, vis: new Float32Array(n) }, cast: { u: NaN, v: NaN, dir: NaN }, dirSet: false, sinceSeen: 0, ownField: null,
+      lamp: { u: 0, v: 0, dir: 0, vis: new Float32Array(n) }, cast: { u: NaN, v: NaN, dir: NaN, range: NaN }, o: LUMIERE, dirSet: false, sinceSeen: 0, ownField: null,
     };
   }
 
@@ -138,7 +138,7 @@ export function createShadow(scene) {
     },
 
     // Chaque image : `k` (0 à 1) l'ouverture du noir, `player` { x, z, yaw } le joueur, `daylight` (0 nuit, 1 plein jour).
-    update(dt, { k = 0, player = null, daylight = 0, reduceMotion = false } = {}) {
+    update(dt, { k = 0, player = null, daylight = 0, reduceMotion = false, lamp: lit = false } = {}) {
       const s = cur;
       if (!s) return;
       s.mesh.visible = k > 0.001 && !!player;
@@ -148,11 +148,13 @@ export function createShadow(scene) {
       const want = lampDir(plan.frame, player.yaw);
       if (!s.dirSet || reduceMotion) { lamp.dir = want; s.dirSet = true; } else lamp.dir = approachAngle(lamp.dir, want, 1 - Math.exp(-dt / TURN_TAU));
       lamp.u = p.u; lamp.v = p.v;
-      if (Math.hypot(p.u - s.cast.u, p.v - s.cast.v) > MOVE_EPS || !(s.cast.u === s.cast.u)) {
-        castAll(plan, s.blockers, p.u, p.v, lamp.vis);
-        for (let i = 0; i < lamp.vis.length; i++) s.visData[i] = Math.min(255, Math.round((255 * lamp.vis[i]) / LUMIERE.range));
+      const o = lumiereOf(lit);
+      s.o = o;
+      if (Math.hypot(p.u - s.cast.u, p.v - s.cast.v) > MOVE_EPS || !(s.cast.u === s.cast.u) || s.cast.range !== o.range) {
+        castAll(plan, s.blockers, p.u, p.v, lamp.vis, o.range);
+        for (let i = 0; i < lamp.vis.length; i++) s.visData[i] = Math.min(255, Math.round((255 * lamp.vis[i]) / o.range));
         s.visTex.needsUpdate = true;
-        s.cast.u = p.u; s.cast.v = p.v;
+        s.cast.u = p.u; s.cast.v = p.v; s.cast.range = o.range;
         s.dirty = true;
       }
       if (Math.abs(lamp.dir - s.cast.dir) > TURN_EPS || !(s.cast.dir === s.cast.dir)) { s.cast.dir = lamp.dir; s.dirty = true; }
@@ -160,11 +162,13 @@ export function createShadow(scene) {
       if (s.dirty && s.sinceSeen >= SEEN_EVERY && k > 0.5) {
         s.sinceSeen = 0;
         s.dirty = false;
-        if (markSeen(plan, lamp, s.seenData)) s.seenTex.needsUpdate = true;
+        if (markSeen(plan, lamp, s.seenData, o)) s.seenTex.needsUpdate = true;
       }
       const u = s.material.uniforms;
       u.uLamp.value.set(p.u, p.v);
-      u.uBeam.value.x = lamp.dir;
+      u.uBeam.value.set(lamp.dir, o.half, o.edge, o.range);
+      u.uMore.value.x = o.ambient;
+      u.uMore.value.y = o.range;
       const t = Math.max(0, Math.min(1, daylight));
       u.uDark.value.set(lerp(DARK.unseen[0], DARK.unseen[1], t), lerp(DARK.seen[0], DARK.seen[1], t), lerp(DARK.outside[0], DARK.outside[1], t), k);
     },
@@ -174,7 +178,7 @@ export function createShadow(scene) {
       const s = cur;
       if (!s || !s.mesh.visible) return 1;
       const q = toPlanUV(s.plan.frame, x, z);
-      return lightAt(s.lamp, q.u, q.v);
+      return lightAt(s.lamp, q.u, q.v, s.o);
     },
 
     // Pièces déjà vues (tests, captures).

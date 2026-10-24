@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { daylight } from './sun.js';
 import { setWorldWeather } from './scene.js';
 import { ZOOM, fogRange } from './view.js';
+import { fogRangeBasse } from './camera-basse.js';
 
 const DEG = Math.PI / 180;
 
@@ -22,6 +23,21 @@ export function createAtmosphere(scene, { lowPower }) {
   scene.add(torch, torch.target);
   const beam = torchBeam();
   scene.add(beam);
+  // Une lampe torche portée (survival.js, `light`) : la nuit, le faisceau est plus fort, plus large et porte plus loin.
+  const LAMP = { intensity: 1.6, distance: 58, angle: 0.74, beam: 1.3 };
+  let torchBase = 0, lampOn = false;
+  function applyTorch() {
+    torch.intensity = torchBase * (lampOn ? LAMP.intensity : 1);
+    torch.distance = lampOn ? LAMP.distance : 40;
+    torch.angle = lampOn ? LAMP.angle : 0.6;
+    beam.scale.setScalar(lampOn ? LAMP.beam : 1);
+    beam.visible = torch.intensity > 0 && !indoor;
+  }
+  function setLamp(on) {
+    if (lampOn === !!on) return;
+    lampOn = !!on;
+    applyTorch();
+  }
   // Halo autour du joueur la nuit, placé haut pour éclairer large sans brûler le personnage.
   const lantern = new THREE.PointLight(0xffd9a0, 0, 34, 1.3);
   scene.add(lantern);
@@ -30,7 +46,8 @@ export function createAtmosphere(scene, { lowPower }) {
   scene.background = new THREE.Color(0xa9cde8);
   // Vue de la caméra (zoom, src/view.js) ; avec la visibilité selon le temps (state.visibility), elle donne le
   // brouillard (applyFog).
-  const view = { dist: ZOOM.base, pitch: 1, aspect: 1.6, radius: ZOOM.radius, covered: ZOOM.radius };
+  // Vue basse (camera-basse.js) : part de la vue basse (0 à 1), distance, tangage et champ vus, alerte ou vague en cours.
+  const view = { dist: ZOOM.base, pitch: 1, aspect: 1.6, radius: ZOOM.radius, covered: ZOOM.radius, low: 0, lowDist: 5.5, lowPitch: 0.2, lowFov: 66, danger: false };
   let shadowHalf = 60;
 
   const rainCount = lowPower ? 1800 : 4500;
@@ -114,9 +131,9 @@ export function createAtmosphere(scene, { lowPower }) {
     // Aube et crépuscule : le ciel orangé réchauffe aussi la lumière ambiante (soleil trop bas pour éclairer le sol).
     hemi.color.copy(colors.hemiNight).lerp(colors.hemiSky, state.daylight).lerp(colors.dusk, duskAmount * 0.4);
     hemi.groundColor.copy(colors.hemiGroundNight).lerp(colors.hemiGround, state.daylight).lerp(colors.dusk, duskAmount * 0.2);
-    torch.intensity = state.isNight || w.kind === 'fog' ? 32 : 0;
+    torchBase = state.isNight || w.kind === 'fog' ? 32 : 0;
+    applyTorch();
     // Cône visible : plus net dans la pluie et le brouillard (les gouttes accrochent la lumière).
-    beam.visible = torch.intensity > 0;
     beam.material.uniforms.uStrength.value = (state.isNight ? 0.16 : 0.1) * (wet || w.kind === 'fog' || w.kind === 'snow' ? 1.35 : 1);
     lantern.intensity = state.daylight < 0.4 ? 22 * (1 - state.daylight) : 0;
     // Pluie un peu moins blanche la nuit, pour ne pas griser toute la vue.
@@ -141,8 +158,14 @@ export function createAtmosphere(scene, { lowPower }) {
   // autour du joueur quand la caméra recule (fogRange).
   function applyFog() {
     const f = fogRange({ visibility: state.visibility, ...view });
-    scene.fog.near = f.near;
-    scene.fog.far = f.far;
+    let { near, far } = f;
+    if (view.low > 0) {
+      const g = fogRangeBasse({ visibility: state.visibility, dist: view.lowDist, pitch: view.lowPitch, aspect: view.aspect, fov: view.lowFov, radius: view.radius, covered: view.covered, danger: view.danger });
+      near += (g.near - near) * view.low;
+      far += (g.far - far) * view.low;
+    }
+    scene.fog.near = near;
+    scene.fog.far = far;
   }
 
   // Ombre du soleil : sa boîte suit la distance de la caméra (±60 m jusqu'à 28 m, ±120 m au plus) ; carte de 1024
@@ -155,11 +178,15 @@ export function createAtmosphere(scene, { lowPower }) {
     sun.shadow.camera.updateProjectionMatrix();
   }
 
-  // Vue de la caméra à chaque image : { dist, pitch, aspect, radius, covered } (main.js, syncScene) ; rien à refaire
+  // Vue de la caméra à chaque image : { dist, pitch, aspect, radius, covered, low, lowDist, lowPitch, lowFov, danger } (main.js, syncScene) ; rien à refaire
   // quand elle n'a pas bougé.
   function setView(v) {
-    if (v.dist === view.dist && v.pitch === view.pitch && v.aspect === view.aspect && v.radius === view.radius && v.covered === view.covered) return;
+    const low = v.low ?? 0;
+    if (v.dist === view.dist && v.pitch === view.pitch && v.aspect === view.aspect && v.radius === view.radius && v.covered === view.covered
+      && low === view.low && (low === 0 || (v.lowDist === view.lowDist && v.lowPitch === view.lowPitch && v.lowFov === view.lowFov && !!v.danger === view.danger))) return;
     view.dist = v.dist; view.pitch = v.pitch; view.aspect = v.aspect; view.radius = v.radius; view.covered = v.covered;
+    view.low = low;
+    if (low > 0) { view.lowDist = v.lowDist; view.lowPitch = v.lowPitch; view.lowFov = v.lowFov; view.danger = !!v.danger; }
     applyFog();
     shadowFor(view.dist);
   }
@@ -252,7 +279,7 @@ export function createAtmosphere(scene, { lowPower }) {
     groundMaterials = mats.map((m) => [m, m.color.getHex()]);
   }
 
-  return { state, setConditions, setView, update, endFrame, setGroundMaterials, setRelief, setIndoor };
+  return { state, setConditions, setView, update, endFrame, setGroundMaterials, setRelief, setIndoor, setLamp };
 }
 
 function flakeTexture() {

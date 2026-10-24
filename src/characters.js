@@ -89,11 +89,61 @@ function addOutlineNormals(g) {
   g.setAttribute('aOutline', new THREE.BufferAttribute(out, 3));
 }
 
+// Habillement porté (survie.js : tête, torse, pantalon, main gauche), vu sur le personnage du joueur : couleur du haut et du bas,
+// coiffe à la place de la casquette, protections et objet de la main gauche. Un brassard orange garde le joueur lisible de dessus.
+export const LOOK_SLOTS = ['head', 'clothing', 'legs', 'offhand'];
+const LOOK_TORSO = { manteau: 0x6b6f76, poncho: 0x4f7f4a, doudoune: 0x2f6fa8, blouson_cuir: 0x4a3426, gilet_renforce: 0x77705f };
+const LOOK_PUFF = { doudoune: 1.18, poncho: 1.22, manteau: 1.06 };
+const LOOK_LEGS = { pantalon_travail: 0x2d4a6b, pantalon_renforce: 0x5c5a3e, pantalon_pluie: 0xd8b21e, collant_thermique: 0x1f2227 };
+
+// Ce que l'habillement change : { cap (garder la casquette), torso et legs (couleurs), puff (ampleur du haut), body[] et legPieces[] (pièces
+// ajoutées), hand[] (sur le bras gauche) }.
+function dressLook(look) {
+  const L = look ?? {};
+  const out = { cap: !L.head, torso: LOOK_TORSO[L.clothing] ?? null, puff: LOOK_PUFF[L.clothing] ?? 1, legs: LOOK_LEGS[L.legs] ?? null, body: [], legPieces: [], hand: [] };
+  const SHELL = 0x262b31;
+  if (L.head === 'bonnet') {
+    out.body.push({ geo: box(0.32, 0.17, 0.32, 0, 1.985, 0), color: 0x3d4a5c });
+    out.body.push({ geo: box(0.08, 0.08, 0.08, 0, 2.12, 0), color: PLAYER_JACKET }); // pompon : l'accent orange
+  } else if (L.head === 'chapeau_pluie') {
+    out.body.push({ geo: box(0.3, 0.12, 0.3, 0, 2.03, 0), color: 0xd8b21e });
+    out.body.push({ geo: box(0.52, 0.03, 0.52, 0, 1.975, 0), color: 0xd8b21e });
+  } else if (L.head === 'casque_chantier') {
+    out.body.push({ geo: box(0.34, 0.15, 0.34, 0, 2.0, 0), color: 0xe5c11a });
+    out.body.push({ geo: box(0.4, 0.03, 0.4, 0, 1.935, 0.02), color: 0xe5c11a });
+  } else if (L.head === 'casque_moto') {
+    out.body.push({ geo: box(0.37, 0.38, 0.37, 0, 1.86, 0), color: SHELL });
+    out.body.push({ geo: box(0.29, 0.1, 0.04, 0, 1.88, 0.19), color: 0x6fa8c8 }); // visière
+    out.body.push({ geo: box(0.06, 0.04, 0.38, 0, 2.06, 0), color: PLAYER_JACKET }); // bande orange : l'accent
+  }
+  if (look?.clothing) out.body.push({ geo: box(0.1, 0.07, 0.1, 0.31, 1.5, 0), color: PLAYER_JACKET, part: ARM_L }); // brassard
+  if (L.clothing === 'gilet_renforce') {
+    out.body.push({ geo: box(0.36, 0.3, 0.03, 0, 1.4, 0.2), color: 0x2c3328 });
+    out.body.push({ geo: box(0.36, 0.3, 0.03, 0, 1.4, -0.2), color: 0x2c3328 });
+  }
+  if (L.legs === 'pantalon_renforce') {
+    for (const side of [1, -1]) out.legPieces.push({ geo: box(0.13, 0.11, 0.13, side * 0.12, 0.55, 0.07), color: 0x262b31, part: side > 0 ? LEG_L : LEG_R });
+  }
+  if (L.offhand === 'lampe_torche') {
+    out.hand.push({ geo: new THREE.CylinderGeometry(0.035, 0.05, 0.26, 6).rotateX(Math.PI / 2).translate(0.31, 1.03, 0.14), color: 0x30343a });
+    out.hand.push({ geo: box(0.07, 0.07, 0.02, 0.31, 1.03, 0.28), color: 0xfff2c0, mask: GLOW });
+  } else if (L.offhand === 'bouclier_fortune') {
+    out.hand.push({ geo: box(0.34, 0.46, 0.05, 0.38, 1.13, 0.16), color: 0x8a7a5c });
+    out.hand.push({ geo: box(0.36, 0.04, 0.06, 0.38, 1.13, 0.16), color: 0x4a4f55 });
+  } else if (L.offhand === 'bouclier_emeute') {
+    out.hand.push({ geo: box(0.44, 0.74, 0.04, 0.38, 1.18, 0.18), color: 0x7fa6c4 });
+    out.hand.push({ geo: box(0.47, 0.05, 0.06, 0.38, 1.55, 0.18), color: 0x262b31 });
+    out.hand.push({ geo: box(0.47, 0.05, 0.06, 0.38, 0.81, 0.18), color: 0x262b31 });
+  }
+  return out;
+}
+
 // Joueur : veste et casquette orange (l'accent de l'interface, lisible de dessus), bas sombre, sac à dos olive, batte.
 // `jacket` : veste et casquette d'une autre couleur (sarcelle pour les autres survivants). `civil` : sans sac à dos ni batte
 // (les habitants sauvés).
-export function playerGeometry({ jacket = PLAYER_JACKET, civil = false } = {}) {
-  const JACKET = jacket, PANTS = 0x3a3f46, SKIN = 0xd9a07a, DARK = 0x262b31, PACK = 0x5b6b3a, STRIP = 0xdfe3e6;
+export function playerGeometry({ jacket = PLAYER_JACKET, civil = false, look = null } = {}) {
+  const dress = dressLook(look);
+  const JACKET = dress.torso ?? jacket, PANTS = dress.legs ?? 0x3a3f46, SKIN = 0xd9a07a, DARK = 0x262b31, PACK = 0x5b6b3a, STRIP = 0xdfe3e6;
   const pieces = [];
   for (const [side, leg] of [[1, LEG_L], [-1, LEG_R]]) {
     const x = side * 0.12;
@@ -101,22 +151,26 @@ export function playerGeometry({ jacket = PLAYER_JACKET, civil = false } = {}) {
     pieces.push({ geo: prism(0.1, 0.085, 0.82, x, 0.5, 0, { open: true }), color: PANTS, part: leg });
   }
   pieces.push({ geo: box(0.42, 0.2, 0.26, 0, 0.95, 0), color: PANTS });
-  pieces.push({ geo: prism(0.29, 0.23, 0.62, 0, 1.33, 0, { depth: 0.72 }), color: JACKET });
+  pieces.push({ geo: prism(0.29 * dress.puff, 0.23 * dress.puff, 0.62, 0, 1.33, 0, { depth: 0.72 }), color: JACKET });
   pieces.push({ geo: box(0.18, 0.06, 0.2, 0, 1.66, 0.01), color: DARK }); // col
   pieces.push({ geo: box(0.3, 0.3, 0.29, 0, 1.83, 0.01), color: SKIN });
-  pieces.push({ geo: box(0.33, 0.1, 0.33, 0, 1.99, 0), color: JACKET }); // casquette
-  pieces.push({ geo: box(0.28, 0.035, 0.14, 0, 1.955, 0.21), color: DARK }); // visière : sens du regard
+  if (dress.cap) {
+    pieces.push({ geo: box(0.33, 0.1, 0.33, 0, 1.99, 0), color: jacket }); // casquette
+    pieces.push({ geo: box(0.28, 0.035, 0.14, 0, 1.955, 0.21), color: DARK }); // visière : sens du regard
+  }
   pieces.push({ geo: box(0.08, 0.05, 0.04, -0.1, 1.5, 0.2), color: STRIP, mask: GLOW }); // lampe de poitrine
+  pieces.push(...dress.body, ...dress.legPieces);
   if (!civil) {
     pieces.push({ geo: box(0.32, 0.4, 0.18, 0, 1.3, -0.24), color: PACK });
     pieces.push({ geo: new THREE.CylinderGeometry(0.07, 0.07, 0.36, 6).rotateZ(Math.PI / 2).translate(0, 1.54, -0.25), color: 0x8a7f5a });
   }
   for (const [side, arm] of [[1, ARM_L], [-1, ARM_R]]) {
     const x = side * 0.31;
-    pieces.push({ geo: prism(0.08, 0.07, 0.44, x, 1.32, 0), color: JACKET, part: arm });
+    pieces.push({ geo: prism(0.08 * dress.puff, 0.07 * dress.puff, 0.44, x, 1.32, 0), color: JACKET, part: arm });
     pieces.push({ geo: prism(0.087, 0.087, 0.05, x, 1.42, 0), color: STRIP, part: arm, mask: GLOW }); // bande réfléchissante
     pieces.push({ geo: box(0.1, 0.12, 0.11, x, 1.05, 0), color: DARK, part: arm });
   }
+  for (const h of dress.hand) pieces.push({ ...h, part: ARM_L });
   // Batte dans la main droite, pointée vers l'avant et un peu vers le bas (garde basse).
   if (!civil) {
     const bat = new THREE.CylinderGeometry(0.048, 0.024, 0.86, 6).translate(0, 0.43, 0).rotateX(Math.PI / 2 + 0.52).translate(-0.31, 1.03, 0.04);
@@ -338,7 +392,7 @@ export function createCharacters({ lowPower = false } = {}) {
   };
 
   // Joueur : un maillage d'une instance, plus son contour.
-  const playerGeo = playerGeometry();
+  let playerGeo = playerGeometry();
   instanced(playerGeo, 1);
   const playerMat = lambert(playerUniforms);
   const player = new THREE.InstancedMesh(playerGeo, playerMat, 1);
@@ -349,6 +403,20 @@ export function createCharacters({ lowPower = false } = {}) {
   const outline = new THREE.InstancedMesh(playerGeo, outlineMat, 1);
   outline.frustumCulled = false;
   root.add(outline, player);
+
+  // Habillement du joueur : la silhouette est refaite quand une pièce change (rarement), pas à chaque image.
+  let lookKey = '';
+  function dressPlayer(sv) {
+    const key = LOOK_SLOTS.map((k) => sv?.[k] ?? '').join('|');
+    if (key === lookKey) return;
+    lookKey = key;
+    const old = playerGeo;
+    playerGeo = playerGeometry({ look: Object.fromEntries(LOOK_SLOTS.map((k) => [k, sv?.[k] ?? null])) });
+    instanced(playerGeo, 1);
+    player.geometry = playerGeo;
+    outline.geometry = playerGeo;
+    old.dispose();
+  }
 
   // Zombies : un seul maillage instancié ; ombres de contact : un seul maillage pour le joueur et tous les zombies.
   // Les deux sont refaits plus grands si la foule dépasse leur capacité.
@@ -484,6 +552,7 @@ export function createCharacters({ lowPower = false } = {}) {
     const gy = grid ? (x, z) => groundAt(grid, x, z) : () => 0;
 
     // ----- Joueur -----
+    dressPlayer(s.survivor);
     const p = s.player;
     const ps = stateOf(p, p.x, p.z);
     // Partie finie ou en pause : la vitesse n'est plus mise à jour, le joueur s'arrête net.
