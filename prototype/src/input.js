@@ -29,6 +29,7 @@ export function createInput(canvas, ui) {
     cameraZoomDelta: 0,     // zoom demandé pendant l'image, en logarithme (> 0 : la caméra recule)
     map: false,             // agrandir ou réduire la carte des environs (C)
     bag: false,             // ouvrir ou fermer le sac (I)
+    view: false,            // passer de la vue de dessus à la vue basse derrière le personnage, ou l'inverse (G, bouton)
     dress: false,           // ouvrir ou fermer l'habillement (H)
     touch: false,
     gesture: null,          // geste choisi dans la roue (0 à 5), pendant une image
@@ -73,6 +74,7 @@ export function createInput(canvas, ui) {
     if (e.code === 'Escape') state.escape = true;
     if (e.code === 'KeyC') state.map = true;
     if (e.code === 'KeyI') state.bag = true;
+    if (e.code === 'KeyG' && !e.ctrlKey && !e.metaKey && !e.altKey) state.view = true;
     if (e.code === 'KeyH') state.dress = true;
     // + et − : Ctrl, Cmd ou Alt enfoncés, ils restent au zoom du navigateur.
     if (!e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -124,6 +126,18 @@ export function createInput(canvas, ui) {
   };
   zoomButton(ui.zoomIn, -1);
   zoomButton(ui.zoomOut, 1);
+  // Bouton de la vue (basse ou de dessus) : un appui, une bascule ; le clic qui suit un appui au pointeur n'en ajoute pas (comme + et −).
+  if (ui.viewToggle) {
+    let pointerUntil = 0;
+    ui.viewToggle.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      state.view = true;
+      pointerUntil = performance.now() + 700;
+    });
+    ui.viewToggle.addEventListener('click', () => {
+      if (performance.now() < pointerUntil) { pointerUntil = 0; ui.viewToggle.blur(); } else state.view = true;
+    });
+  }
 
   // Souris : glisser pour tourner la caméra, clic bref pour attaquer.
   let mouse = null;
@@ -325,6 +339,7 @@ export function createInput(canvas, ui) {
     state.cameraZoomDelta = 0;
     state.map = false;
     state.bag = false;
+    state.view = false;
     state.dress = false;
   }
 

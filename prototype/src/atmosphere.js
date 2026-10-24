@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { daylight } from './sun.js';
 import { setWorldWeather } from './scene.js';
 import { ZOOM, fogRange } from './view.js';
+import { fogRangeBasse } from './camera-basse.js';
 
 const DEG = Math.PI / 180;
 
@@ -45,7 +46,8 @@ export function createAtmosphere(scene, { lowPower }) {
   scene.background = new THREE.Color(0xa9cde8);
   // Vue de la caméra (zoom, src/view.js) ; avec la visibilité selon le temps (state.visibility), elle donne le
   // brouillard (applyFog).
-  const view = { dist: ZOOM.base, pitch: 1, aspect: 1.6, radius: ZOOM.radius, covered: ZOOM.radius };
+  // Vue basse (camera-basse.js) : part de la vue basse (0 à 1), distance, tangage et champ vus, alerte ou vague en cours.
+  const view = { dist: ZOOM.base, pitch: 1, aspect: 1.6, radius: ZOOM.radius, covered: ZOOM.radius, low: 0, lowDist: 5.5, lowPitch: 0.2, lowFov: 66, danger: false };
   let shadowHalf = 60;
 
   const rainCount = lowPower ? 1800 : 4500;
@@ -156,8 +158,14 @@ export function createAtmosphere(scene, { lowPower }) {
   // autour du joueur quand la caméra recule (fogRange).
   function applyFog() {
     const f = fogRange({ visibility: state.visibility, ...view });
-    scene.fog.near = f.near;
-    scene.fog.far = f.far;
+    let { near, far } = f;
+    if (view.low > 0) {
+      const g = fogRangeBasse({ visibility: state.visibility, dist: view.lowDist, pitch: view.lowPitch, aspect: view.aspect, fov: view.lowFov, radius: view.radius, covered: view.covered, danger: view.danger });
+      near += (g.near - near) * view.low;
+      far += (g.far - far) * view.low;
+    }
+    scene.fog.near = near;
+    scene.fog.far = far;
   }
 
   // Ombre du soleil : sa boîte suit la distance de la caméra (±60 m jusqu'à 28 m, ±120 m au plus) ; carte de 1024
@@ -170,11 +178,15 @@ export function createAtmosphere(scene, { lowPower }) {
     sun.shadow.camera.updateProjectionMatrix();
   }
 
-  // Vue de la caméra à chaque image : { dist, pitch, aspect, radius, covered } (main.js, syncScene) ; rien à refaire
+  // Vue de la caméra à chaque image : { dist, pitch, aspect, radius, covered, low, lowDist, lowPitch, lowFov, danger } (main.js, syncScene) ; rien à refaire
   // quand elle n'a pas bougé.
   function setView(v) {
-    if (v.dist === view.dist && v.pitch === view.pitch && v.aspect === view.aspect && v.radius === view.radius && v.covered === view.covered) return;
+    const low = v.low ?? 0;
+    if (v.dist === view.dist && v.pitch === view.pitch && v.aspect === view.aspect && v.radius === view.radius && v.covered === view.covered
+      && low === view.low && (low === 0 || (v.lowDist === view.lowDist && v.lowPitch === view.lowPitch && v.lowFov === view.lowFov && !!v.danger === view.danger))) return;
     view.dist = v.dist; view.pitch = v.pitch; view.aspect = v.aspect; view.radius = v.radius; view.covered = v.covered;
+    view.low = low;
+    if (low > 0) { view.lowDist = v.lowDist; view.lowPitch = v.lowPitch; view.lowFov = v.lowFov; view.danger = !!v.danger; }
     applyFog();
     shadowFor(view.dist);
   }

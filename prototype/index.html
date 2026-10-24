@@ -862,7 +862,7 @@ body.touch #objective { grid-column: 2 / -1; grid-row: 2; }
 
 /* Boussole : flèches pleines autour du joueur (centre de l'écran, même panneau ouvert), chacune sur son cercle et à sa
    taille : quête en orange (la plus grande, distance du côté extérieur), refuge en bleu, sac perdu en violet, horde en rouge. */
-#compass { position: fixed; left: 50%; top: 50%; width: 0; height: 0; transition: opacity var(--t-base) var(--ease-std); }
+#compass { position: fixed; left: 50%; top: 50%; width: 0; height: 0; translate: 0 var(--anchor-dy, 0px); transition: opacity var(--t-base) var(--ease-std); }
 #compass.near { opacity: .4; }
 #compass .arrow { position: absolute; left: -16px; top: -16px; width: 32px; height: 32px; overflow: visible; transform-origin: 16px 16px; color: var(--c-accent); transition: opacity var(--t-base) var(--ease-std); will-change: transform; }
 #compass .arrow path { fill: currentColor; stroke: var(--c-on-accent); stroke-width: 2; stroke-linejoin: round; }
@@ -871,6 +871,12 @@ body.touch #objective { grid-column: 2 / -1; grid-row: 2; }
 #compass .arrow[data-kind="car"] { left: -12px; top: -12px; width: 24px; height: 24px; transform-origin: 12px 12px; color: var(--c-car); }
 #compass .arrow[data-kind="horde"] { left: -14px; top: -14px; width: 28px; height: 28px; transform-origin: 14px 14px; color: var(--c-horde); }
 #compass .arrow.near, .compass-dist.near { opacity: .4; }
+/* Vue basse : flèches sur le bord de l'écran vers les zombies hors du champ (src/flancs.js). */
+#flancs { position: fixed; inset: 0; z-index: 1; pointer-events: none; }
+#flancs .flanc { position: absolute; left: 0; top: 0; width: 26px; height: 26px; margin: -13px 0 0 -13px; color: var(--c-danger); opacity: 0; transition: opacity var(--t-base) var(--ease-std); will-change: transform; }
+#flancs .flanc.on { opacity: .6; }
+#flancs .flanc.near { opacity: 1; }
+#flancs .flanc path { fill: currentColor; stroke: rgba(0, 0, 0, .6); stroke-width: 2; stroke-linejoin: round; }
 #compass .arrow.off, .compass-dist.off { display: none; }
 .compass-dist { position: absolute; left: 0; top: 0; color: var(--c-text); font: var(--fw-bold) var(--fs-xs) / 1 var(--font-text); font-variant-numeric: tabular-nums; text-shadow: var(--sh-text); white-space: nowrap; }
 /* Coup reçu : voile rouge radial sous les panneaux, son opacité suit le coup (main.js). */
@@ -1145,6 +1151,8 @@ body.indoor #conditions, body.indoor #quest, body.indoor #online-pill, body.indo
 #mapbox > .zoom-btns { pointer-events: none; }
 .zoom-btns .small { padding: 0; pointer-events: auto; touch-action: none; }
 .zoom-btns .small[aria-disabled="true"] { opacity: var(--o-disabled); }
+/* Bouton de la vue (src/camera-basse.js) : allumé quand la vue basse est choisie. */
+.zoom-btns #view-toggle[aria-pressed="true"] { border-color: var(--c-accent-line); background: var(--c-accent-soft); color: var(--c-accent); }
 #minimap { display: block; width: var(--mm-size); height: var(--mm-size); padding: 0; border: 1px solid var(--c-line-strong); border-radius: var(--r-md); background: #161c22; box-shadow: var(--sh-1); overflow: hidden; cursor: pointer; touch-action: none; }
 #minimap canvas { display: block; width: 100%; height: 100%; }
 #minimap:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
@@ -1174,6 +1182,7 @@ body.indoor #conditions, body.indoor #quest, body.indoor #online-pill, body.indo
   #hud.map-tr #mapbox { position: static; grid-column: 2; grid-row: 3 / 5; margin-top: 6px; justify-self: end; align-self: start; flex-direction: row; align-items: flex-start; gap: 6px; }
   #hud.map-tr .zoom-btns { flex-direction: column; gap: 4px; }
   #hud.map-tr .zoom-btns .small { width: var(--touch); min-width: var(--touch); height: calc((var(--mm-size) - 4px) / 2); }
+  #hud.map-tr .zoom-btns #view-toggle { height: var(--touch); }
 }
 @media (max-width: 379px) { #hud.map-tr { --mm-size: 88px; --mm-col: calc(88px + 50px); } }
 /* Tablette en portrait (760 à 1023 px), feuille du refuge ouverte (56 % de l'écran, panels.js) : le HUD du haut reste, la
@@ -1205,7 +1214,8 @@ body.indoor #conditions, body.indoor #quest, body.indoor #online-pill, body.indo
 @media (max-width: 759px), (max-height: 500px) and (orientation: landscape) {
   #hud.map-bl { --mm-size: 96px; }
   #hud.map-bl #mapbox { flex-direction: row; align-items: flex-end; }
-  #hud.map-bl .zoom-btns { order: 2; flex-direction: column; }
+  #hud.map-bl .zoom-btns { order: 2; flex-flow: row wrap; align-content: flex-end; width: calc(2 * var(--touch) + 4px); gap: 4px; }
+  #hud.map-bl .zoom-btns #view-toggle { flex: 1 1 100%; }
   body:not(.touch) #hud.map-bl .zoom-btns { display: none; }
   #hud.map-bl.has-map #stick-hint { bottom: calc(var(--hud-b) + var(--mm-size) + 12px); }
 }
@@ -1334,7 +1344,7 @@ body.touch #gesture-toggle { padding: 0; border-width: 2px; border-radius: 50%; 
 body.touch #gesture-toggle .gt-text, body.touch #gesture-toggle kbd { display: none; }
 body.touch #gesture-toggle .icon { width: 24px; height: 24px; }
 /* z-index 2 : au-dessus de Fouiller et de l'action secondaire (positionnés après elle dans #hud). */
-#gestures { --wr: 112px; position: fixed; left: 50%; top: 50%; z-index: 2; width: 0; height: 0; pointer-events: none; }
+#gestures { --wr: 112px; position: fixed; left: 50%; top: 50%; translate: 0 var(--anchor-dy, 0px); z-index: 2; width: 0; height: 0; pointer-events: none; }
 .gesture { position: absolute; left: -46px; top: -28px; display: grid; place-items: center; align-content: center; gap: 3px; width: 92px; height: 56px; padding: 0 4px; border: 2px solid var(--c-others); border-radius: var(--r-md); background: var(--c-panel-strong); box-shadow: var(--sh-2); color: var(--c-text); cursor: pointer; pointer-events: auto; touch-action: manipulation; transition: transform var(--t-fast) var(--ease-std); }
 .gesture .icon { width: 22px; height: 22px; color: var(--c-others); }
 .gesture-name { max-width: 100%; overflow: hidden; font: var(--fw-semibold) var(--fs-2xs) / 1.05 var(--font-display); letter-spacing: .02em; text-align: center; text-transform: uppercase; }
@@ -1876,11 +1886,14 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <div class="zoom-btns" role="group" aria-label="Zoom de la caméra">
       <button class="small" id="zoom-out" aria-label="Dézoomer" title="Dézoomer (−)"><span class="small-icon" data-icon="moins"></span></button>
       <button class="small" id="zoom-in" aria-label="Zoomer" title="Zoomer (+)"><span class="small-icon" data-icon="plus"></span></button>
+      <button class="small" id="view-toggle" aria-label="Vue basse derrière le personnage" aria-pressed="false" title="Vue basse derrière le personnage (G)"><span class="small-icon" data-icon="vue-basse"></span></button>
     </div>
     <button id="minimap" aria-label="Carte des environs : agrandir" aria-expanded="false" title="Carte des environs (C)"><canvas id="minimap-canvas" aria-hidden="true"></canvas></button>
   </div>
   <!-- Boussole : la flèche de quête reste le premier enfant ; refuge, sac perdu et horde (une par front) ensuite. -->
   <div id="compass" aria-hidden="true"><svg class="arrow off" data-kind="quest" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="home" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="bag" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="car" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="horde" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><svg class="arrow off" data-kind="horde" viewBox="0 0 32 32"><path d="M16 3 26.5 28 16 21.5 5.5 28Z"/></svg><span class="compass-dist off" id="compass-dist"></span></div>
+ <!-- Vue basse : flèches sur le bord de l'écran vers les zombies hors du champ (src/flancs.js). -->
+  <div id="flancs" aria-hidden="true"></div>
   <div id="toast" class="pill" role="status" aria-live="polite" style="opacity:0"><span class="toast-icon" id="toast-icon" hidden></span><span id="toast-text"></span></div>
   <div id="controls">
     <div id="stick-base"><div id="stick-knob"></div></div>

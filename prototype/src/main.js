@@ -27,6 +27,11 @@ import {
   ZOOM, clampZoom, zoomMax, pitchFloor, viewRadius, waveCap, edgeCap, smoothZoom, effectiveAspect, readViewPrefs,
   writeViewPrefs,
 } from './view.js';
+import {
+  BASSE, clampBasseDist, clampBassePitch, approachK, boomLimit, boomSmooth, lowPose, blendPose, recenterDelta, followDelta, flankAlerts,
+  halfFovH,
+} from './camera-basse.js';
+import { createFlancs } from './flancs.js';
 import { PLAYER, createPlayer, createZombieDirector, updatePlayer, playerAttack, urbanDensity, targetZombieCount } from './game.js';
 import {
   planDelivery, questText, updateQuest, currentTarget, placeWith, refugeQuest, offerMissions, questReward, missionLine,
@@ -483,10 +488,12 @@ const softRender = (() => {
 })();
 const groundDetail = GROUND_DETAILS.includes(params.get('sol')) ? params.get('sol') : softRender ? 'plat' : lowPower ? 'simple' : 'fin';
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000);
+const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000); // champ : FOV_TOP, plus large en vue basse
 // Caméra isométrique, comme Project Zomboid, Dysmantle ou HumanitZ ; sa distance (zoom) et son tangage plancher : ZOOM
 // de src/view.js.
 const CAM = { pitch: 1.0, minPitch: 0.6, maxPitch: 1.35, steep: 1.3 };
+// Champ vertical de la vue de dessus (°) et rayon de la découpe des murs (m, scene.js) : la vue basse les change (camera-basse.js).
+const FOV_TOP = 48, CUT_RADIUS = 5.5;
 const SEARCH_TIME = 2.2;
 const BUILDING_LABELS = { house: 'Habitation', retail: 'Commerce', commercial: 'Bureaux', industrial: 'Entrepôt', school: 'École', station: 'Gare', pharmacy: 'Pharmacie', clinic: 'Clinique', hospital: 'Hôpital', supermarket: 'Supermarché', convenience: 'Épicerie', fuel: 'Station-service', hardware: 'Quincaillerie', police: 'Commissariat', fire_station: 'Caserne de pompiers' };
 const atmosphere = createAtmosphere(scene, { lowPower });
@@ -496,13 +503,17 @@ if (SOUND_AUTOSTART) son.attach(window);
 const input = createInput(canvas, {
   stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'),
   action2Button: $('action2'), useButtons: [...document.querySelectorAll('#inventory .chip[data-use]')], autoRun: true,
-  zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), wheelTargets: [$('mapbox')],
+  zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), viewToggle: $('view-toggle'), wheelTargets: [$('mapbox')],
 });
 // Zoom gardé d'une partie et d'une visite à l'autre, hors de la sauvegarde (src/view.js) ; écrit 800 ms après le
 // dernier changement.
 const viewStorage = (() => { try { return window.localStorage; } catch { return null; } })();
 const viewPrefs = readViewPrefs(viewStorage);
+// ?vue=basse ou ?vue=dessus : la vue de cette visite (essais), gardée ensuite comme un choix du bouton.
+if (params.get('vue') === 'basse' || params.get('vue') === 'dessus') viewPrefs.mode = params.get('vue');
 let viewPrefsTimer = 0;
+// Flèches sur le bord de l'écran vers les zombies hors du champ, en vue basse (src/flancs.js).
+const flancs = createFlancs($('flancs'), { max: BASSE.flancs.max });
 // Aspect effectif de la vue (tiroir ouvert : décalée, un côté va plus loin), pour le zoom et le brouillard ; vue donnée
 // au brouillard à chaque image (le même objet, sans allocation).
 let viewAspect = 1;
@@ -631,6 +642,8 @@ const mapSource = () => mapInfo(session);
 let hudFrozen = false;
 // Champ de la caméra : une horde n'apparaît jamais à l'écran.
 const frustum = new THREE.Frustum();
+const anchorAt = new THREE.Vector3();
+let anchorShown = 0;
 const frustumMatrix = new THREE.Matrix4();
 const probe = new THREE.Sphere(new THREE.Vector3(), 1.2);
 const beaconNormal = [0, 1, 0];
@@ -1326,6 +1339,10 @@ function buildSession(place, origin, home, store, grid, loader, chunks, start, l
     zoomWant: clampZoom(viewPrefs.zoom, lowPower), cameraDist: clampZoom(viewPrefs.zoom, lowPower),
     viewRadius: ZOOM.radius, covered: ZOOM.radius, coveredFog: ZOOM.radius, zoomCap: Infinity, edgeCap: Infinity,
     zoomGoal: clampZoom(viewPrefs.zoom, lowPower), zoomLimited: '', zoomSeen: clampZoom(viewPrefs.zoom, lowPower),
+    // Vue basse (camera-basse.js) : choix du joueur ('dessus' ou 'basse'), part de la vue basse (0 à 1), distance et tangage voulus,
+    // perche (m au sol), temps depuis que le pouce droit a touché la caméra.
+    viewMode: viewPrefs.mode, lowK: viewPrefs.mode === 'basse' ? 1 : 0, lowDist: clampBasseDist(viewPrefs.dist ?? NaN, lowPower),
+    lowPitch: clampBassePitch(viewPrefs.pitch ?? NaN), boomH: 0, lookIdle: 9, lowSteer: false,
     isNight: false, nextPrefetch: 0, actionMul: 1, respawnedAt: null, lastPanel: 0,
     // Compétences (skills.js) : durées de fouille et de fabrication à multiplier, saison jouée (null hors saison).
     searchMul: 1, craftMul: 1, seasonId: null,
@@ -1337,6 +1354,7 @@ function buildSession(place, origin, home, store, grid, loader, chunks, start, l
   // Autres survivants : module chargé à la première partie en ligne (rien en solo).
   if (onlineOn) ensureOthersView();
   syncZoomButtons(session);
+  syncViewButton(session);
   atmosphere.state.onLightning = () => {
     if (!session?.player) return;
     session.director.alertAll(session.player, 60);
@@ -1402,7 +1420,7 @@ renderer.setAnimationLoop(() => {
   if (onlineOn && !menuEl.classList.contains('hidden') && frameNow - menuOnlineAt > 500) renderOnlineMenu();
   if (!session) return;
   // Pendant le menu (carte du monde), la scène 3D est cachée : inutile de la dessiner.
-  if (!menuEl.classList.contains('hidden')) { input.consume(); return; }
+  if (!menuEl.classList.contains('hidden')) { input.consume(); flancs.clear(); return; }
   const s = session;
   const inp = input.poll();
   if (s.player) {
@@ -1466,6 +1484,7 @@ function handleUiKeys(s, inp) {
   // Une carte de jeu qui attend une réponse garde la main : la carte des environs ne s'ouvre pas par-dessus.
   if (inp.map && !(card.isOpen() && cardInfo?.blocking) && !finds.isOpen() && !dressing.isOpen()) minimap.toggle();
   if (inp.bag) toggleBag(s);
+  if (inp.view) toggleView(s);
   if (inp.dress) toggleDressing(s);
   if (inp.tab) panel.nextTab();
   if (inp.fold) {
@@ -1484,6 +1503,15 @@ function applyZoom(s, inp) {
     if (z !== (s.interiorZoom ?? 1)) { s.interiorZoom = z; syncZoomButtons(s); }
     return;
   }
+  // Vue basse : le zoom change la distance derrière le personnage (aucun plafond de horde ou de bord : la vue basse a son brouillard).
+  if (lowActive(s)) {
+    const want = clampBasseDist(s.lowDist * Math.exp(delta), lowPower);
+    if (want === s.lowDist) return;
+    s.lowDist = viewPrefs.dist = want;
+    syncZoomButtons(s);
+    savePrefsLater();
+    return;
+  }
   if (delta > 0 && s.zoomLimited) return;
   const from = s.zoomLimited ? Math.min(s.zoomWant, s.zoomSeen) : s.zoomWant;
   const want = clampZoom(from * Math.exp(delta), lowPower);
@@ -1491,8 +1519,36 @@ function applyZoom(s, inp) {
   s.zoomWant = want;
   syncZoomButtons(s);
   viewPrefs.zoom = want;
+  savePrefsLater();
+}
+
+// Réglage de la vue (zoom, vue basse) écrit 800 ms après le dernier changement.
+function savePrefsLater() {
   clearTimeout(viewPrefsTimer);
   viewPrefsTimer = setTimeout(() => writeViewPrefs(viewStorage, viewPrefs), 800);
+}
+
+// La vue basse (camera-basse.js) est choisie et rien ne la remplace : au refuge et dans un bâtiment ouvert, la caméra reste de dessus
+// (le noir de la lampe est un plan posé à hauteur de mur, que seule une vue de dessus montre).
+const lowActive = (s) => s.viewMode === 'basse' && !s.refuge.inside && !(INTERIOR_DARK && s.interior?.entered);
+
+// Bouton de la vue (et touche G) : bascule entre la vue de dessus et la vue basse, gardée d'une visite à l'autre.
+function toggleView(s) {
+  s.viewMode = s.viewMode === 'basse' ? 'dessus' : 'basse';
+  viewPrefs.mode = s.viewMode;
+  savePrefsLater();
+  syncViewButton(s);
+  syncZoomButtons(s);
+  if (s.viewMode === 'basse' && !lowActive(s)) toast('La vue basse reprend dehors.', 2);
+}
+
+function syncViewButton(s) {
+  const on = s.viewMode === 'basse';
+  const btn = $('view-toggle');
+  btn?.setAttribute('aria-pressed', String(on));
+  btn?.setAttribute('title', on ? 'Vue de dessus (G)' : 'Vue basse derrière le personnage (G)');
+  btn?.setAttribute('aria-label', on ? 'Revenir à la vue de dessus' : 'Vue basse derrière le personnage');
+  document.body.classList.toggle('vue-basse', on);
 }
 
 // Boutons − et + : estompés en butée (aria-disabled, ils gardent le focus) ; − aussi quand la vue est plafonnée, avec la
@@ -1503,6 +1559,12 @@ function syncZoomButtons(s) {
     const z = s.interiorZoom ?? 1;
     zoomIn?.setAttribute('aria-disabled', String(z <= INTERIOR_CAMERA.zoomMin + 1e-6));
     zoomOut?.setAttribute('aria-disabled', String(z >= INTERIOR_CAMERA.zoomMax - 1e-6));
+    zoomOut?.setAttribute('title', 'Dézoomer (−)');
+    return;
+  }
+  if (lowActive(s)) {
+    zoomIn?.setAttribute('aria-disabled', String(s.lowDist <= BASSE.dist.min + 1e-6));
+    zoomOut?.setAttribute('aria-disabled', String(s.lowDist >= (lowPower ? BASSE.dist.maxLow : BASSE.dist.max) - 1e-6));
     zoomOut?.setAttribute('title', 'Dézoomer (−)');
     return;
   }
@@ -1559,7 +1621,19 @@ function step(s, inp, dt) {
     s.yawBefore = undefined;
     s.cameraYaw += inp.cameraYawDelta;
   }
-  if (inp.cameraPitchDelta && !topDown) {
+  // Vue basse : le pouce droit tourne la caméra (côté) et la baisse ou la monte (haut-bas) ; au repos, elle revient lentement derrière
+  // le personnage qui avance tout droit, ou derrière la voiture au volant.
+  const lowOn = lowActive(s) && !topDown;
+  s.lookIdle = inp.cameraYawDelta || inp.cameraPitchDelta ? 0 : Math.min(60, s.lookIdle + dt);
+  if (lowOn && s.lowK > 0.5 && s.yawBefore === undefined && !p.hidden) {
+    s.cameraYaw += s.driving
+      ? followDelta({ yaw: s.cameraYaw, heading: s.driving.yaw, speed: s.driving.speed, idle: s.lookIdle, dt })
+      : recenterDelta({ mx: inp.move.x, my: inp.move.y, speed: Math.hypot(p.vx ?? 0, p.vz ?? 0), idle: s.lookIdle, dt });
+  }
+  if (inp.cameraPitchDelta && lowOn) {
+    s.lowPitch = viewPrefs.pitch = clampBassePitch(s.lowPitch + inp.cameraPitchDelta);
+    savePrefsLater();
+  } else if (inp.cameraPitchDelta && !topDown) {
     const floor = r.inside ? CAM.minPitch : Math.max(CAM.minPitch, pitchFloor(s.cameraDist, lowPower));
     s.cameraPitch = Math.min(CAM.maxPitch, Math.max(floor, Math.max(s.cameraPitch, floor) + inp.cameraPitchDelta));
   }
@@ -2918,7 +2992,7 @@ function hudInfo(s) {
   }
   const text = graceText(s, r.bannerText());
   return {
-    primary, secondary, arrows, target,
+    primary, secondary, arrows, target, anchorDy: s.anchorDy ?? 0,
     banner: text ? { text, alert: r.phase === 'alerte' } : null,
     // Ville de secours : le refuge n'y est pas, pas de ligne.
     baseLine: r.base && s.store.source === 'tiles' ? r.statusLine({ player: p }) : '',
@@ -3038,15 +3112,37 @@ function syncScene(s, dt) {
   const lead = viewAspect < 1 ? INTERIOR_CAMERA.lead * ie * d : 0;
   const pull = aim ? aim.k * ie : 0; // part du centrage sur le bâtiment (0 : on suit le joueur)
   const ax = (at.x + Math.sin(s.cameraYaw) * lead) * (1 - pull) + (aim?.cx ?? 0) * pull, az = (at.z + Math.cos(s.cameraYaw) * lead) * (1 - pull) + (aim?.cz ?? 0) * pull;
+  // Vue basse (camera-basse.js) : la pose de dessus (d, pitch) glisse vers une pose derrière le personnage, à 3 ou 8 m et à peine
+  // au-dessus de l'horizon, selon la part s.lowK (0 : comme avant). La perche se raccourcit devant un mur et la caméra monte d'autant.
+  // Les murs ne sont plus découpés (ils le sont pour une caméra de dessus) ; le champ s'élargit, le brouillard suit (fogView.low).
+  const lowWant = lowActive(s) ? 1 : 0;
+  s.lowK = approachK(s.lowK, lowWant, dt, { reduce });
+  if (!!lowWant !== s.lowShown) { s.lowShown = !!lowWant; syncZoomButtons(s); }
+  s.lowSteer = lowWant === 1 && s.lowK > 0.5;
+  let pose = { dist: d, pitch, fov: FOV_TOP, aim: 1.6, above: 2, short: 0, k: 0 };
+  let basse = null;
+  if (s.lowK > 0) {
+    // Au volant, la caméra recule et monte un peu (s.carK) : la carrosserie ne cache pas la route.
+    s.carK = approachK(s.carK ?? 0, s.driving ? 1 : 0, dt, { reduce });
+    const wantD = clampBasseDist(s.lowDist, lowPower) + s.carK * BASSE.follow.dist, wantP = s.lowPitch + s.carK * BASSE.follow.pitch;
+    const wantH = wantD * Math.cos(wantP);
+    s.boomH = boomSmooth(s.boomH, lowWant ? boomLimit(s.grid, at.x, at.z, s.cameraYaw, wantH) : wantH, dt, reduce);
+    basse = lowPose({ dist: wantD, pitch: wantP, aspect: camera.aspect, limit: s.boomH });
+    pose = blendPose(pose, basse, s.lowK);
+  }
+  if (Math.abs(camera.fov - pose.fov) > 0.02) { camera.fov = pose.fov; camera.updateProjectionMatrix(); }
+  s.camPose = pose;
   camera.position.set(
-    ax - Math.sin(s.cameraYaw) * Math.cos(pitch) * d,
-    gy + 1.6 + Math.sin(pitch) * d,
-    az - Math.cos(s.cameraYaw) * Math.cos(pitch) * d,
+    ax - Math.sin(s.cameraYaw) * Math.cos(pose.pitch) * pose.dist,
+    gy + pose.aim + Math.sin(pose.pitch) * pose.dist,
+    az - Math.cos(s.cameraYaw) * Math.cos(pose.pitch) * pose.dist,
   );
-  if (relief) camera.position.y = Math.max(camera.position.y, groundAt(s.grid, camera.position.x, camera.position.z) + 2);
-  camera.lookAt(ax, gy + 1.6, az);
+  if (relief) camera.position.y = Math.max(camera.position.y, groundAt(s.grid, camera.position.x, camera.position.z) + pose.above);
+  const ahead = pose.short * BASSE.lookAhead; // perche raccourcie : le regard passe devant le personnage
+  camera.lookAt(ax + Math.sin(s.cameraYaw) * ahead, gy + pose.aim, az + Math.cos(s.cameraYaw) * ahead);
   cutaway.player.value.set(at.x, gy + 1.2, at.z);
   cutaway.camera.value.copy(camera.position);
+  cutaway.radius.value = CUT_RADIUS * (1 - pose.k);
   // Brouillard : même voile autour du joueur à toute distance, ramené devant le premier sol non construit visible. Le
   // trou le plus proche est rattrapé tout de suite et ne se relâche qu'en douceur (τ = 0,3 s). Au refuge, la caméra vise
   // le bâtiment alors que le monde est construit autour du joueur : l'écart est retiré du rayon couvert.
@@ -3055,11 +3151,14 @@ function syncScene(s, dt) {
   const off = Math.hypot(at.x - p.x, at.z - p.z);
   fogView.dist = d; fogView.pitch = pitch; fogView.aspect = viewAspect; fogView.radius = s.viewRadius;
   fogView.covered = s.coveredFog - off;
+  fogView.low = pose.k; fogView.danger = danger;
+  if (basse) { fogView.lowDist = basse.dist; fogView.lowPitch = basse.pitch; fogView.lowFov = basse.fov; }
   atmosphere.setView(fogView);
 
   // Joueur et zombies : marche, coups, éclairs, ombres de contact ; puis petite secousse de caméra
   // quand un coup porte ou qu'un zombie mord (aucune en mouvement réduit). Au refuge, le joueur est caché.
-  for (const m of playerMeshes) m.visible = !p.hidden && !s.driving;
+  // Vue basse : le personnage disparaît quand la perche est si courte que son dos remplirait l'écran (dos au mur).
+  for (const m of playerMeshes) m.visible = !p.hidden && !s.driving && !(pose.k > 0.5 && pose.dist < 1.5);
   document.body.classList.toggle('driving', !!s.driving);
   s.sightAt = INTERIOR_DARK && s.interior?.entered ? interiorView.shadow.lightAtWorld : null; // zombies dans le noir : cachés
   characters.sync(s, dt, camera, atmosphere.state.daylight);
@@ -3070,6 +3169,20 @@ function syncScene(s, dt) {
   frustumMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   frustum.setFromProjectionMatrix(frustumMatrix);
 
+  // Boussole et roue des gestes sont centrées sur le personnage, qui descend dans l'image en vue basse (variable CSS --anchor-dy).
+  s.anchorDy = 0;
+  if (pose.k > 0) {
+    anchorAt.set(at.x, gy + 1, at.z).project(camera);
+    s.anchorDy = Math.round(pose.k * (((1 - anchorAt.y) / 2) * window.innerHeight - window.innerHeight / 2));
+  }
+  if (s.anchorDy !== anchorShown) {
+    anchorShown = s.anchorDy;
+    document.documentElement.style.setProperty('--anchor-dy', `${anchorShown}px`);
+  }
+  // Vue basse : flèches sur le bord de l'écran vers les zombies que le champ ne montre pas.
+  if (pose.k > 0.6 && !r.inside && !p.hidden && !s.ended) {
+    flancs.update(flankAlerts({ x: p.x, z: p.z, yaw: s.cameraYaw, half: halfFovH(pose.fov, camera.aspect), zombies: s.director.zombies }), window.innerWidth, window.innerHeight);
+  } else flancs.clear();
   syncBase(s, dt);
   propsView.update(dt);
   if (onlineOn) {
@@ -4100,7 +4213,26 @@ const debug = DEBUG ? {
       want: s.zoomWant, dist: s.cameraDist, pitch: s.camPitchEff, radius: s.viewRadius, covered: s.covered, coveredFog: s.coveredFog,
       cap: s.zoomCap, edgeCap: s.edgeCap, goal: s.zoomGoal, limited: s.zoomLimited,
       aspect: viewAspect, visibility: atmosphere.state.visibility, fog: { near: scene.fog.near, far: scene.fog.far },
+      basse: {
+        mode: s.viewMode, k: s.lowK, dist: s.lowDist, pitch: s.lowPitch, boom: s.boomH, steer: s.lowSteer, idle: s.lookIdle,
+        pose: s.camPose ? { dist: s.camPose.dist, pitch: s.camPose.pitch, fov: s.camPose.fov, k: s.camPose.k } : null,
+        fov: camera.fov, cutRadius: cutaway.radius.value,
+      },
     };
+  },
+  // Vue basse : choix (true : basse, false : de dessus), avec now la caméra y est tout de suite ; dist, pitch et yaw au choix.
+  basse(on, { now = true, dist, pitch, yaw } = {}) {
+    const s = session;
+    if (!s) return null;
+    s.viewMode = on ? 'basse' : 'dessus';
+    viewPrefs.mode = s.viewMode;
+    if (Number.isFinite(dist)) s.lowDist = clampBasseDist(dist, lowPower);
+    if (Number.isFinite(pitch)) s.lowPitch = clampBassePitch(pitch);
+    if (Number.isFinite(yaw)) s.cameraYaw = yaw;
+    if (now) s.lowK = lowActive(s) ? 1 : 0;
+    syncViewButton(s);
+    syncZoomButtons(s);
+    return debug.view();
   },
   // Distance voulue (bornée à l'appareil) ; avec now, la caméra y est tout de suite (le tangage suit à l'image suivante).
   zoom(d, { now = false } = {}) {
