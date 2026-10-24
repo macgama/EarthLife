@@ -10,6 +10,8 @@ export const ART = {
     'conserve', 'barre', 'eau', 'soda', 'bandage', 'medicaments', 'chaufferette', 'bois', 'clous', 'ferraille', 'tissu', 'ruban', 'planche', 'plaque',
     'piege', 'leurre', 'batte', 'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_ecolier', 'sac_randonnee', 'sac_renforce', 'pistolet', 'fusil', 'balles', 'cartouches',
     'bidon', 'batterie', 'cueillette', 'poisson', 'canne', 'puits',
+    'doudoune', 'blouson_cuir', 'gilet_renforce', 'bonnet', 'chapeau_pluie', 'casque_chantier', 'casque_moto', 'pantalon_travail', 'pantalon_pluie',
+    'pantalon_renforce', 'collant_thermique', 'lampe_torche', 'bouclier_fortune', 'bouclier_emeute', 'pied_de_biche',
   ]),
   // Objets dont l'image n'est pas encore livrée (accord de Gaël pour les crédits Artlist) : ils gardent l'icône au trait.
   pending: new Set(['champignon_cuit', 'legume_cuit', 'poisson_cuit', 'eau_riviere', 'eau_bouillie']),
@@ -23,13 +25,16 @@ const base = (dir, name) => new URL(`../assets/art/${dir}/${name}.webp`, import.
 export const ITEM_ART = { baies: 'cueillette', champignon: 'cueillette', legume: 'cueillette' };
 
 // Famille d'un objet : donne la teinte de l'emplacement et l'icône de repli.
-// food faim, water soif, heal santé, warm chaleur, mat matériaux, tool arme ou piège, wear vêtement, pack sac, gun arme à feu,
-// ammo munition, fuel carburant.
+// food faim, water soif, heal santé, warm chaleur, mat matériaux, tool arme ou piège, wear vêtement, guard protection (casque, blouson,
+// pantalon renforcé, bouclier), pack sac, gun arme à feu, ammo munition, fuel carburant.
 export const ITEM_KIND = {
   conserve: 'food', barre: 'food', eau: 'water', soda: 'water', bandage: 'heal', medicaments: 'heal', chaufferette: 'warm',
   bois: 'mat', clous: 'mat', ferraille: 'mat', tissu: 'mat', ruban: 'mat', planche: 'mat', plaque: 'mat',
   piege: 'tool', leurre: 'tool', batte: 'tool', batte_cloutee: 'tool', hache: 'tool',
-  manteau: 'wear', poncho: 'wear', sac_ecolier: 'pack', sac_randonnee: 'pack', sac_renforce: 'pack',
+  manteau: 'wear', poncho: 'wear', doudoune: 'wear', bonnet: 'wear', chapeau_pluie: 'wear', pantalon_pluie: 'wear', collant_thermique: 'wear',
+  blouson_cuir: 'guard', gilet_renforce: 'guard', casque_chantier: 'guard', casque_moto: 'guard', pantalon_travail: 'guard', pantalon_renforce: 'guard',
+  bouclier_fortune: 'guard', bouclier_emeute: 'guard', lampe_torche: 'tool', pied_de_biche: 'tool',
+  sac_ecolier: 'pack', sac_randonnee: 'pack', sac_renforce: 'pack',
   pistolet: 'gun', fusil: 'gun', balles: 'ammo', cartouches: 'ammo',
   bidon: 'fuel', batterie: 'mat',
   baies: 'food', champignon: 'food', legume: 'food', poisson: 'food', champignon_cuit: 'food', legume_cuit: 'food', poisson_cuit: 'food',
@@ -41,7 +46,11 @@ export const ITEM_ICON = {
   conserve: 'manger', barre: 'manger', eau: 'boire', soda: 'boire', bandage: 'soigner', medicaments: 'soigner', chaufferette: 'chauffer',
   bois: 'hache', clous: 'marteau', ferraille: 'cle', tissu: 'manteau', ruban: 'cle', planche: 'marteau', plaque: 'marteau',
   piege: 'piege', leurre: 'leurre', batte: 'frapper', batte_cloutee: 'frapper', hache: 'hache',
-  manteau: 'manteau', poncho: 'manteau', sac_ecolier: 'sac', sac_randonnee: 'sac', sac_renforce: 'sac',
+  manteau: 'manteau', poncho: 'manteau', doudoune: 'manteau', blouson_cuir: 'manteau', gilet_renforce: 'manteau',
+  bonnet: 'casque', chapeau_pluie: 'casque', casque_chantier: 'casque', casque_moto: 'casque',
+  pantalon_travail: 'pantalon', pantalon_pluie: 'pantalon', pantalon_renforce: 'pantalon', collant_thermique: 'pantalon',
+  bouclier_fortune: 'bouclier', bouclier_emeute: 'bouclier', lampe_torche: 'lampe', pied_de_biche: 'frapper',
+  sac_ecolier: 'sac', sac_randonnee: 'sac', sac_renforce: 'sac',
   pistolet: 'tirer', fusil: 'tirer', balles: 'cible', cartouches: 'cible',
   bidon: 'bidon', batterie: 'batterie',
   baies: 'feuille', champignon: 'feuille', legume: 'feuille', poisson: 'poisson', champignon_cuit: 'manger', legume_cuit: 'manger', poisson_cuit: 'poisson',
@@ -49,7 +58,7 @@ export const ITEM_ICON = {
 };
 
 const KIND_LABEL = {
-  food: 'Nourriture', water: 'Boisson', heal: 'Soin', warm: 'Chaleur', mat: 'Matériau', tool: 'Arme ou piège', wear: 'Vêtement', pack: 'Sac',
+  food: 'Nourriture', water: 'Boisson', heal: 'Soin', warm: 'Chaleur', mat: 'Matériau', tool: 'Arme ou piège', wear: 'Vêtement', guard: 'Protection', pack: 'Sac',
   gun: 'Arme à feu', ammo: 'Munition', fuel: 'Carburant',
 };
 
@@ -94,6 +103,7 @@ export const ART_CSS = `
 .art-mat { --art-tint: var(--c-text-3, #86929c); }
 .art-tool { --art-tint: var(--c-accent, #ff7f1f); }
 .art-wear { --art-tint: var(--c-others, #2bb3a3); }
+.art-guard { --art-tint: var(--c-info, #5aa9ff); }
 .art-pack { --art-tint: var(--c-bag, #c58bff); }
 .art-gun { --art-tint: var(--c-danger, #ff5a4f); }
 .art-ammo { --art-tint: var(--c-warn, #f2b84b); }

@@ -227,6 +227,14 @@ node test/trouvailles-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou
 
 Le script fouille un bâtiment de Lyon depuis sa façade (butin tiré d'une graine fixée avec `debug.lootSeed`, `?trouve=1`), sur ordinateur puis sur téléphone : la fenêtre s'ouvre, le sac n'a rien reçu et le jeu est en pause (la faim ne baisse pas), la fenêtre tient dans l'écran sans défilement horizontal, boutons et cases de 44 px au moins, butin au-dessus du sac (téléphone) ou à sa gauche ; la batte cloutée est signalée « Mieux », choisie, puis portée ; une pile entière entre dans le sac ; le sac plein grise « Prendre » et « Tout prendre » avec son motif, laisser des planches libère des places que le sélecteur de quantité règle ; « Laisser le reste » (ou Échap) ferme, la notification dit ce qui reste et le jeu reprend ; une seconde fouille se vide d'un « Tout prendre » et se ferme sur « Terminé ». La puce « Ouvrir » : première puce du sac, sans recouvrir un autre bouton, la pastille compte les places prises ; elle ouvre la fenêtre en une colonne et en pause, jette une pile, la reprend, en jette une autre ; la fermeture perd ce qui reste jeté et le dit, la touche I ouvre et Échap ferme sur ordinateur. La CI le lance après l'acceptation des intérieurs ; il bloque la publication.
 
+### Acceptation de la fenêtre « Habillement »
+
+```sh
+node test/habillement-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobile) ; captures dans browser-shots/habillement
+```
+
+Le script remplit le sac de pièces (bonnet, casques, blouson, pantalon, lampe, bouclier), ouvre « Habillement » (bouton du sac sur téléphone, touche H sur ordinateur), vérifie la pause du jeu, la tenue dans l'écran, des boutons et cases de 44 px au moins, puis porte les pièces une à une : effets cumulés, usure de douze morsures, « Retirer » (pièce intacte au sac, pièce entamée jetée), sauvegarde, mort (tout ce qui est porté tombe avec le sac, avec son usure) et reprise du sac. Une capture du personnage de près montre l'habillement porté. Règles dans `src/survival.js` (`ITEMS`, `gearStats`, `wearGuard`, `deathPenalty`), fenêtre dans `src/habillement.js`, silhouette dans `src/characters.js` (`dressLook`), lampe torche dans `src/interieur-lumiere.js` (`LUMIERE_LAMPE`) et `src/atmosphere.js` (`setLamp`).
+
 ## Organisation
 
 - `src/picker.js` : carte du monde du menu, recherche et choix du lieu

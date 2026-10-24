@@ -23,11 +23,28 @@ export const ITEMS = {
   plaque: { name: 'Plaque de métal', one: 'plaque', many: 'plaques' },
   piege: { name: 'Piège à pointes', one: 'piège', many: 'pièges' },
   leurre: { name: 'Leurre', verb: 'Lancer', lure: true, one: 'leurre', many: 'leurres' },
-  // Équipement : une arme, un vêtement et un sac portés, qui n'occupent pas de place dans le sac.
+  // Équipement porté, un objet par emplacement, qui n'occupe pas de place dans le sac : main droite (arme), main gauche (`offhand`),
+  // tête (`head`), torse (`clothing`), pantalon (`legs`) et sac. Effets d'une pièce : `warm` (°C ressentis), `wetMul` (mouillure ×),
+  // `guard` (part des dégâts de morsure évitée) avec sa `durability` (morsures encaissées avant de se briser), `light` (lampe).
   batte_cloutee: { name: 'Batte cloutée', equip: 'weapon', damage: 75, uses: 60, one: 'batte cloutée', many: 'battes cloutées' },
   hache: { name: 'Hache', equip: 'weapon', damage: 90, uses: 50, chop: true, one: 'hache', many: 'haches' },
   manteau: { name: 'Manteau chaud', equip: 'clothing', warm: 12, one: 'manteau chaud', many: 'manteaux chauds' },
   poncho: { name: 'Poncho', equip: 'clothing', warm: 4, wetMul: 0.25, one: 'poncho', many: 'ponchos' },
+  doudoune: { name: 'Doudoune', equip: 'clothing', warm: 16, one: 'doudoune', many: 'doudounes' },
+  blouson_cuir: { name: 'Blouson de cuir', equip: 'clothing', warm: 6, guard: 0.1, durability: 32, one: 'blouson de cuir', many: 'blousons de cuir' },
+  gilet_renforce: { name: 'Gilet renforcé', equip: 'clothing', warm: 2, guard: 0.15, durability: 44, one: 'gilet renforcé', many: 'gilets renforcés' },
+  bonnet: { name: 'Bonnet', equip: 'head', warm: 3, one: 'bonnet', many: 'bonnets' },
+  chapeau_pluie: { name: 'Chapeau de pluie', equip: 'head', warm: 1, wetMul: 0.7, one: 'chapeau de pluie', many: 'chapeaux de pluie' },
+  casque_chantier: { name: 'Casque de chantier', equip: 'head', guard: 0.06, durability: 24, one: 'casque de chantier', many: 'casques de chantier' },
+  casque_moto: { name: 'Casque de moto', equip: 'head', guard: 0.1, durability: 36, one: 'casque de moto', many: 'casques de moto' },
+  pantalon_travail: { name: 'Pantalon de travail', equip: 'legs', warm: 2, guard: 0.05, durability: 28, one: 'pantalon de travail', many: 'pantalons de travail' },
+  pantalon_pluie: { name: 'Pantalon de pluie', equip: 'legs', wetMul: 0.5, one: 'pantalon de pluie', many: 'pantalons de pluie' },
+  pantalon_renforce: { name: 'Pantalon renforcé', equip: 'legs', warm: 2, guard: 0.1, durability: 40, one: 'pantalon renforcé', many: 'pantalons renforcés' },
+  collant_thermique: { name: 'Collant thermique', equip: 'legs', warm: 5, one: 'collant thermique', many: 'collants thermiques' },
+  lampe_torche: { name: 'Lampe torche', equip: 'offhand', light: true, one: 'lampe torche', many: 'lampes torche' },
+  bouclier_fortune: { name: 'Bouclier de fortune', equip: 'offhand', guard: 0.08, durability: 20, one: 'bouclier de fortune', many: 'boucliers de fortune' },
+  bouclier_emeute: { name: 'Bouclier antiémeute', equip: 'offhand', guard: 0.15, durability: 44, one: 'bouclier antiémeute', many: 'boucliers antiémeute' },
+  pied_de_biche: { name: 'Pied-de-biche', equip: 'weapon', damage: 62, uses: 80, one: 'pied-de-biche', many: 'pieds-de-biche' },
   // Trois sacs, un seul porté : le plus grand passe en premier (betterThanWorn), les autres se rangent.
   sac_ecolier: { name: "Sac d'écolier", equip: 'bag', capacity: 36, one: "sac d'écolier", many: "sacs d'écolier" },
   sac_randonnee: { name: 'Sac de randonnée', equip: 'bag', capacity: 45, one: 'sac de randonnée', many: 'sacs de randonnée' },
@@ -63,6 +80,7 @@ export const WEAPONS = {
   batte: { name: 'Batte', damage: 50, uses: null },
   batte_cloutee: { name: ITEMS.batte_cloutee.name, damage: ITEMS.batte_cloutee.damage, uses: ITEMS.batte_cloutee.uses },
   hache: { name: ITEMS.hache.name, damage: ITEMS.hache.damage, uses: ITEMS.hache.uses, chop: true },
+  pied_de_biche: { name: ITEMS.pied_de_biche.name, damage: ITEMS.pied_de_biche.damage, uses: ITEMS.pied_de_biche.uses },
 };
 
 // Armes à feu : contre les zombies seulement (jamais un autre joueur). `ammo` : munition consommée, une par tir ; `damage` : sur
@@ -86,8 +104,6 @@ export const FATIGUE = {
   tired: 60, exhausted: 85,
   offlineRefuge: 20, offlineElsewhere: 8, // par heure hors du jeu
 };
-// Usure perdue par l'arme à la mort : 25 % de son maximum, arrondi vers le haut.
-export const DEATH_WEAR = 0.25;
 
 // Butin selon le type réel du lieu (OpenStreetMap). Chaque ligne : [objet, probabilité, quantité max].
 export const LOOT = {
@@ -131,6 +147,18 @@ LOOT.fire_station.push(['sac_renforce', 0.04, 1]);
 LOOT.police.push(['sac_renforce', 0.04, 1]);
 // Canne à pêche (crafting.js la fabrique aussi) : dans les magasins de sport et de plein air, en fin de table comme les lignes d'au-dessus.
 LOOT.outdoor.push(['canne', 0.2, 1]);
+// Habillement (têtes, torses, pantalons, main gauche), en fin de table pour la même raison : le chaud et l'imperméable partout où l'on
+// vend des vêtements ou du plein air, la protection (casques, blousons, gilets, boucliers) rare chez ceux qui en portent.
+LOOT.clothes.push(['bonnet', 0.4, 1], ['chapeau_pluie', 0.15, 1], ['pantalon_pluie', 0.2, 1], ['pantalon_travail', 0.15, 1],
+  ['collant_thermique', 0.2, 1], ['blouson_cuir', 0.06, 1], ['doudoune', 0.05, 1]);
+LOOT.outdoor.push(['bonnet', 0.3, 1], ['chapeau_pluie', 0.25, 1], ['pantalon_pluie', 0.25, 1], ['collant_thermique', 0.25, 1],
+  ['pantalon_travail', 0.12, 1], ['doudoune', 0.08, 1], ['blouson_cuir', 0.04, 1], ['casque_moto', 0.04, 1], ['lampe_torche', 0.15, 1]);
+LOOT.hardware.push(['casque_chantier', 0.1, 1], ['pantalon_travail', 0.2, 1], ['lampe_torche', 0.2, 1], ['pied_de_biche', 0.2, 1]);
+LOOT.industrial.push(['casque_chantier', 0.08, 1], ['pantalon_travail', 0.15, 1], ['casque_moto', 0.03, 1], ['lampe_torche', 0.1, 1], ['pied_de_biche', 0.1, 1]);
+LOOT.fire_station.push(['casque_chantier', 0.15, 1], ['pantalon_travail', 0.2, 1], ['gilet_renforce', 0.03, 1], ['lampe_torche', 0.25, 1], ['pied_de_biche', 0.08, 1]);
+LOOT.police.push(['gilet_renforce', 0.03, 1], ['bouclier_emeute', 0.03, 1], ['lampe_torche', 0.3, 1]);
+LOOT.house.push(['bonnet', 0.1, 1], ['lampe_torche', 0.06, 1]);
+LOOT.retail.push(['bonnet', 0.08, 1]);
 const KIND_ALIASES = {
   apartments: 'house', residential: 'house', detached: 'house', yes: 'house', terrace: 'house', semidetached_house: 'house', dormitory: 'house',
   shop: 'retail', supermarket: 'supermarket', office: 'commercial', warehouse: 'industrial', garage: 'industrial', garages: 'industrial',
@@ -200,7 +228,9 @@ export function createSurvivor() {
     fatigue: FATIGUE.start,
     inventory: { eau: 1, conserve: 1 }, // le sac
     weapon: { key: 'batte', uses: null },
-    clothing: null, // null = veste légère, sinon 'manteau' ou 'poncho'
+    clothing: null, // torse : null = veste légère, sinon un vêtement (manteau, poncho, blouson…)
+    head: null, legs: null, offhand: null, // tête, pantalon, main gauche : null = rien
+    wear: {}, // morsures encore encaissables par emplacement ('head', 'clothing', 'legs', 'offhand'), pour les pièces qui s'usent
     pack: null, // null = sac de base (30 places), sinon 'sac_ecolier' (36), 'sac_randonnee' (45) ou 'sac_renforce' (60)
     warmth: 0, // effet temporaire d'une chaufferette
   };
@@ -210,7 +240,7 @@ export function createSurvivor() {
 export function effectiveAmbient(s, env) {
   const base = env.feelsLike + 6 + (env.sheltered ? 4 : 0) + (env.refugeWarmth ?? 0);
   // Vêtement et chaufferette réchauffent quand il fait froid, sans faire suer quand il fait doux (on les ouvre).
-  const extra = (ITEMS[s.clothing]?.warm ?? 0) + (s.warmth > 0 ? 15 : 0);
+  const extra = gearStats(s).warm + (s.warmth > 0 ? 15 : 0);
   return base + Math.max(0, Math.min(extra, COMFORT_HIGH - 2 - base));
 }
 
@@ -234,9 +264,9 @@ export function updateSurvivor(s, env, dt) {
   const effects = { hypothermia: false, hyperthermia: false, starving: false, dehydrated: false, damage: 0, fatigue: 0, sick: false, sickDamage: 0 };
   s.warmth = Math.max(0, s.warmth - dt);
 
-  // Mouillure : le poncho en retient les trois quarts ; au refuge on sèche trois fois plus vite.
+  // Mouillure : le poncho en retient les trois quarts (les pièces imperméables se cumulent) ; au refuge on sèche trois fois plus vite.
   const exposed = (env.raining || env.snowing) && !env.sheltered && !env.inside;
-  const wetRate = exposed ? 0.02 * (ITEMS[s.clothing]?.wetMul ?? 1) : env.inside ? -0.03 : -0.01;
+  const wetRate = exposed ? 0.02 * gearStats(s).wetMul : env.inside ? -0.03 : -0.01;
   s.wet = Math.min(1, Math.max(0, s.wet + wetRate * dt));
 
   // Fatigue : monte dehors (plus en courant, plus la nuit), jamais au refuge.
@@ -285,11 +315,69 @@ export function bagCapacity(s) {
   return ITEMS[s?.pack]?.capacity ?? BAG_BASE;
 }
 
-// Clé de l'objet porté à l'emplacement `equip` ('weapon', 'clothing' ou 'bag'), null si rien (ou la batte de base).
+// Emplacements d'habillement (clés du survivant) : tête, torse, pantalon et main gauche. Avec l'arme (main droite) et le sac, ce sont
+// tous les emplacements d'`equip`.
+export const GEAR_SLOTS = ['head', 'clothing', 'legs', 'offhand'];
+const isGearSlot = (equip) => GEAR_SLOTS.includes(equip);
+// Noms des emplacements, dans l'ordre de la fenêtre « Habillement ».
+export const SLOT_LABEL = { head: 'Tête', clothing: 'Torse', legs: 'Pantalon', offhand: 'Main gauche', weapon: 'Main droite', bag: 'Sac' };
+// Protection totale plafonnée à la moitié des dégâts de morsure ; mouillure jamais divisée par plus de 6,5.
+export const GUARD_CAP = 0.5;
+export const WET_FLOOR = 0.15;
+
+// Clé de l'objet porté à l'emplacement `equip` ('weapon', 'bag' ou l'un de GEAR_SLOTS), null si rien (la batte de base se dit 'batte').
 export function wornKey(s, equip) {
   if (equip === 'weapon') return s.weapon?.key ?? null;
   if (equip === 'bag') return s.pack ?? null;
-  return s.clothing ?? null;
+  return isGearSlot(equip) ? s[equip] ?? null : null;
+}
+
+// Effets de l'habillement porté : { warm (°C ressentis), wetMul (mouillure ×), guard (0 à GUARD_CAP, part des dégâts de morsure évitée),
+// light (lampe torche en main) }. Les chaleurs et les protections s'additionnent, les pièces imperméables se multiplient.
+export function gearStats(s) {
+  let warm = 0, wetMul = 1, guard = 0, light = false;
+  for (const slot of GEAR_SLOTS) {
+    const it = ITEMS[s[slot]];
+    if (!it) continue;
+    warm += it.warm ?? 0;
+    wetMul *= it.wetMul ?? 1;
+    guard += it.guard ?? 0;
+    if (it.light) light = true;
+  }
+  return { warm, wetMul: Math.max(WET_FLOOR, wetMul), guard: Math.min(GUARD_CAP, guard), light };
+}
+
+// Morsures que la pièce portée à `slot` peut encore encaisser ; null si elle ne s'use pas (ou si l'emplacement est vide).
+export function gearUses(s, slot) {
+  const it = ITEMS[s[slot]];
+  if (!it?.durability) return null;
+  const n = s.wear?.[slot];
+  return Number.isFinite(n) ? Math.min(it.durability, Math.max(1, n)) : it.durability;
+}
+
+// Note d'une pièce pour dire laquelle est « meilleure » : chaleur, protection (100 pour 1), imperméabilité, lampe.
+export function gearScore(key) {
+  const it = ITEMS[key];
+  if (!it) return 0;
+  return (it.warm ?? 0) + (it.guard ?? 0) * 100 + (1 - (it.wetMul ?? 1)) * 10 + (it.light ? 6 : 0);
+}
+
+// Une morsure encaissée use d'un point une pièce de protection portée, tirée au hasard (`rand` : le tirage, pour les essais).
+// Renvoie la clé de la pièce qui vient de se briser, ou null.
+export function wearGuard(s, rand = Math.random) {
+  const slots = GEAR_SLOTS.filter((slot) => ITEMS[s[slot]]?.durability);
+  if (!slots.length) return null;
+  const slot = slots[Math.min(slots.length - 1, Math.floor(rand() * slots.length))];
+  const left = gearUses(s, slot) - 1;
+  if (!s.wear) s.wear = {};
+  if (left > 0) {
+    s.wear[slot] = left;
+    return null;
+  }
+  const key = s[slot];
+  s[slot] = null;
+  delete s.wear[slot];
+  return key;
 }
 
 // Armes à feu du sac, dans l'ordre de FIREARM_KEYS : [{ key, ammo, n }] ; `n` : munitions de cette arme dans le sac.
@@ -308,13 +396,19 @@ export function weaponDamage(s) {
   return (WEAPONS[s.weapon?.key] ?? WEAPONS.batte).damage;
 }
 
-// Un objet trouvé ou fabriqué s'équipe tout seul : une arme si elle frappe plus fort, un vêtement si l'emplacement est vide,
-// un sac s'il est plus grand que celui que l'on porte.
+// Un objet trouvé ou fabriqué s'équipe tout seul : une arme si elle frappe plus fort, une pièce d'habillement si l'emplacement
+// est vide ou si elle a une meilleure note (`gearScore`), un sac s'il est plus grand que celui que l'on porte.
 export function betterThanWorn(s, key) {
   const item = ITEMS[key];
   if (item?.equip === 'weapon') return item.damage > weaponDamage(s);
-  if (item?.equip === 'clothing') return !s.clothing;
   if (item?.equip === 'bag') return item.capacity > bagCapacity(s);
+  if (isGearSlot(item?.equip)) {
+    const worn = s[item.equip];
+    if (!worn) return true;
+    // Main gauche : une lampe et un bouclier ne se comparent pas, seulement deux pièces de la même sorte.
+    if (item.equip === 'offhand' && !!ITEMS[worn]?.light !== !!item.light) return false;
+    return gearScore(key) > gearScore(worn);
+  }
   return false;
 }
 
@@ -330,20 +424,30 @@ export function packSwapRefusal(s, key) {
 // Le coffre et le sac ne gardent pas l'usure (schéma 4.2) : une arme entamée retirée est jetée, jamais rangée.
 // Renvoie la clé de l'arme portée qui serait jetée si l'on portait `key`, sinon null.
 export function discardedBy(s, key) {
-  if (ITEMS[key]?.equip !== 'weapon') return null;
+  const equip = ITEMS[key]?.equip;
+  if (isGearSlot(equip)) {
+    const worn = s[equip];
+    const max = ITEMS[worn]?.durability;
+    return max && gearUses(s, equip) < max ? worn : null;
+  }
+  if (equip !== 'weapon') return null;
   const w = s.weapon;
   const max = WEAPONS[w?.key]?.uses;
   if (!max) return null; // batte de base : rien à jeter
   return Number.isFinite(w.uses) && w.uses >= max ? null : w.key;
 }
 
-// « Ta batte cloutée usée est jetée ».
+// Objets au féminin pour les messages (« Ta hache usée », « Doudoune équipée », « Trouvé : une conserve »).
+export const FEMININE_ITEMS = new Set(['conserve', 'barre', 'eau', 'ferraille', 'planche', 'plaque', 'chaufferette', 'batte_cloutee', 'hache', 'doudoune', 'lampe_torche']);
+
+// « Ta batte cloutée usée est jetée », « Ton casque de chantier usé est jeté ».
 export function discardText(key) {
-  return `Ta ${ITEMS[key]?.one ?? key} usée est jetée`;
+  const name = ITEMS[key]?.one ?? key;
+  return FEMININE_ITEMS.has(key) ? `Ta ${name} usée est jetée` : `Ton ${name} usé est jeté`;
 }
 
-// Porte l'objet. Renvoie { back, discarded } : `back` est l'objet retiré à ranger (vêtement, ou arme intacte),
-// `discarded` l'arme entamée jetée ; null pour la batte de base et la veste légère.
+// Porte l'objet. Renvoie { back, discarded } : `back` est l'objet retiré à ranger (pièce ou arme intacte),
+// `discarded` la pièce ou l'arme entamée jetée ; null pour la batte de base et la veste légère.
 function wear(s, key) {
   const item = ITEMS[key];
   if (item.equip === 'weapon') {
@@ -357,9 +461,15 @@ function wear(s, key) {
     s.pack = key;
     return { back: prev, discarded: null };
   }
-  const prev = s.clothing ?? null;
-  s.clothing = key;
-  return { back: prev, discarded: null };
+  // Habillement : la pièce neuve est intacte ; la pièce remplacée retourne d'où vient la nouvelle, sauf si elle est entamée (jetée).
+  const slot = item.equip;
+  const discarded = discardedBy(s, key);
+  const prev = s[slot] ?? null;
+  s[slot] = key;
+  if (!s.wear) s.wear = {};
+  if (item.durability) s.wear[slot] = item.durability;
+  else delete s.wear[slot];
+  return { back: discarded ? null : prev, discarded };
 }
 
 // Équipe l'objet s'il est meilleur, sinon le range dans `chest` (ou dans le sac si `chest` est absent).
@@ -393,6 +503,36 @@ export function equipFrom(s, key, from) {
   const { back } = wear(s, key);
   if (back) addCount(from, back, 1);
   return true;
+}
+
+// Motifs d'un « Retirer » refusé.
+export const REMOVE_WHY = Object.freeze({ empty: 'Rien à retirer', full: 'Sac plein' });
+
+// Retire la pièce portée à `slot` ('weapon' ou l'un de GEAR_SLOTS) : elle va dans le sac si elle est intacte et qu'il y a de la place ;
+// une pièce entamée est jetée (le sac ne garde pas l'usure, comme pour l'arme). Retirer l'arme remet la batte de base.
+// Renvoie { ok, why, key, discarded }.
+export function removeGear(s, slot) {
+  const none = (why) => ({ ok: false, why, key: null, discarded: null });
+  if (slot === 'weapon') {
+    const w = s.weapon;
+    if (!w || w.key === 'batte' || !ITEMS[w.key]) return none(REMOVE_WHY.empty);
+    const max = WEAPONS[w.key]?.uses;
+    const damaged = !!max && Number.isFinite(w.uses) && w.uses < max;
+    if (!damaged && bagUsed(s) >= bagCapacity(s)) return none(REMOVE_WHY.full);
+    const key = w.key;
+    s.weapon = { key: 'batte', uses: null };
+    if (!damaged) addCount(s.inventory, key, 1);
+    return { ok: true, why: '', key, discarded: damaged ? key : null };
+  }
+  if (!isGearSlot(slot) || !ITEMS[s[slot]]) return none(REMOVE_WHY.empty);
+  const key = s[slot];
+  const max = ITEMS[key].durability;
+  const damaged = !!max && gearUses(s, slot) < max;
+  if (!damaged && bagUsed(s) >= bagCapacity(s)) return none(REMOVE_WHY.full);
+  s[slot] = null;
+  if (s.wear) delete s.wear[slot];
+  if (!damaged) addCount(s.inventory, key, 1);
+  return { ok: true, why: '', key, discarded: damaged ? key : null };
 }
 
 // Objets du sac qui ne tiendraient plus dans les 30 places de base si l'on enlevait le sac porté.
@@ -469,25 +609,69 @@ export function wearWeapon(s, keep = 1, rand = Math.random) {
   return 'broken';
 }
 
-// Mort : le sac est vidé (son contenu reste au sol, `bag`, le sac porté compris), l'arme perd 25 % de son usure
-// maximale (`lost` coups), le vêtement est gardé. Les besoins du réveil sont dans `wakeAfterDeath`.
+// Mort : le sac est vidé et tout ce qu'on portait tombe avec lui (`bag` : le contenu, le sac porté, les pièces d'habillement et l'arme
+// qui n'est pas la batte de base). `worn` : clé → usure restante de chaque pièce portée (coups de l'arme, morsures de la pièce,
+// null pour une pièce qui ne s'use pas), pour la remettre au même état en reprenant le sac (`recoverGear`). Les besoins du réveil
+// sont dans `wakeAfterDeath`.
 export function deathPenalty(s) {
-  const bag = {};
+  const bag = {}, worn = {};
   for (const [k, n] of Object.entries(s.inventory ?? {})) if (n > 0) bag[k] = n;
   for (const k of Object.keys(s.inventory ?? {})) delete s.inventory[k];
   if (s.pack) {
     addCount(bag, s.pack, 1);
     s.pack = null;
   }
-  let lost = 0, broken = false;
-  const max = WEAPONS[s.weapon?.key]?.uses;
-  if (max) {
-    lost = Math.min(s.weapon.uses, Math.ceil(max * DEATH_WEAR));
-    s.weapon.uses -= lost;
-    if (s.weapon.uses <= 0) { s.weapon.key = 'batte'; s.weapon.uses = null; broken = true; }
+  for (const slot of GEAR_SLOTS) {
+    const key = s[slot];
+    if (!ITEMS[key]) continue;
+    addCount(bag, key, 1);
+    worn[key] = gearUses(s, slot);
+    s[slot] = null;
   }
-  return { bag, lost, broken };
+  s.wear = {};
+  const w = s.weapon;
+  if (w && w.key !== 'batte' && ITEMS[w.key]) {
+    addCount(bag, w.key, 1);
+    worn[w.key] = Number.isFinite(w.uses) ? w.uses : null;
+    s.weapon = { key: 'batte', uses: null };
+  }
+  return { bag, worn };
 }
+
+// Remet sur le survivant, en reprenant son sac, ce qu'il portait à sa mort (`d` : { bag, worn } du sac tombé, modifié sur place).
+// Chaque pièce retourne à son emplacement s'il est libre, avec l'usure qu'elle avait. Une pièce qui s'use et dont l'emplacement est
+// pris reste au sol (la mettre dans le sac la réparerait) ; une pièce qui ne s'use pas rejoint le sac comme un objet ordinaire.
+// Renvoie le nombre de pièces remises.
+export function recoverGear(s, d) {
+  let n = 0;
+  for (const [key, uses] of Object.entries(d.worn ?? {})) {
+    const item = ITEMS[key];
+    const slot = item?.equip;
+    if (!slot || slot === 'bag' || !((d.bag?.[key] ?? 0) > 0)) {
+      delete d.worn[key];
+      continue;
+    }
+    const free = slot === 'weapon' ? !s.weapon || s.weapon.key === 'batte' : !s[slot];
+    if (!free) {
+      if (uses === null) delete d.worn[key];
+      continue;
+    }
+    takeCount(d.bag, key, 1);
+    if (slot === 'weapon') s.weapon = { key, uses: Number.isFinite(uses) ? Math.min(item.uses, Math.max(1, uses)) : item.uses };
+    else {
+      s[slot] = key;
+      if (!s.wear) s.wear = {};
+      if (item.durability) s.wear[slot] = Number.isFinite(uses) ? Math.min(item.durability, Math.max(1, uses)) : item.durability;
+      else delete s.wear[slot];
+    }
+    delete d.worn[key];
+    n++;
+  }
+  return n;
+}
+
+// Clés du sac tombé qu'on ne peut pas encore ranger dans le sac : des pièces qui s'usent, en attente de leur emplacement.
+export const heldOnGround = (d) => new Set(Object.keys(d.worn ?? {}).filter((k) => d.worn[k] !== null && d.worn[k] !== undefined));
 
 // Réveil après la mort : faim et soif remontées à au moins 40, fatigue +10 (la santé, 50, est celle du joueur).
 export function wakeAfterDeath(s) {
