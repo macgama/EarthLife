@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LAB, buildPlan, labAt } from '../src/interieur.js';
 import {
-  LUMIERE, blockersOf, castRay, castAll, sightAt, lightAt, markSeen, contactShade, outsideMask, alignedYaw, approachAngle, lampDir, toPlanUV,
+  LUMIERE, LUMIERE_LAMPE, lumiereOf, blockersOf, castRay, castAll, sightAt, lightAt, markSeen, contactShade, outsideMask, alignedYaw, approachAngle, lampDir, toPlanUV,
 } from '../src/interieur-lumiere.js';
 
 const { WALL, FLOOR, DOOR, SHELL, OUT, FURN } = LAB;
@@ -159,4 +159,25 @@ test('coût : 256 rayons sur un plan réel en moins de 5 ms en moyenne, ombre de
   const t1 = performance.now();
   contactShade(plan);
   assert.ok(performance.now() - t1 < 60, `${(performance.now() - t1).toFixed(1)} ms`);
+});
+
+test('lampe torche portée : la lampe porte plus loin et éclaire plus large, le reste ne change pas', () => {
+  assert.equal(lumiereOf(false), LUMIERE);
+  assert.equal(lumiereOf(true), LUMIERE_LAMPE);
+  assert.ok(LUMIERE_LAMPE.range > LUMIERE.range && LUMIERE_LAMPE.half > LUMIERE.half && LUMIERE_LAMPE.ambient > LUMIERE.ambient);
+  for (const k of ['rays', 'edge', 'tall', 'slack', 'seen', 'aoReach']) assert.equal(LUMIERE_LAMPE[k], LUMIERE[k], k);
+  // Une grande pièce de 30 m : à 13 m devant la lampe, le noir sans lampe torche, une lueur avec elle.
+  const nu = 80, nv = 20, lab = new Uint8Array(nu * nv).fill(FLOOR);
+  const plan = { nu, nv, size: nu * nv, cell: 0.5, u0: 0, v0: 0, lab, furn: [], frame: { ox: 0, oz: 0, ux: 1, uz: 0, vx: 0, vz: 1 } };
+  const vis = (o) => castAll(plan, blockersOf(plan), 5, 5, new Float32Array(LUMIERE.rays), o.range);
+  const at = (o) => ({ u: 5, v: 5, dir: 0, vis: vis(o) });
+  assert.equal(lightAt(at(LUMIERE), 18, 5, LUMIERE), 0, 'à 13 m, sans lampe torche : noir');
+  assert.ok(lightAt(at(LUMIERE_LAMPE), 18, 5, LUMIERE_LAMPE) > 0.05, 'à 13 m, avec la lampe torche : éclairé');
+  // De biais (0,65 rad du cap), hors du cône ordinaire mais dans le cône élargi.
+  const aside = (o) => lightAt(at(o), 5 + 6 * Math.cos(0.65), 5 + 6 * Math.sin(0.65), o);
+  assert.equal(aside(LUMIERE), 0);
+  assert.ok(aside(LUMIERE_LAMPE) > 0.2, `${aside(LUMIERE_LAMPE)}`);
+  // Les cases vues : la lampe torche en marque plus.
+  const seen = (o) => { const s = new Uint8Array(plan.size); markSeen(plan, at(o), s, o); return s.reduce((n, v) => n + (v ? 1 : 0), 0); };
+  assert.ok(seen(LUMIERE_LAMPE) > seen(LUMIERE) * 1.3, `${seen(LUMIERE_LAMPE)} contre ${seen(LUMIERE)}`);
 });

@@ -317,16 +317,25 @@ test('mode sac : textes du transfert et de la fermeture', () => {
   assert.equal(leftText({}, 'bag'), '');
 });
 
-test('gearOf : arme, vêtement et sac portés', () => {
+test('gearOf : main droite, main gauche, tête, torse, pantalon et sac portés', () => {
   const s = survivor();
-  assert.deepEqual(gearOf(s).map((g) => [g.slot, g.name]), [['weapon', 'Batte'], ['clothing', 'Veste légère'], ['pack', 'Sac de base']]);
+  assert.deepEqual(gearOf(s).map((g) => [g.slot, g.name]), [
+    ['weapon', 'Batte'], ['offhand', 'Main libre'], ['head', 'Tête nue'], ['clothing', 'Veste légère'], ['legs', 'Jean'], ['bag', 'Sac de base'],
+  ]);
   s.weapon = { key: 'hache', uses: 41 };
   s.clothing = 'poncho';
   s.pack = 'sac_randonnee';
-  const g = gearOf(s);
-  assert.equal(g[0].detail, '90 dégâts · 41/50 coups');
-  assert.equal(g[1].detail, 'retient la pluie');
-  assert.equal(g[2].detail, '45 places');
+  s.head = 'casque_chantier';
+  s.wear = { head: 7 };
+  s.offhand = 'lampe_torche';
+  const g = Object.fromEntries(gearOf(s).map((r) => [r.slot, r]));
+  assert.equal(g.weapon.detail, '90 dégâts · 41/50 coups');
+  assert.equal(g.clothing.detail, '+4 °C · mouillure ×0,25');
+  assert.equal(g.bag.detail, '45 places');
+  assert.equal(g.head.detail, '−6 % de morsure · 7/24 morsures');
+  assert.deepEqual([g.head.key, g.head.uses, g.head.max], ['casque_chantier', 7, 24]);
+  assert.equal(g.offhand.detail, 'éclaire plus loin');
+  assert.deepEqual([g.legs.key, g.legs.detail], [null, 'rien']);
 });
 
 test('itemInfo : une ligne pour chaque objet du jeu, sans « undefined »', () => {
@@ -339,7 +348,10 @@ test('itemInfo : une ligne pour chaque objet du jeu, sans « undefined »', () =
   assert.equal(itemInfo('soda'), 'Boire · +5 faim, +20 soif, −8 fatigue');
   assert.equal(itemInfo('bandage'), 'Soigner · +15 PV');
   assert.equal(itemInfo('bois'), 'Matériau de fabrication');
-  assert.equal(itemInfo('manteau'), 'Vêtement · +12 °C ressentis');
+  assert.equal(itemInfo('manteau'), 'Torse · +12 °C');
+  assert.equal(itemInfo('casque_moto'), 'Tête · −10 % de morsure · 36 morsures');
+  assert.equal(itemInfo('pantalon_pluie'), 'Pantalon · mouillure ×0,5');
+  assert.equal(itemInfo('lampe_torche'), 'Main gauche · éclaire plus loin');
   assert.equal(itemInfo('sac_randonnee'), 'Sac · 45 places');
   assert.equal(itemInfo('balles'), 'Munitions · Pistolet');
   assert.equal(itemInfo('fusil'), 'Arme à feu · 200 dégâts · portée 12 m');

@@ -439,8 +439,8 @@ export function createInteriorView(scene, { dark = true } = {}) {
     },
 
     // Chaque image : fondu du toit, noir (ouvert une fois le joueur dedans, refermé à la sortie), lueur des meubles à fouiller.
-    // `player` { x, z, yaw } et `entered` : le joueur a passé le seuil ; `daylight` : 0 nuit, 1 plein jour.
-    update(dt, { time = 0, reduceMotion = false, player = null, entered = false, daylight = 0 } = {}) {
+    // `player` { x, z, yaw } et `entered` : le joueur a passé le seuil ; `daylight` : 0 nuit, 1 plein jour ; `lamp` : une lampe torche est portée (la lampe porte plus loin).
+    update(dt, { time = 0, reduceMotion = false, player = null, entered = false, daylight = 0, lamp = false } = {}) {
       if (!cur) return;
       if (fading) {
         fading.t += dt;
@@ -455,7 +455,7 @@ export function createInteriorView(scene, { dark = true } = {}) {
       if (!cur) return;
       const want = entered && !cur.leaving ? 1 : 0, step = reduceMotion ? 1 : dt / FADE_TIME;
       cur.k = want > cur.k ? Math.min(1, cur.k + step) : Math.max(0, cur.k - step);
-      shadow.update(dt, { k: cur.k, player, daylight, reduceMotion });
+      shadow.update(dt, { k: cur.k, player, daylight, reduceMotion, lamp });
       cur.glow.material.opacity = reduceMotion ? 0.4 : 0.28 + 0.2 * (0.5 + 0.5 * Math.sin(time * 4));
       cur.lamps.material.opacity = reduceMotion ? 0.5 : 0.5 + 0.06 * Math.sin(time * 1.7);
     },

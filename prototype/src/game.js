@@ -560,9 +560,11 @@ export function createZombieDirector(grid, rand = Math.random) {
       // Intérieur ouvert : une cloison entre eux protège des morsures (et des coups : playerAttack).
       if (exposed && dist < 1.3 && z.attackTimer <= 0 && player.health > 0 && (grid.interior === undefined || lineFree(grid, z.x, z.z, player.x, player.z))) {
         z.attackTimer = 1.1;
-        player.health = Math.max(0, player.health - t.damage);
+        // L'habillement du joueur (`player.guard`, 0 à 0,5) évite une part de la morsure.
+        const bite = t.damage * (1 - (player.guard ?? 0));
+        player.health = Math.max(0, player.health - bite);
         player.hurt = 0.35;
-        events.push({ type: 'bitten', zombie: z, damage: t.damage });
+        events.push({ type: 'bitten', zombie: z, damage: bite });
       }
     }
     return events;

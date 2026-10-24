@@ -25,6 +25,8 @@ export const ITEM_KEYS = [
   'bois', 'clous', 'ferraille', 'tissu', 'ruban',
   'planche', 'plaque', 'piege', 'leurre',
   'batte_cloutee', 'hache', 'manteau', 'poncho', 'sac_randonnee', 'sac_ecolier', 'sac_renforce',
+  'doudoune', 'blouson_cuir', 'gilet_renforce', 'bonnet', 'chapeau_pluie', 'casque_chantier', 'casque_moto',
+  'pantalon_travail', 'pantalon_pluie', 'pantalon_renforce', 'collant_thermique', 'lampe_torche', 'bouclier_fortune', 'bouclier_emeute', 'pied_de_biche',
   'pistolet', 'fusil', 'balles', 'cartouches',
   'bidon', 'batterie',
   'baies', 'champignon', 'legume', 'poisson', 'champignon_cuit', 'legume_cuit', 'poisson_cuit', 'eau_riviere', 'eau_bouillie', 'canne',
@@ -60,8 +62,16 @@ const ID = new RegExp(`^[A-Za-z0-9._,-]{1,${ID_MAX}}$`);
 const CONTROL = /[\u0000-\u001f\u007f]/g;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 const NIGHT_KEYS = 14;
-const WEAPON_USES = { batte: null, batte_cloutee: 60, hache: 50 };
-const CLOTHING = ['manteau', 'poncho'];
+const WEAPON_USES = { batte: null, batte_cloutee: 60, hache: 50, pied_de_biche: 80 };
+// Habillement porté (survival.ITEMS, equip) : pièces permises par emplacement et, pour celles qui s'usent, leurs morsures encaissables
+// au départ (`durability`). Torse = `clothing`.
+const GEAR = {
+  clothing: { manteau: null, poncho: null, doudoune: null, blouson_cuir: 32, gilet_renforce: 44 },
+  head: { bonnet: null, chapeau_pluie: null, casque_chantier: 24, casque_moto: 36 },
+  legs: { pantalon_travail: 28, pantalon_pluie: null, pantalon_renforce: 40, collant_thermique: null },
+  offhand: { lampe_torche: null, bouclier_fortune: 20, bouclier_emeute: 44 },
+};
+const GEAR_SLOTS = Object.keys(GEAR);
 const PERK_KEYS = ['lits', 'infirmerie', 'reserve', 'atelier', 'murs', 'abri', 'arriere'];
 const UPGRADES = ['etabli', 'recuperateur', 'sirene', 'feu'];
 const PLANS = ['etabli'];
@@ -74,7 +84,7 @@ const NORM_TOLERANCE = 0.02;
 
 const TOP_KEYS = ['v', 'writer', 'rev', 'savedAt', 'lastSiegeCheck', 'profile', 'survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'car', 'searched', 'dismantled'];
 const PROFILE_KEYS = ['createdAt', 'nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths', 'weathers', 'plans', 'sinceLastPlan', 'firstWaveDone', 'kitGiven', 'journal', 'distanceM', 'playSec', 'skills'];
-const SURVIVOR_KEYS = ['health', 'food', 'water', 'bodyTemp', 'wet', 'fatigue', 'bag', 'weapon', 'clothing', 'pack'];
+const SURVIVOR_KEYS = ['health', 'food', 'water', 'bodyTemp', 'wet', 'fatigue', 'bag', 'weapon', 'clothing', 'head', 'legs', 'offhand', 'wear', 'pack'];
 const BASE_KEYS = ['id', 'lat', 'lon', 'area', 'height', 'kind', 'name', 'place', 'claimedAt', 'density', 'utcOffset', 'perk', 'openings', 'chest', 'upgrades', 'sirenAt', 'lastReserve', 'habitants'];
 const HORDE_KEYS = ['nightKey', 't', 'waves', 'lastWaveEnd', 'held', 'played'];
 const COUNTERS = ['nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths'];
@@ -122,6 +132,10 @@ export function emptySave(now = Date.now()) {
       bag: { eau: 1, conserve: 1 },
       weapon: { key: 'batte', uses: null },
       clothing: null,
+      head: null,
+      legs: null,
+      offhand: null,
+      wear: {},
       pack: null,
     },
     where: null,
@@ -470,9 +484,20 @@ function checkSurvivor(raw, c, base) {
       weapon = { key: w.key, uses: null };
     } else weapon = { key: w.key, uses: c.num(w.uses, 'survivor.weapon.uses', { min: 1, max, def: max, int: true }) };
   } else if (w !== undefined) c.fix('survivor.weapon', 'illisible → batte');
-  let clothing = null;
-  if (CLOTHING.includes(s.clothing)) clothing = s.clothing;
-  else if (s.clothing !== null && s.clothing !== undefined) c.fix('survivor.clothing', `${JSON.stringify(s.clothing)} → null`);
+  // Habillement : une pièce permise par emplacement (absente d'une ancienne partie : rien, sans correction signalée) et l'usure de celles
+  // qui s'usent (`wear`, morsures restantes, par emplacement ; une pièce sans usure enregistrée est intacte).
+  const gear = {}, wear = {};
+  const rawWear = isObj(s.wear) ? s.wear : {};
+  if (s.wear !== undefined && !isObj(s.wear)) c.fix('survivor.wear', 'illisible, pièces intactes');
+  for (const slot of GEAR_SLOTS) {
+    const key = s[slot];
+    gear[slot] = null;
+    if (typeof key === 'string' && Object.hasOwn(GEAR[slot], key)) {
+      gear[slot] = key;
+      const max = GEAR[slot][key];
+      if (max !== null) wear[slot] = rawWear[slot] === undefined ? max : c.num(rawWear[slot], `survivor.wear.${slot}`, { min: 1, max, def: max, int: true });
+    } else if (key !== null && key !== undefined) c.fix(`survivor.${slot}`, `${JSON.stringify(key)} → null`);
+  }
   return {
     health,
     food: c.num(s.food, 'survivor.food', { min: 0, max: 100, def: 80 }),
@@ -482,9 +507,30 @@ function checkSurvivor(raw, c, base) {
     fatigue: c.num(s.fatigue, 'survivor.fatigue', { min: 0, max: 100, def: 10 }),
     bag: bag.out,
     weapon,
-    clothing,
+    clothing: gear.clothing,
+    head: gear.head,
+    legs: gear.legs,
+    offhand: gear.offhand,
+    wear,
     pack,
   };
+}
+
+// Pièces portées à la mort, rangées avec le sac tombé : une pièce d'habillement, ou une arme qui n'est pas la batte de base, présente
+// dans le sac, avec ses morsures (ou coups) restants. Ce qui est illisible est ignoré (la pièce reste un objet du sac). Null s'il n'en reste aucune.
+function checkDroppedGear(raw, bag) {
+  if (!isObj(raw)) return null;
+  const out = {};
+  for (const [key, uses] of Object.entries(raw)) {
+    if (!((bag[key] ?? 0) > 0)) continue;
+    const slot = GEAR_SLOTS.find((sl) => Object.hasOwn(GEAR[sl], key));
+    const max = slot ? GEAR[slot][key] : WEAPON_USES[key];
+    if (max === undefined || key === 'batte') continue;
+    if (max === null) out[key] = null;
+    else if (finite(uses) && Number.isInteger(uses)) out[key] = Math.min(max, Math.max(1, uses));
+    else out[key] = max;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 // Compétences : un jeu libre et un jeu de saison, des points bornés de 0 à XP_MAX. Rien n'est signalé pour un champ absent.
@@ -626,6 +672,9 @@ export function validateSave(raw, now = Date.now(), { itemKeys = ITEM_KEYS } = {
   if (raw.dropBag !== null && raw.dropBag !== undefined) {
     if (c.position(raw.dropBag)) {
       dropBag = { lat: raw.dropBag.lat, lon: raw.dropBag.lon, at: c.time(raw.dropBag.at, 'dropBag.at'), bag: c.counts(raw.dropBag.bag, 'dropBag.bag').out };
+      // Ce que le survivant portait en mourant et qui est dans ce sac : clé → usure restante (null pour une pièce qui ne s'use pas).
+      const worn = checkDroppedGear(raw.dropBag.worn, dropBag.bag);
+      if (worn) dropBag.worn = worn;
     } else c.fix('dropBag', 'position illisible : sac supprimé');
   }
 

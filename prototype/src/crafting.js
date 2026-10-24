@@ -1,7 +1,7 @@
 // Fabrication au refuge : recettes chiffrées, prises au coffre puis au sac, et plan de l'établi.
 // Module pur : les Counts passés dans `ctx` sont modifiés sur place (ce sont ceux de la sauvegarde).
 
-import { ITEMS, equipOrStoreInfo, discardText, itemLabel, countsLabel, lootKind, addCount, takeCount, countsTotal } from './survival.js';
+import { ITEMS, FEMININE_ITEMS, equipOrStoreInfo, discardText, itemLabel, countsLabel, lootKind, addCount, takeCount, countsTotal } from './survival.js';
 
 const PLAN_WHY = "Il faut le plan de l'établi (quincailleries, entrepôts)";
 const FIELD_WHY = 'À faire au refuge';
@@ -22,6 +22,18 @@ export const RECIPES = {
   sac_randonnee: { name: 'Sac de randonnée', time: 12, desc: 'Équipement : sac de 45 places au lieu de 30', needs: { tissu: 3, ruban: 2 }, makes: { sac_randonnee: 1 }, upgrade: null, requires: null, plan: null },
   sac_renforce: { name: 'Sac renforcé', time: 20, desc: 'Équipement : sac de 60 places au lieu de 30', needs: { tissu: 6, ruban: 3, ferraille: 2 }, makes: { sac_renforce: 1 }, upgrade: null, requires: 'etabli', plan: null },
   poncho: { name: 'Poncho', time: 8, desc: 'Vêtement : mouillure ×0,25, +4 °C', needs: { tissu: 2, ruban: 2 }, makes: { poncho: 1 }, upgrade: null, requires: null, plan: null },
+  // Habillement : le chaud et l'imperméable se cousent partout ; ce qui protège des morsures (`guard`) se fabrique à l'établi.
+  bonnet: { name: 'Bonnet', time: 6, desc: 'Tête : +3 °C ressentis', needs: { tissu: 2 }, makes: { bonnet: 1 }, upgrade: null, requires: null, plan: null },
+  chapeau_pluie: { name: 'Chapeau de pluie', time: 7, desc: 'Tête : mouillure ×0,7, +1 °C ressenti', needs: { tissu: 2, ruban: 1 }, makes: { chapeau_pluie: 1 }, upgrade: null, requires: null, plan: null },
+  collant_thermique: { name: 'Collant thermique', time: 8, desc: 'Pantalon : +5 °C ressentis', needs: { tissu: 3 }, makes: { collant_thermique: 1 }, upgrade: null, requires: null, plan: null },
+  pantalon_pluie: { name: 'Pantalon de pluie', time: 9, desc: 'Pantalon : mouillure ×0,5', needs: { tissu: 3, ruban: 2 }, makes: { pantalon_pluie: 1 }, upgrade: null, requires: null, plan: null },
+  pantalon_travail: { name: 'Pantalon de travail', time: 10, desc: 'Pantalon : −5 % de morsure, +2 °C, 28 morsures', needs: { tissu: 3, ruban: 1 }, makes: { pantalon_travail: 1 }, upgrade: null, requires: null, plan: null },
+  bouclier_fortune: { name: 'Bouclier de fortune', time: 8, desc: 'Main gauche : −8 % de morsure, 20 morsures', needs: { planche: 2, clous: 2, ruban: 1 }, makes: { bouclier_fortune: 1 }, upgrade: null, requires: null, plan: null },
+  lampe_torche: { name: 'Lampe torche', time: 8, desc: 'Main gauche : éclaire plus loin la nuit et dans les intérieurs noirs', needs: { batterie: 1, ferraille: 1, ruban: 1 }, makes: { lampe_torche: 1 }, upgrade: null, requires: null, plan: null },
+  casque_chantier: { name: 'Casque de chantier', time: 12, desc: 'Tête : −6 % de morsure, 24 morsures', needs: { plaque: 1, tissu: 1, ruban: 1 }, makes: { casque_chantier: 1 }, upgrade: null, requires: 'etabli', plan: null },
+  pantalon_renforce: { name: 'Pantalon renforcé', time: 14, desc: 'Pantalon : −10 % de morsure, +2 °C, 40 morsures', needs: { tissu: 3, ferraille: 2, ruban: 2 }, makes: { pantalon_renforce: 1 }, upgrade: null, requires: 'etabli', plan: null },
+  gilet_renforce: { name: 'Gilet renforcé', time: 18, desc: 'Torse : −15 % de morsure, +2 °C, 44 morsures', needs: { tissu: 4, plaque: 2, ruban: 2 }, makes: { gilet_renforce: 1 }, upgrade: null, requires: 'etabli', plan: null },
+  pied_de_biche: { name: 'Pied-de-biche', time: 10, desc: 'Arme : 62 dégâts, 80 coups', needs: { ferraille: 3, clous: 1 }, makes: { pied_de_biche: 1 }, upgrade: null, requires: 'etabli', plan: null },
   leurre: { name: 'Leurre', time: 4, desc: 'Se lance (touche 5) : attire les zombies à 45 m pendant 20 s', needs: { ferraille: 1, ruban: 1 }, makes: { leurre: 1 }, upgrade: null, requires: null, plan: null },
   etabli: { name: 'Établi', time: 20, desc: 'Aménagement : débloque plaque, hache, récupérateur, sirène', needs: { bois: 4, clous: 3, ferraille: 2 }, makes: null, upgrade: 'etabli', requires: null, plan: 'etabli' },
   hache: { name: 'Hache', time: 10, desc: 'Arme : 90 dégâts, 50 coups ; abat un arbre en 1,5 s pour +1 bois', needs: { bois: 1, ferraille: 2, ruban: 1 }, makes: { hache: 1 }, upgrade: null, requires: 'etabli', plan: null },
@@ -71,7 +83,7 @@ export const PLAN = { chance: 0.04, rich: { hardware: 0.5, industrial: 0.5 }, pi
 export const PLAN_FOUND_TEXT = 'Plan trouvé : établi. Tu peux le fabriquer au refuge';
 
 // Noms féminins pour les messages (« Batte cloutée équipée », « Sirène installée »).
-const FEMININE = new Set(['batte_cloutee', 'hache', 'sirene']);
+const FEMININE = new Set([...FEMININE_ITEMS, 'sirene']);
 
 // Stock disponible pour fabriquer : coffre et sac additionnés.
 export function stockOf(chest, bag) {
@@ -89,7 +101,10 @@ function knowsPlan(plan, ctx) {
 // mais l'objet qu'il remplace, s'il est intact, en prend une (simulation sur une copie : rien n'est modifié).
 function chestNeed(r, survivor) {
   if (!survivor) return countsTotal(r.makes);
-  const sim = { weapon: survivor.weapon ? { ...survivor.weapon } : null, clothing: survivor.clothing ?? null, pack: survivor.pack ?? null };
+  const sim = {
+    weapon: survivor.weapon ? { ...survivor.weapon } : null, pack: survivor.pack ?? null, wear: { ...survivor.wear },
+    clothing: survivor.clothing ?? null, head: survivor.head ?? null, legs: survivor.legs ?? null, offhand: survivor.offhand ?? null,
+  };
   const dest = {};
   for (const [k, n] of Object.entries(r.makes)) {
     for (let i = 0; i < n; i++) {

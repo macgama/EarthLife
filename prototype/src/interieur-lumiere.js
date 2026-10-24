@@ -19,6 +19,10 @@ export const LUMIERE = Object.freeze({
   aoReach: 0.8,      // m : ombre de contact le long des murs et des meubles
 });
 
+// Avec une lampe torche à la main gauche (survival.js, `light`) : la lampe porte plus loin, éclaire plus large, le halo grandit un peu.
+export const LUMIERE_LAMPE = Object.freeze({ ...LUMIERE, range: 15, half: 0.72, ambient: 3.2 });
+export const lumiereOf = (lamp) => (lamp ? LUMIERE_LAMPE : LUMIERE);
+
 // Caméra dans un intérieur : tangage (rad, presque de dessus), part de la distance retirée, durée de l'approche (s), avance du point visé
 // devant le joueur (part de la distance, écran en portrait seulement).
 export const CAMERA = Object.freeze({ pitch: 1.38, shrink: 0.28, ease: 0.45, lead: 0.12 });

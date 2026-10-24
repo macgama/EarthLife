@@ -48,6 +48,11 @@ const ICONS = {
   stats: '<path d="M4 20.5h16"/><path d="M6.5 20.5V12M12 20.5V4.5M17.5 20.5V9"/>',
   effets: `<path d="M9 7h11M9 12h11M9 17h11"/>${dot(5, 7, 1.3)}${dot(5, 12, 1.3)}${dot(5, 17, 1.3)}`,
   manteau: '<path d="M9 3.5 12 6l3-2.5 4.5 2L21 10l-2.5 1.5v9h-13v-9L3 10l1.5-4.5z"/><path d="M12 6v14.5"/>',
+  // Habillement : tête, pantalon, main gauche (bouclier, lampe).
+  casque: '<path d="M4.5 15.5a7.5 7.5 0 0 1 15 0"/><path d="M3 15.5h18V18H3zM12 8V5.5"/>',
+  pantalon: '<path d="M7 3h10l1.5 18h-5L12 11l-1.5 10h-5z"/><path d="M7 7h10"/>',
+  bouclier: '<path d="M12 3 5 5.5v5.8c0 4.2 2.8 7.6 7 9.7 4.2-2.1 7-5.5 7-9.7V5.5z"/><path d="M12 7v10"/>',
+  lampe: '<path d="M7 3h10l-2 5H9zM9.5 8h5v12a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1z"/><path d="M12 12v3"/>',
 
   // Refuge et fabrication
   refuge: '<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 9.5v11h13v-11"/><path d="M10 20.5V15h4v5.5"/>',
