@@ -4,7 +4,7 @@ import { CITIES } from './cities.js';
 import { createPicker, placeFromCity } from './picker.js';
 import { fetchWeather, forcedWeather, gameplayModifiers } from './weather.js';
 import { sunPosition, localTimeLabel } from './sun.js';
-import { createChunkedGrid, nearestFree, nearestOpen, buildingNear, buildingAt, lineFree, groundAt, groundNormal, isFree } from './collision.js';
+import { createChunkedGrid, nearestFree, nearestOpen, nearestFit, buildingNear, buildingAt, lineFree, groundAt, groundNormal, isFree, getAt, PROP } from './collision.js';
 import { buildingFloor } from './terrain.js';
 import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate, addFeatures } from './world.js';
 import { DEM_ATTRIBUTION } from './dem.js';
@@ -1702,6 +1702,11 @@ function step(s, inp, dt) {
       s.lastBuildingCount = s.store.buildings.length;
       renderConditions();
     }
+  }
+  // Le décor plein se pose après le joueur (morceau construit sous ses pieds, départ ou reprise sur un tronc) : il est dégagé au plus près.
+  if (getAt(s.grid, p.x, p.z) === PROP) {
+    const out = nearestFit(s.grid, p.x, p.z, PLAYER.radius, { maxD: 4, step: 0.25 });
+    if (out) Object.assign(p, { x: out.x, z: out.z, vx: 0, vz: 0 });
   }
   // 6. Déplacement : immobile pendant une action dehors (caché au refuge, le joueur ne bouge pas).
   const before = { x: p.x, z: p.z };
