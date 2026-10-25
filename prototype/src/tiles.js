@@ -3,6 +3,8 @@
 // Ce module n'importe que des modules sans dépendance, pour tourner aussi dans un Web Worker.
 import { decodeTile, classifyRings } from './mvt.js';
 import { makeProjection, pointInPolygon } from './geo.js';
+import { regionOf } from './climat.js';
+import { frameOf, sameRow, lookOf } from './batiment-look.js';
 
 export const TILE_ZOOM = 14;
 export const TILEJSON_URL = 'https://tiles.openfreemap.org/planet';
@@ -237,12 +239,8 @@ export function stopOf(p) {
 }
 const cleanName = (v) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 80) : null);
 
-// Région de la position réelle (façades, toits, volets).
-export function regionOf(lat, lon) {
-  if (lat >= 35 && lat < 46.5 && lon >= -10 && lon <= 30) return 'sud';
-  if (lat >= 46.5 && lat < 61 && lon >= -11 && lon <= 40) return 'nord';
-  return 'monde';
-}
+// Région de la position réelle (façades, toits, volets) : climat.js.
+export { regionOf };
 
 // Le point est-il dans une zone d'occupation du sol de classe cls ?
 const TOWER_H = 21, TOWER_AREA = 200;
@@ -253,6 +251,17 @@ function inZone(zones, cls, x, z) {
   }
   return false;
 }
+
+// Le point est-il dans une aire d'occupation du sol (landcover) dont la classe est dans `set` ?
+function inArea(areas, set, x, z) {
+  for (const zn of areas) {
+    const b = zn.bounds;
+    if (set.has(zn.cls) && x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ && insideAll(x, z, zn.rings)) return true;
+  }
+  return false;
+}
+const RURAL_AREAS = new Set(['farmland', 'grass', 'wood']);
+const BUILT_ZONES = ['residential', 'commercial', 'retail'];
 
 // Type de bâtiment déduit de sa forme quand ni lieu ni occupation du sol ne le disent (aussi pour la ville de secours).
 export function shapeUse(area, height, hasPoi = false) {
@@ -458,6 +467,23 @@ function makeBoxGrid(box, cell, items) {
 // Échantillons tous les 8 m ; un échantillon est bordé si la boîte d'un bâtiment est à moins de largeur / 2 + 13 m
 // (avenues et boulevards aux trottoirs larges : façades à 15-18 m de l'axe).
 const rangeTmp = [0, 0, 0, 0];
+// Bâtiments dont le centre est à moins de r mètres de celui de `it` (chacun une fois, `it` exclu).
+let neighbourStamp = 0;
+function eachNeighbour(it, boxes, all, r, visit) {
+  const { head, nz } = boxes, next = boxes.next, item = boxes.item, rg = rangeTmp;
+  const stamp = ++neighbourStamp, r2 = r * r;
+  boxes.range(it.cx, it.cz, r, rg);
+  for (let ci = rg[0]; ci <= rg[1]; ci++) {
+    for (let cj = rg[2]; cj <= rg[3]; cj++) {
+      for (let k = head[ci * nz + cj]; k !== -1; k = next[k]) {
+        const o = all[item[k]];
+        if (o === it || o.lookStamp === stamp) continue;
+        o.lookStamp = stamp;
+        if ((o.cx - it.cx) ** 2 + (o.cz - it.cz) ** 2 <= r2) visit(o);
+      }
+    }
+  }
+}
 function roadSetting(r, boxes, all, front) {
   const pts = r.points;
   const { head, nz } = boxes, next = boxes.next, item = boxes.item, rg = rangeTmp;
@@ -775,6 +801,36 @@ function facadeEdges(it, walls, streets, squares, shopPts) {
 // Convertit une tuile décodée en éléments de jeu, en mètres autour de `origin` (x vers l'est, z vers le sud).
 // Les bâtiments et les lieux ne sont gardés que dans la tuile qui contient leur centre, pour éviter les doublons
 // dus à la marge des tuiles ; routes, eau et sols peuvent apparaître deux fois sans gêne.
+// Type visuel d'un bâtiment de forme seule (silo, serre, grange, garage, parking, tour d'habitation) : batiment-look.js.
+// Le contexte (zone d'habitation, champs, voisins) est lu seulement pour les bâtiments que leur forme peut concerner.
+function visualLook(it, use, inside, parkGrid, out, boxes, all) {
+  if (use !== 'house' && use !== 'apartments' && use !== 'shed' && use !== 'hall') return null;
+  const a = it.area, h = it.h;
+  const tall = use === 'apartments' && h >= 21 && a >= 150;
+  const outer = it.rings[0];
+  let poiParking = false;
+  if (a >= 250) {
+    const b = it.bounds;
+    for (const p of parkGrid.query(b.minX, b.minZ, b.maxX, b.maxZ)) {
+      if (p.x >= b.minX && p.x <= b.maxX && p.z >= b.minZ && p.z <= b.maxZ && pointInPolygon(p.x, p.z, outer)) { poiParking = true; break; }
+    }
+  }
+  if (!tall && !poiParking && h > 10 && a > 42) return null;
+  const frame = (it.frame ??= frameOf(outer, a));
+  const hasPoi = inside.length > 0;
+  let zoned = false;
+  for (const cls of BUILT_ZONES) if (inZone(out.zones, cls, it.cx, it.cz)) { zoned = true; break; }
+  let near = 0, rows = 0, bigNear = false;
+  const long = frame.aspect >= 2.2;
+  eachNeighbour(it, boxes, all, 40, (o) => {
+    near++;
+    if (o.area >= 60 && (o.cx - it.cx) ** 2 + (o.cz - it.cz) ** 2 <= 625) bigNear = true;
+    if (long && o.area >= 40) rows += sameRow(frame, (o.frame ??= frameOf(o.rings[0], o.area)), a, o.area) ? 1 : 0;
+  });
+  const rural = !zoned && a >= 60 && (near <= 5 || (near <= 12 && inArea(out.areas, RURAL_AREAS, it.cx, it.cz)));
+  return lookOf({ use, area: a, h, frame, poiParking, hasPoi, zoned, rural, rows, bigNear });
+}
+
 export function tileFeatures(layers, tx, ty, z, origin) {
   const proj = makeProjection(origin.lat, origin.lon);
   const n = 2 ** z;
@@ -997,6 +1053,8 @@ export function tileFeatures(layers, tx, ty, z, origin) {
 
   const pLayer = layers.poi;
   const poiGrid = makeHashGrid(32);
+  // Lieux « parking » : un parking dans un grand bâtiment le dessine en parc de stationnement à étages (batiment-look.js).
+  const parkGrid = makeHashGrid(32);
   if (pLayer) {
     const toLocal = convert(pLayer.extent);
     for (const f of pLayer.features) {
@@ -1012,6 +1070,12 @@ export function tileFeatures(layers, tx, ty, z, origin) {
         }
       }
       // Stations et bouches de métro des trajets entre stations (transport.js), à part des lieux de butin.
+      if (fp.class === 'parking' && fp.indoor !== 1) {
+        for (const pt of f.geometry.flat()) {
+          const p = toLocal(pt);
+          parkGrid.add(p.x, p.z, p.x, p.z, { x: p.x, z: p.z, stamp: 0 });
+        }
+      }
       const stop = stopOf(fp);
       if (stop) {
         for (const pt of f.geometry.flat()) {
@@ -1072,13 +1136,14 @@ export function tileFeatures(layers, tx, ty, z, origin) {
     const fe = facadeEdges(it, walls, streets, squares, shopPts);
     let door = fe.door;
     if ((use === 'shed' && it.area < 6) || it.minHeight > 0 || (use === 'hall' && !fe.front)) door = null;
+    const look = it.minHeight > 0 ? null : visualLook(it, use, inside, parkGrid, out, boxes, all);
     out.buildings.push({
       id: it.id, rings: it.rings, cx: it.cx, cz: it.cz, area: it.area,
       height: it.h, minHeight: it.minHeight,
       colour: it.colour,
       bounds: it.bounds,
       heightKnown: it.known, region: regionOf(it.lat, it.lon), use, shop, shops: shopPts.length,
-      edges: fe.edges, door, hide3d: it.hide,
+      edges: fe.edges, door, hide3d: it.hide, ...(look ? { look } : null),
     });
   }
   return out;
