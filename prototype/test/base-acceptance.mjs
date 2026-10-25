@@ -3605,6 +3605,52 @@ async function conduiteScenario(device) {
   check(/^Descendre( \(E\))? · 0 km\/h · 6 L · 100 %$/.test(seat.label ?? ''), `${tag} : bouton E : « ${seat.label} »`);
   const start = await driveOf(page);
   check(!!(await toastSeen(page, 'Au volant', 15000)), `${tag} : notification « Au volant… »`);
+  // Le volant et les pédales ne s'affichent qu'au tactile ; la caméra reste derrière la voiture.
+  const ui = await ev(page, () => {
+    const vis = (id) => { const e = document.getElementById(id); return !!e && getComputedStyle(e).display !== 'none'; };
+    const box = (id) => { const r = document.getElementById(id).getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
+    return { wheel: vis('wheel'), gas: vis('pedal-gas'), brake: vis('pedal-brake'), hint: vis('stick-hint'), base: vis('stick-base'), wheelBox: vis('wheel') ? box('wheel') : null, gasBox: vis('pedal-gas') ? box('pedal-gas') : null,
+      brakeBox: vis('pedal-brake') ? box('pedal-brake') : null, vw: window.innerWidth, vh: window.innerHeight };
+  });
+  if (device === 'mobile') {
+    const inScreen = (b) => b && b.x >= 0 && b.y >= 0 && b.x + b.w <= ui.vw + 0.5 && b.y + b.h <= ui.vh + 0.5;
+    check(ui.wheel && ui.gas && ui.brake && !ui.hint && !ui.base && inScreen(ui.wheelBox) && inScreen(ui.gasBox) && inScreen(ui.brakeBox),
+      `${tag} : volant à gauche et pédales à droite, dans l'écran (volant ${JSON.stringify(ui.wheelBox)}, gaz ${JSON.stringify(ui.gasBox)})`);
+    check(ui.wheelBox.x + ui.wheelBox.w < ui.brakeBox.x, `${tag} : le volant ne recouvre pas les pédales`);
+  } else {
+    check(!ui.wheel && !ui.gas && !ui.brake, `${tag} : au clavier, ni volant ni pédales à l'écran`);
+  }
+
+  // 2b. Le volant : les flèches (ou le pouce) braquent, la voiture tourne en roulant, la caméra la suit, le volant à l'écran tourne ; droit, elle va droit.
+  await page.keyboard.down('ArrowUp');
+  await until(page, () => (window.__earthlife.session.driving?.speed > 2.5 ? 1 : null), null, 120000);
+  const yawOf = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+  await page.keyboard.down('ArrowRight');
+  const right = await until(page, (a) => {
+    const s = window.__earthlife.session, d = s.driving, ang = Math.atan2(Math.sin(d.yaw - a), Math.cos(d.yaw - a));
+    return ang < -0.12 ? { ang, steer: d.steer, deg: document.getElementById('wheel').style.getPropertyValue('--steer'), cam: s.cameraYaw, yaw: d.yaw } : null;
+  }, corridor.a, 120000);
+  check(!!right && right.steer > 0.3, `${tag} : flèche droite : la voiture tourne à droite (cap ${right ? round(right.ang, 2) : '?'} rad, volant ${right ? round(right.steer, 2) : '?'})`);
+  if (device === 'mobile') check(!!right && Number(right.deg) > 0.3, `${tag} : le volant à l'écran tourne à droite (--steer ${right?.deg})`);
+  await page.keyboard.up('ArrowRight');
+  await page.keyboard.down('ArrowLeft');
+  const straight = await until(page, (a) => {
+    const d = window.__earthlife.session.driving, ang = Math.atan2(Math.sin(d.yaw - a), Math.cos(d.yaw - a));
+    return ang > -0.02 ? { ang, steer: d.steer } : null;
+  }, corridor.a, 120000);
+  await page.keyboard.up('ArrowLeft');
+  check(!!straight, `${tag} : flèche gauche : elle revient dans l'axe du couloir (${straight ? round(straight.ang, 3) : '?'} rad)`);
+  const centred = await until(page, () => { const d = window.__earthlife.session.driving; return Math.abs(d.steer) < 0.05 ? d.steer : null; }, null, 60000);
+  check(centred !== null, `${tag} : volant relâché, il revient au centre`);
+  const follow = await until(page, () => {
+    const s = window.__earthlife.session, d = s.driving, ang = Math.atan2(Math.sin(s.cameraYaw - d.yaw), Math.cos(s.cameraYaw - d.yaw));
+    return Math.abs(ang) < 0.1 ? ang : null;
+  }, null, 60000);
+  check(follow !== null, `${tag} : la caméra est revenue derrière la voiture (écart ${follow === null ? '?' : round(follow, 3)} rad)`);
+  const camTurn = await ev(page, (swipe) => { const s = window.__earthlife.session; const y0 = s.cameraYaw; window.__earthlife.input.state.cameraYawDelta += swipe; return y0; }, 1.2);
+  await wait(400);
+  const camHeld = await ev(page, () => { const s = window.__earthlife.session; return Math.abs(Math.atan2(Math.sin(s.cameraYaw - s.driving.yaw), Math.cos(s.cameraYaw - s.driving.yaw))); });
+  check(camHeld < 0.15, `${tag} : un glissé du doigt ne tourne plus la caméra au volant (écart ${round(camHeld, 3)} rad)`);
 
   // 3. Accélérer tout droit : 30 km/h au plus, dans l'axe du couloir, l'essence baisse, le moteur attire les zombies à 50 m.
   await page.keyboard.down('ArrowUp');
@@ -3639,6 +3685,22 @@ async function conduiteScenario(device) {
   await page.keyboard.up('ArrowUp');
   const stopped = await until(page, () => (Math.abs(window.__earthlife.session.driving?.speed ?? 9) < 0.3 ? 1 : null), null, 120000);
   check(!!stopped, `${tag} : poussée relâchée : la voiture s'arrête`);
+
+  // 5b. Téléphone : le gaz et le frein sont des pédales tenues au doigt.
+  if (device === 'mobile') {
+    const pedal = (id, type) => page.evaluate(([i, ty]) => document.getElementById(i).dispatchEvent(new PointerEvent(ty, { bubbles: true, cancelable: true, pointerId: 77, pointerType: 'touch' })), [id, type]);
+    await pedal('pedal-gas', 'pointerdown');
+    const gas = await until(page, () => (window.__earthlife.session.driving?.speed > 2.5 ? window.__earthlife.session.driving.speed : null), null, 120000);
+    const gasOn = await ev(page, () => document.getElementById('pedal-gas').classList.contains('on'));
+    check(!!gas && gasOn, `${tag} : pédale de gaz tenue : la voiture accélère (${gas ? round(gas, 1) : '?'} m/s)`);
+    await pedal('pedal-gas', 'pointerup');
+    await pedal('pedal-brake', 'pointerdown');
+    const slowed = await until(page, () => (Math.abs(window.__earthlife.session.driving?.speed ?? 9) < 0.6 ? 1 : null), null, 120000);
+    await pedal('pedal-brake', 'pointerup');
+    const both = await ev(page, () => ({ gas: window.__earthlife.input.state.pedal.gas, brake: window.__earthlife.input.state.pedal.brake }));
+    check(!!slowed && !both.gas && !both.brake, `${tag} : pédale de frein : la voiture s'arrête, pédales relâchées`);
+    await until(page, () => (Math.abs(window.__earthlife.session.driving?.speed ?? 9) < 0.3 ? 1 : null), null, 120000);
+  }
 
   // 6. Contre un mur : un mur de face à 25 m ou plus est cherché autour (la même distance sur trois lignes parallèles, à 1 m de part et d'autre :
   // un mur large et droit, pas un coin ni un passage où la voiture glisserait), la voiture est posée à 8 m devant, vitesse nulle, poussée en avant ;

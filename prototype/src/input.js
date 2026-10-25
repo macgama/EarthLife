@@ -16,6 +16,8 @@ export function createInput(canvas, ui) {
   const zoomHeld = new Map();
   const state = {
     move: { x: 0, y: 0 },   // x = droite, y = avant, dans [-1, 1]
+    stickTouch: false,      // un doigt tient le joystick (au volant : le volant, sans gaz ni frein par la hauteur)
+    pedal: { gas: false, brake: false }, // pédales tactiles du volant
     run: false,
     attack: false,          // vrai pendant une image après un appui
     interact: false,        // action principale (E) : fouiller, entrer, clouer, démonter…
@@ -183,6 +185,7 @@ export function createInput(canvas, ui) {
   };
   const cancelStick = () => {
     stick = null;
+    state.stickTouch = false;
     state.move.x = 0; state.move.y = 0; state.run = false;
     base.classList.remove('active');
   };
@@ -203,6 +206,7 @@ export function createInput(canvas, ui) {
       }
       if (left && !stick && !pinch) {
         stick = { id: t.identifier, x0: t.clientX, y0: t.clientY, moved: false };
+        state.stickTouch = true;
         stickAt = now;
         base.style.left = `${t.clientX}px`;
         base.style.top = `${t.clientY}px`;
@@ -279,6 +283,18 @@ export function createInput(canvas, ui) {
   // .on : bouton enfoncé (le CSS le rétrécit et allume son halo).
   press(ui.attackButton, (on) => { if (on) state.attack = true; ui.attackButton.classList.toggle('on', on); });
   press(ui.runButton, (on) => { runHeld = on; ui.runButton.classList.toggle('on', on); });
+  // Pédales du volant (gaz, frein) : tenues au doigt, le doigt peut glisser sans les lâcher.
+  const pedal = (el, key) => {
+    if (!el) return;
+    const set = (on) => { state.pedal[key] = on; el.classList.toggle('on', on); };
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation(); set(true);
+      try { el.setPointerCapture?.(e.pointerId); } catch { /* pointeur déjà levé */ }
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) el.addEventListener(type, () => set(false));
+  };
+  pedal(ui.gasButton, 'gas');
+  pedal(ui.brakeButton, 'brake');
   // L'action peut ouvrir la feuille du refuge ou une carte sous le doigt : le clic émis au relâcher est avalé,
   // sinon il replierait la feuille ou toucherait un de ses boutons.
   const eatNextClick = (id) => {
@@ -308,6 +324,11 @@ export function createInput(canvas, ui) {
   });
 
   function poll() {
+    // Les pédales ne durent pas plus que le volant : à la descente, un doigt resté dessus n'accélère plus.
+    if ((state.pedal.gas || state.pedal.brake) && !document.body.classList.contains('driving')) {
+      state.pedal.gas = state.pedal.brake = false;
+      ui.gasButton?.classList.remove('on'); ui.brakeButton?.classList.remove('on');
+    }
     if (!stick) {
       const x = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
       const y = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);

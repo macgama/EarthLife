@@ -172,19 +172,20 @@ export function driveBlock({ season = false, offline = false, car = null } = {})
 }
 
 // ---------- Conduite dans les rues (étape 5 du cahier) ----------
-// Le joueur pousse dans la direction où il veut aller, comme à pied : la voiture se tourne vers elle, accélère, freine au relâché,
-// recule quand la poussée est derrière elle à l'arrêt. 30 km/h au plus (le joueur court à 34 km/h : le monde construit au fil de la marche
-// suit). Règles pures ici ; collisions, zombies et sauvegarde dans conduite.js.
+// Au volant : le pouce tourne le volant (gauche, droite), les pédales donnent le gaz et le frein ; la caméra suit toujours le cap de la
+// voiture. 30 km/h au plus (le joueur court à 34 km/h : le monde construit au fil de la marche suit). Règles pures ici ; collisions,
+// zombies et sauvegarde dans conduite.js.
 export const DRIVE = {
   maxMs: 30 / 3.6,        // 30 km/h
   reverseMs: 3,           // marche arrière
   accel: 3.2,             // m/s²
-  brake: 8,               // poussée contraire
-  coast: 3.5,             // stick relâché
-  turn: 2.6,              // rad/s à l'arrêt franc, divisé par 1 + vitesse / turnHalf
+  brake: 8,               // frein, ou poussée contraire
+  coast: 3.5,             // pied levé
+  turn: 2.6,              // rad/s au braquage plein, divisé par 1 + vitesse / turnHalf
   turnHalf: 5,
-  stickMin: 0.15,
-  aheadRad: 1.75,         // au-delà de 100° de son cap, la poussée est « derrière »
+  stickMin: 0.15,         // gaz ou frein sous ce seuil : pied levé
+  wheel: { dead: 0.07, expo: 1.4, gain: 1.25, rise: 7, fall: 12 }, // volant : zone morte, courbe douce, braquage plein à 80 % de la course, vitesses (1/s)
+  chase: 0.3,             // la caméra se remet derrière la voiture avec cette constante de temps (s)
   radius: 1.15,           // disque de collision (la voiture mesure 1,8 × 4,1 m)
   crash: 0.4,             // part de la vitesse gardée à chaque image contre un mur
   half: [0.9, 2.05],      // demi-largeur et demi-longueur de la carrosserie (m)
@@ -198,38 +199,49 @@ export const DRIVE = {
 
 const TAU = Math.PI * 2;
 const wrap = (a) => { const r = ((a + Math.PI) % TAU + TAU) % TAU - Math.PI; return r; };
+const clamp1 = (v) => Math.max(-1, Math.min(1, v));
 export const angleDiff = (to, from) => wrap(to - from);
 
-// Un pas de conduite : { yaw, speed } (speed en m/s, négatif en marche arrière) ; want = { m (0 à 1), heading } ou null au relâché ;
-// traction 0 à 1 (sol mouillé ou enneigé : on prend moins bien les virages et on accélère moins).
-export function driveStep({ yaw, speed }, want, dt, traction = 1) {
+// Course du pouce (−1 à 1, positif à droite) → braquage voulu : zone morte pour rester droit, courbe douce autour du milieu, plein
+// braquage avant le bout de la course.
+export function wheelTarget(x) {
+  const W = DRIVE.wheel, v = clamp1((Number.isFinite(x) ? x : 0) * W.gain), a = Math.abs(v);
+  if (a <= W.dead) return 0;
+  return Math.sign(v) * ((a - W.dead) / (1 - W.dead)) ** W.expo;
+}
+
+// Le volant rejoint le braquage voulu sans à-coup (plus vite au retour au centre).
+export function wheelStep(cur, target, dt) {
+  const W = DRIVE.wheel, rate = (Math.abs(target) < Math.abs(cur) ? W.fall : W.rise) * dt;
+  const k = Math.min(1, rate);
+  return cur + (target - cur) * k;
+}
+
+// Un pas de conduite : { yaw, speed } (speed en m/s, négatif en marche arrière) ; ctl = { steer (−1 à 1, positif à droite), gas (−1 à 1 :
+// gaz, frein puis marche arrière) } ou null pour rouler sur son élan, volant droit ; traction 0 à 1 (sol mouillé ou enneigé : on prend
+// moins bien les virages et on accélère moins). Le cap ne change qu'en roulant (la voiture ne pivote pas sur place) ; en marche
+// arrière, le même coup de volant fait virer l'arrière du même côté.
+export function driveStep({ yaw, speed }, ctl, dt, traction = 1) {
   const grip = 0.6 + 0.4 * Math.max(0, Math.min(1, traction));
-  const m = want ? Math.max(0, Math.min(1, want.m)) : 0;
-  let target = 0, aim = yaw;
-  if (m >= DRIVE.stickMin) {
-    const diff = angleDiff(want.heading, yaw);
-    const behind = Math.abs(diff) > DRIVE.aheadRad;
-    // À l'arrêt (ou déjà en marche arrière), une poussée derrière la voiture la fait reculer, l'arrière tourné vers elle.
-    const reversing = (behind && speed < 1.5) || (speed < -0.3 && Math.abs(diff) > Math.PI / 2);
-    if (reversing) {
-      aim = want.heading + Math.PI;
-      target = -DRIVE.reverseMs * m;
-    } else {
-      aim = want.heading;
-      target = DRIVE.maxMs * m * Math.max(0.3, Math.cos(Math.min(Math.abs(diff), Math.PI / 2)));
-    }
+  const gas = clamp1(ctl?.gas ?? 0), steer = clamp1(ctl?.steer ?? 0);
+  let target = 0, rate = DRIVE.coast;
+  if (gas >= DRIVE.stickMin) {
+    target = DRIVE.maxMs * gas;
+    if (speed < -0.1) rate = DRIVE.brake * grip;                 // on repart vers l'avant : d'abord on freine la marche arrière
+    else if (target > speed) rate = DRIVE.accel * grip;
+  } else if (gas <= -DRIVE.stickMin) {
+    if (speed > 0.5) { target = 0; rate = DRIVE.brake * grip * Math.max(0.5, -gas); } // frein
+    else { target = DRIVE.reverseMs * gas; rate = DRIVE.accel * grip; }              // arrêtée : marche arrière, lentement
   }
-  let rate;
-  if (m < DRIVE.stickMin) rate = DRIVE.coast;                                              // stick relâché : on roule sur son élan
-  else if (Math.sign(target) !== Math.sign(speed) && Math.abs(speed) > 0.1) rate = DRIVE.brake * grip; // poussée contraire : on freine
-  else if (Math.abs(target) > Math.abs(speed)) rate = DRIVE.accel * grip;
-  else rate = DRIVE.coast;                                                                 // on lève le pied
   const delta = target - speed;
   const next = speed + Math.max(-rate * dt, Math.min(rate * dt, delta));
   const omega = (DRIVE.turn / (1 + Math.abs(next) / DRIVE.turnHalf)) * Math.min(1, Math.abs(next) / 1.2) * grip;
-  const turn = Math.max(-omega * dt, Math.min(omega * dt, angleDiff(aim, yaw)));
-  return { yaw: wrap(yaw + turn), speed: next };
+  const dyaw = -steer * omega * Math.sign(next) * dt;
+  return { yaw: dyaw === 0 ? yaw : wrap(yaw + dyaw), speed: next };
 }
+
+// Au volant : angle à ajouter au lacet de la caméra pour la ramener derrière le cap de la voiture (toujours, même à l'arrêt).
+export const chaseDelta = (yaw, heading, dt) => wrap(heading - yaw) * (1 - Math.exp(-dt / DRIVE.chase));
 
 // Essence brûlée sur `meters` mètres roulés (la même consommation que les trajets : 8 L aux 100 km).
 export const driveFuel = (meters) => (Math.max(0, meters) / 1000) * (CAR.litresPer100 / 100);

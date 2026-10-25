@@ -28,7 +28,7 @@ import {
   writeViewPrefs,
 } from './view.js';
 import {
-  BASSE, clampBasseDist, clampBassePitch, approachK, boomLimit, boomSmooth, lowPose, blendPose, recenterDelta, followDelta, flankAlerts,
+  BASSE, clampBasseDist, clampBassePitch, approachK, boomLimit, boomSmooth, lowPose, blendPose, recenterDelta, flankAlerts,
   halfFovH,
 } from './camera-basse.js';
 import { createFlancs } from './flancs.js';
@@ -64,6 +64,7 @@ import {
 import { createHud, distanceText } from './hud.js';
 import { createRideGame, createRideOverlay } from './trajet.js';
 import { createCarGame } from './conduite.js';
+import { chaseDelta } from './voiture.js';
 import { createCampagne } from './campagne-jeu.js';
 import { saisonDe, dateDuMois, mur as plantMure } from './campagne.js';
 import { createDriveMap } from './conduite-carte.js';
@@ -514,6 +515,7 @@ if (SOUND_AUTOSTART) son.attach(window);
 const input = createInput(canvas, {
   stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'),
   action2Button: $('action2'), useButtons: [...document.querySelectorAll('#inventory .chip[data-use]')], autoRun: true,
+  gasButton: $('pedal-gas'), brakeButton: $('pedal-brake'),
   zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), viewToggle: $('view-toggle'), wheelTargets: [$('mapbox')],
 });
 // Zoom gardé d'une partie et d'une visite à l'autre, hors de la sauvegarde (src/view.js) ; écrit 800 ms après le
@@ -589,6 +591,7 @@ const cars = createCarGame({
   showCard: (...a) => showCard(...a), toast: (...a) => toast(...a), propsView, online, overlay: createRideOverlay(document),
   addLoot, lootNotes: (res) => lootNotes(res), gainSkill: (...a) => gainSkill(...a), craftXp,
   arrive: (place, arrival, season) => arriveByCar(place, arrival, season), openMap: (args) => driveMap.open(args), tripCities: () => city.tripCities(),
+  touch: () => isTouch(),
   // Zombies renversés au volant : comptés comme des coups portés (profil, Combat).
   runOver: (s, { hits, kills }) => {
     if (kills) {
@@ -1630,16 +1633,16 @@ function step(s, inp, dt) {
     if (Math.abs(Math.atan2(Math.sin(s.yawBefore - s.cameraYaw), Math.cos(s.yawBefore - s.cameraYaw))) < 0.01) { s.cameraYaw = s.yawBefore; s.yawBefore = undefined; }
   } else {
     s.yawBefore = undefined;
-    s.cameraYaw += inp.cameraYawDelta;
+    // Au volant, la caméra ne se manie plus : elle reste derrière la voiture, à l'arrêt comme en route.
+    if (s.driving) s.cameraYaw += chaseDelta(s.cameraYaw, s.driving.yaw, dt);
+    else s.cameraYaw += inp.cameraYawDelta;
   }
   // Vue basse : le pouce droit tourne la caméra (côté) et la baisse ou la monte (haut-bas) ; au repos, elle revient lentement derrière
   // le personnage qui avance tout droit, ou derrière la voiture au volant.
   const lowOn = lowActive(s) && !topDown;
   s.lookIdle = inp.cameraYawDelta || inp.cameraPitchDelta ? 0 : Math.min(60, s.lookIdle + dt);
-  if (lowOn && s.lowK > 0.5 && s.yawBefore === undefined && !p.hidden) {
-    s.cameraYaw += s.driving
-      ? followDelta({ yaw: s.cameraYaw, heading: s.driving.yaw, speed: s.driving.speed, idle: s.lookIdle, dt })
-      : recenterDelta({ mx: inp.move.x, my: inp.move.y, speed: Math.hypot(p.vx ?? 0, p.vz ?? 0), idle: s.lookIdle, dt });
+  if (lowOn && !s.driving && s.lowK > 0.5 && s.yawBefore === undefined && !p.hidden) {
+    s.cameraYaw += recenterDelta({ mx: inp.move.x, my: inp.move.y, speed: Math.hypot(p.vx ?? 0, p.vz ?? 0), idle: s.lookIdle, dt });
   }
   if (inp.cameraPitchDelta && lowOn) {
     s.lowPitch = viewPrefs.pitch = clampBassePitch(s.lowPitch + inp.cameraPitchDelta);
@@ -1815,6 +1818,8 @@ const BUSY_LABELS = { nail: 'Clouage…', repair: 'Réparation…', plate: 'Pose
 // En deçà, la flèche de boussole s'estompe (la balise ou le repère 3D prend le relais).
 const NEAR_ARROW = 25;
 
+let wheelDeg = 0;
+const wheelEl = document.getElementById('wheel');
 const isTouch = () => document.body.classList.contains('touch') || !!input.state.touch;
 const actionIcon = (a) => (a.id === 'prop' ? ACTION_ICONS[a.arg.kind] : ACTION_ICONS[a.id]) ?? 'fouiller';
 
@@ -3199,6 +3204,9 @@ function syncScene(s, dt) {
   // Vue basse : le personnage disparaît quand la perche est si courte que son dos remplirait l'écran (dos au mur).
   for (const m of playerMeshes) m.visible = !p.hidden && !s.driving && !(pose.k > 0.5 && pose.dist < 1.5);
   document.body.classList.toggle('driving', !!s.driving);
+  // Volant à l'écran (téléphone) : il tourne avec le braquage.
+  const steerDeg = s.driving ? Math.round((s.driving.steer ?? 0) * 100) : 0;
+  if (steerDeg !== wheelDeg) { wheelDeg = steerDeg; wheelEl?.style.setProperty('--steer', String(steerDeg / 100)); }
   s.sightAt = INTERIOR_DARK && s.interior?.entered ? interiorView.shadow.lightAtWorld : null; // zombies dans le noir : cachés
   characters.sync(s, dt, camera, atmosphere.state.daylight);
   tirView.update(dt, p, s.grid?.terrain?.enabled ? s.grid : null);
@@ -4342,7 +4350,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, finds, dressing, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail, son, depot } : {}),
+  saveStore, picker, renderer, finds, dressing, ...(debug ? { debug, online, input, tirView, cars, driveMap, propsView, floreView, groundDetail, son, depot } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.

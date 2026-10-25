@@ -9,7 +9,7 @@ import { distanceText } from './stats.js';
 import { lonLatToTile, tileUrl, fetchTileBytes, TILE_ZOOM } from './tiles.js';
 import {
   CAR, DRIVE, repairable, repairCheck, payRepair, repairedCar, siphonLoot, siphonKey, applyRefuel, refuelCheck, driveBlock, litres, rangeM,
-  parkingSpot, tripOf, driveStep, driveFuel, canHit, hitDamage, hitWear, bodyHit, streetBlock, fixWearCost, fixWearCheck, payFixWear,
+  parkingSpot, tripOf, driveStep, wheelTarget, wheelStep, driveFuel, canHit, hitDamage, hitWear, bodyHit, streetBlock, fixWearCost, fixWearCheck, payFixWear,
 } from './voiture.js';
 
 export const MY_CAR = 'ma-voiture'; // clé du décor et identifiant de la voiture du joueur dans propsView
@@ -230,10 +230,10 @@ export function createCarGame(host) {
     if (Math.hypot(at.x - p.x, at.z - p.z) > CAR.reach + 0.5) { host.toast('Tu es trop loin de ta voiture', 2.5); return false; }
     const spot = nearestFit(s.grid, at.x, at.z, DRIVE.radius, { maxD: 4, step: 0.25 });
     if (!spot) { host.toast('Pas la place de démarrer ici : la voiture est coincée', 3.5, 'danger'); return false; }
-    s.driving = { yaw: car.yaw, speed: 0, noiseT: 0, saveT: 0, warnedFuel: car.fuel < 1, warnedWear: car.wear <= 25 };
+    s.driving = { yaw: car.yaw, speed: 0, steer: 0, noiseT: 0, saveT: 0, warnedFuel: car.fuel < 1, warnedWear: car.wear <= 25 };
     Object.assign(p, { x: spot.x, z: spot.z, vx: 0, vz: 0, yaw: car.yaw, running: false });
     placeCar(s, s.driving);
-    host.toast('Au volant : pousse dans la direction où aller', 3);
+    host.toast(host.touch?.() ? 'Au volant : le volant à gauche, le gaz et le frein à droite' : 'Au volant : flèches ou ZQSD, bas pour freiner', 3.5);
     return true;
   }
 
@@ -283,16 +283,12 @@ export function createCarGame(host) {
   function drive(s, inp, dt, mods) {
     const d = s.driving, car = save.car, p = s.player;
     if (!d || !car) { s.driving = null; return; }
-    const len = Math.hypot(inp.move.x, inp.move.y);
-    let want = null;
-    if (len > 0.1) {
-      const mx = len > 1 ? inp.move.x / len : inp.move.x, my = len > 1 ? inp.move.y / len : inp.move.y;
-      // Vue basse (camera-basse.js) : la caméra suit la voiture, la poussée se lit par rapport à son cap (en avant : tout droit).
-      const ref = s.lowSteer ? d.yaw : s.cameraYaw;
-      const sin = Math.sin(ref), cos = Math.cos(ref);
-      want = { m: Math.min(1, len), heading: Math.atan2(-mx * cos + my * sin, mx * sin + my * cos) };
-    }
-    Object.assign(d, driveStep(d, want, dt, mods.traction ?? 1));
+    // Volant : le pouce à gauche ou à droite (ou les flèches, A et D) ; gaz et frein aux pédales (ou en haut et en bas du clavier).
+    // Un doigt posé sur le volant ne donne ni gaz ni frein quand il dérive en hauteur.
+    const pedal = inp.pedal ?? {};
+    const gas = Math.max(-1, Math.min(1, (inp.stickTouch ? 0 : inp.move.y) + (pedal.gas ? 1 : 0) - (pedal.brake ? 1 : 0)));
+    d.steer = wheelStep(d.steer ?? 0, wheelTarget(inp.move.x), dt);
+    Object.assign(d, driveStep(d, { steer: d.steer, gas }, dt, mods.traction ?? 1));
     const dx = Math.sin(d.yaw) * d.speed * dt, dz = Math.cos(d.yaw) * d.speed * dt;
     const next = moveWithCollisions(s.grid, p, dx, dz, DRIVE.radius);
     const wanted = Math.hypot(dx, dz), got = Math.hypot(next.x - p.x, next.z - p.z);
