@@ -1,5 +1,5 @@
 // Intérieur des bâtiments : plan déterministe depuis le vrai contour (tuiles de Lyon et de Pérouges enregistrées), pièces,
-// portes, butin réparti, embuscade par pièce, poursuite entre les pièces.
+// portes, butin réparti, zombies qui logent et se baladent de pièce en pièce, poursuite entre les pièces.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -10,7 +10,7 @@ import { ambushChance } from '../src/embuscade.js';
 import {
   INTERIEUR, LAB, ROOM_TYPES, buildPlan, planFor, clearPlanCache, noInterior, familyOf, shaderRing, simplifyRing, seededRandom,
   roomAt, labAt, cellIndex, overlayOf, outsideBuilding, nearSearch, searchSpot, distToFurniture, roomSearchTime, roomWeight, rollRoomLoot,
-  roomAmbushChance, roomAmbushCount, ambushSpotsIn, steerTo, roomsLine,
+  LODGE, lodgerCount, lodgerSpots, roamGoal, roamStep, steerTo, roomsLine,
 } from '../src/interieur.js';
 
 const tile = (name) => readFileSync(new URL(`./fixtures/tiles/${name}.mvt`, import.meta.url));
@@ -105,7 +105,6 @@ test('les couloirs (pièces où aucun meuble ne tient) sont rares et ne comptent
     assert.equal(couloir.name, 'Couloir');
     assert.equal(couloir.share, 0);
     for (const [item] of LOOT[p.kind]) assert.equal(roomWeight(p, couloir.i, item), 0);
-    assert.equal(roomAmbushChance(p, couloir.i, { rate: 1 }), 0);
     assert.equal(nearSearch(p, couloir.x, couloir.z), -1);
   }
 });
@@ -219,44 +218,117 @@ test('la cuisine garde plus de nourriture, la salle de bains plus de soins', () 
   assert.ok(roomWeight(p, chambre.i, 'manteau') > roomWeight(p, cuisine.i, 'manteau'));
 });
 
-test("embuscade par pièce : fouiller toutes les pièces redonne la probabilité d'avant", () => {
+test("logeurs : le tirage est celui de l'embuscade, une fois pour le bâtiment, jamais plus d'un zombie par pièce", () => {
   const p = buildPlan(box(14, 10, { loot: 'supermarket' }));
   const ctx = { hearing: 1, night: false, rate: 1 };
-  const base = ambushChance('supermarket', ctx);
-  let none = 1;
-  for (const r of p.rooms) none *= 1 - roomAmbushChance(p, r.i, ctx);
-  assert.ok(Math.abs(1 - none - base) < 1e-9, `${1 - none} vs ${base}`);
-  for (const r of p.rooms) assert.ok(roomAmbushChance(p, r.i, ctx) < base || p.rooms.length === 1);
-  assert.equal(roomAmbushChance(p, 0, { ...ctx, rate: 0 }), 0);
-  assert.equal(roomAmbushCount(p, 0, { force: 2 }), 2);
-  assert.equal(roomAmbushCount(p, 0, { force: 9 }), 2);
-  assert.equal(roomAmbushCount(p, 0, { ...ctx, rate: 0 }, () => 0), 0);
+  assert.equal(lodgerCount(p, { force: 2 }), 2);
+  assert.equal(lodgerCount(p, { force: 9 }), 2);
+  assert.equal(lodgerCount(p, { ...ctx, rate: 0 }, () => 0), 0);
   const seq = (...v) => { let i = 0; return () => v[Math.min(i++, v.length - 1)]; };
-  assert.equal(roomAmbushCount(p, 0, { ...ctx, rate: 1000 }, seq(0, 0.5)), 1);
-  assert.equal(roomAmbushCount(p, 0, { ...ctx, rate: 1000 }, seq(0, 0)), 2);
-  assert.equal(roomAmbushCount(p, 0, { ...ctx, rate: 1000 }, () => 0.99), 0);
+  assert.equal(lodgerCount(p, { ...ctx, rate: 1000 }, seq(0, 0.5)), 1);
+  assert.equal(lodgerCount(p, { ...ctx, rate: 1000 }, seq(0, 0)), 2);
+  assert.equal(lodgerCount(p, { ...ctx, rate: 1000 }, () => 0.99), 0);
+  const solo = buildPlan(box(5, 5));
+  assert.equal(solo.rooms.length, 1);
+  assert.equal(lodgerCount(solo, { force: 2 }), 1, 'une seule pièce : un seul zombie');
 });
 
-test('les zombies de l’embuscade apparaissent derrière une porte, dans la pièce voisine, à plus de 2,5 m du joueur', () => {
-  for (const [, p] of plans.slice(0, 80)) {
-    if (p.rooms.length < 2) continue;
-    const spot = searchSpot(p, 0);
-    const player = { x: spot.x, z: spot.z };
-    const spots = ambushSpotsIn(p, 0, player, 2, seededRandom(3));
+test('logeurs : ils sont dans des pièces différentes, hors de la pièce du joueur, à 4 m de lui au moins', () => {
+  let checked = 0;
+  for (const [, p] of plans.slice(0, 120)) {
+    if (p.rooms.length < 3) continue;
+    const player = { x: p.entry.ix, z: p.entry.iz };
+    const mine = roomAt(p, player.x, player.z);
+    const spots = lodgerSpots(p, player, 2, seededRandom(5 + checked));
     assert.equal(spots.length, 2);
-    const near = new Set([0, ...p.adj[0].map((a) => a.to)]);
-    for (const s of spots) {
-      assert.ok(Math.hypot(s.x - player.x, s.z - player.z) >= 2.4, 'trop près');
-      const r = roomAt(p, s.x, s.z);
-      assert.ok(r >= 0, 'sur un sol');
-      assert.ok(near.has(r), `pièce ${r} non voisine de 0`);
+    const rooms = spots.map((q) => roomAt(p, q.x, q.z));
+    for (const [i, q] of spots.entries()) {
+      assert.equal(labAt(p, q.x, q.z), LAB.FLOOR, 'sur un sol libre de meuble');
+      assert.ok(rooms[i] >= 0 && rooms[i] !== mine, `pièce ${rooms[i]} = celle du joueur`);
+      assert.ok(Math.hypot(q.x - player.x, q.z - player.z) >= LODGE.minFromPlayer - 1e-9 || p.rooms[rooms[i]].cells < 40, 'trop près');
     }
+    assert.notEqual(rooms[0], rooms[1], 'deux pièces');
+    checked++;
   }
-  // Une seule pièce : au fond de la pièce même.
+  assert.ok(checked > 20, `${checked} plans essayés`);
+  assert.deepEqual(lodgerSpots(buildPlan(box(8, 6)), { x: 0, z: 0 }, 0), []);
+  // Une seule pièce (5 × 5 m : rien n'est à 4 m) : tant pis pour la pièce du joueur, mais à la case la plus éloignée.
   const solo = buildPlan(box(5, 5));
-  const here = [solo.entry.ix, solo.entry.iz];
-  const [s] = ambushSpotsIn(solo, 0, { x: here[0], z: here[1] }, 1, seededRandom(1));
-  assert.equal(roomAt(solo, s.x, s.z), 0);
+  const here = { x: solo.entry.ix, z: solo.entry.iz };
+  const [q] = lodgerSpots(solo, here, 1, seededRandom(1));
+  assert.equal(roomAt(solo, q.x, q.z), 0);
+  assert.ok(Math.hypot(q.x - here.x, q.z - here.z) >= 3, `à ${Math.hypot(q.x - here.x, q.z - here.z)} m : au fond de la pièce`);
+});
+
+test("logeurs : le but suivant est une case de sol d'une autre pièce, une pièce voisine le plus souvent", () => {
+  const p = buildPlan(box(14, 10));
+  assert.ok(p.rooms.length >= 4);
+  const from = searchSpot(p, 0);
+  const rand = seededRandom(11);
+  let neighbour = 0;
+  const near = new Set(p.adj[0].map((a) => a.to));
+  for (let i = 0; i < 200; i++) {
+    const g = roamGoal(p, { x: from.x, z: from.z }, rand);
+    const r = roomAt(p, g.x, g.z);
+    assert.ok(r >= 0 && r !== 0, `but dans la pièce ${r}`);
+    assert.equal(labAt(p, g.x, g.z), LAB.FLOOR);
+    if (near.has(r)) neighbour++;
+  }
+  assert.ok(neighbour > 120 && neighbour < 200, `${neighbour} buts sur 200 dans une pièce voisine`);
+  // Une seule pièce : un but à 2 m ou plus, dans la même pièce.
+  const solo = buildPlan(box(5, 5));
+  const at = { x: solo.entry.ix, z: solo.entry.iz };
+  const g = roamGoal(solo, at, seededRandom(2));
+  assert.equal(roomAt(solo, g.x, g.z), 0);
+  assert.ok(Math.hypot(g.x - at.x, g.z - at.z) >= 2);
+});
+
+test('logeurs : roamStep suit un chemin par les portes sans toucher un mur ni un meuble, se repose au but, abandonne un but hors de portée', () => {
+  const p = buildPlan(box(14, 10));
+  const zb = { x: p.entry.ix, z: p.entry.iz };
+  const rand = seededRandom(4);
+  const walkable = (x, z) => [LAB.FLOOR, LAB.DOOR].includes(labAt(p, x, z));
+  const clear = (x0, z0, x1, z1) => {
+    const n = Math.ceil(Math.hypot(x1 - x0, z1 - z0) / 0.05);
+    for (let i = 1; i <= n; i++) if (!walkable(x0 + ((x1 - x0) * i) / n, z0 + ((z1 - z0) * i) / n)) return false;
+    return true;
+  };
+  let goals = 0;
+  for (let n = 0; n < 6; n++) {
+    let way = roamStep(p, zb, 0.1, rand, clear);
+    const goal = zb.roam.goal;
+    assert.ok(way && goal && roomAt(p, goal.x, goal.z) !== roomAt(p, zb.x, zb.z), 'un point à viser, dans une autre pièce');
+    // Le zombie avance de 0,1 m par pas vers le point visé : il arrive, par des cases libres.
+    const seen = new Set([roomAt(p, zb.x, zb.z)]);
+    let steps = 0;
+    while (way && steps++ < 1500) {
+      const d = Math.hypot(way.x - zb.x, way.z - zb.z);
+      if (d > 0.1) { zb.x += ((way.x - zb.x) / d) * 0.1; zb.z += ((way.z - zb.z) / d) * 0.1; } else { zb.x = way.x; zb.z = way.z; }
+      assert.ok(walkable(zb.x, zb.z), `pas sur un sol libre (${zb.x.toFixed(2)}, ${zb.z.toFixed(2)}) : ${labAt(p, zb.x, zb.z)}`);
+      seen.add(roomAt(p, zb.x, zb.z));
+      way = roamStep(p, zb, 0.1, rand, clear);
+    }
+    assert.equal(way, null, `arrivé au but en ${steps} pas`);
+    assert.ok(zb.roam.rest >= LODGE.rest[0] && zb.roam.rest <= LODGE.rest[1], 'repos');
+    goals++;
+    // Le repos se consomme, puis il repart.
+    assert.equal(roamStep(p, zb, LODGE.rest[1] + 1, rand), null);
+  }
+  assert.equal(goals, 6);
+  // But inatteignable (le zombie n'avance pas) : abandonné après LODGE.patience s.
+  const stuck = { x: p.entry.ix, z: p.entry.iz };
+  roamStep(p, stuck, 0.1, rand);
+  const old = stuck.roam.goal;
+  roamStep(p, stuck, LODGE.patience + 1, rand);
+  assert.notEqual(stuck.roam.goal, old, 'nouveau but');
+  // Hors du plan : marche ordinaire.
+  assert.equal(roamStep(p, { x: p.entry.ox + p.entry.nx * 6, z: p.entry.oz + p.entry.nz * 6 }, 0.1, rand), undefined);
+  // Un zombie pris dans une poche sans sortie (ici sur une case de meuble) ne cherche pas un but impossible : il se repose.
+  const furn = p.furn[0];
+  const pocket = { x: furn.x, z: furn.z };
+  assert.equal(roamStep(p, pocket, 0.1, rand), null);
+  assert.equal(pocket.roam.goal, null);
+  assert.equal(pocket.roam.rest, LODGE.rest[1]);
 });
 
 test('poursuite : entre deux pièces, le zombie vise la porte ; dans la même pièce, tout droit', () => {
