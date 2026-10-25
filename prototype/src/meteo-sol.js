@@ -17,6 +17,9 @@ uniform sampler2D uWNoise;
 varying vec2 vWxz;
 ${CLOUD_GLSL}
 float gSnowAmt; // part du pixel couverte de neige (lue plus bas pour son éclat)
+#ifdef WEATHER_SHARED_NOISE
+vec4 gGroundNoise = vec4(0.5); // première lecture de bruit du sol, posée par son shader (map_fragment)
+#endif
 float wHash(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -26,7 +29,11 @@ float wHash(vec2 p) {
 vec3 weatherGround(vec3 col, vec2 xz) {
   gSnowAmt = 0.0;
   if (uWetGround < 0.01 && uSnowCover < 0.01) return col;
+#if defined(WEATHER_SHARED_NOISE) && defined(GROUND_DETAIL)
+  vec4 n = gGroundNoise;
+#else
   vec4 n = texture2D(uWNoise, xz * (1.0 / 64.0));
+#endif
   float water = smoothstep(0.05, 0.2, col.b - col.r);                   // lac, rivière : ni neige ni flaques
   float green = smoothstep(0.0, 0.1, col.g - max(col.r, col.b));        // herbe : s'imbibe et s'assombrit, pas de flaques
   float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
@@ -63,7 +70,11 @@ vec3 weatherGround(vec3 col, vec2 xz) {
 
 // Branche le sol d'un matériau (MeshLambertMaterial) sur la météo. `noise` : l'uniforme de la texture de bruit du sol
 // (chunks.js, groundKeys.uNoise). Doit suivre le shader propre du matériau (groundShader pour les morceaux).
+// Le shader du sol des morceaux lit déjà ce bruit au même point : on garde sa lecture (une lecture de texture de moins par pixel).
+const GROUND_NOISE_READ = 'vec4 nA = texture2D(uNoise, vGroundXZ * (1.0 / 64.0));';
+
 export function groundWeather(shader, noise) {
+  const shared = shader.fragmentShader.includes(GROUND_NOISE_READ);
   shader.uniforms.uSnowCover = weatherLook.snow;
   shader.uniforms.uWetGround = weatherLook.wet;
   shader.uniforms.uRainNow = weatherLook.rain;
@@ -75,8 +86,9 @@ export function groundWeather(shader, noise) {
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nvarying vec2 vWxz;')
     .replace('#include <project_vertex>', '#include <project_vertex>\n  vWxz = (modelMatrix * vec4(transformed, 1.0)).xz;');
+  if (shared) shader.fragmentShader = shader.fragmentShader.replace(GROUND_NOISE_READ, `${GROUND_NOISE_READ}\n    gGroundNoise = nA;`);
   shader.fragmentShader = shader.fragmentShader
-    .replace('#include <common>', `#include <common>\n${GLSL}`)
+    .replace('#include <common>', `#include <common>\n${shared ? '#define WEATHER_SHARED_NOISE\n' : ''}${GLSL}`)
     .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb = weatherGround(diffuseColor.rgb, vWxz);')
     // La neige renvoie la lumière du ciel même à l'ombre : un éclat propre, éteint avec le jour (weatherLook.glow).
     .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(0.82, 0.88, 0.97) * gSnowAmt * uSnowGlow;')

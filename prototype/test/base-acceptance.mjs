@@ -597,7 +597,9 @@ async function packAndStats(page, tag) {
   await page.click('#rp-tab-craft');
   await page.click(panelButton('craft', 'sac_randonnee'));
   const act = await ev(page, () => { const a = window.__earthlife.session.action; return a ? { id: a.id, time: a.time } : null; });
-  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 120000);
+  // 11,5 s de jeu : en rendu logiciel le temps de jeu avance de 0,05 s au plus par image (80 s à la montre sur un poste lent,
+  // 95 s avec le sol mouillé de la pluie), donc une marge large avant de conclure que la fabrication est bloquée.
+  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 240000);
   const bagText = await until(page, () => {
     const t = document.getElementById('bag-count').textContent.replace(/\s+/g, ' ').trim();
     return /\/45$/.test(t) ? t : null;
@@ -2041,7 +2043,7 @@ const mapVisible = (page) => ev(page, () => {
 // 13.7 et 13.8 : agrandir et refermer (clic, C, Échap ; toucher sur téléphone), sans pause ; carte masquée quand le
 // panneau du refuge prend sa place.
 async function mapOpenClose(page, device, tag) {
-  // Le jeu continue carte agrandie : le directeur des zombies avance (appels comptés pendant 1 s).
+  // Le jeu continue carte agrandie : le directeur des zombies avance (appels comptés pendant 2 s).
   const running = async () => {
     await ev(page, () => {
       const d = window.__earthlife.session.director, orig = d.update;
@@ -2049,7 +2051,7 @@ async function mapOpenClose(page, device, tag) {
       d.update = (...a) => { window.__steps++; return orig(...a); };
       window.__unwrap = () => { d.update = orig; };
     });
-    await wait(1000);
+    await wait(2000); // en rendu logiciel une image peut durer plus d'une seconde
     return ev(page, () => { window.__unwrap(); return window.__steps; });
   };
   const hasRefuge = await ev(page, () => !!window.__earthlife.refuge.anchor());
@@ -2059,7 +2061,7 @@ async function mapOpenClose(page, device, tag) {
     const aria = await ev(page, () => document.getElementById('minimap').getAttribute('aria-expanded'));
     const steps = await running();
     check(big.open && aria === 'true' && big.radius === 320 && steps > 0,
-      `${tag} 13.7 : clic : carte agrandie (aria-expanded ${aria}, ${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur en 1 s)`);
+      `${tag} 13.7 : clic : carte agrandie (aria-expanded ${aria}, ${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur en 2 s)`);
     await shot(page, `${tag}-13-carte-agrandie`);
     const inside0 = await ev(page, () => window.__earthlife.refuge.inside);
     await page.keyboard.press('Escape');
@@ -2098,7 +2100,7 @@ async function mapOpenClose(page, device, tag) {
   await page.tap('#minimap');
   const big = await mapAfter(page);
   const steps = await running();
-  check(big.open && big.radius === 240 && steps > 0, `${tag} 13.7 : toucher : carte agrandie (${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur en 1 s)`);
+  check(big.open && big.radius === 240 && steps > 0, `${tag} 13.7 : toucher : carte agrandie (${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur en 2 s)`);
   await shot(page, `${tag}-13-carte-agrandie`);
   await page.tap('#minimap');
   const closed = await mapAfter(page);
