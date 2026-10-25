@@ -55,6 +55,14 @@ test('congé : rayon réduit sur une branche courte, rien sans place ni pour une
   assert.equal(junctionFillets(junction([[0, 3], [0.2, 3], [Math.PI, 3]]), 4.5).filter((f) => f.th < 0.3).length, 0, 'angle trop aigu : rien');
 });
 
+test('congé : une branche qui tourne avant les points de tangence n\'en reçoit pas', () => {
+  const J = junction([[0, 3], [Math.PI / 2, 3], [Math.PI, 3]]);
+  const droit = (b) => ({ dx: b.dx, dz: b.dz });
+  assert.equal(junctionFillets(J, 4.5, () => true, droit).length, 2, 'branches droites : congés');
+  const tourne = (b, t) => { const a = Math.atan2(b.dz, b.dx) + (t > 6 ? 0.3 : 0); return { dx: Math.cos(a), dz: Math.sin(a) }; };
+  assert.equal(junctionFillets(J, 4.5, () => true, tourne).length, 0, 'branches qui dévient de 17° : rien');
+});
+
 test('congé : le test de terrain libre écarte un angle recouvert par une autre chaussée', () => {
   const J = junction([[0, 3], [Math.PI / 2, 3], [Math.PI, 3]]);
   assert.equal(junctionFillets(J, 4.5, () => false).length, 0);

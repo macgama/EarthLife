@@ -45,6 +45,7 @@ export function laneCenters(w, oneway) {
 const STOP_LINE = 0.3, GIVE_LINE = 0.5; // m : épaisseur des deux lignes
 const GIVE_DASH = [0.55, 0.4]; // m : « dents » du cédez-le-passage
 const STOP_MARGIN = 1.2, REACH_MARGIN = 0.7; // m : recul après la chaussée en travers, après le congé du coin
+const ZEBRA_HALF = 1.25; // m : demi-longueur d'un passage piétons (ZEBRA.length / 2, chunks.js)
 const STOP_CLASSES = new Set(['tertiary', 'secondary', 'primary']);
 const GIVE_CLASSES = new Set(['minor', 'tertiary', 'secondary', 'primary']);
 
@@ -67,9 +68,13 @@ export function planStops({ junctions, real, H, PAL, strokeOp, rank }) {
       // Sens unique : seulement si son sens est connu (par rapport au tracé) et qu'il arrive au carrefour ; la ligne barre alors toute la chaussée.
       if (v.style.oneway && (v.r.onewayDir ?? 0) !== -b.sign) continue;
       // Après le passage piétons du carrefour s'il y en a un, sinon après la chaussée en travers et le congé du coin.
-      const d = b.stopAt ?? Math.max(J.across(b.dx, b.dz) + STOP_MARGIN, (b.reach ?? 0) + REACH_MARGIN);
+      let d = b.stopAt ?? Math.max(J.across(b.dx, b.dz) + STOP_MARGIN, (b.reach ?? 0) + REACH_MARGIN);
+      // Passage piétons réel sur la branche, avant ou sur la ligne : la ligne se pose derrière lui.
+      for (const c of real) {
+        const rd = (c.s - b.s) * b.sign;
+        if (c.c === v && rd >= -1 && rd < d + 3) d = Math.max(d, rd + ZEBRA_HALF + STOP_MARGIN / 2);
+      }
       if (d + 2 > b.len) continue;
-      if (real.some((c) => c.c === v && (c.s - b.s) * b.sign >= -1 && (c.s - b.s) * b.sign < d + 3)) continue;
       const p = H.pointAt(v.p, b.s + b.sign * d);
       const tx = -b.sign * p.dx, tz = -b.sign * p.dz; // sens de marche vers le carrefour
       const rx = -tz, rz = tx; // sa droite
@@ -180,8 +185,25 @@ const RUT = { color: '#9a8a6c', alpha: 0.6, width: 0.4, from: 0.7 }; // m : les 
 const GRASS = { color: '#a9b36c', alpha: 0.75, width: 0.7, dash: [7, 2.2] };
 const MIN_TRACK = 2.6; // m : largeur de chemin à partir de laquelle on dessine des ornières
 
-// Ornières et herbe du milieu des chemins de terre (voies `track` non revêtues, `gravel`). env : { walks, H, strokeOp }.
-export function planTracks({ walks, H, strokeOp, visible }) {
+// Parties [début, fin] de [s0, s1] dont le point à `lat` de l'axe (une ou plusieurs distances) est hors de l'enrobé des voies
+// `cars`, pas de 0,5 m ; les parties de moins de 1 m sont écartées.
+function offRoad(H, v, s0, s1, lats, cars) {
+  if (!cars.length) return [[s0, s1]];
+  const n = Math.max(1, Math.ceil((s1 - s0) / 0.5)), out = [];
+  let open = null;
+  for (let k = 0; k <= n; k++) {
+    const s = s0 + ((s1 - s0) * k) / n, q = H.pointAt(v.p, s);
+    const on = lats.some((lat) => cars.some((o) => H.onOtherRoad(o, q.x - q.dz * lat, q.z + q.dx * lat, q)));
+    if (!on && open === null) open = s;
+    if (on && open !== null) { out.push([open, s - (s1 - s0) / n]); open = null; }
+  }
+  if (open !== null) out.push([open, s1]);
+  return out.filter(([a, b]) => b - a >= 1);
+}
+
+// Ornières et herbe du milieu des chemins de terre (voies `track` non revêtues, `gravel`), là où aucune chaussée ne les
+// recouvre. env : { walks, cars, H, strokeOp, visible }.
+export function planTracks({ walks, cars, H, strokeOp, visible }) {
   const ops = [];
   for (const v of walks) {
     if (v.r.cls !== 'track' || v.walk.kind !== 'gravel' || v.r.bridge || v.r.width < MIN_TRACK || !visible(v)) continue;
@@ -189,14 +211,17 @@ export function planTracks({ walks, H, strokeOp, visible }) {
     const [a, b] = seedOf(whole);
     const m0 = v.r.mark ? v.r.mark[0] : 0, m1 = v.r.mark ? v.r.mark[1] : v.p.len;
     const from = Math.min(RUT.from, v.r.width / 2 - 0.5);
+    const near = cars.filter((o) => o.runs.length && !o.r.bridge && H.boxesMeet(o.p.box, v.p.box, o.w / 2 + 1));
+    const period = GRASS.dash[0] + GRASS.dash[1], phase = Math.round(hash3(a, b, 77) * period * 1000) / 1000;
     for (const run of v.runs) {
-      const s0 = Math.max(run.s0, m0), s1 = Math.min(run.s1, m1);
-      if (s1 - s0 < 1) continue;
-      const mid = H.slice(v.p, s0, s1);
-      for (const d of [-from, from]) ops.push(strokeOp('rut', RUT.color, RUT.width, [H.offsetLine(mid, d)], { cap: 'butt', alpha: RUT.alpha, mark: 'ground' }));
-      // Herbe du milieu : tirets longs et irréguliers, calés sur l'abscisse de la voie entière.
-      const period = GRASS.dash[0] + GRASS.dash[1], phase = Math.round(hash3(a, b, 77) * period * 1000) / 1000;
-      ops.push(strokeOp('trackGrass', GRASS.color, GRASS.width, [mid], { cap: 'butt', alpha: GRASS.alpha, dash: GRASS.dash, offset: Math.round((((phase + at + s0) % period) + period) % period * 1000) / 1000, mark: 'ground' }));
+      const r0 = Math.max(run.s0, m0), r1 = Math.min(run.s1, m1);
+      if (r1 - r0 < 1) continue;
+      for (const [s0, s1] of offRoad(H, v, r0, r1, [-from - RUT.width / 2, 0, from + RUT.width / 2], near)) {
+        const mid = H.slice(v.p, s0, s1);
+        for (const d of [-from, from]) ops.push(strokeOp('rut', RUT.color, RUT.width, [H.offsetLine(mid, d)], { cap: 'butt', alpha: RUT.alpha, mark: 'ground' }));
+        // Herbe du milieu : tirets longs et irréguliers, calés sur l'abscisse de la voie entière.
+        ops.push(strokeOp('trackGrass', GRASS.color, GRASS.width, [mid], { cap: 'butt', alpha: GRASS.alpha, dash: GRASS.dash, offset: Math.round((((phase + at + s0) % period) + period) % period * 1000) / 1000, mark: 'ground' }));
+      }
     }
   }
   return ops;

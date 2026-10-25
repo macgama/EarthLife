@@ -12,6 +12,7 @@ export const EDGE_OVERLAP = 0.12; // m : une bande déborde de 12 cm dans le con
 const EDGE_STEP = 0.5; // m : pas des points d'un arc
 const BLOCK_STEP = 1; // m : pas de recherche des bords coupés par l'enrobé d'une autre voie, puis dichotomie (5 coupes : 3 cm)
 const GUTTER_BACK = 0.55; // m : largeur repeinte vers la chaussée (caniveau de 35 cm et sa transition floue)
+const BEND_COS = Math.cos(0.12); // une branche qui dévie de plus de 7° avant le congé n'en reçoit pas
 const FREE_CAP = 0.6; // part minimale d'un bout rond hors de l'enrobé des autres voies
 const FILLET_MIN = 2.5, FILLET_GAP = 1.5; // rayon minimal ; marge entre le congé et le bout de la branche (m)
 const ANGLE_MIN = 0.3, ANGLE_MAX = Math.PI - 0.25; // angles de carrefour arrondis (rad) : ni trop aigus, ni quasi plats
@@ -50,7 +51,7 @@ function corner(J, a, b, na, nb, sin, ha, hb) {
 // vers l'angle, sommet V du coin, points de
 // tangence Ta et Tb sur les bords des deux chaussées, centre O et rayon R du cercle, distances ta et tb du centre du
 // carrefour à Ta et Tb le long des branches. `base` : rayon voulu (m), réduit si les branches sont courtes.
-export function junctionFillets(J, base, free = () => true) {
+export function junctionFillets(J, base, free = () => true, dirAt = null) {
   const br = J.streets.filter((b) => !NO_FILLET.has(b.c.r.cls)).sort((p, q) => Math.atan2(p.dz, p.dx) - Math.atan2(q.dz, q.dx));
   const n = br.length;
   const out = [];
@@ -79,6 +80,9 @@ export function junctionFillets(J, base, free = () => true) {
     // d'aucune autre voie (chaussées parallèles, rue qui coupe l'angle).
     const arc = arcPoints(f), mid = arc[arc.length >> 1];
     if (![f.O, mid, { x: (mid.x + V.x) / 2, z: (mid.z + V.z) / 2 }, { x: (mid.x + f.O.x) / 2, z: (mid.z + f.O.z) / 2 }].every((p) => free(p.x, p.z))) continue;
+    // Rue qui tourne avant les points de tangence (giratoire, virage) : le congé, tangent à la droite de départ, ne
+    // rejoindrait pas son bord ; le coin garde alors son dessin d'avant.
+    if (dirAt && ![[a, f.ta], [b, f.tb]].every(([br, t]) => { const q = dirAt(br, t); return q.dx * br.dx + q.dz * br.dz > BEND_COS; })) continue;
     out.push(f);
   }
   return out;
@@ -276,10 +280,12 @@ export function planEdges({ cars, junctions, H, PAL, strokeOp, fillOp, rank }) {
   // Un point est-il hors de l'enrobé de toutes les voies ? (c : point sans voie à prolonger)
   const nowhere = { x: 1e9, z: 1e9, dx: 1, dz: 0 };
   const free = (x, z) => !cars.some((o) => o.runs.length && H.onOtherRoad(o, x, z, nowhere));
+  // Direction sortante de la branche b à la distance dist du carrefour.
+  const dirAt = (b, dist) => { const q = H.pointAt(b.c.p, Math.max(0, Math.min(b.c.p.len, b.s + b.sign * dist))); return { dx: b.sign * q.dx, dz: b.sign * q.dz }; };
   // 1. Congés : remplissage de l'angle, bande le long de l'arc, bords des deux voies arrêtés aux points de tangence.
   for (const J of junctions) {
     const setting = J.streets.some((b) => b.c.style.setting === 'city') ? 'city' : J.streets.some((b) => b.c.style.setting === 'village') ? 'village' : 'rural';
-    for (const f of junctionFillets(J, FILLET_RADIUS[setting], free)) {
+    for (const f of junctionFillets(J, FILLET_RADIUS[setting], free, dirAt)) {
       const top = rank(f.a.c) >= rank(f.b.c) ? f.a.c : f.b.c;
       const spec = specOf(top);
       if (!spec) continue;

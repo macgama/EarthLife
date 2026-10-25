@@ -912,7 +912,7 @@ export function groundPlan(f, x0, z0, size) {
     // Cédez-le-passage et arrêts des rues qui débouchent sur une plus grande, bouches d'égout, avaloirs, ornières (rues-details.js).
     ops.push(...planStops({ ...detail, junctions, real, rank: (c) => c.rank }));
     ops.push(...planFurniture({ ...detail, cars, cuts }));
-    ops.push(...planTracks({ ...detail, walks: walkOrder, visible }));
+    ops.push(...planTracks({ ...detail, walks: walkOrder, cars, visible }));
   }
 
   // 7. Ponts : tablier, trottoirs, bordures et chaussée, voie par voie. Bout rond seulement contre un autre morceau

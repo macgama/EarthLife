@@ -132,3 +132,13 @@ test('plan du sol : un chemin de terre a deux ornières et une herbe au milieu, 
   assert.equal(tagged(groundPlan(track({ surface: 'paved' }), 0, 0, 64), 'rut', 'trackGrass').length, 0);
   assert.equal(tagged(groundPlan(world({ roads: [road([P(2, 32), P(62, 36)], 2, 'path', { walkOnly: true, sub: 'path', setting: 'rural' })] }), 0, 0, 64), 'rut', 'trackGrass').length, 0);
 });
+
+test('plan du sol : les ornières s\'arrêtent au bord de la chaussée qu\'un chemin de terre rejoint', () => {
+  const w = world({ roads: [
+    road([P(2, 32), P(62, 32)], 6, 'minor', { setting: 'rural' }),
+    road([P(32, 32), P(32, 62)], 3, 'track', { walkOnly: true, setting: 'rural' }),
+  ] });
+  const ops = tagged(groundPlan(w, 0, 0, 64), 'rut', 'trackGrass');
+  assert.ok(ops.length >= 3, 'ornières et herbe sur le chemin');
+  for (const o of ops) for (const l of o.lines) for (const p of l) assert.ok(p.z > 32 + 3 - 0.6, `trace sur la chaussée en z = ${p.z.toFixed(2)}`);
+});
