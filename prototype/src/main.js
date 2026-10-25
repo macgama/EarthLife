@@ -15,6 +15,7 @@ import {
   removePack, packSurplus, packSwapRefusal, PACK_REMOVE_FULL, SICK, FEMININE_ITEMS, GEAR_SLOTS, SLOT_LABEL, gearStats, wearGuard, recoverGear, heldOnGround,
 } from './survival.js';
 import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
+import { setBati } from './batiment-style.js';
 import { createCharacters } from './characters.js';
 import { shoot as fireShot, shotWave, SHOT, SHOT_TEXT } from './tir.js';
 import { createTirView } from './tir-view.js';
@@ -499,6 +500,7 @@ const softRender = (() => {
   } catch { return false; }
 })();
 const groundDetail = GROUND_DETAILS.includes(params.get('sol')) ? params.get('sol') : softRender ? 'plat' : lowPower ? 'simple' : 'fin';
+setBati(params.get('bati'), lowPower); // ?bati=base|simple|fin : détail des bâtiments (matières, toits), 'base' = comme avant
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000); // champ : FOV_TOP, plus large en vue basse
 // Caméra isométrique, comme Project Zomboid, Dysmantle ou HumanitZ ; sa distance (zoom) et son tangage plancher : ZOOM

@@ -10,9 +10,12 @@ import { featuresFromBytes, regionOf, shapeUse } from '../src/tiles.js';
 import { makeProjection, pointInPolygon, polygonArea } from '../src/geo.js';
 import { createWorldStore, useProceduralWorld } from '../src/world.js';
 import { buildingsGeometry, buildingMaterial, facadeLevels, pitchedRoof, roofTop } from '../src/scene.js';
+import { setBati } from '../src/batiment-style.js';
 import { roadStyle } from '../src/chunks.js';
 
 const vtpbf = createRequire(import.meta.url)('vt-pbf');
+// Les essais de géométrie de ce fichier mesurent les toits sans détails (lucarnes, solaire, machines : test/batiments-varies.test.js).
+setBati('base');
 
 const tile = (name) => readFileSync(new URL(`./fixtures/tiles/${name}.mvt`, import.meta.url));
 const LYON_TILES = ['14-8411-5844', '14-8411-5845', '14-8412-5844', '14-8412-5845'];
@@ -118,7 +121,7 @@ test('voies : sens unique, revêtement, contexte bâti (Lyon en ville, cœur de 
 test('régions et types déduits de la forme', () => {
   assert.equal(regionOf(45.76, 4.83), 'sud');
   assert.equal(regionOf(48.85, 2.35), 'nord');
-  assert.equal(regionOf(40.71, -74.0), 'monde');
+  assert.equal(regionOf(40.71, -74.0), 'brique');
   assert.equal(regionOf(64.1, -21.9), 'monde');
   assert.equal(shapeUse(20, 3), 'shed');
   assert.equal(shapeUse(2000, 8), 'hall');
@@ -157,7 +160,7 @@ test('géométrie : sans NaN, déterministe, deux attributs de façade par somme
     }
   }
   assert.equal(g1.getAttribute('aFacade').itemSize + g1.getAttribute('aStyle').itemSize, 8);
-  // Le code de style est un entier exact (type + 12 × région + 36 × volets + 180 × famille).
+  // Le code de style est un entier exact (type + région + volets + famille + matière + drapeaux, batiment-style.js).
   const sty = g1.getAttribute('aStyle').array;
   for (let i = 3; i < sty.length; i += 4) assert.equal(sty[i], Math.round(sty[i]));
 });
