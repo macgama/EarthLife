@@ -15,6 +15,7 @@ import { ITEM_KIND } from '../src/art.js';
 import { ITEMS } from '../src/survival.js';
 import { ITEM_KEYS } from '../src/save.js';
 import { nameOf } from '../src/net/protocol.js';
+import { ESCROW } from '../src/depot.js';
 
 const T0 = 1791640000000;
 const DAY = 86400000;
@@ -261,7 +262,7 @@ test('confidentialite.html cite les règles des amis (un changement de règle ob
 
 test('confidentialite.html cite les règles de la boîte de dépôt (un changement de plafond ou de garde oblige à relire la page)', () => {
   const html = readFileSync(new URL('../confidentialite.html', import.meta.url), 'utf8').replace(/&nbsp;| | /g, ' ');
-  for (const phrase of ['boîte de dépôt', `${GIFT_RULES.perDay} objets par jour`, `${GIFT_RULES.pending} en attente`, `${GIFT_RULES.keepMs / DAY} jours`, 'vivres et des matériaux', 'journal du serveur', 'fichier d\'export']) {
+  for (const phrase of ['boîte de dépôt', `${GIFT_RULES.perDay} objets par jour`, `${GIFT_RULES.pending} en attente`, `${GIFT_RULES.keepMs / DAY} jours`, 'vivres et des matériaux', 'journal du serveur', 'fichier d\'export', 'identifiant des dépôts', `${ESCROW.doneMs / DAY} jours`]) {
     assert.ok(html.includes(phrase), `« ${phrase} » absent de confidentialite.html`);
   }
 });

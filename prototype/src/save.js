@@ -3,6 +3,7 @@
 // validateSave, parseSave et purgeOld sont purs ; createSaveStore reçoit le stockage et l'horloge.
 import { maxHp, CHEST } from './base.js';
 import { SKILL_KEYS, XP_MAX, emptyProfileSkills } from './skills.js';
+import { GIFT_KEYS } from './net/amis.js';
 
 export const SAVE_KEY = 'earthlife.save.v1';
 export const PREV_KEY = 'earthlife.save.v1.prev';
@@ -82,7 +83,7 @@ const WEATHER_KEY = /^[a-z_]{1,20}$/;
 // Écart toléré sur la norme d'une normale avant de la renormaliser (arrondis à 3 décimales de createBase).
 const NORM_TOLERANCE = 0.02;
 
-const TOP_KEYS = ['v', 'writer', 'rev', 'savedAt', 'lastSiegeCheck', 'profile', 'survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'car', 'searched', 'dismantled'];
+const TOP_KEYS = ['v', 'writer', 'rev', 'savedAt', 'lastSiegeCheck', 'profile', 'survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'car', 'searched', 'dismantled', 'gifts'];
 const PROFILE_KEYS = ['createdAt', 'nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths', 'weathers', 'plans', 'sinceLastPlan', 'firstWaveDone', 'kitGiven', 'journal', 'distanceM', 'playSec', 'skills'];
 const SURVIVOR_KEYS = ['health', 'food', 'water', 'bodyTemp', 'wet', 'fatigue', 'bag', 'weapon', 'clothing', 'head', 'legs', 'offhand', 'wear', 'pack'];
 const BASE_KEYS = ['id', 'lat', 'lon', 'area', 'height', 'kind', 'name', 'place', 'claimedAt', 'density', 'utcOffset', 'perk', 'openings', 'chest', 'upgrades', 'sirenAt', 'lastReserve', 'habitants'];
@@ -100,6 +101,13 @@ const CAR_KEYS = ['lat', 'lon', 'yaw', 'fuel', 'wear', 'from', 'tint'];
 const CAR_TANK = 40;
 const CAR_TINT = 0x4f6f78;
 const SEASON_ID = /^[A-Za-z0-9_.:-]{1,40}$/;
+// Dépôts entre amis (depot.js, ESCROW) : { out: [{ gid, fid, items, at }], held: [{ items, at }], done: [{ id, at }] }, les dons partis dont
+// le serveur n'a pas confirmé le dépôt, les objets à remettre au sac et les dépôts déjà retirés ou repris. Absente d'une ancienne
+// partie : vide, sans correction signalée. Mêmes bornes que depot.js (un test les compare).
+export const SAVE_GIFTS = { out: 10, held: 10, done: 300, perGift: 20, kinds: 6, perHeld: 200 };
+const GIFTS = SAVE_GIFTS;
+const GIFT_SET = new Set(GIFT_KEYS);
+const HEX32 = /^[0-9a-f]{32}$/;
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const finite = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -146,6 +154,7 @@ export function emptySave(now = Date.now()) {
     car: null,
     searched: {},
     dismantled: {},
+    gifts: { out: [], held: [], done: [] },
   };
 }
 
@@ -155,6 +164,7 @@ export function emptySave(now = Date.now()) {
 export function isBlankSave(save) {
   if (!isObj(save)) return true;
   if (save.base || save.orphanChest || save.dropBag || save.car) return false;
+  if (isObj(save.gifts) && ((Array.isArray(save.gifts.out) && save.gifts.out.length) || (Array.isArray(save.gifts.held) && save.gifts.held.length))) return false;
   const p = isObj(save.profile) ? save.profile : {};
   if (COUNTERS.some((k) => finite(p[k]) && p[k] !== 0)) return false;
   if (p.firstWaveDone === true) return false;
@@ -611,6 +621,61 @@ function checkCar(raw, c) {
   };
 }
 
+// Objets d'un paquet de dépôts : seules les clés de GIFT_KEYS, `cap` objets au plus ; vide : le paquet est abandonné par l'appelant.
+function checkGiftItems(raw, path, c, cap, kinds = Infinity) {
+  const { out } = c.counts(raw, path, cap);
+  for (const k of Object.keys(out)) {
+    if (!GIFT_SET.has(k) || out[k] === 0) { c.fix(`${path}.${k}`, 'objet qui ne se donne pas, supprimé'); delete out[k]; }
+  }
+  const keys = Object.keys(out);
+  if (keys.length > kinds) {
+    c.fix(path, `${keys.length} sortes ramenées à ${kinds}`);
+    for (const k of keys.slice(kinds)) delete out[k];
+  }
+  return out;
+}
+
+function checkGifts(raw, c, now) {
+  const out = { out: [], held: [], done: [] };
+  if (raw === undefined) return out;
+  if (!isObj(raw)) { c.fix('gifts', 'illisible, vidé'); return out; }
+  c.unknown(raw, ['out', 'held', 'done'], 'gifts');
+  const list = (v, path) => {
+    if (Array.isArray(v)) return v;
+    if (v !== undefined) c.fix(path, 'illisible, vidé');
+    return [];
+  };
+  const seen = new Set();
+  for (const [i, e] of list(raw.out, 'gifts.out').entries()) {
+    const path = `gifts.out.${i}`;
+    if (!isObj(e) || typeof e.gid !== 'string' || !HEX32.test(e.gid) || typeof e.fid !== 'string' || !HEX32.test(e.fid) || seen.has(e.gid)) {
+      c.fix(path, 'don illisible supprimé');
+      continue;
+    }
+    const items = checkGiftItems(e.items, `${path}.items`, c, GIFTS.perGift, GIFTS.kinds);
+    if (!Object.keys(items).length) { c.fix(path, 'don vide supprimé'); continue; }
+    seen.add(e.gid);
+    out.out.push({ gid: e.gid, fid: e.fid, items, at: c.time(e.at, `${path}.at`, now) });
+  }
+  if (out.out.length > GIFTS.out) { c.fix('gifts.out', `${out.out.length} dons ramenés à ${GIFTS.out}`); out.out = out.out.slice(0, GIFTS.out); }
+  for (const [i, h] of list(raw.held, 'gifts.held').entries()) {
+    const path = `gifts.held.${i}`;
+    if (!isObj(h)) { c.fix(path, 'paquet illisible supprimé'); continue; }
+    const items = checkGiftItems(h.items, `${path}.items`, c, GIFTS.perHeld);
+    if (!Object.keys(items).length) { c.fix(path, 'paquet vide supprimé'); continue; }
+    out.held.push({ items, at: c.time(h.at, `${path}.at`, now) });
+  }
+  if (out.held.length > GIFTS.held) { c.fix('gifts.held', `${out.held.length} paquets ramenés à ${GIFTS.held}`); out.held = out.held.slice(0, GIFTS.held); }
+  const ids = new Set();
+  for (const [i, d] of list(raw.done, 'gifts.done').entries()) {
+    if (!isObj(d) || typeof d.id !== 'string' || !HEX32.test(d.id) || ids.has(d.id)) { c.fix(`gifts.done.${i}`, 'identifiant illisible supprimé'); continue; }
+    ids.add(d.id);
+    out.done.push({ id: d.id, at: c.time(d.at, `gifts.done.${i}.at`, now) });
+  }
+  if (out.done.length > GIFTS.done) { c.fix('gifts.done', `${out.done.length} identifiants ramenés à ${GIFTS.done}`); out.done = out.done.slice(-GIFTS.done); }
+  return out;
+}
+
 function checkHorde(raw, c) {
   const h = isObj(raw) ? raw : {};
   if (!isObj(raw)) c.fix('horde', 'illisible, remis à zéro');
@@ -694,6 +759,7 @@ export function validateSave(raw, now = Date.now(), { itemKeys = ITEM_KEYS } = {
     car: checkCar(raw.car, c),
     searched: c.stamps(raw.searched, 'searched', true),
     dismantled: c.stamps(raw.dismantled, 'dismantled'),
+    gifts: checkGifts(raw.gifts, c, now),
   };
   return { ok: true, save, fixes };
 }

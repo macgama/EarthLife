@@ -3130,7 +3130,7 @@ await scenario('O35', 'amis : où sont-ils, voir sur la carte et rejoindre', asy
 });
 
 // =====================================================================================================
-// O36 : « Mes amis », étape 3 (boîte de dépôt entre amis, serveur seul : le jeu ne l'appelle pas encore) : A dépose pour B, qui
+// O36 : « Mes amis », étape 3 (boîte de dépôt entre amis, côté serveur : le jeu s'en sert dans O37) : A dépose pour B, qui
 // retire une fois ; dépôt rejouable, reprise, amitié retirée qui rend, plafond du jour, un tiers qui ne peut rien ; aucun
 // identifiant de compte ni d'identité ni adresse dans les réponses
 // =====================================================================================================
@@ -3234,6 +3234,153 @@ await scenario('O36', 'amis : boîte de dépôt (déposer, retirer, reprendre, p
     }
   } finally {
     Object.assign(LIM, was);
+  }
+});
+
+// =====================================================================================================
+// O37 : « Mes amis », étape 4 (le sac) : A (ordinateur) donne des vivres à son ami B (téléphone) depuis son sac, la réponse du serveur se perd
+// au premier don (la partie est écrite avant la requête ; la réouverture du sac renvoie sans rien déposer de plus) ; B est prévenu d'un mot, retire
+// dans son sac et retrouve les objets une fois ; la carte « Mes amis » dit qu'un dépôt attend ; la section tient sur l'écran du téléphone
+// =====================================================================================================
+await scenario('O37', 'amis : donner et retirer depuis le sac', async () => {
+  const SERVER = `http://127.0.0.1:${srv.port}`;
+  const post = async (route, body) => {
+    const r = await fetch(`${SERVER}${route}`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
+    return { status: r.status, body: await r.json() };
+  };
+  const { ACCOUNT_LIMITS: LIM } = await load('server/src/accounts.js');
+  const was = { codesPerIpHour: LIM.codesPerIpHour, coldCodesPerIpHour: LIM.coldCodesPerIpHour, ipPerMin: LIM.ipPerMin };
+  LIM.codesPerIpHour += 10;
+  LIM.coldCodesPerIpHour += 10;
+  LIM.ipPerMin = 1000;
+  let A = null, B = null;
+  try {
+    const U = {};
+    for (const n of ['a', 'b']) {
+      const u = U[n] = { email: `${n}.sac@exemple.test`, pw: `essai-sac-${n}-quai-80` };
+      await post('/v1/account/code', { v: 1, email: u.email, why: 'signup' });
+      const ver = await post('/v1/account/verify', { v: 1, email: u.email, code: srv.mailbox.lastCode(u.email), password: u.pw, tok: null, age: true });
+      u.ses = ver.body.ses;
+      check(ver.status === 200 && !!u.ses, `${n.toUpperCase()} : compte créé (${ver.status})`);
+    }
+    const ask = (n, kind, body = {}) => post(`/v1/friends/${kind}`, { v: 1, ses: U[n].ses, ...body });
+    const code = (await ask('b', 'code')).body.friendCode;
+    const j = await ask('a', 'join', { code });
+    check(j.status === 200 && !!j.body.friend?.fid, `A : ami de B (${j.status})`);
+    const K = friendsKit(U);
+    const bagOf = (t) => ev(t, () => ({ ...window.__earthlife.session.survivor.inventory }));
+    const setBag = (t, bag) => ev(t, (b) => { const inv = window.__earthlife.session.survivor.inventory; for (const k of Object.keys(inv)) delete inv[k]; Object.assign(inv, b); }, bag);
+    const bagOpen = (t) => until(t, () => (window.__earthlife.finds.isOpen() && window.__earthlife.finds.mode() === 'bag' ? 1 : null), null, 30000);
+    const rowsOf = (t) => ev(t, () => [...document.querySelectorAll('#finds .tv-dep li')].map((li) => ({ text: li.innerText.replace(/\s+/g, ' ').trim(), btn: li.querySelector('[data-tv="dep"]')?.dataset.kind ?? null, off: !!li.querySelector('[data-tv="dep"]')?.disabled })));
+    const pause = async (t) => { active.delete(t); await t.calming; };       // le sac ouvert met le jeu en pause : plus de « calme » à appliquer
+
+    A = await K.openAs('A (ordinateur, sac)', desktop, 'a', '&friendPollMs=60000');
+    B = await K.openAs('B (téléphone, sac)', mobile, 'b', '&friendPollMs=60000&depotPollMs=3000');
+    check(await play(A), 'A : partie lancée');
+    check(await play(B), 'B : partie lancée');
+    await setBag(A, { conserve: 6, eau: 3, planche: 2, hache: 1 });
+    await setBag(B, { barre: 1 });
+
+    // ---- A ouvre son sac : la section « Dépôts d'amis » est là, vide ; un outil ne se donne pas ----
+    await click(A, '#bag-open');
+    check(!!(await bagOpen(A)), 'A : le sac s\'ouvre');
+    check(!(await ev(A, () => document.querySelector('#finds .tv-depot'))), 'A : pas de section « Dépôts d\'amis » tant qu\'il n\'y a rien dedans');
+    await click(A, '#finds .tv-slot[data-side="bag"][data-key="hache"]');
+    const giveTool = await ev(A, () => document.querySelector('#finds [data-tv="give"]'));
+    check(!giveTool, 'A : pas de « Donner à un ami » sur un outil');
+    // ---- premier don : la réponse du serveur se perd (la requête arrive, la réponse non) ----
+    const stored = [];
+    let lose = true;
+    await A.ctx.route('**/v1/friends/give', async (route) => {
+      stored.push(await A.page.evaluate(() => window.__earthlife.saveStore.storedText).catch(() => ''));
+      if (lose) { lose = false; await route.fetch(); await route.abort('failed'); } else await route.continue();
+    });
+    const netDone = expectNet(A);
+    await click(A, '#finds .tv-slot[data-side="bag"][data-key="conserve"]');
+    check(!!(await until(A, () => document.querySelector('#finds [data-tv="give"]:not([disabled])') ? 1 : null, null, 30000)), 'A : « Donner à un ami » sur les conserves (compte connecté)');
+    const qty = async (t, n) => {                                              // la pile entière est proposée : « − » jusqu'à n
+      for (let i = 0; i < 25 && (await ev(t, () => Number(document.querySelector('#finds .tv-n')?.textContent))) > n; i++) await click(t, '#finds [data-tv="step"][data-d="-1"]');
+      return ev(t, () => Number(document.querySelector('#finds .tv-n')?.textContent));
+    };
+    check((await qty(A, 2)) === 2, 'A : la quantité à donner est réglée sur 2 (sur 6)');
+    await shot(A, 'o37-ordi-donner');
+    await click(A, '#finds [data-tv="give"]');
+    check(!!(await until(A, () => document.querySelector('#finds [data-tv="give-to"]') ? 1 : null, null, 20000)), 'A : « À qui ? » liste l\'ami');
+    await click(A, '#finds [data-tv="give-to"]');
+    check(!!(await until(A, () => window.__earthlife.save.gifts?.out?.length === 1 || null, null, 30000)), 'A : le don est inscrit dans la partie (réponse perdue : il reste en route)');
+    check((await bagOf(A)).conserve === 4, `A : 2 conserves ont quitté le sac (${(await bagOf(A)).conserve})`);
+    check(stored.length === 1 && /"gifts":\{"out":\[\{"gid":"[0-9a-f]{32}"/.test(stored[0]), 'A : la partie écrite contenait déjà le don quand la requête est partie');
+    const box1 = (await ask('a', 'box')).body;
+    check(box1.outgoing?.length === 1 && box1.outgoing[0].items.conserve === 2, `serveur : un seul dépôt de A (${box1.outgoing?.length})`);
+    check(!!(await until(A, () => /gardés/.test(document.querySelector('#finds .tv-msg')?.textContent ?? '') || null, null, 30000)), 'A : la fenêtre dit que le serveur ne répond pas et que les objets sont gardés');
+    const row1 = await rowsOf(A);
+    check(row1.some((r) => /En route vers/.test(r.text) && r.btn === null), `A : la ligne « En route vers… » sans bouton (${row1.map((r) => r.text).join(' | ')})`);
+    netDone();
+    // ---- A referme et rouvre le sac : le don repart avec la même clé, le serveur ne dépose rien de plus ----
+    await click(A, '#finds [data-tv="close"].tv-x');
+    check(!(await ev(A, () => window.__earthlife.finds.isOpen())), 'A : le sac se ferme');
+    await click(A, '#bag-open');
+    check(!!(await until(A, () => window.__earthlife.save.gifts?.out?.length === 0 || null, null, 30000)), 'A : à la réouverture, le don est confirmé (plus rien en route)');
+    const box2 = (await ask('a', 'box')).body;
+    check(box2.outgoing?.length === 1, `serveur : toujours un seul dépôt après le renvoi (${box2.outgoing?.length})`);
+    check(!!(await until(A, () => [...document.querySelectorAll('#finds .tv-dep li')].some((li) => /Pour .*2 conserves/.test(li.innerText)) || null, null, 20000)), 'A : la ligne « Pour … : 2 conserves » avec « Reprendre »');
+    check((await bagOf(A)).conserve === 4, 'A : le sac n\'a pas changé au renvoi');
+    // ---- un second don, normal : de l'eau ----
+    await click(A, '#finds .tv-slot[data-side="bag"][data-key="eau"]');
+    check((await qty(A, 1)) === 1, 'A : une seule eau');
+    await click(A, '#finds [data-tv="give"]');
+    await until(A, () => document.querySelector('#finds [data-tv="give-to"]') ? 1 : null, null, 20000);
+    await click(A, '#finds [data-tv="give-to"]');
+    check(!!(await until(A, () => window.__earthlife.session.survivor.inventory.eau === 2 || null, null, 20000)), 'A : 1 eau a quitté le sac');
+    const box3 = await until(A, () => document.querySelectorAll('#finds .tv-dep li').length >= 2 || null, null, 20000);
+    check(!!box3, 'A : deux dépôts en attente dans la section');
+    await shot(A, 'o37-ordi-depots');
+    await click(A, '#finds [data-tv="close"].tv-x');
+
+    // ---- B : un mot (une seule fois), puis les deux retraits dans son sac ----
+    const toasted = await until(B, () => (window.__seen.toasts.some((x) => /laissé des objets/.test(x.t)) ? 1 : null), null, 40000);
+    check(!!toasted, 'B : un mot dit qu\'un ami a laissé des objets');
+    await wait(8000);
+    check((await ev(B, () => window.__seen.toasts.filter((x) => /laissé des objets/.test(x.t)).length)) === 1, 'B : ce mot n\'est dit qu\'une fois par dépôt');
+    await click(B, '#bag-open');
+    check(!!(await bagOpen(B)), 'B : le sac s\'ouvre');
+    check(!!(await until(B, () => document.querySelectorAll('#finds .tv-dep [data-tv="dep"][data-kind="in"]').length === 2 || null, null, 30000)), 'B : deux dépôts à retirer');
+    const fit = await ev(B, () => {
+      const s = document.querySelector('#finds .tv-depot'), w = document.querySelector('#finds .tv-win, #finds');
+      const r = s.getBoundingClientRect();
+      return { left: r.left, right: r.right, vw: window.innerWidth, scrollW: document.documentElement.scrollWidth, btn: Math.round(document.querySelector('#finds [data-tv="dep"]').getBoundingClientRect().height) };
+    });
+    check(fit.left >= 0 && fit.right <= fit.vw + 0.5 && fit.scrollW <= fit.vw && fit.btn >= 36, `B : la section tient sur l'écran du téléphone (${Math.round(fit.left)}–${Math.round(fit.right)} sur ${fit.vw}, bouton ${fit.btn} px)`);
+    await shot(B, 'o37-tel-depots');
+    await click(B, '#finds [data-tv="dep"][data-kind="in"]');
+    await until(B, () => document.querySelectorAll('#finds [data-tv="dep"][data-kind="in"]').length === 1 || null, null, 20000);
+    await click(B, '#finds [data-tv="dep"][data-kind="in"]');
+    await until(B, () => document.querySelectorAll('#finds [data-tv="dep"][data-kind="in"]').length === 0 || null, null, 20000);
+    const bagB = await bagOf(B);
+    check(bagB.conserve === 2 && bagB.eau === 1 && bagB.barre === 1, `B : les objets sont dans son sac, une seule fois (${JSON.stringify(bagB)})`);
+    const doneB = await ev(B, () => window.__earthlife.save.gifts.done.length);
+    check(doneB === 2, `B : la partie garde l'identifiant des deux dépôts retirés (${doneB})`);
+    const boxB = (await ask('b', 'box')).body;
+    check(boxB.incoming?.length === 0, 'serveur : plus rien à retirer pour B');
+    const boxA = (await ask('a', 'box')).body;
+    check(boxA.outgoing?.length === 0, 'serveur : plus rien en attente pour A (retiré)');
+    await click(B, '#finds [data-tv="close"].tv-x');
+
+    // ---- un dépôt de plus pour B, laissé pendant qu'il est au menu : la carte « Mes amis » le dit ----
+    const g = await ask('a', 'give', { fid: j.body.friend.fid, gid: 'b7'.repeat(16), items: { bois: 1 } });
+    check(g.status === 200, `A (API) : un dépôt de plus pour B (${g.status})`);
+    await pause(B);
+    await click(B, '#quit');
+    await K.openFriends(B);
+    check(!!(await K.cardWait(B, 'Mes amis (1/30)')), 'B : carte « Mes amis »');
+    const v = await K.cardView(B);
+    check(/Un dépôt t'attend/.test(v.text) && /Donner à un ami/.test(v.text), `B : la carte dit qu'un dépôt attend et où donner (${v.lines.filter((l) => /dépôt|Donner/.test(l)).join(' | ')})`);
+    await shot(B, 'o37-tel-carte-amis');
+    await K.cardBtn(B, 'close');
+  } finally {
+    Object.assign(LIM, was);
+    await closeAcc(A);
+    await closeAcc(B);
   }
 });
 

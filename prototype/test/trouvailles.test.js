@@ -375,3 +375,73 @@ test('FINDS_CSS : accolades équilibrées, classes en tv-', () => {
   assert.ok(classes.length > 20);
   for (const c of classes) assert.match(c, /^tv-/);
 });
+
+// ---------- Dépôts d'amis dans le sac (depot.js) ----------
+
+const bagFind = (depot, over = {}) => ({ title: 'Mon sac', kicker: 'Inventaire', sub: '', notes: [], ground: {}, mode: 'bag', depot, ...over });
+const FIDA = 'a'.repeat(32), FIDB = 'b'.repeat(32);
+const snap = (over = {}) => ({ available: true, friends: [{ fid: FIDA, name: 'Panda des Cascades 67' }, { fid: FIDB, name: 'Coyote <b>' }], rows: [], note: '', ...over });
+
+test('dépôts : « Donner à un ami » seulement avec un compte, sur une pile du sac qui se donne, 20 au plus', () => {
+  const s = survivor({ conserve: 5, bois: 28, fusil: 1 });
+  const give = (key, depot, n = null) => {
+    const sel = { side: 'bag', key, n: n ?? s.inventory[key] };
+    return findView(s, bagFind(depot), sel).detail.give;
+  };
+  assert.equal(give('conserve', snap()).label, 'Donner à un ami ×5');
+  assert.equal(give('conserve', snap()).enabled, true);
+  assert.equal(give('conserve', snap(), 2).label, 'Donner à un ami ×2');
+  assert.equal(give('bois', snap()).n, 20, 'jamais plus de 20 par don');
+  assert.equal(give('fusil', snap()), null, 'une arme ne se donne pas');
+  assert.equal(give('conserve', null), null, 'sans dépôt (hors ligne, sans compte) : aucun bouton');
+  assert.equal(give('conserve', snap({ available: false })), null);
+  const alone = give('conserve', snap({ friends: [] }));
+  assert.deepEqual([alone.enabled, alone.why], [false, 'Pas encore d\'amis : invite-en un depuis le menu.']);
+  // Du côté « Jeté » ou dans la fenêtre de fouille : jamais.
+  assert.equal(findView(s, bagFind(snap(), { ground: { eau: 1 } }), { side: 'ground', key: 'eau', n: 1 }).detail.give, null);
+  assert.equal(findView(s, find({ eau: 1 }, { depot: snap() }), { side: 'ground', key: 'eau', n: 1 }).detail.give, null);
+  assert.equal(findView(s, find({ eau: 1 }, { depot: snap() })).depot, null, 'la fouille ne montre pas les dépôts');
+});
+
+test('dépôts : la section reprend les lignes du dépôt, le pied demande « à qui ? », tout est échappé', () => {
+  const s = survivor({ conserve: 3 });
+  const rows = [
+    { kind: 'in', key: 'i'.repeat(32), who: 'Panda', items: { eau: 1 }, label: 'Panda <i>: 1 eau', action: 'Retirer', enabled: true, why: '' },
+    { kind: 'out', key: 'o'.repeat(32), who: 'Coyote', items: { bois: 4 }, label: 'Pour Coyote : 4 bois', action: 'Reprendre', enabled: false, why: 'Sac plein : il manque 1 place' },
+    { kind: 'sending', key: 'g'.repeat(32), who: 'Coyote', items: { clous: 1 }, label: 'En route vers Coyote : 1 clou', action: '', enabled: false, why: '' },
+  ];
+  const v = findView(s, bagFind(snap({ rows, note: '1 à retirer' })), { side: 'bag', key: 'conserve', n: 3 });
+  assert.deepEqual(v.depot.rows.length, 3);
+  const html = findHtml(v);
+  assert.ok(html.includes('tv-depot') && html.includes('Dépôts d&#39;amis') || html.includes('Dépôts d\'amis'), 'section présente');
+  assert.ok(html.includes('1 à retirer'));
+  assert.ok(html.includes('Panda &lt;i&gt;: 1 eau') && !html.includes('Panda <i>'), 'libellé échappé');
+  assert.match(html, /data-tv="dep" data-kind="in" data-key="i{32}">Retirer</);
+  assert.match(html, /data-tv="dep" data-kind="out" data-key="o{32}" disabled title="Sac plein : il manque 1 place">Reprendre</);
+  assert.ok(!/data-kind="sending"/.test(html), 'un don en route n\'a pas de bouton');
+  assert.match(html, /data-tv="give"/);
+  // À qui ?
+  const pick = findView(s, bagFind(snap()), { side: 'bag', key: 'conserve', n: 2 }, null, { pick: { key: 'conserve', n: 2 } });
+  assert.deepEqual(pick.pick.friends.map((f) => f.name), ['Panda des Cascades 67', 'Coyote <b>']);
+  const foot = findHtml(pick);
+  assert.ok(foot.includes('À qui ?') && foot.includes('2 conserves'));
+  assert.ok(foot.includes(`data-tv="give-to" data-fid="${FIDA}"`) && foot.includes('data-tv="pick-cancel"'));
+  assert.ok(foot.includes('Coyote &lt;b&gt;') && !foot.includes('Coyote <b>'), 'surnom échappé');
+  assert.ok(!foot.includes('data-tv="move"'), 'le choix de l\'ami remplace le détail');
+  // En attente d'une réponse du serveur : tout est grisé.
+  const busy = findView(s, bagFind(snap({ rows })), null, null, { pick: { key: 'conserve', n: 2 }, busy: true });
+  const busyHtml = findHtml(busy);
+  assert.match(busyHtml, /data-tv="give-to"[^>]* disabled/);
+  assert.match(busyHtml, /data-tv="pick-cancel" disabled/);
+  assert.match(busyHtml, /data-tv="dep" data-kind="in" data-key="i{32}" disabled/);
+});
+
+test('dépôts : sans ligne ni note, la section n\'existe pas ; la fenêtre sans compte est celle d\'avant', () => {
+  const s = survivor({ conserve: 3 });
+  assert.ok(!findHtml(findView(s, bagFind(snap()))).includes('tv-depot'));
+  assert.ok(!findHtml(findView(s, bagFind(null))).includes('tv-depot'));
+  assert.ok(!findHtml(findView(s, bagFind(null), { side: 'bag', key: 'conserve', n: 3 })).includes('data-tv="give"'));
+  assert.equal(findView(s, bagFind(snap({ available: false }))).depot, null);
+  // Une note seule (chargement) montre la section.
+  assert.ok(findHtml(findView(s, bagFind(snap({ note: 'Chargement…' })))).includes('Chargement…'));
+});

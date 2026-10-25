@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import {
   SAVE_KEY, PREV_KEY, CORRUPT_KEY, PRESENCE_KEY, PRESENCE, SAVE_VERSION, LIMITS, ITEM_KEYS, SAVE_MESSAGES,
   emptySave, validateSave, parseSave, purgeOld, createSaveStore, memoryStorage, exportFileName, isBlankSave,
-  searchStamp, searchRooms, searchedWhole, markRoom,
+  searchStamp, searchRooms, searchedWhole, markRoom, SAVE_GIFTS,
 } from '../src/save.js';
 import { stampOf } from '../src/net/account.js';
 import { stampOfText } from '../src/account.js';
 import { ITEMS } from '../src/survival.js';
 import { createBase, maxHp } from '../src/base.js';
+import { ESCROW } from '../src/depot.js';
+import { GIFT_RULES } from '../src/net/amis.js';
 
 const NOW = 1790881200000; // 1er octobre 2026, 19 h 00 à Lyon
 const H = 3600 * 1000;
@@ -76,6 +78,7 @@ const EXAMPLE = {
   car: null,
   searched: { 'b45.75718_4.83049': 1790859980000 },
   dismantled: { c457561_48311: 1790860850000, k457549_48298: 1790861200000 },
+  gifts: { out: [], held: [], done: [] },
 };
 
 const example = () => structuredClone(EXAMPLE);
@@ -1728,10 +1731,12 @@ test('ancienne partie sans les champs nouveaux : chargée sans correction, avec 
   delete old.survivor.pack;
   for (const k of ['head', 'legs', 'offhand', 'wear']) delete old.survivor[k];
   delete old.car;
+  delete old.gifts;
   const r = validateSave(old, NOW);
   assert.equal(r.ok, true);
   assert.deepEqual(r.fixes, [], 'aucune correction signalée');
   assert.equal(r.save.car, null, 'sans voiture');
+  assert.deepEqual(r.save.gifts, { out: [], held: [], done: [] }, 'sans dépôts');
   assert.equal(r.save.profile.distanceM, 0);
   assert.equal(r.save.profile.playSec, 0);
   assert.deepEqual(r.save.profile.skills, { free: { combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 }, season: { id: null, combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 } });
@@ -1823,4 +1828,93 @@ test('where.in : le bâtiment où le joueur a quitté la partie survit à la lec
   assert.deepEqual(inside('b45.75718_4.83049'), { lat: 45.7571, lon: 4.8305, at: NOW, inside: false, in: 'b45.75718_4.83049' });
   // Absent, vide, trop long ou d'un autre type : le champ n'existe pas (une ancienne sauvegarde n'en a jamais eu).
   for (const bad of [undefined, null, '', 'x'.repeat(81), 12, {}, ['b1']]) assert.deepEqual(inside(bad), { lat: 45.7571, lon: 4.8305, at: NOW, inside: false });
+});
+
+// ---------- Dépôts entre amis (depot.js) ----------
+
+const G1 = 'a'.repeat(32), G2 = 'b'.repeat(32), F1 = 'c'.repeat(32);
+
+test('dépôts : une partie neuve en a une liste vide, les bornes sont celles de depot.js', () => {
+  assert.deepEqual(emptySave(NOW).gifts, { out: [], held: [], done: [] });
+  assert.deepEqual(SAVE_GIFTS, { out: ESCROW.out, held: ESCROW.held, done: ESCROW.done, perGift: GIFT_RULES.perDay, kinds: GIFT_RULES.kinds, perHeld: 200 });
+});
+
+test('dépôts : dons en route, paquets à remettre et identifiants lus tels quels, sans correction', () => {
+  const gifts = {
+    out: [{ gid: G1, fid: F1, items: { conserve: 2, eau: 1 }, at: NOW - 1000 }],
+    held: [{ items: { bois: 3 }, at: NOW - 2000 }],
+    done: [{ id: G2, at: NOW - 3000 }],
+  };
+  const r = check((s) => { s.gifts = structuredClone(gifts); });
+  assert.deepEqual(r.save.gifts, gifts);
+  assert.deepEqual(r.fixes, []);
+  // Aller-retour par le texte.
+  assert.deepEqual(parseSave(JSON.stringify(r.save), NOW).save.gifts, gifts);
+});
+
+test('dépôts : une entrée illisible est supprimée avec sa correction, le reste est gardé', () => {
+  const r = check((s) => {
+    s.gifts = {
+      out: [
+        { gid: G1, fid: F1, items: { conserve: 2 }, at: NOW },
+        { gid: G1, fid: F1, items: { eau: 1 }, at: NOW },                    // même clé : doublon
+        { gid: 'x', fid: F1, items: { eau: 1 }, at: NOW },                   // clé mal formée
+        { gid: G2, fid: F1, items: { fusil: 1 }, at: NOW },                  // ne se donne pas : vide après nettoyage
+        'n\'importe quoi',
+      ],
+      held: [{ items: {}, at: NOW }, { items: { eau: 1 }, at: 'hier' }, 7],
+      done: [{ id: G1, at: NOW }, { id: G1, at: NOW }, { id: 'zz', at: NOW }, null],
+    };
+  });
+  assert.deepEqual(r.save.gifts.out.map((e) => e.gid), [G1]);
+  assert.deepEqual(r.save.gifts.held, [{ items: { eau: 1 }, at: NOW }]);
+  assert.deepEqual(r.save.gifts.done, [{ id: G1, at: NOW }]);
+  assert.ok(hasFix(r, 'gifts.out.1') && hasFix(r, 'gifts.out.2') && hasFix(r, 'gifts.out.3') && hasFix(r, 'gifts.out.4'));
+  assert.ok(hasFix(r, 'gifts.held.0') && hasFix(r, 'gifts.held.1.at') && hasFix(r, 'gifts.held.2'));
+  assert.ok(hasFix(r, 'gifts.done.1') && hasFix(r, 'gifts.done.2') && hasFix(r, 'gifts.done.3'));
+});
+
+test('dépôts : un don de plus de 20 objets ou de plus de 6 sortes est ramené aux règles du serveur', () => {
+  const r = check((s) => {
+    s.gifts = { out: [
+      { gid: G1, fid: F1, items: { conserve: 30 }, at: NOW },
+      { gid: G2, fid: F1, items: { conserve: 1, barre: 1, baies: 1, eau: 1, soda: 1, bandage: 1, bois: 1 }, at: NOW },
+    ], held: [], done: [] };
+  });
+  assert.deepEqual(r.save.gifts.out[0].items, { conserve: 20 });
+  assert.equal(Object.keys(r.save.gifts.out[1].items).length, 6);
+});
+
+test('dépôts : les listes sont bornées (10 dons, 10 paquets, 300 identifiants, les plus récents gardés)', () => {
+  const hex = (i) => i.toString(16).padStart(32, '0');
+  const r = check((s) => {
+    s.gifts = {
+      out: Array.from({ length: 12 }, (_, i) => ({ gid: hex(i + 1), fid: F1, items: { eau: 1 }, at: NOW })),
+      held: Array.from({ length: 12 }, () => ({ items: { eau: 1 }, at: NOW })),
+      done: Array.from({ length: 305 }, (_, i) => ({ id: hex(i + 1), at: NOW })),
+    };
+  });
+  assert.equal(r.save.gifts.out.length, 10);
+  assert.equal(r.save.gifts.held.length, 10);
+  assert.equal(r.save.gifts.done.length, 300);
+  assert.equal(r.save.gifts.done[0].id, hex(6), 'les plus anciens partent d\'abord');
+});
+
+test('dépôts : clé inconnue ou illisible, une horodatage futur est ramené à maintenant', () => {
+  const r = check((s) => { s.gifts = { out: [{ gid: G1, fid: F1, items: { eau: 1 }, at: NOW + 3 * 86400000 }], extra: 1 }; });
+  assert.equal(r.save.gifts.out[0].at, NOW);
+  assert.ok(hasFix(r, 'gifts.extra'));
+  const r2 = check((s) => { s.gifts = 'oups'; });
+  assert.deepEqual(r2.save.gifts, { out: [], held: [], done: [] });
+  assert.ok(hasFix(r2, 'gifts'));
+  const r3 = check((s) => { s.gifts = { out: 'x', held: 3, done: {} }; });
+  assert.deepEqual(r3.save.gifts, { out: [], held: [], done: [] });
+});
+
+test('dépôts : une partie vide l\'est encore avec des identifiants retirés, plus avec des objets en route ou à remettre', () => {
+  const base = emptySave(NOW);
+  assert.equal(isBlankSave(base), true);
+  assert.equal(isBlankSave({ ...base, gifts: { out: [], held: [], done: [{ id: G1, at: NOW }] } }), true);
+  assert.equal(isBlankSave({ ...base, gifts: { out: [{ gid: G1, fid: F1, items: { eau: 1 }, at: NOW }], held: [], done: [] } }), false);
+  assert.equal(isBlankSave({ ...base, gifts: { out: [], held: [{ items: { eau: 1 }, at: NOW }], done: [] } }), false);
 });

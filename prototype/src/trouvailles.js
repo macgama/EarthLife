@@ -3,11 +3,13 @@
 // transferts et la vue (pures, testées sous node), la page HTML (pure, textes échappés) et le contrôleur du DOM. Classes en tv-.
 // Chaque transfert s'applique tout de suite au sac du survivant : fermer ne valide rien, il laisse le reste sur place.
 // Le même écran sert de « Sac » (mode 'bag', bouton du jeu ou touche I) : sans butin, avec l'équipement porté ; « Jeter » pose l'objet dans
-// une liste « Jeté » d'où l'on peut le reprendre jusqu'à la fermeture, qui le perd.
+// une liste « Jeté » d'où l'on peut le reprendre jusqu'à la fermeture, qui le perd. Avec un compte, le sac montre aussi les dépôts d'amis
+// (depot.js, depot-jeu.js) : ce qui t'attend, ce que tu as donné, et « Donner à un ami » sur les vivres et les matériaux.
 import { ITEMS, WEAPONS, FIREARMS, BAG_BASE, SLOT_LABEL, GEAR_SLOTS, bagCapacity, bagUsed, wornKey, gearUses, discardedBy, equipFrom, betterThanWorn, packSwapRefusal, addCount, takeCount, itemLabel, countsLabel, countsTotal } from './survival.js';
 import { icon } from './icons.js';
 import { itemSlot, injectArtStyle } from './art.js';
 import { esc } from './panels.js';
+import { canGiveKey, giveMax, DEPOT_TEXTS } from './depot.js';
 
 // Motifs d'un transfert refusé.
 export const WHY = Object.freeze({
@@ -226,8 +228,9 @@ const stackOf = (s, key, n, selected, side) => ({
 
 // Vue de la fenêtre : { title, kicker, sub, notes, ground, bag, worn, used, cap, free, detail, all, done, msg, tone }.
 // `find` : { title, kicker, sub, notes, ground } ; `sel` : pile touchée ; `msg` : { text, tone } du dernier transfert.
-export function findView(s, find, sel = null, msg = null) {
+export function findView(s, find, sel = null, msg = null, ui = {}) {
   const bagMode = find.mode === 'bag';
+  const dep = bagMode ? find.depot ?? null : null;
   const ground = keysOf(find.ground).map((k) => stackOf(s, k, find.ground[k], sel, 'ground'));
   const bag = keysOf(s.inventory).map((k) => stackOf(s, k, s.inventory[k], sel, 'bag'));
   const used = bagUsed(s), cap = bagCapacity(s), free = freeRoom(s);
@@ -249,6 +252,7 @@ export function findView(s, find, sel = null, msg = null) {
         label: 'Équiper', enabled: gear.ok, why: gear.why,
         note: gear.ok && gear.discarded ? `Ta ${ITEMS[gear.discarded].one} usée sera jetée` : '',
       } : null,
+      give: dep?.available && sel.side === 'bag' && canGiveKey(sel.key) ? giveButton(s, dep, sel, n, !!ui.busy) : null,
     };
   }
   const left = countsTotal(find.ground);
@@ -258,6 +262,19 @@ export function findView(s, find, sel = null, msg = null) {
     all: { enabled: left > 0 && free > 0, left, why: WHY.full },
     done: left === 0,
     msg: msg?.text ?? '', tone: msg?.tone ?? '',
+    depot: dep?.available ? { note: dep.note ?? '', rows: dep.rows ?? [], busy: !!ui.busy } : null,
+    pick: ui.pick && dep?.available ? { key: ui.pick.key, n: ui.pick.n, name: ITEMS[ui.pick.key]?.name ?? ui.pick.key, friends: dep.friends ?? [] } : null,
+    busy: !!ui.busy,
+  };
+}
+
+// Bouton « Donner à un ami » : ce que la pile touchée peut donner (20 au plus) ; désactivé sans ami.
+function giveButton(s, dep, sel, n, busy) {
+  const count = Math.max(1, Math.min(n, giveMax(s, sel.key)));
+  const friends = dep.friends?.length ?? 0;
+  return {
+    n: count, label: `${DEPOT_TEXTS.give}${count > 1 ? ` ×${count}` : ''}`,
+    enabled: friends > 0 && giveMax(s, sel.key) > 0 && !busy, why: friends > 0 ? '' : DEPOT_TEXTS.noFriend,
   };
 }
 
@@ -291,15 +308,19 @@ function detailHtml(d, mode = 'find') {
   const equipBtn = d.equip
     ? `<button type="button" class="tv-btn tv-btn-gear" data-tv="equip"${d.equip.enabled ? '' : ` disabled title="${esc(d.equip.why)}"`}>${icon('manteau', { size: 18 })}<span>${esc(d.equip.label)}</span></button>`
     : '';
-  const why = !d.move.enabled ? d.move.why : d.equip && !d.equip.enabled && d.equip.why !== WHY.none ? d.equip.why : '';
+  const giveBtn = d.give
+    ? `<button type="button" class="tv-btn tv-btn-give" data-tv="give"${d.give.enabled ? '' : ` disabled title="${esc(d.give.why)}"`}>${icon('amis', { size: 18 })}<span>${esc(d.give.label)}</span></button>`
+    : '';
+  const why = !d.move.enabled ? d.move.why : d.give && !d.give.enabled && d.give.why ? d.give.why : d.equip && !d.equip.enabled && d.equip.why !== WHY.none ? d.equip.why : '';
   return `<div class="tv-d-head">${itemSlot(d.key, { size: 40, lazy: false })}<div class="tv-d-text"><p class="tv-d-name">${esc(d.name)}${d.have > 1 ? `<span class="tv-d-have"> · ${esc(d.have)}</span>` : ''}</p>`
     + `${d.info ? `<p class="tv-d-info">${esc(d.info)}</p>` : ''}${d.compare ? `<p class="tv-d-info">${esc(d.compare)}</p>` : ''}</div></div>`
-    + `<div class="tv-d-act">${stepper}${move}${equipBtn}</div>`
+    + `<div class="tv-d-act">${stepper}${move}${giveBtn}${equipBtn}</div>`
     + `${d.equip?.note ? `<p class="tv-why tv-warn">${esc(d.equip.note)}</p>` : ''}${why ? `<p class="tv-why">${esc(why)}</p>` : ''}`;
 }
 
 // Pied de la fenêtre : dernier message, détail de la pile touchée et boutons. Seul morceau refait quand la sélection change.
 export function footHtml(view) {
+  if (view.pick) return pickHtml(view);
   const bag = view.mode === 'bag';
   const primary = bag
     ? '<button type="button" class="tv-btn tv-primary" data-tv="close">Fermer</button>'
@@ -310,6 +331,29 @@ export function footHtml(view) {
         + '<button type="button" class="tv-btn" data-tv="close">Laisser le reste</button>';
   return `<p class="tv-msg${view.tone ? ` tv-${esc(view.tone)}` : ''}" role="status" aria-live="polite">${esc(view.msg)}</p>`
     + `<div class="tv-detail">${detailHtml(view.detail, view.mode)}</div><div class="tv-btns">${primary}</div>`;
+}
+
+// Pied « À qui ? » : les amis, un bouton chacun (30 au plus, la liste défile), et « Annuler ».
+function pickHtml(view) {
+  const p = view.pick;
+  const list = p.friends.map((f) => `<li><button type="button" class="tv-btn tv-friend" data-tv="give-to" data-fid="${esc(f.fid)}"${view.busy ? ' disabled' : ''}>${esc(f.name)}</button></li>`).join('');
+  return `<p class="tv-msg${view.tone ? ` tv-${esc(view.tone)}` : ''}" role="status" aria-live="polite">${esc(view.msg)}</p>`
+    + `<div class="tv-detail tv-pick"><p class="tv-d-name">${esc(DEPOT_TEXTS.give)} : ${esc(itemLabel(p.key, p.n))}</p><p class="tv-d-info">${esc(DEPOT_TEXTS.whom)}</p>`
+    + `<ul class="tv-friends" aria-label="Amis">${list}</ul></div>`
+    + `<div class="tv-btns"><button type="button" class="tv-btn tv-primary" data-tv="pick-cancel"${view.busy ? ' disabled' : ''}>${esc(DEPOT_TEXTS.cancel)}</button></div>`;
+}
+
+// Section « Dépôts d'amis » du sac : une ligne par dépôt reçu, donné, en route ou à remettre, avec son bouton.
+function depotHtml(dep) {
+  if (!dep || (!dep.rows.length && !dep.note)) return '';
+  const rows = dep.rows.map((r) => {
+    const btn = r.action
+      ? `<button type="button" class="tv-btn tv-dep-b" data-tv="dep" data-kind="${esc(r.kind)}" data-key="${esc(r.key)}"${r.enabled && !dep.busy ? '' : ` disabled${r.why ? ` title="${esc(r.why)}"` : ''}`}>${esc(r.action)}</button>`
+      : '';
+    return `<li class="tv-dep-row tv-dep-${esc(r.kind)}"><span class="tv-dep-t">${esc(r.label)}</span>${btn}${r.why && r.action ? `<span class="tv-why tv-dep-why">${esc(r.why)}</span>` : ''}</li>`;
+  }).join('');
+  return `<section class="tv-col tv-depot" aria-label="${esc(DEPOT_TEXTS.title)}"><h3 class="tv-h">${esc(DEPOT_TEXTS.title)}<span class="tv-h-note">${esc(dep.note)}</span></h3>`
+    + `${rows ? `<ul class="tv-dep">${rows}</ul>` : ''}</section>`;
 }
 
 // HTML de la fenêtre (contenu de #finds). Pur : `view` vient de findView ; `enter` : la feuille arrive (animation d'entrée, une fois).
@@ -330,7 +374,7 @@ export function findHtml(view, { enter = false } = {}) {
     + `${view.sub ? `<p class="tv-sub">${esc(view.sub)}</p>` : ''}</div>`
     + `${bagMode ? `<button type="button" class="tv-dress" data-tv="dress" aria-label="Habillement : ce que je porte (H)">${icon('manteau', { size: 18 })}<span>Habillement</span></button>` : ''}`
     + `<button type="button" class="tv-x" data-tv="close" aria-label="${bagMode ? 'Fermer le sac' : 'Fermer : ce qui reste est laissé sur place'}">${icon('fermer', { size: 20 })}</button></header>`
-    + `${notes}<div class="tv-body">${groundCol}`
+    + `${notes}<div class="tv-body">${bagMode ? depotHtml(view.depot) : ''}${groundCol}`
     + `<section class="tv-col" aria-label="Mon sac"><h3 class="tv-h">Mon sac<span class="tv-h-note tv-num${view.free === 0 ? ' tv-full' : ''}">${esc(view.used)}/${esc(view.cap)}</span></h3>`
     + `<div class="tv-gauge${view.free === 0 ? ' tv-full' : ''}" role="meter" aria-label="Places du sac" aria-valuemin="0" aria-valuemax="${esc(view.cap)}" aria-valuenow="${esc(view.used)}"><i style="width:${pct}%"></i></div>`
     + `<ul class="tv-worn" aria-label="Porté">${worn}</ul>${grid(view.bag, 'Sac vide')}</section></div>`
@@ -439,6 +483,16 @@ export const FINDS_CSS = `
 .tv-btn.tv-primary { flex: 2 1 160px; min-height: 48px; border: 0; background: ${T.accent}; color: ${T.onAccent}; font-weight: var(--fw-bold, 700); font-size: var(--fs-md, 15px); }
 .tv-btns .tv-btn:not(.tv-primary) { flex: 1 1 120px; }
 .tv-btn.tv-primary:active:not(:disabled) { background: ${T.accentPress}; }
+.tv-dep { display: grid; gap: 6px; list-style: none; }
+.tv-dep-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--sp-3, 12px); padding: 8px 10px; background: ${T.field}; border: 1px solid ${T.line}; border-left: 3px solid ${T.accent}; border-radius: ${T.rSm}; }
+.tv-dep-out, .tv-dep-sending { border-left-color: ${T.lineStrong}; }
+.tv-dep-back, .tv-dep-held { border-left-color: ${T.warn}; }
+.tv-dep-t { flex: 1 1 160px; min-width: 0; color: ${T.text}; font-size: var(--fs-sm, 13px); overflow-wrap: anywhere; }
+.tv-dep-b { flex: 0 0 auto; min-height: ${T.touch}; padding: 0 var(--sp-3, 12px); }
+.tv-dep-why { flex: 1 1 100%; }
+.tv-pick .tv-d-name { color: ${T.text}; }
+.tv-friends { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; max-height: 168px; overflow-y: auto; overscroll-behavior: contain; list-style: none; }
+.tv-friend { width: 100%; justify-content: flex-start; text-align: left; text-transform: none; letter-spacing: 0; overflow-wrap: anywhere; }
 .tv-host :is(button):focus-visible { outline: 2px solid ${T.accent}; outline-offset: 2px; }
 @media (hover: hover) and (pointer: fine) {
   .tv-slot:hover { border-color: ${T.lineStrong}; }
@@ -479,7 +533,7 @@ export function createFinds(root, { onChange = () => {}, onDress = () => {}, now
   root.hidden = true;
   let st = null;
 
-  const view = () => (st ? findView(st.s, st.find, st.sel, st.msg) : null);
+  const view = () => (st ? findView(st.s, st.find, st.sel, st.msg, { pick: st.pick, busy: st.busy }) : null);
 
   // Le focus suit la pile ou le bouton touché ; s'il a disparu (pile vidée), il revient à la fenêtre.
   const activeData = () => (doc.activeElement && root.contains(doc.activeElement) && doc.activeElement.dataset.tv ? { ...doc.activeElement.dataset } : null);
@@ -520,11 +574,16 @@ export function createFinds(root, { onChange = () => {}, onDress = () => {}, now
     st.msg = { text, tone };
   }
 
-  function open(s, { title, found, kicker = '', sub = '', notes = [], mode = 'find', onClose = null } = {}) {
+  // `depot` (mode 'bag' seulement) : { snapshot, give({ fid, key, n }), act({ kind, key }) } de depot-jeu.js. `snapshot` : { available, friends: [{ fid, name }],
+  // rows (depot.js depotRows), note } ; les deux appels rendent { text, tone, snapshot? } (le sac a changé : la fenêtre se refait).
+  function open(s, { title, found, kicker = '', sub = '', notes = [], mode = 'find', onClose = null, depot = null } = {}) {
     if (st) close();
     const ground = cleanFound(found);
     if (mode !== 'bag' && !countsTotal(ground)) return false;
-    st = { s: s.survivor ?? s, find: { title, kicker, sub, notes, ground, mode }, sel: null, msg: null, openedAt: now(), onClose };
+    st = {
+      s: s.survivor ?? s, find: { title, kicker, sub, notes, ground, mode, depot: mode === 'bag' ? depot?.snapshot ?? null : null }, sel: null, msg: null,
+      openedAt: now(), onClose, depot: mode === 'bag' ? depot : null, pick: null, busy: false,
+    };
     root.hidden = false;
     render({ enter: true });
     root.querySelector('.tv-sheet')?.focus({ preventScroll: true });
@@ -548,16 +607,61 @@ export function createFinds(root, { onChange = () => {}, onDress = () => {}, now
     onChange();
   }
 
+  // Un appel du dépôt (don, retrait, reprise) : la fenêtre attend sans rien laisser toucher, puis se refait d'après la réponse. Si elle a été
+  // fermée entre-temps, le crochet a déjà tout écrit dans la partie : rien d'autre à faire ici.
+  async function viaDepot(call) {
+    const cur = st;
+    cur.busy = true;
+    renderSel();
+    let r;
+    try { r = await call(cur.depot); } catch { r = { text: 'Le dépôt a échoué : réessaie dans un instant.', tone: 'warn' }; }
+    if (st !== cur) return;
+    cur.busy = false;
+    cur.pick = null;
+    if (r?.snapshot) cur.find.depot = r.snapshot;
+    if (r?.text) say(r.text, r.tone ?? '');
+    changed();
+    render();
+  }
+
   const actions = {
     pick(d) {
       st.sel = selectSlot(st.s, st.find, st.sel, d.side, d.key);
       st.msg = null;
+      st.pick = null;
       renderSel();
       return false;
     },
     step(d) {
       st.sel = stepSel(st.s, st.find, st.sel, Number(d.d) || 0);
       renderSel();
+      return false;
+    },
+    // « Donner à un ami » : le pied demande à qui ; rien ne part avant le choix d'un ami.
+    give() {
+      const sel = st.sel;
+      const give = view()?.detail?.give;
+      if (!sel || sel.side !== 'bag' || !give?.enabled) return false;
+      st.pick = { key: sel.key, n: give.n };
+      st.msg = null;
+      renderSel();
+      return false;
+    },
+    'pick-cancel'() {
+      st.pick = null;
+      renderSel();
+      return false;
+    },
+    'give-to'(d) {
+      const p = st.pick;
+      if (!p || !st.depot || !(view()?.pick?.friends ?? []).some((f) => f.fid === d.fid)) return false;
+      viaDepot((depot) => depot.give({ fid: d.fid, key: p.key, n: p.n }));
+      return false;
+    },
+    // Une ligne de la section « Dépôts d'amis » : retirer, reprendre ou récupérer.
+    dep(d) {
+      if (!st.depot) return false;
+      viaDepot((depot) => depot.act({ kind: d.kind, key: d.key }));
       return false;
     },
     move() {
@@ -599,11 +703,19 @@ export function createFinds(root, { onChange = () => {}, onDress = () => {}, now
     const el = e.target.closest?.('[data-tv]');
     if (!el || !st || !root.contains(el) || el.disabled) return;
     if (now() - st.openedAt < OPEN_GUARD_MS) return;
+    if (st.busy && el.dataset.tv !== 'close') return;
     const fn = actions[el.dataset.tv];
     if (!fn) return;
     // Une action rend false quand elle a déjà mis la page à jour (sélection) ; les autres refont tout.
     if (fn(el.dataset) !== false && st) render();
   });
 
-  return { open, close, isOpen: () => !!st, mode: () => st?.find.mode ?? null, view, refresh: () => { if (st) render(); }, el: root };
+  // Le dépôt s'est chargé (ou changé) pendant que le sac est ouvert : la section se refait, sans toucher à la sélection.
+  function setDepot(snapshot) {
+    if (!st || st.find.mode !== 'bag' || !st.depot) return;
+    st.find.depot = snapshot;
+    if (!st.busy) render();
+  }
+
+  return { open, close, isOpen: () => !!st, mode: () => st?.find.mode ?? null, view, refresh: () => { if (st) render(); }, setDepot, el: root };
 }
