@@ -37,7 +37,7 @@ export const PAL = {
   water: '#4b9ed6', shallow: '#7cc4e4', sidewalk: '#b3ad9f', asphalt: '#4d525b', major: '#464b55', line: '#e8e1c8', path: '#cfc1a1',
   steps: '#b5a88c', rail: '#6f685f', tie: '#9a9083', bridge: '#6c6457',
   sidewalkJoint: '#a59f92', curb: '#d6d1c4', gutter: '#3d4148', pave: '#c2b7a3', paveJoint: '#a99e8b', paveEdge: '#9d927f',
-  gravel: '#cfc1a1', villageRoad: '#5d5f63', verge: '#b0aa8a', cycle: '#5b6461', platform: '#a19d94', pier: '#8c8072',
+  gravel: '#cfc1a1', rut: '#a8946f', villageRoad: '#5d5f63', verge: '#b0aa8a', cycle: '#5b6461', platform: '#a19d94', pier: '#8c8072',
   quay: '#9c968a', pitchLine: '#e9eee6', trackPaved: '#8f8b80',
 };
 // Les places passent sous les pelouses ; pontons et tabliers de pont sont peints après l'eau.
@@ -747,6 +747,11 @@ export function groundPlan(f, x0, z0, size, mois = MOIS_TROPIQUE) {
   const paintWalk = (v, extra = null) => {
     const w = v.r.width;
     ops.push(strokeOp(v.walk.kind, v.walk.color, w, lines(v), extra));
+    // Chemin de terre : une bande d'herbe au milieu, deux ornières de roues (peint en 2D, sans coût à l'image).
+    if (VIVANT_ON && v.walk.kind === 'gravel' && v.r.cls === 'track' && w >= 2.8) {
+      ops.push(strokeOp('trackGrass', PAL.grass, 0.6, lines(v), { cap: 'butt' }));
+      ops.push(strokeOp('trackRut', PAL.rut, 0.42, v.runs.flatMap((run) => [offsetLine(run.pts, 0.8), offsetLine(run.pts, -0.8)]), { cap: 'butt' }));
+    }
     if (v.walk.kind === 'steps') ops.push(strokeOp('stepLines', PAL.sidewalkJoint, w, lines(v), { cap: 'butt', dash: [0.06, 0.29] }));
     if (v.walk.kind === 'cycleway' && v.walk.color === PAL.cycle) {
       for (const run of v.runs) {
@@ -1557,7 +1562,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     else showTrees(v);
     if (floreView) {
       // Buissons, rochers et touffes : pas d'identifiant mémorisé, pas de collision ; posés sur le relief comme les arbres.
-      const flore = floreForChunk(near, patch, v.cx, v.cz, size, proj, { lowPower });
+      const flore = floreForChunk(near, patch, v.cx, v.cz, size, proj, { lowPower, vivant: VIVANT_ON });
       if (relief) for (const kind in flore) for (const it of flore[kind]) seatProp(it, ground);
       floreView.setChunk(key, flore);
       v.flore = true;

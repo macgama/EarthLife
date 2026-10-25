@@ -194,6 +194,33 @@ export function haieGeometry(sobre = false) {
     : [blob(0.7, -0.75, 0.6, 0, { sx: 1.5, sy: 0.95, sz: 0.85, seed: 31, lo: 0.58 }), blob(0.68, 0.75, 0.64, 0.05, { sx: 1.5, sy: 1, sz: 0.85, seed: 32, lo: 0.58 })]);
 }
 
+// Clôture de pré : deux piquets et deux lisses, 2,9 m le long de X (version sobre : une seule lisse).
+export function clotureGeometry(sobre = false) {
+  const parts = [];
+  for (const side of [-1, 1]) {
+    const post = ready(new THREE.CylinderGeometry(0.065, 0.08, 1.05, 4, 1, true));
+    post.translate(side * 1.38, 0.52, 0);
+    parts.push(paint(post, (_x, y) => { const k = shade(0.62, 1.0, y / 1.05); return [k, k * 0.92, k * 0.82]; }));
+  }
+  for (const y of sobre ? [0.72] : [0.42, 0.82]) {
+    const rail = ready(new THREE.BoxGeometry(2.8, 0.09, 0.06));
+    rail.translate(0, y, 0);
+    parts.push(paint(rail, (_x, vy) => { const k = shade(0.85, 1.05, (vy - y + 0.045) / 0.09); return [k, k * 0.94, k * 0.86]; }));
+  }
+  return merged(parts);
+}
+
+// Muret de pierres sèches : 2,9 m le long de X, 0,7 m de haut, dessus irrégulier (version sobre : un bloc simple).
+export function muretGeometry(sobre = false) {
+  const g = ready(new THREE.BoxGeometry(2.9, 0.7, 0.46, sobre ? 1 : 3, 1, 1));
+  if (!sobre) wobble(g, 0.045, 61);
+  g.translate(0, 0.35, 0);
+  return merged([paint(g, (x, y, z) => {
+    const k = shade(0.72, 1.08, y / 0.75) * shade(0.9, 1.1, hash3(Math.round(x * 1.7), Math.round(y * 6), Math.round(z * 9)));
+    return [k, k, k * 0.97];
+  })]);
+}
+
 // Balle de paille ronde couchée le long de X : 1,2 m de long, 1,24 m de diamètre.
 export function balleGeometry(sobre = false) {
   const g = ready(new THREE.CylinderGeometry(0.62, 0.62, 1.2, sobre ? 6 : 8, 1));
@@ -314,6 +341,8 @@ export const PETITS = {
   touffe: { color: 0x8fc36a, build: touffeGeometry, cap: 4096, doubleSide: true },
   haie: { color: 0x4c8745, build: haieGeometry, cap: 2000, doubleSide: false },
   balle: { color: 0xd3b766, build: balleGeometry, cap: 256, doubleSide: false },
+  cloture: { color: 0xa88a62, build: clotureGeometry, cap: 1600, doubleSide: false },
+  muret: { color: 0x9b968d, build: muretGeometry, cap: 1600, doubleSide: false },
   // À cueillir et à puiser (campagne.js) : dessinés à part, pour que la couleur de base soit celle de la baie, du chapeau, de la pierre.
   baie: { color: 0xb3263f, build: baieGeometry, cap: 2048, doubleSide: false },
   champi: { color: 0xd8c4a0, build: champiGeometry, cap: 256, doubleSide: false },
