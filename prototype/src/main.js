@@ -54,6 +54,7 @@ import { createFinds, leftText as findsLeftText } from './trouvailles.js';
 import { createDressing } from './habillement.js';
 import { createPropsView } from './props-view.js';
 import { createFloreView } from './flore-view.js';
+import { tickVivant } from './vivant.js';
 import { createBaseView } from './base-view.js';
 import { createHabitantsView } from './habitants-view.js';
 import { habitantCount, HABITANT_TEXT } from './habitants.js';
@@ -1472,6 +1473,7 @@ renderer.setAnimationLoop(() => {
   const at = s.viewAt ?? s.player;
   focus.set(at?.x ?? 0, s.groundY ?? 0, at?.z ?? 0);
   atmosphere.update(dt, focus, s.player?.yaw ?? 0);
+  tickVivant(dt, atmosphere.state, scene.background);
   renderer.render(scene, camera);
   atmosphere.endFrame();
   if (s.player && !hudFrozen) hud.render(s, dt, hudInfo(s));

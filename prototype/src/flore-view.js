@@ -6,10 +6,14 @@
 import * as THREE from 'three';
 import { PETITS } from './flore-geo.js';
 import { tracker, touch, flush } from './props-view.js';
+import { agiter } from './vivant.js';
 
 const KINDS = Object.keys(PETITS);
 // Trop petits pour porter une ombre.
 const SANS_OMBRE = new Set(['touffe', 'baie', 'champi', 'legume']);
+// Ce qui plie sous le vent (vivant.js, VENT_TYPES) : le type de vent de chaque décor ; les baies suivent leur buisson, rochers,
+// paille, champignons et puits ne bougent pas.
+const VENT_DE = { buisson: 'buisson', baie: 'buisson', haie: 'haie', touffe: 'herbe', legume: 'legume' };
 // Teinte neutre (pierre, paille, chapeaux, baies) : seule la clarté change d'un pied à l'autre.
 const NEUTRES = new Set(['rocher', 'balle', 'puits', 'champi', 'baie']);
 
@@ -21,7 +25,7 @@ export function createFloreView(scene, { lowPower = false } = {}) {
   const pools = new Map(KINDS.map((kind) => {
     const spec = PETITS[kind];
     const geo = spec.build(lowPower);
-    const mat = new THREE.MeshLambertMaterial({ color: spec.color, flatShading: true, vertexColors: true, side: spec.doubleSide ? THREE.DoubleSide : THREE.FrontSide });
+    const mat = agiter(new THREE.MeshLambertMaterial({ color: spec.color, flatShading: true, vertexColors: true, side: spec.doubleSide ? THREE.DoubleSide : THREE.FrontSide }), VENT_DE[kind]);
     const mesh = new THREE.InstancedMesh(geo, mat, spec.cap);
     mesh.name = `flore-${kind}`;
     mesh.count = 0;
