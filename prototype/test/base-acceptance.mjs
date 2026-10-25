@@ -597,7 +597,8 @@ async function packAndStats(page, tag) {
   await page.click('#rp-tab-craft');
   await page.click(panelButton('craft', 'sac_randonnee'));
   const act = await ev(page, () => { const a = window.__earthlife.session.action; return a ? { id: a.id, time: a.time } : null; });
-  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 120000);
+  // 300 s comme l'attente du sommeil (2b) : en rendu logiciel le jeu avance au rythme des images (3 par seconde en CI), 120 s étaient à la limite.
+  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 300000);
   const bagText = await until(page, () => {
     const t = document.getElementById('bag-count').textContent.replace(/\s+/g, ' ').trim();
     return /\/45$/.test(t) ? t : null;

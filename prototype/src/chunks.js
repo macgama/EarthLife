@@ -1235,15 +1235,17 @@ float markCover(float x, float h, float w) {
     // Taille du pixel le long des coordonnées de la bande (hors des branches : dérivées toujours définies).
     vec2 mw = vec2(length(vec2(dFdx(vMark.x), dFdy(vMark.x))), length(vec2(dFdx(vMark.y), dFdy(vMark.y))));
     float shade = 1.0;
+    // Un seul appel de groundDetail pour tout le sol, après les branches : un processeur graphique sans vrai saut (rendu
+    // logiciel) fait toutes les branches, et un appel de plus dans chacune coûtait 17 % d'images par seconde en CI.
+    bool detailOn = false;
+    vec3 detailKey = vec3(0.0);
     if (vMark.z > 0.0) {
       float cover = markCover(vMark.x, vMark.z, mw.x) * markCover(vMark.y - 0.5 * vMark.w, 0.5 * vMark.w, mw.y);
       float open = vMarkInfo.y > 0.5 ? 1.0 : smoothstep(0.93, 0.97, sampledDiffuseColor.a);
       // Couleur propre à la bande (lignes, bordures, caniveaux, bords de chaussée) ; celle de l'enrobé garde son grain.
-      vec3 markCol = diffuse * vMarkColor;
-#ifdef GROUND_DETAIL
-      markCol = groundDetail(markCol, vMarkColor, vGroundXZ, nA, nB, gw);
-#endif
-      diffuseColor = vec4(markCol, cover * vMarkInfo.x * open);
+      diffuseColor = vec4(diffuse * vMarkColor, cover * vMarkInfo.x * open);
+      detailOn = true;
+      detailKey = vMarkColor;
     } else if (vMarkInfo.y > 3.5 && vMarkInfo.y < 4.5) {
       // Dalle du contour d'un pont (markings.js, deckBuffers) : couleur unie du tablier (la texture y a l'eau dessous).
       diffuseColor = vec4(diffuse * uBridgeColor, 1.0);
@@ -1267,7 +1269,10 @@ float markCover(float x, float h, float w) {
       vec3 dw = abs(sampledDiffuseColor.rgb - uWalkKey);
       float onPave = 1.0 - smoothstep(0.022, 0.035, max(dp.x, max(dp.y, dp.z)));
       float onWalk = 1.0 - smoothstep(0.022, 0.035, max(dw.x, max(dw.y, dw.z)));
+      detailOn = true;
+      detailKey = sampledDiffuseColor.rgb;
       if (onPave > 0.0 || onWalk > 0.0) {
+        detailOn = false;
         // Pavés de 0,5 m en quinconce, joints de 6 cm (x 0,88) ; sinon dalles de 1 m, joints de 4 cm (x 0,93). Chaque pavé
         // ou dalle a une clarté un peu à lui. Un seul calcul des joints pour les deux : un processeur graphique sans
         // vrai saut (rendu logiciel) fait toutes les branches.
@@ -1278,10 +1283,10 @@ float markCover(float x, float h, float w) {
         shade = 1.0 - (pave ? 0.12 : 0.07) * on * groundJoints(q, pave ? fw * 2.0 : fw, pave ? 0.12 : 0.04);
         shade *= 1.0 + (pave ? 0.08 : 0.06) * on * (groundHash(floor(q) + (pave ? 7.0 : 3.0)) - 0.5);
       }
-#ifdef GROUND_DETAIL
-      else diffuseColor.rgb = groundDetail(diffuseColor.rgb, sampledDiffuseColor.rgb, vGroundXZ, nA, nB, gw);
-#endif
     }
+#ifdef GROUND_DETAIL
+    if (detailOn) diffuseColor.rgb = groundDetail(diffuseColor.rgb, detailKey, vGroundXZ, nA, nB, gw);
+#endif
     // Grain de 25 cm ancré dans le monde (peinture usée comme l'enrobé).
     float grain = groundHash(floor(vGroundXZ * 4.0)) - 0.5;
     shade *= 1.0 + 0.06 * grain * (1.0 - smoothstep(0.35, 0.7, max(fw.x, fw.y) * 4.0));
