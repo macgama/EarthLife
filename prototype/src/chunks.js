@@ -13,6 +13,8 @@ import { makeBruitTexture } from './bruit.js';
 import { buildingsGeometry, buildingMaterial, treesInstanced, followTreeWeather } from './scene.js';
 import { groundGeometry } from './markings.js';
 import { SETTING_INDEX, SIDEWALK, carriageway, markBoxes } from './roadway.js';
+import { EAU_DECL, EAU_FN, EAU_UNIFORMS, RIVE } from './eau.js';
+import { VIVANT_ON } from './vivant.js';
 
 // Rayon construit et visible autour du joueur (Gaël : environ 100 m) ; la caméra reculée en demande parfois plus, sans
 // dépasser la grille de collision (src/view.js, update({ radius })).
@@ -31,7 +33,7 @@ export const PAL = {
   ground: '#c8c2b3', grass: '#a2cd7f', wood: '#86b56c', farmland: '#d9d6a6', sand: '#e7dab0', wetland: '#a9c8a2',
   rock: '#c6c0b6', ice: '#eef2f6', pitch: '#8dc672', cemetery: '#aac69c', playground: '#cbd9a3', railway: '#c8c1b6',
   stadium: '#b9d3a0', track: '#c98f6d', quarry: '#c9c0b2', garages: '#cbc6bd',
-  water: '#4b9ed6', sidewalk: '#b3ad9f', asphalt: '#4d525b', major: '#464b55', line: '#e8e1c8', path: '#cfc1a1',
+  water: '#4b9ed6', shallow: '#7cc4e4', sidewalk: '#b3ad9f', asphalt: '#4d525b', major: '#464b55', line: '#e8e1c8', path: '#cfc1a1',
   steps: '#b5a88c', rail: '#6f685f', tie: '#9a9083', bridge: '#6c6457',
   sidewalkJoint: '#a59f92', curb: '#d6d1c4', gutter: '#3d4148', pave: '#c2b7a3', paveJoint: '#a99e8b', paveEdge: '#9d927f',
   gravel: '#cfc1a1', villageRoad: '#5d5f63', verge: '#b0aa8a', cycle: '#5b6461', platform: '#a19d94', pier: '#8c8072',
@@ -494,7 +496,36 @@ function zebra(x, z, dx, dz, width, tag) {
 
 const fillOp = (tag, color, rings) => ({ t: 'fill', tag, color, rings });
 const strokeOp = (tag, color, width, lines, extra = null) => ({ t: 'stroke', tag, color, width, lines, cap: 'round', dash: null, offset: 0, alpha: 1, closed: false, ...extra });
-const bandOp = (tag, color, width, rings) => ({ t: 'band', tag, color, width, rings });
+// `edges` : seules ces lignes sont tracées (bande coupée par le polygone) au lieu de tout le contour.
+const bandOp = (tag, color, width, rings, edges = null) => ({ t: 'band', tag, color, width, rings, ...(edges ? { edges } : null) });
+
+// Contour d'un plan d'eau sans les coupes de tuile : une arête longue qui suit exactement un axe du monde est presque toujours la
+// coupe de la tuile (l'eau continue de l'autre côté), pas une vraie rive. Rend des polylignes ; un contour sans coupe se ferme.
+const COUPE_LONGUE = 20, COUPE_AXE = 0.05;
+export function riveLignes(rings) {
+  const out = [];
+  for (const ring of rings) {
+    const n = ring.length;
+    if (n < 3) continue;
+    const cut = (i) => {
+      const p = ring[i], q = ring[(i + 1) % n], dx = q.x - p.x, dz = q.z - p.z;
+      return Math.hypot(dx, dz) >= COUPE_LONGUE && (Math.abs(dx) < COUPE_AXE || Math.abs(dz) < COUPE_AXE);
+    };
+    let first = -1;
+    for (let i = 0; i < n; i++) if (cut(i)) { first = i; break; }
+    if (first < 0) { out.push([...ring, ring[0]]); continue; }
+    // Parcours depuis la première coupe : chaque série d'arêtes entre deux coupes devient une polyligne.
+    let run = null;
+    for (let k = 1; k <= n; k++) {
+      const e = (first + k) % n;
+      if (cut(e)) { if (run && run.length > 1) out.push(run); run = null; continue; }
+      if (!run) run = [ring[e]];
+      run.push(ring[(e + 1) % n]);
+    }
+    if (run && run.length > 1) out.push(run);
+  }
+  return out;
+}
 
 // Écarte de la ligne les tronçons coupés (carrefours, passages) ; rend les morceaux gardés [s0, s1]. Un morceau pris
 // entre deux coupures et plus court que 8 m (bout de médiane entre un carrefour et son passage) n'est pas gardé.
@@ -669,9 +700,17 @@ export function groundPlan(f, x0, z0, size) {
     if (QUAY_WATER.has(w.cls) && city) ops.push(strokeOp('quay', PAL.quay, 2.4, w.rings, { closed: true }));
     else if (w.cls === 'swimming_pool') ops.push(strokeOp('quay', PAL.curb, 1, w.rings, { closed: true }));
   }
+  // Rive peu profonde (eau vivante, eau.js) : bande plus claire le long du bord des plans d'eau (sans les coupes de tuile), de chaque
+  // côté des ruisseaux et rivières qui ne passent pas dans un plan d'eau (le cours d'une rivière dessinée en plan d'eau est au milieu).
+  const inLake = (l) => water.some((w) => boxesMeet(w.bounds ?? rect, l.bounds));
   const paintWater = (tag, blockingOnly = false) => {
-    for (const w of water) ops.push(fillOp(tag, PAL.water, w.rings));
-    for (const w of waterLines) if (!blockingOnly || w.blocking) ops.push(strokeOp(tag, PAL.water, w.width, [w.points]));
+    const lines = waterLines.filter((w) => !blockingOnly || w.blocking);
+    if (VIVANT_ON) for (const w of lines) if (!inLake(w)) ops.push(strokeOp('shore', PAL.shallow, w.width + 2 * RIVE.cours, [w.points]));
+    for (const w of water) {
+      ops.push(fillOp(tag, PAL.water, w.rings));
+      if (VIVANT_ON && w.cls !== 'swimming_pool') ops.push(bandOp('shore', PAL.shallow, RIVE.plan, w.rings, riveLignes(w.rings)));
+    }
+    for (const w of lines) ops.push(strokeOp(tag, PAL.water, w.width, [w.points]));
   };
   paintWater('water');
   paintAreas(true);
@@ -992,6 +1031,7 @@ export function drawGround(ctx, f, x0, z0, size, px, plan = groundPlan(f, x0, z0
       ctx.beginPath();
       tracePolygon(ctx, op.rings);
       ctx.clip('evenodd');
+      if (op.edges) { ctx.beginPath(); traceLines(ctx, op.edges, false); ctx.lineCap = 'round'; }
       ctx.strokeStyle = op.color;
       ctx.lineWidth = op.width * 2;
       ctx.setLineDash([]);
@@ -1049,6 +1089,7 @@ const groundKeys = {
   uLineColor: { value: new THREE.Color(PAL.line) },
   uWaterKey: { value: new THREE.Color(PAL.water) },
   uWaterShade: { value: new THREE.Color(PAL.water).multiplyScalar(0.62) },
+  uShoreKey: { value: new THREE.Color(PAL.shallow) },
   uBridgeColor: { value: new THREE.Color(PAL.bridge) },
   // Détail des sols naturels et de l'enrobé (herbe, bois, champs, sable, terre, marais, route) : une clé par famille de sol.
   // Les familles proches (terre, roche, carrière, voies ferrées ; enrobé, grande voirie) partagent une clé.
@@ -1068,7 +1109,7 @@ export const GROUND_DETAILS = ['fin', 'simple', 'plat'];
 let groundDetailMode = 'fin';
 
 function groundShader(shader) {
-  Object.assign(shader.uniforms, groundKeys);
+  Object.assign(shader.uniforms, groundKeys, EAU_UNIFORMS);
   const defines = groundDetailMode === 'plat' ? '' : groundDetailMode === 'simple' ? '#define GROUND_DETAIL\n' : '#define GROUND_DETAIL\n#define GROUND_FINE\n';
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nvarying vec2 vGroundXZ;\nattribute vec4 aMark;\nattribute vec2 aMarkInfo;\nvarying vec4 vMark;\nvarying vec2 vMarkInfo;')
@@ -1089,6 +1130,7 @@ uniform vec3 uDustKey;
 uniform vec3 uWetKey;
 uniform vec3 uTarKey;
 uniform sampler2D uNoise;
+${EAU_DECL}
 varying vec2 vGroundXZ;
 varying vec4 vMark;
 varying vec2 vMarkInfo;
@@ -1116,6 +1158,7 @@ float gKey(vec3 c, vec3 k, float lo, float hi) {
   vec3 d = abs(c - k);
   return 1.0 - smoothstep(lo, hi, max(d.x, max(d.y, d.z)));
 }
+${EAU_FN}
 // Détail des sols naturels et de l'enrobé, en coordonnées du monde. Les bruits viennent de deux lectures de la texture de
 // bruit (bruit.js) faites une fois par pixel : nA à l'échelle du terrain (cases de 16, 8, 4 et 2 m dans les canaux r, g, b, a),
 // nB à celle du brin d'herbe (1 m, 50, 25 et 12 cm). Les mipmaps effacent seuls les motifs plus fins que le pixel ; le grain
@@ -1180,6 +1223,7 @@ vec3 groundDetail(vec3 col, vec3 c, vec2 xz, vec4 nA, vec4 nB, float gw) {
     float crack = (1.0 - smoothstep(0.0, max(gw * 1.6, 0.002), abs(nA.g - 0.5))) * worn;
     col = mix(col, col * (lum + (nB.b - 0.5) * 0.14 * G_FINE - 0.22 * crack), w);
   }
+  col = eauDetail(col, c, xz);
   return col;
 }
 #endif
@@ -1192,6 +1236,7 @@ float markCover(float x, float h, float w) {
 #ifdef USE_MAP
   {
     vec2 fw = fwidth(vGroundXZ);
+    eauFw = fw;
 #ifdef GROUND_DETAIL
     // Bruits du sol (deux lectures par pixel, hors des branches : les dérivées des mipmaps restent définies).
     vec4 nA = texture2D(uNoise, vGroundXZ * (1.0 / 64.0));
@@ -1217,7 +1262,8 @@ float markCover(float x, float h, float w) {
       // Ombre d'un tablier de pont sur l'eau (markings.js, deckBuffers) : l'eau et le tablier peint dessous (alpha 0,9)
       // deviennent l'eau assombrie ; ailleurs (la terre), le sol dessous se voit tel quel.
       vec3 dq = abs(sampledDiffuseColor.rgb - uWaterKey);
-      float under = max(1.0 - smoothstep(0.022, 0.035, max(dq.x, max(dq.y, dq.z))), 1.0 - smoothstep(0.93, 0.97, sampledDiffuseColor.a));
+      vec3 dr = abs(sampledDiffuseColor.rgb - uShoreKey);
+      float under = max(max(1.0 - smoothstep(0.022, 0.035, max(dq.x, max(dq.y, dq.z))), 1.0 - smoothstep(0.022, 0.035, max(dr.x, max(dr.y, dr.z)))), 1.0 - smoothstep(0.93, 0.97, sampledDiffuseColor.a));
       if (under < 0.01) discard;
       diffuseColor = vec4(mix(diffuseColor.rgb, diffuse * uWaterShade, under), 1.0);
     } else {
