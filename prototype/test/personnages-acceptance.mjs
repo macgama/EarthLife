@@ -4,7 +4,7 @@
 // Variables : ROUTES, PLAYWRIGHT_MODULE, PORT, ONLY (desktop ou mobile).
 // Contrôles : aucune erreur de page ni de shader ; soixante zombies ne coûtent pas d'appel de dessin de plus que zéro (les variantes sont
 // dans la même géométrie) et se distinguent (cheveux, manches, blessures tirés par instance) ; un coup de feu fait naître des particules
-// dans un seul maillage instancié (un appel de dessin) qui s'éteint ensuite ; une foule d'autres survivants ne montre pas toutes les
+// dans un seul maillage instancié qui s'éteint ensuite ; une foule d'autres survivants ne montre pas toutes les
 // mêmes têtes ; captures des zombies, du tir, des survivants et de la vue basse. Sans carte graphique
 // (swiftshader) le jeu va jusqu'à vingt fois moins vite que la montre : on attend l'état du jeu, pas la montre.
 import http from 'node:http';
@@ -128,14 +128,15 @@ for (const device of ['mobile', 'desktop']) {
   });
   check(during.visible && during.drawn <= during.capacity, `${device} : le maillage des effets est dessiné (${during.drawn} sur ${during.capacity})`);
   const shotFrame = await frames(page, 2);
-  check(shotFrame.calls - crowd.calls <= 3, `${device} : les effets ajoutent au plus 3 appels de dessin (${shotFrame.calls - crowd.calls}), traceur compris`);
+  check(shotFrame.calls - crowd.calls <= 6, `${device} : un coup de feu ajoute au plus 6 appels de dessin (${shotFrame.calls - crowd.calls}) : maillage des effets, traceur et arme en main, pas un maillage par particule`);
   await page.screenshot({ path: path.join(out, `${device}-tir.png`) });
   await page.waitForFunction(() => window.__earthlife.effectsView.fx.count === 0, null, { timeout: 90000, polling: 500 }).then(
     () => check(true, `${device} : les effets s'éteignent d'eux-mêmes`),
     () => check(false, `${device} : les effets s'éteignent d'eux-mêmes`),
   );
-  const idle = await page.evaluate(() => window.__earthlife.effectsView.mesh.visible);
-  check(!idle, `${device} : sans particule, le maillage des effets n'est pas dessiné`);
+  // Le maillage lit ses particules avant de les faire vieillir : il s'éteint à l'image qui suit la dernière.
+  const idle = await page.waitForFunction(() => !window.__earthlife.effectsView.mesh.visible, null, { timeout: 20000, polling: 'raf' }).then(() => true, () => false);
+  check(idle, `${device} : sans particule, le maillage des effets n'est pas dessiné`);
 
   // Foule d'autres survivants : les têtes diffèrent d'une personne à l'autre.
   const heads = await page.evaluate(async () => {

@@ -259,7 +259,7 @@ Le script joue la caméra basse à Lyon, sur ordinateur puis sur téléphone : l
 node test/personnages-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobile) ; captures dans browser-shots/personnages
 ```
 
-Hors ligne, téléphone puis ordinateur : aucune erreur de page ni de shader ; soixante zombies n'ajoutent pas d'appel de dessin (au plus un) et se distinguent entre eux ; un coup de feu fait naître des particules dans un seul maillage (au plus deux ou trois appels, traceur compris) qui s'éteint ensuite ; une foule d'autres survivants ne montre pas toutes les mêmes têtes. Les tests purs sont dans `test/personnages.test.js` et `test/effets.test.js`.
+Hors ligne, téléphone puis ordinateur : aucune erreur de page ni de shader ; soixante zombies n'ajoutent pas d'appel de dessin (au plus un) et se distinguent entre eux ; un coup de feu fait naître des particules dans un seul maillage (au plus six appels de plus avec le traceur et l'arme en main) qui s'éteint ensuite ; une foule d'autres survivants ne montre pas toutes les mêmes têtes. Les tests purs sont dans `test/personnages.test.js` et `test/effets.test.js`.
 
 ### Acceptation de la fenêtre « Habillement »
 
