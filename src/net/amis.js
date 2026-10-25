@@ -18,6 +18,24 @@ export const FRIEND_RULES = {
   wherePollMs: 20000,
   shareStepE6: 500,
 };
+// Étape 3 : la boîte de dépôt. Je dépose des objets pour un ami, le serveur les tient, il les retire quand il veut (même hors ligne).
+// Seuls vivres et matériaux passent (cahier, décision de Gaël) : jamais une arme, une munition, un sac, un vêtement ni du carburant.
+export const GIFT_RULES = {
+  perDay: 20,                       // objets donnés par jour (UTC) à un même ami, retirés ou en attente
+  pending: 40,                      // objets en attente de retrait chez un même ami
+  pendingGifts: 10,                 // dépôts en attente chez un même ami (borne la place prise sur le serveur)
+  kinds: 6,                         // sortes d'objets au plus par dépôt
+  keepMs: 7 * DAY,                  // un dépôt retiré ou repris reste 7 jours : retirer deux fois rend la même chose, `again` (jamais deux fois en jeu)
+  listMax: 100,                     // dépôts rendus par sens dans `box`
+};
+// Objets de survie.js dont ITEM_KIND (art.js) est food, water, heal ou mat (un test le vérifie) ; `chaufferette` (warm) reste chez soi.
+export const GIFT_KEYS = [
+  'conserve', 'barre', 'baies', 'champignon', 'legume', 'poisson', 'champignon_cuit', 'legume_cuit', 'poisson_cuit',
+  'eau', 'soda', 'eau_riviere', 'eau_bouillie',
+  'bandage', 'medicaments',
+  'bois', 'clous', 'ferraille', 'tissu', 'ruban', 'planche', 'plaque', 'batterie',
+];
+const GIFT_SET = new Set(GIFT_KEYS);
 // 32 signes sans 0, 1, I, O (confondus à la lecture) : 8 signes font 40 bits.
 export const FRIEND_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export const FRIEND_CODE_LEN = 8;
@@ -25,7 +43,9 @@ export const FRIEND_CODE_RE = new RegExp(`^[${FRIEND_ALPHABET}]{${FRIEND_CODE_LE
 export const FID_RE = /^[0-9a-f]{32}$/;
 // Codes de refus des routes d'amis, en plus de ceux des comptes : 'ami-code' (code inconnu, périmé, déjà pris, de soi-même,
 // ou d'un joueur bloqué : une seule réponse pour tous, rien n'est dit de l'autre), 'ami-plein' (30 amis déjà).
-export const FRIEND_ERRORS = ['requete', 'session', 'taille', 'trop', 'occupe', 'base', 'arret', 'ami-code', 'ami-plein'];
+// Étape 3 : 'boite' (ce dépôt ou cet ami n'existe pas, n'est pas à toi ou n'est plus là : une seule réponse pour tous), 'boite-pleine'
+// (20 objets par jour, 40 objets ou 10 dépôts en attente chez cet ami).
+export const FRIEND_ERRORS = ['requete', 'session', 'taille', 'trop', 'occupe', 'base', 'arret', 'ami-code', 'ami-plein', 'boite', 'boite-pleine'];
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -62,11 +82,40 @@ function readBody(text) {
   return { o: r.obj, ses };
 }
 
-// list, code et where : { v, ses }. join : { v, ses, code }. remove et block : { v, ses, fid }.
+// Objets d'un dépôt : { clé: nombre } sans clé hors de GIFT_KEYS, 1 à `kinds` sortes, des entiers de 1 au plus `perDay` pour un total d'au plus `perDay` ;
+// null sinon. Rendu sur un objet neuf (jamais celui de la requête ni de la réponse).
+export function readItems(v) {
+  if (!isObj(v)) return null;
+  const keys = Object.keys(v);
+  if (!keys.length || keys.length > GIFT_RULES.kinds) return null;
+  const out = {};
+  let total = 0;
+  for (const k of keys) {
+    const n = v[k];
+    if (!GIFT_SET.has(k) || !inRange(n, 1, GIFT_RULES.perDay)) return null;
+    out[k] = n;
+    total += n;
+  }
+  return total <= GIFT_RULES.perDay ? out : null;
+}
+export const giftTotal = (items) => Object.values(items ?? {}).reduce((a, n) => a + n, 0);
+
+// list, code, where et box : { v, ses }. join : { v, ses, code }. remove et block : { v, ses, fid }. give : { v, ses, fid, gid, items }
+// (`gid` : 32 chiffres hexadécimaux tirés par le jeu, la clé du dépôt : le même renvoyé ne dépose pas deux fois). take et recall : { v, ses, id }.
 export function parseFriendsReq(kind, text) {
   const b = readBody(text);
   if (!b.o) return fail(b.why);
   const msg = { v: PROTOCOL, ses: b.ses };
+  if (kind === 'give') {
+    const fid = get(b.o, 'fid'), gid = get(b.o, 'gid'), items = readItems(get(b.o, 'items'));
+    if (typeof fid !== 'string' || !FID_RE.test(fid) || typeof gid !== 'string' || !FID_RE.test(gid) || !items) return fail('requete');
+    return { ok: true, msg: { ...msg, fid, gid, items } };
+  }
+  if (kind === 'take' || kind === 'recall') {
+    const id = get(b.o, 'id');
+    if (typeof id !== 'string' || !FID_RE.test(id)) return fail('requete');
+    return { ok: true, msg: { ...msg, id } };
+  }
   if (kind === 'join') {
     const code = normFriendCode(get(b.o, 'code'));
     // Un code mal formé n'est pas une requête mal faite : même réponse qu'un code faux (le serveur le compte comme un échec).
@@ -77,7 +126,7 @@ export function parseFriendsReq(kind, text) {
     if (typeof fid !== 'string' || !FID_RE.test(fid)) return fail('requete');
     return { ok: true, msg: { ...msg, fid } };
   }
-  if (kind === 'list' || kind === 'code' || kind === 'where') return { ok: true, msg };
+  if (kind === 'list' || kind === 'code' || kind === 'where' || kind === 'box') return { ok: true, msg };
   return fail('requete');
 }
 
@@ -110,7 +159,19 @@ function readWhere(v) {
   return { ...out, a, o };
 }
 
-// Réponse d'une route d'amis → { ok, code?, retryMs?, friends?, where?, pending?, max?, friend?, friendCode?, expiresMs? } ou null ;
+// Un dépôt : { id, fid (l'amitié), items, madeMs, st (0 en attente, 1 retiré, 2 rendu parce que l'amitié a fini, 3 repris), again? } ; null si mal formé.
+// `again` : réponse à un retrait ou à une reprise déjà faite (les mêmes objets, à ne pas ajouter une seconde fois).
+function readGift(v) {
+  if (!isObj(v)) return null;
+  const id = get(v, 'id'), fid = get(v, 'fid'), madeMs = get(v, 'madeMs'), st = get(v, 'st'), again = get(v, 'again');
+  const items = readItems(get(v, 'items'));
+  if (typeof id !== 'string' || !FID_RE.test(id) || typeof fid !== 'string' || !FID_RE.test(fid) || !items || !safeMs(madeMs) || !inRange(st, 0, 3)) return null;
+  const out = { id, fid, items, madeMs, st };
+  if (again === true) out.again = true;
+  return out;
+}
+
+// Réponse d'une route d'amis → { ok, code?, retryMs?, friends?, where?, pending?, max?, friend?, friendCode?, expiresMs?, gift?, incoming?, outgoing? } ou null ;
 // jamais de clé inattendue (comme readAccountReply). `code` ne porte que le motif d'un refus ; `friendCode` est le code d'ami
 // en clair (8 signes), rendu une seule fois par la route code.
 export function readFriendsReply(text) {
@@ -139,6 +200,12 @@ export function readFriendsReply(text) {
   if (inRange(max, 1, 1000)) out.max = max;
   const friend = readFriend(get(o, 'friend'));
   if (friend) out.friend = friend;
+  const gift = readGift(get(o, 'gift'));
+  if (gift) out.gift = gift;
+  for (const k of ['incoming', 'outgoing']) {
+    const l = get(o, k);
+    if (Array.isArray(l)) out[k] = l.slice(0, GIFT_RULES.listMax).map(readGift).filter(Boolean);
+  }
   const expiresMs = get(o, 'expiresMs');
   if (safeMs(expiresMs)) out.expiresMs = expiresMs;
   return out;

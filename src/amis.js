@@ -3,7 +3,7 @@
 // (account.friends). Une amitié passe par un compte ; elle lève l'anonymat entre les deux amis seulement (leurs surnoms).
 // Rien ne vit sur l'écran de jeu : tout se passe dans le menu (« Mes amis ») et dans ces cartes.
 import { nameOf } from './net/protocol.js';
-import { FRIEND_RULES, normFriendCode, showFriendCode } from './net/amis.js';
+import { FRIEND_RULES, GIFT_RULES, normFriendCode, showFriendCode } from './net/amis.js';
 import { dayText } from './panels.js';
 
 const DAY_MS = 86400000;
@@ -66,6 +66,8 @@ export function friendErrorText(code, retryMs = null) {
   switch (code) {
     case 'ami-code': return "Ce code ne marche pas : il a déjà servi, il est périmé, ou il n'est pas fait pour toi. Demande-en un nouveau à ton ami.";
     case 'ami-plein': return `Tu as déjà ${FRIEND_RULES.max} amis. Retire-en un pour en ajouter.`;
+    case 'boite': return "Ce dépôt n'est plus là : il a déjà été retiré, ou l'amitié a pris fin.";
+    case 'boite-pleine': return `La boîte de cet ami est pleine : ${GIFT_RULES.perDay} objets par jour au plus, ${GIFT_RULES.pending} en attente. Réessaie demain ou après son retrait.`;
     case 'trop': {
       const min = Number.isFinite(retryMs) && retryMs > 0 ? Math.max(1, Math.ceil(retryMs / 60000)) : null;
       return min ? `Trop d'essais. Réessaie dans ${min} min.` : "Trop d'essais. Réessaie un peu plus tard.";
