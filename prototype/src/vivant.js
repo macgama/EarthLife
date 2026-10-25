@@ -23,6 +23,7 @@ export const VENT_TYPES = {
   arbre: { ref: 5, amp: 1 },
   buisson: { ref: 1, amp: 0.45 },
   haie: { ref: 1.3, amp: 0.22 },
+  fruitier: { ref: 3, amp: 0.7 },
   herbe: { ref: 0.6, amp: 0.55 },
   legume: { ref: 0.45, amp: 0.5 },
 };

@@ -11,9 +11,9 @@ import { hashId } from './campagne.js';
 const { gather, sortFeatures, eachCell, cellId, cellRand, salt, step, blocked, onAny, patchFree, near, inOrNear, TAU } = PLACEMENT;
 
 // Plafonds par morceau de 64 m (les mêmes en tout lieu : temps de construction et mémoire bornés).
-export const FLORE_CAPS = { buisson: 40, rocher: 14, touffe: 110, haie: 80, balle: 5, champi: 8, legume: 14, puits: 2 };
+export const FLORE_CAPS = { buisson: 40, rocher: 14, touffe: 110, haie: 80, balle: 5, champi: 8, legume: 14, puits: 2, verger: 96 };
 // Appareils peu puissants : moins de pièces (touffes surtout, nombreuses et petites) pour alléger le rendu.
-export const FLORE_CAPS_SOBRE = { buisson: 24, rocher: 8, touffe: 40, haie: 30, balle: 2, champi: 5, legume: 8, puits: 2 };
+export const FLORE_CAPS_SOBRE = { buisson: 24, rocher: 8, touffe: 40, haie: 30, balle: 2, champi: 5, legume: 8, puits: 2, verger: 48 };
 // `baie` : les baies de certains buissons (même identifiant que le buisson, dessinées à part), jamais plus que les buissons gardés.
 const KINDS = [...Object.keys(FLORE_CAPS), 'baie'];
 
@@ -30,6 +30,8 @@ const REGLES = {
   wetland: { touffe: 0.55, buisson: 0.05, rocher: 0, champi: 0.04 },
   rock: { touffe: 0.02, buisson: 0.02, rocher: 0.5, champi: 0 },
 };
+// Dans un verger, l'herbe pousse entre les arbres (pas d'arbustes ni de rochers).
+const VERGER_REGLES = { touffe: 0.3, buisson: 0, rocher: 0, champi: 0.02 };
 // Part des buissons qui portent des baies (jardins et parcs : plus), des champs cultivés et des jardins qui portent un légume, et des
 // cellules d'herbe ou de champ qui ont un puits (si un bâtiment est à 4 à 30 m : la cour d'une ferme, pas le milieu d'un pré).
 const BAIE_PART = { wood: 0.45, grass: 0.5, wetland: 0.3 };
@@ -39,15 +41,16 @@ const PUITS_PART = 0.07, PUITS_PROCHE = 30, PUITS_LIBRE = 4;
 // Balles de paille : part des cellules des champs cultivés qui en portent une.
 const BALLE_PART = 0.1;
 const estChamp = (a) => a?.cls === 'farmland' && a.sub === 'farmland';
+const estVerger = (a) => a?.cls === 'farmland' && a.sub === 'orchard';
 // Jardins et parcs : plus d'arbustes que dans un pré.
 const BUISSON_SOUS = { garden: 0.26, park: 0.1, village_green: 0.08, recreation_ground: 0.06 };
 
-// Aire visible à un point (celle peinte en dernier), ou null.
+// Aire visible à un point (celle peinte en dernier : à rang égal, la dernière de la liste, comme le sol), ou null.
 function aireEn(areas, x, z) {
   let best = -1, found = null;
   for (const a of areas) {
     const r = RANG.get(a.cls);
-    if (r === undefined || r <= best || !near(a.bounds, x, z, 0) || !inOrNear(a.rings, x, z, 0)) continue;
+    if (r === undefined || r < best || !near(a.bounds, x, z, 0) || !inOrNear(a.rings, x, z, 0)) continue;
     best = r;
     found = a;
   }
@@ -97,7 +100,7 @@ export function floreForChunk(f, patch, cx, cz, size, proj, { lowPower = false }
       } else if (kind === 'puits') {
         part = area && (area.cls === 'grass' || area.cls === 'farmland') ? PUITS_PART : 0;
       } else {
-        const rules = area && REGLES[area.cls];
+        const rules = area && (REGLES[area.cls] ?? (estVerger(area) ? VERGER_REGLES : undefined));
         if (!rules) return;
         part = rules[kind] ?? 0;
         if (kind === 'buisson' && area.cls === 'grass') part = BUISSON_SOUS[area.sub] ?? part;
@@ -118,6 +121,7 @@ export function floreForChunk(f, patch, cx, cz, size, proj, { lowPower = false }
   out.baie = out.buisson.filter((b) => baies.has(b.id)).map((b) => ({ ...b, kind: 'baie' }));
   const seen = new Set();
   out.haie = garder([...haies(nature, ctx, patch, x0, z0, size, proj, seen), ...haiesParcelles(nature, ctx, patch, x0, z0, size, seen)], caps.haie);
+  out.verger = garder(vergers(nature, ctx, patch, x0, z0, size, proj), caps.verger);
   return out;
 }
 
@@ -232,6 +236,31 @@ function haiesParcelles(areas, ctx, patch, x0, z0, size, seen) {
         if (rand() < HAIE_TROU) continue;
         cands.push({ keep, item: { id, kind: 'haie', x, z, yaw: Math.atan2(gx, gz) + (rand() - 0.5) * 0.1, s: 1 + rand() * 0.3, v: rand() } });
       }
+    }
+  }
+  return cands;
+}
+
+// ---------- Vergers ----------
+// Arbres fruitiers en quinconce dans les vergers (sous-classe `orchard` d'OpenFreeMap) : une grille de 6,7 m en latitude et de 8,6e-5
+// degré en longitude (6,6 m à 46°), une rangée sur deux décalée d'une demi-case, chaque arbre écarté d'au plus 0,5 m de sa place.
+// Comme tout le reste, la grille est ancrée en latitude et longitude : mêmes arbres pour tous, quelle que soit l'origine du monde.
+// Sans collision (comme les haies et les buissons).
+const VERGER_PAS = { lat: PLACEMENT.step('verger'), lon: 8.6e-5 };
+function vergers(areas, ctx, patch, x0, z0, size, proj) {
+  const cands = [];
+  if (!areas.some(estVerger)) return cands;
+  const a = proj.toLatLon(x0, z0), b = proj.toLatLon(x0 + size, z0 + size), sel = salt('verger');
+  const lat0 = Math.floor(Math.min(a.lat, b.lat) / VERGER_PAS.lat) - 1, lat1 = Math.floor(Math.max(a.lat, b.lat) / VERGER_PAS.lat) + 1;
+  const lon0 = Math.floor(Math.min(a.lon, b.lon) / VERGER_PAS.lon) - 1, lon1 = Math.floor(Math.max(a.lon, b.lon) / VERGER_PAS.lon) + 1;
+  for (let ilat = lat0; ilat <= lat1; ilat++) {
+    for (let ilon = lon0; ilon <= lon1; ilon++) {
+      const rand = cellRand(sel, ilat, ilon);
+      const p = proj.toLocal((ilat + 0.5) * VERGER_PAS.lat, (ilon + 0.5 + (ilat & 1 ? 0.5 : 0)) * VERGER_PAS.lon);
+      const x = p.x + (rand() - 0.5), z = p.z + (rand() - 0.5);
+      if (x < x0 || x >= x0 + size || z < z0 || z >= z0 + size) continue;
+      if (!estVerger(aireEn(areas, x, z)) || !pose(ctx, patch, x, z, 1.4)) continue;
+      cands.push({ keep: rand(), item: { id: cellId('verger', ilat, ilon), kind: 'verger', x, z, yaw: rand() * TAU, s: 0.85 + rand() * 0.3, v: rand() } });
     }
   }
   return cands;

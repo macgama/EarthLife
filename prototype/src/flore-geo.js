@@ -6,6 +6,7 @@
 // météo : neige, pluie), pas des couleurs absolues.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { saisonVerger, MOIS_TROPIQUE } from './champs.js';
 
 // Bruit stable d'un point (même valeur partout et toujours, quel que soit le moteur JavaScript à un ulp près).
 function hash3(x, y, z) {
@@ -281,6 +282,30 @@ export function puitsGeometry(sobre = false) {
   return merged(parts);
 }
 
+// Arbre fruitier d'un verger : tronc court, couronne ronde (deux masses, une sur appareil peu puissant). Les couleurs de la saison (champs.js, saisonVerger : branches
+// nues, fleurs roses, feuillage, feuilles jaunies) sont dans la géométrie, donc la couleur du matériau est blanche et la météo ne fait
+// que la ternir. Refaite au changement de mois (flore-view.js, setMois).
+export function vergerGeometry(sobre = false, mois = MOIS_TROPIQUE) {
+  const { couleur, echelle } = saisonVerger(mois);
+  const crown = new THREE.Color(couleur), bark = new THREE.Color(0x6e5641);
+  const parts = [];
+  const trunk = ready(new THREE.CylinderGeometry(0.1, 0.14, 1.3, 4, 1, true));
+  trunk.translate(0, 0.65, 0);
+  parts.push(paint(trunk, (_vx, vy) => { const k = shade(0.8, 1.05, vy / 1.3); return [bark.r * k, bark.g * k, bark.b * k]; }));
+  const masses = [[1.3, 0, 2.15, 0, 41], ...(sobre ? [] : [[0.85, 0.75, 2.05, 0.35, 42]])];
+  for (const [r0, x, y, z, seed] of masses) {
+    const r = r0 * echelle, g = ready(new THREE.IcosahedronGeometry(r, 0));
+    wobble(g, r * 0.16, seed);
+    g.scale(1, 0.85, 1);
+    g.translate(x * echelle, y, z * echelle);
+    parts.push(paint(g, (_vx, vy) => {
+      const t = (vy - (y - r * 0.85)) / (2 * r * 0.85), k = shade(0.66, 1.12, t);
+      return [crown.r * k * shade(0.96, 1.04, t), crown.g * k, crown.b * k * shade(1.04, 0.94, t)];
+    }));
+  }
+  return merged(parts);
+}
+
 // Couleur de base des petits décors (suivie par la météo comme celle des arbres). build(sobre) : forme allégée quand
 // `sobre` est vrai (appareil peu puissant).
 export const PETITS = {
@@ -294,4 +319,6 @@ export const PETITS = {
   champi: { color: 0xd8c4a0, build: champiGeometry, cap: 256, doubleSide: false },
   legume: { color: 0x6aa84a, build: legumeGeometry, cap: 512, doubleSide: true },
   puits: { color: 0x9b968d, build: puitsGeometry, cap: 64, doubleSide: true },
+  // Arbres fruitiers des vergers : couleur de base blanche (celles de la saison sont dans la géométrie, vergerGeometry).
+  verger: { color: 0xffffff, build: (sobre) => vergerGeometry(sobre), cap: 1536, doubleSide: false },
 };

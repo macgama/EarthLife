@@ -44,6 +44,8 @@ const CELLS = {
   champi: { step: 1.1e-4, prefix: 'fm', salt: 0x5d3c27e1 },
   legume: { step: 7e-5, prefix: 'fl', salt: 0x13b7a9c5 },
   puits: { step: 2.2e-4, prefix: 'fp', salt: 0x7a41d3f9 },
+  // Arbres fruitiers des vergers (flore.js, en quinconce : le pas est celui de la grille, la cellule n'est pas tirée au hasard).
+  verger: { step: 6e-5, prefix: 'fv', salt: 0x6a1f3b27 },
 };
 const KEEP = { wood: 0.81, park: 0.17, car: 0.3, bench: 0.12, benchPark: 0.5 };
 const CAR_ROAD = 6; // une route carrossable doit passer à moins de 6 m
