@@ -121,7 +121,7 @@ test('bouton unique : rejoindre, reprendre, indisponible', () => {
 test('repères de la carte : seulement les villes dont on connaît la position', () => {
   const pins = pinsOf(fronts());
   assert.equal(pins.length, 1, 'Pérouges n\'a pas de coordonnées, le niveau difficile pas de ville');
-  assert.deepEqual(pins[0], { level: 'facile', key: 'c1', lat: 46.6, lon: 6.8, tone: 'warn', own: false, label: 'Facile · Vulliens', tag: 'Vulliens · 12 en ligne' });
+  assert.deepEqual(pins[0], { level: 'facile', key: 'c1', lat: 46.6, lon: 6.8, tone: 'warn', own: false, started: true, label: 'Facile · Vulliens', tag: 'Vulliens · 310/729 sauvés · 12 en ligne' });
   assert.deepEqual(pinsOf([]), []);
 });
 
@@ -362,14 +362,29 @@ test('repères de la carte : un par ville ouverte de chaque niveau, ta ville dit
   const list = [...manyFronts({ enrolled: 'facile', own }).slice(0, 1), frontModel('moyen', { announced: { key: 'm1', name: 'Pérouges', lat: 45.9, lon: 5.2 } })];
   const pins = pinsOf(list);
   assert.deepEqual(pins.map((p) => [p.level, p.key, p.tone, p.own]), [['facile', 'c3', 'warn', false], ['facile', 'c1', 'warn', true], ['facile', 'c9', 'ok', false], ['moyen', 'm1', 'idle', false]]);
-  assert.equal(pins[1].tag, 'Ta ville · Vulliens · 2 en ligne');
-  assert.equal(pins[0].tag, 'Lyon · 5 en ligne');
+  assert.equal(pins[1].tag, 'Ta ville · Vulliens · 10/640 sauvés · 2 en ligne');
+  assert.equal(pins[0].tag, 'Lyon · 10/640 sauvés · 5 en ligne');
   assert.equal(pins[3].tag, 'Pérouges');
   // Cadrage : une ville précise, les villes d'un niveau, toutes.
   assert.deepEqual(framingOf(pins, 'facile', 'c1'), { kind: 'city', level: 'facile', key: 'c1', lat: 46.1, lon: 6 });
   assert.equal(framingOf(pins, 'facile').points.length, 3);
   assert.equal(framingOf(pins, 'facile', 'zz').points.length, 3, 'clé inconnue : les villes du niveau');
   assert.equal(framingOf(pins).points.length, 4);
+});
+
+test('repères de la carte : pâles tant que le sauvetage n\'a pas commencé, sauf ta ville ; perdue en gris aussi', () => {
+  const calm = (key, name, o = {}) => CITY(key, name, { saved: 0, killed: 0, ...o });
+  const entry = { players: 5, online: 2, seats: 100, citiesMax: 30, cities: [
+    calm('a', 'Calme', { dy: 0.1, online: 1 }), calm('b', 'Abattue', { dy: 0.2, killed: 4 }), calm('c', 'Ma ville', { dy: 0.3 }),
+    calm('d', 'Perdue', { dy: 0.4, status: 'perdue', saved: 3 }), calm('e', 'Cœur', { dy: 0.5, status: 'coeur', killed: 90 }), calm('f', 'Installée', { dy: 0.6, homes: 1 })] };
+  const [f] = [frontModel('facile', entry, { enrolled: 'facile', own: { key: 'c', name: 'Ma ville', lat: 46.3, lon: 6 } })];
+  const pins = pinsOf([f]);
+  assert.deepEqual(pins.map((p) => [p.key, p.tone, p.started]), [['a', 'idle', false], ['b', 'warn', true], ['c', 'warn', false], ['d', 'idle', true], ['e', 'danger', true], ['f', 'warn', true]]);
+  assert.equal(pins[0].tag, 'Calme · pas encore commencée · 1 en ligne');
+  assert.equal(pins[1].tag, 'Abattue · 0/640 sauvés', 'un zombie abattu suffit : le sauvetage a commencé');
+  assert.equal(pins[2].tag, 'Ta ville · Ma ville · pas encore commencée');
+  assert.equal(pins[3].tag, 'Perdue · perdue');
+  assert.equal(pins[5].tag, 'Installée · 0/640 sauvés', 'un refuge posé suffit : le joueur est établi');
 });
 
 test('totaux de la bannière : toutes les villes ouvertes, tous niveaux', () => {

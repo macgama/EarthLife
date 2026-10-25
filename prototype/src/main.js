@@ -72,6 +72,7 @@ import { networkOf, lineTitle } from './transport.js';
 import { addStep, statsCard, MAX_STEP_M } from './stats.js';
 import { bucketFor, addXp, effectsOf, craftXp, levelUpText, GAIN } from './skills.js';
 import { createMinimap } from './minimap.js';
+import { makeMapMarks } from './carte-marques.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
 import { makeProjection } from './geo.js';
 import { createTerritoryStore } from './territory-store.js';
@@ -3052,6 +3053,19 @@ function hudInfo(s) {
 
 // Ce que montre la carte des environs : centrée sur le point visé par la caméra (l'ancre du refuge quand on y est),
 // tournée avec elle ; refuge, mission (couleur de la balise), sac perdu, zombies proches et fronts de la horde.
+// Fond de la mini-carte (carte-marques.js) : bâti teinté selon son pâté, contour ambre s'il est fouillé (par toi, ou par un autre survivant).
+function mapMarksOf(s) {
+  const tiles = s.store.source === 'tiles';
+  s.mapMarks ??= makeMapMarks({
+    rt: s.city ?? null,
+    searched: (b) => isSearched(s, b),
+    searchedCount: () => (tiles ? Object.values(save.searched ?? {}).filter((e) => searchedWhole(e, Date.now(), LIMITS.searchedMs)).length : s.searchedLocal.size),
+    other: (b) => tiles && !!online.searchedByOther(b.id),
+    otherCount: () => online.searchedCount(),
+  });
+  return s.mapMarks;
+}
+
 function mapInfo(s) {
   const p = s.player, r = s.refuge, at = s.viewAt ?? p;
   const target = s.quest ? currentTarget(s.quest) : s.cityTarget ?? null;
@@ -3063,6 +3077,7 @@ function mapInfo(s) {
     bag: save.dropBag ? s.store.proj.toLocal(save.dropBag.lat, save.dropBag.lon) : null,
     zombies: s.director.zombies, fog: s.weather?.kind === 'fog',
     others: onlineOn ? s.othersNow.map((o) => s.store.proj.toLocal(o.lat, o.lon)) : [],
+    marks: mapMarksOf(s),
     fronts: centre ? r.hordeArrows().map((a) => { const v = frontVector(a); return { x: centre.x + v.x * 60, z: centre.z + v.z * 60 }; }) : [],
   };
 }

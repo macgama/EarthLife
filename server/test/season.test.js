@@ -739,6 +739,21 @@ test('évolution de la saison : publique, gardée 30 s', async () => {
   assert.equal((await w.seasons.progress()).body.levels.facile.city.zombies, 119);
 });
 
+test('évolution de la saison : homes compte les joueurs installés (maison posée) dans la ville où ils jouent', async () => {
+  const w = rig();
+  const a = await seeded(w);
+  const b = await w.player(2);
+  assert.equal((await b.call('/v1/season/seed', OTHER)).body.created, true);
+  const homes = async () => Object.fromEntries((await w.seasons.progress()).body.levels.facile.cities.map((x) => [x.key, x.homes]));
+  assert.deepEqual(await homes(), { c01283: 0, c99999: 0 }, 'villes ouvertes, personne installé');
+  await a.send({ o: 'in', c: SEED.key });
+  const [k] = redBlock(w);
+  assert.equal((await a.call('/v1/season/home', { key: k, a: 45900000, o: 5200000 })).status, 200);
+  w.clock.t += 31000;
+  assert.deepEqual(await homes(), { c01283: 1, c99999: 0 }, 'une maison posée compte, pas une ville seulement ouverte');
+  assert.equal((await w.seasons.progress()).body.levels.moyen.cities.length, 0);
+});
+
 test('fin de saison : fin annoncée, plus de geste, ville gelée en lecture', async () => {
   const w = rig({ rules: { days: 3 } });
   const a = await seeded(w);
