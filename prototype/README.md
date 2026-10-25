@@ -16,6 +16,8 @@ Le monde se construit au fil de la marche : rues, bâtiments, eau, parcs et arbr
 
 **Végétation et sols.** Rien n'est téléchargé en plus : tout est dessiné dans le code. Les arbres ont quatre espèces (feuillus, conifères, bouleaux, palmiers) choisies par la latitude (`src/climat.js` : conifères et bouleaux vers le nord, palmiers dans les parcs du sud), une teinte propre à chaque pied et un tronc qui suit l'espèce ; leur identifiant, leur place et leur taille n'ont pas changé, ce que l'on a abattu reste abattu. Des buissons (bois, jardins), des rochers (terrains rocheux, bord du sable) et des touffes d'herbe (prés, bois, marais) s'y ajoutent, sans collision ni démontage (`src/flore.js` pour le placement, `src/flore-view.js` pour le rendu : une instance globale par type, plafonnée par morceau). À la campagne, des haies suivent le contour des champs et des prés, ainsi que certaines limites des parcelles dessinées dans les champs (`parcelle` de `src/bruit.js` retrouve les mêmes parcelles que le shader : un test vérifie que les constantes restent d'accord), et des balles de paille parsèment les champs cultivés. Le sol garde sa texture de 8 à 12 px/m et reçoit en plus, dans le shader, un détail en coordonnées du monde lu dans une texture de bruit de 256 Ko fabriquée au lancement (`src/bruit.js`) : plaques et brins d'herbe, fleurs, sous-bois, parcelles de champs avec leurs rangs, rides de sable, terre, marais, enrobé usé et fissuré, dalles et pavés de clarté variable. Sur appareil peu puissant, formes d'arbres allégées, moins de touffes et une seule lecture de bruit. Sans carte graphique (rendu logiciel : SwiftShader, llvmpipe), le sol garde les couleurs de sa texture, sans ce détail, qui y coûterait environ 30 % du temps de dessin ; `?sol=fin`, `simple` ou `plat` force le niveau (la recette de la base tourne en `sol=fin`).
 
+**Bâtiments variés.** Le style d'un bâtiment suit sa vraie position (`regionOf` de `src/climat.js` : huit styles, dont les Alpes, la brique du nord-ouest de l'Europe et du nord-est des États-Unis, l'Europe de l'Est, l'Asie et l'adobe) et sa forme. OpenMapTiles ne dit pas ce qu'est un bâtiment : `src/batiment-look.js` reconnaît à la forme et au contexte (occupation du sol, voisins en rang, lieu « parking ») les silos, serres, granges, garages, parkings à étages et tours d'habitation. Le type de jeu (`use` : butin, intérieur, logements) ne change pas, seul le dessin change (`look`). Palettes, matières et probabilités de détails sont dans `src/batiment-style.js`, tirées de la graine du bâtiment (son identifiant : le même bâtiment est identique pour tous). Les matières (crépi, brique, bardage, béton, pierre, tôle, chalet), balcons, stores, volets, climatiseurs et escaliers de secours sont dessinés par le shader (`src/batiment-shader.js`, sans texture de plus ; version allégée sur téléphone), les lucarnes, panneaux solaires, deuxièmes cheminées, réservoirs, machines, paraboles et mâts sont de la géométrie (`src/batiment-toit.js`), toujours dans le contour du bâtiment et loin du centre du toit (mât du refuge). `?bati=base` (comme avant), `simple` (défaut des téléphones) ou `fin` (défaut ailleurs) force le niveau, pour comparer le coût.
+
 Chaque tuile téléchargée est gardée dans le cache de l'appareil : revenir dans un quartier déjà visité ne télécharge plus rien. Le cache est vidé automatiquement quand OpenFreeMap publie une nouvelle version de la carte. Une base partagée entre joueurs (ce que les joueurs construisent ou changent) viendra plus tard.
 
 ## Jouer en ligne
@@ -171,6 +173,17 @@ Pendant l'alerte et la vague, la caméra ne recule pas assez pour voir la horde 
 
 Le menu permet de forcer une météo ou la nuit pour tester.
 
+### Personnages et effets
+
+**Des visages.** Les autres survivants et les habitants du refuge ne se ressemblent plus : peau, cheveux (ras, courts, longs, queue-de-cheval, frisés), coiffe (aucune, casquette, bonnet, capuche), sac (aucun, sac à dos, sacoche), pantalon, taille et, pour les habitants, veste sont tirés de leur identifiant (`src/personnages.js`, module pur testé sous node : la même personne a toujours le même visage). Le joueur garde le sien (cheveux courts, casquette orange, sac à dos, batte), pour que sa silhouette reste lisible. **Aucun appel de dessin de plus** : toutes les options sont dans la même géométrie et le shader replie sur son pivot la pièce que l'instance n'a pas choisie ; les couleurs viennent de palettes (`uPal`, quarante teintes).
+
+**Des zombies usés.** Cheveux, capuche, manches (un bras nu, débardeur), vêtements fanés, teint plus ou moins livide et blessure en aplat de sang séché (brun, jamais vif, jamais en volume) sont tirés de l'identifiant du zombie. Chaque type a sa démarche : l'errant traîne la jambe, tête ballante ; le coureur fonce penché, bras fouettant l'air ; le costaud piétine, épaules qui roulent. À terre, le corps s'affaisse à gauche ou à droite, les bras s'écartent, la tête retombe, et une tache brun sombre reste sous lui jusqu'à son effacement.
+
+**Des poses.** Le joueur tire d'une main (pistolet) ou des deux (fusil), la batte repliée, avec le recul ; il fouille à tâtons, bricole, cueille ; voûté et plus lent dès que la fatigue passe 55, frissonnant quand le corps descend sous 36 °C (valeurs de `survival.js`, rien d'inventé). Le souffle ne se voit que par temps frais : la buée dépend de la vraie température d'Open-Meteo (rien au-dessus de 12 °C, pleine à 4 °C).
+
+**Des effets** (`src/effets.js`, `src/effets-view.js`) : une réserve de 96 particules (téléphone) ou 192, dessinées par **un seul maillage instancié** (un appel, aucun quand il n'y a rien). Au tir : éclair en étoile, jet de flamme, étincelles, fumée qui dérive avec le vent réel, douille éjectée qui rebondit (cuivre pour le pistolet, rouge pour le fusil) ; le traceur parcourt la ligne de tir. Aux impacts : éclat, gouttes de sang séché qui retombent (sans mare), poussière pour une balle perdue ; à la chute d'un zombie, un anneau de poussière. Au refuge, une fumée mince sort de la cheminée dès que le feu est installé. Ni lumière dynamique, ni ombre portée de plus.
+
+
 ### Relief (`?relief=1`)
 
 Le relief réel est un essai : il ne s'active qu'avec `?relief=1` dans l'adresse (par exemple `?lat=45.7578&lon=4.832&relief=1`). Sans ce paramètre, ou si les tuiles d'altitude n'arrivent pas, le jeu est plat, exactement comme avant ; le panneau des conditions dit « Relief indisponible » dans ce second cas.
@@ -242,6 +255,14 @@ node test/camera-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobi
 
 Le script joue la caméra basse à Lyon, sur ordinateur puis sur téléphone : la vue de dessus reste celle du départ (champ 48°, découpe des murs, rien d'écrit dans les réglages), le bouton (touche G) passe en vue basse et le choix est gardé et relu après un rechargement, puis le retour rend la vue de dessus ; dos à un mur la perche se raccourcit et la caméra reste hors du bâtiment, puis reprend sa longueur ; sur téléphone, le pouce droit tourne et baisse la caméra, un pincement l'approche ; le recentrage ne bouge pas pour une poussée tout droit et suit une poussée un peu de côté ; des flèches montrent les zombies hors du champ (aucune en vue de dessus) ; sur ordinateur, le bouton + rapproche la caméra, un bâtiment ouvert la remet de dessus (le bouton reste enfoncé) et la vue basse revient dehors, et au volant elle recule puis revient derrière la voiture qui roule. La CI le lance dans son propre travail, `acceptance-camera` ; il bloque la publication.
 
+### Acceptation des personnages et des effets
+
+```sh
+node test/personnages-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobile) ; captures dans browser-shots/personnages
+```
+
+Hors ligne, téléphone puis ordinateur : aucune erreur de page ni de shader ; soixante zombies n'ajoutent pas d'appel de dessin (au plus un) et se distinguent entre eux ; un coup de feu fait naître des particules dans un seul maillage (au plus six appels de plus avec le traceur et l'arme en main) qui s'éteint ensuite ; une foule d'autres survivants ne montre pas toutes les mêmes têtes. Les tests purs sont dans `test/personnages.test.js` et `test/effets.test.js`.
+
 ### Acceptation de la fenêtre « Habillement »
 
 ```sh
@@ -271,10 +292,13 @@ Le script remplit le sac de pièces (bonnet, casques, blouson, pantalon, lampe, 
 - `src/survival.js` : faim, soif, température du corps, butin selon le type de lieu, inventaire
 - `src/trouvailles.js` : fenêtre « Trouvé » et fenêtre du sac (butin d'une fouille face au sac, ou le sac seul : prendre, laisser, jeter, équiper ; règles et page pures, contrôleur du DOM)
 - `src/scene.js`, `src/atmosphere.js` : rendu Three.js, façades et fenêtres, balise de quête, ciel, pluie, neige, éclairs
+- `src/batiment-style.js`, `src/batiment-look.js`, `src/batiment-geo.js`, `src/batiment-toit.js`, `src/batiment-shader.js` : bâtiments variés (styles par région, type visuel, matières et détails de façade dans le shader, détails de toit)
 - `src/minimap.js` : carte des environs (canvas 2D tourné avec la caméra, fond dessiné par tranches dans un cache, repères, garde-fou qui l'écarte des autres panneaux, carte agrandie)
 - `src/camera-basse.js`, `src/flancs.js` : vue basse derrière le personnage (pose, perche contre les murs, brouillard, recentrage, suivi de la voiture) et flèches vers les zombies hors du champ
 - `src/view.js` : zoom de la caméra (de 18 à 72 m, 56 m sur téléphone), tangage plancher, rayon construit et brouillard qui cache le bord du monde, réglage gardé (`localStorage['earthlife.vue']`)
-- `src/characters.js` : joueur et zombies low-poly animés (un seul appel de dessin pour tous les zombies), ombres de contact
+- `src/characters.js` : joueur, autres survivants et zombies low-poly animés (un seul appel de dessin pour tous les zombies, variantes dans la même géométrie), ombres de contact
+- `src/personnages.js` : variantes de visage, de tenue et de démarche tirées d'un identifiant, palettes, fatigue et froid (module pur)
+- `src/effets.js`, `src/effets-view.js` : particules du tir, des impacts, de la poussière, de la buée et de la cheminée (module pur, puis maillage instancié unique)
 - `src/icons.js` : icônes de l'interface (SVG au trait, `data-icon` dans la page)
 - `src/input.js` : clavier, souris (molette), joystick tactile et pincement
 - `assets/fonts/` : polices Chakra Petch et Barlow Semi Condensed auto-hébergées (licence OFL)
