@@ -13,6 +13,7 @@ import { makeBruitTexture } from './bruit.js';
 import { buildingsGeometry, buildingMaterial, treesInstanced, followTreeWeather } from './scene.js';
 import { groundGeometry } from './markings.js';
 import { SETTING_INDEX, SIDEWALK, carriageway, markBoxes } from './roadway.js';
+import { planEdges } from './carrefours.js';
 
 // Rayon construit et visible autour du joueur (Gaël : environ 100 m) ; la caméra reculée en demande parfois plus, sans
 // dépasser la grille de collision (src/view.js, update({ radius })).
@@ -554,7 +555,7 @@ function drawnParts(r) {
     // Tirets calés sur le point de coupe (le même pour la copie de la tuile voisine).
     const at = cutA ? a : cutB ? b : 0, q = pointAt(p, at);
     const phase = cutA || cutB ? q.x * q.dx + q.z * q.dz - at : phaseOf(r.points);
-    list.push({ ...r, points, span: null, phase: phase + a2, mark: [a - a2, b - a2], whole: r });
+    list.push({ ...r, points, span: null, phase: phase + a2, mark: [a - a2, b - a2], whole: r, at: a2 });
   }
   pieces.set(r, list);
   return list;
@@ -727,6 +728,7 @@ export function groundPlan(f, x0, z0, size) {
     ops.push(strokeOp('rail', PAL.rail, 1.5, list, extra));
   };
   for (const v of ground) if (v.kind === 'rail' && visible(v)) paintRail(v);
+  const asphaltEnd = ops.length; // les angles arrondis des carrefours se peignent ici (étape 6)
 
   // 6. Marquages : passages piétons réels et de carrefour, lignes d'arrêt, médianes, rives.
   const crossCars = cars.filter((v) => CROSSABLE.has(v.r.cls) && v.style.marked && boxesMeet(v.p.box, markZone));
@@ -887,6 +889,10 @@ export function groundPlan(f, x0, z0, size) {
     }
   };
   paintLines(cars, 'line', cars);
+  // Bords nets de chaque chaussée (bandes en géométrie) et angles arrondis des carrefours (carrefours.js).
+  const edges = planEdges({ cars, junctions, H: { pointAt, slice, offsetLine, onOtherRoad, boxesMeet, prep }, PAL, strokeOp, fillOp, rank: (c) => c.rank });
+  ops.splice(asphaltEnd, 0, ...edges.fills);
+  ops.push(...edges.strips);
 
   // 7. Ponts : tablier, trottoirs, bordures et chaussée, voie par voie. Bout rond seulement contre un autre morceau
   // de pont ; un bout posé sur une chaussée au sol (carrefour du quai) s'arrête au bord de celle-ci, à bout droit.
@@ -1071,8 +1077,8 @@ function groundShader(shader) {
   Object.assign(shader.uniforms, groundKeys);
   const defines = groundDetailMode === 'plat' ? '' : groundDetailMode === 'simple' ? '#define GROUND_DETAIL\n' : '#define GROUND_DETAIL\n#define GROUND_FINE\n';
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nvarying vec2 vGroundXZ;\nattribute vec4 aMark;\nattribute vec2 aMarkInfo;\nvarying vec4 vMark;\nvarying vec2 vMarkInfo;')
-    .replace('#include <project_vertex>', '#include <project_vertex>\n  vGroundXZ = (modelMatrix * vec4(transformed, 1.0)).xz;\n  vMark = aMark;\n  vMarkInfo = aMarkInfo;');
+    .replace('#include <common>', '#include <common>\nvarying vec2 vGroundXZ;\nattribute vec4 aMark;\nattribute vec2 aMarkInfo;\nattribute vec3 aMarkColor;\nvarying vec4 vMark;\nvarying vec2 vMarkInfo;\nvarying vec3 vMarkColor;')
+    .replace('#include <project_vertex>', '#include <project_vertex>\n  vGroundXZ = (modelMatrix * vec4(transformed, 1.0)).xz;\n  vMark = aMark;\n  vMarkInfo = aMarkInfo;\n  vMarkColor = aMarkColor;');
   shader.fragmentShader = shader.fragmentShader
     .replace('#include <common>', `#include <common>
 ${defines}uniform vec3 uPaveKey;
@@ -1092,6 +1098,7 @@ uniform sampler2D uNoise;
 varying vec2 vGroundXZ;
 varying vec4 vMark;
 varying vec2 vMarkInfo;
+varying vec3 vMarkColor;
 float groundHash(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -1209,7 +1216,12 @@ float markCover(float x, float h, float w) {
     if (vMark.z > 0.0) {
       float cover = markCover(vMark.x, vMark.z, mw.x) * markCover(vMark.y - 0.5 * vMark.w, 0.5 * vMark.w, mw.y);
       float open = vMarkInfo.y > 0.5 ? 1.0 : smoothstep(0.93, 0.97, sampledDiffuseColor.a);
-      diffuseColor = vec4(diffuse * uLineColor, cover * vMarkInfo.x * open);
+      // Couleur propre à la bande (lignes, bordures, caniveaux, bords de chaussée) ; celle de l'enrobé garde son grain.
+      vec3 markCol = diffuse * vMarkColor;
+#ifdef GROUND_DETAIL
+      markCol = groundDetail(markCol, vMarkColor, vGroundXZ, nA, nB, gw);
+#endif
+      diffuseColor = vec4(markCol, cover * vMarkInfo.x * open);
     } else if (vMarkInfo.y > 3.5 && vMarkInfo.y < 4.5) {
       // Dalle du contour d'un pont (markings.js, deckBuffers) : couleur unie du tablier (la texture y a l'eau dessous).
       diffuseColor = vec4(diffuse * uBridgeColor, 1.0);
