@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { shapeUse } from './tiles.js';
+import { CLOUD_GLSL, bindClouds } from './nuages.js';
 
 export function createRenderer(canvas, { lowPower }) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: !lowPower, powerPreference: 'high-performance' });
@@ -59,9 +60,15 @@ export function setOpenBuilding(ring) {
 export const CUT_KEEP = 1.13;
 
 // Aspect du monde selon la météo : toits blanchis par la neige, murs assombris et refroidis par la pluie.
+// snow : couche de neige (0 à 1, selon l'épaisseur réelle) ; wet : humidité (0 à 1) ; rain : pluie qui tombe (0 à 1, rides des flaques) ;
+// sky : couleur du ciel que reflètent les flaques. Le sol (chunks.js, meteo-sol.js) et les bâtiments lisent les mêmes valeurs.
 export const weatherLook = {
   snow: { value: 0 },
   wet: { value: 0 },
+  rain: { value: 0 },
+  sky: { value: new THREE.Color(0x9aa4ad) },
+  glow: { value: 0 }, // éclat de la neige, plus fort de jour (atmosphere.js)
+  time: { value: 0 }, // s : horloge des rides de la pluie (atmosphere.js)
 };
 
 // ---------- Façades, toits et couleurs selon le type réel des bâtiments ----------
@@ -420,6 +427,7 @@ function addCutaway(material, { facades = false, lite = false } = {}) {
     shader.uniforms.uOpenBox = openBuilding.box;
     shader.uniforms.uOpenPoly = openBuilding.poly;
     shader.uniforms.uOpenFade = openBuilding.fade;
+    bindClouds(shader.uniforms);
     if (facades) {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>\nattribute vec4 aFacade;\nattribute vec4 aStyle;\nattribute float aFloor;${FACADE_VARYINGS}`)
@@ -435,7 +443,8 @@ function addCutaway(material, { facades = false, lite = false } = {}) {
       .replace('#include <project_vertex>', '#include <project_vertex>\nvCutWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     if (!facades) shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\n#define CUT_EXTRA 0.0');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vCutWorld;\nuniform vec3 uCutPlayer;\nuniform vec3 uCutCamera;\nuniform float uCutRadius;\nuniform float uNight;\nuniform float uSnow;\nuniform float uWet;\nuniform float uOpenN;\nuniform vec4 uOpenBox;\nuniform vec2 uOpenPoly[${OPEN_MAX}];\nuniform float uOpenFade;`)
+      .replace('#include <opaque_fragment>', '  outgoingLight *= cloudShade(vCutWorld.xz); // ombre d\'un nuage (nuages.js), rien de lu sans nuage\n#include <opaque_fragment>')
+      .replace('#include <common>', `#include <common>${CLOUD_GLSL}\nvarying vec3 vCutWorld;\nuniform vec3 uCutPlayer;\nuniform vec3 uCutCamera;\nuniform float uCutRadius;\nuniform float uNight;\nuniform float uSnow;\nuniform float uWet;\nuniform float uOpenN;\nuniform vec4 uOpenBox;\nuniform vec2 uOpenPoly[${OPEN_MAX}];\nuniform float uOpenFade;`)
       .replace('void main() {', `void main() {
   vec3 cutDir = uCutPlayer - uCutCamera;
   float cutLen = length(cutDir);
@@ -998,12 +1007,22 @@ export function followTreeWeather({ crowns = [], trunks = [] } = {}) {
   };
 }
 
-// Météo du monde (appelée par l'atmosphère) : neige sur les toits et les arbres, pluie qui assombrit.
-export function setWorldWeather(kind) {
-  worldKind = kind;
-  weatherLook.snow.value = kind === 'snow' ? 1 : 0;
-  weatherLook.wet.value = kind === 'rain' || kind === 'storm' ? 1 : 0;
-  tintTrees();
+// Météo du monde (appelée par l'atmosphère) : neige sur les toits et les arbres, pluie qui assombrit. `look` donne les valeurs
+// continues (neige installée, humidité, pluie, couleur du ciel) ; sans lui, tout ou rien selon le genre de temps.
+export function setWorldWeather(kind, look = null) {
+  const snowing = kind === 'snow', raining = kind === 'rain' || kind === 'storm';
+  const snow = look?.snow ?? (snowing ? 1 : 0);
+  weatherLook.snow.value = snow;
+  weatherLook.wet.value = look?.wet ?? (raining ? 1 : 0);
+  weatherLook.rain.value = look?.rain ?? (raining ? 1 : 0);
+  if (look?.sky) weatherLook.sky.value.copy(look.sky);
+  if (look?.glow !== undefined) weatherLook.glow.value = look.glow;
+  // Les feuillages blanchissent dès que la neige couvre le sol (aussi après la chute) ; la pluie les assombrit.
+  const kindSeen = snow > 0.5 ? 'snow' : kind;
+  if (kindSeen !== worldKind) {
+    worldKind = kindSeen;
+    tintTrees();
+  }
 }
 
 // Ancien chemin du décor, gardé tant que main.js ne passe pas de propsView à createChunkManager.

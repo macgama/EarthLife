@@ -11,6 +11,9 @@ import { propsForChunk, featuresAround, nearestProp, PROP_KINDS, PROP_REACH } fr
 import { floreForChunk } from './flore.js';
 import { makeBruitTexture } from './bruit.js';
 import { buildingsGeometry, buildingMaterial, treesInstanced, followTreeWeather } from './scene.js';
+import { groundWeather } from './meteo-sol.js';
+import { LUMIERE } from './lumiere.js';
+import { createShadowLayer, bindShadow, shadowShapes, shadowLook } from './ombres-sol.js';
 import { groundGeometry } from './markings.js';
 import { SETTING_INDEX, SIDEWALK, carriageway, markBoxes } from './roadway.js';
 
@@ -1254,8 +1257,10 @@ float markCover(float x, float h, float w) {
     diffuseColor.rgb *= shade;
   }
 #endif`);
+  // Sol mouillé ou enneigé, ombres de nuages (meteo-sol.js).
+  if (LUMIERE.all) groundWeather(shader, groundKeys.uNoise);
 }
-const groundProgram = () => `earthlife-sol-marques-${groundDetailMode}`;
+const groundProgram = () => `earthlife-sol-marques-${groundDetailMode}${LUMIERE.all ? '-meteo' : ''}`;
 
 const spotOf = (t) => ({ x: t.x, z: t.z, s: t.s, dark: t.dark });
 
@@ -1305,8 +1310,9 @@ function makeFarGround(terrain) {
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vFarXZ;\nuniform vec2 uAt;\nuniform float uHole;')
       .replace('void main() {', 'void main() {\n  if (distance(vFarXZ, uAt) < uHole) discard;');
+    if (LUMIERE.all) groundWeather(shader, groundKeys.uNoise);
   };
-  mat.customProgramCacheKey = () => 'earthlife-fond-lointain';
+  mat.customProgramCacheKey = () => `earthlife-fond-lointain${LUMIERE.all ? '-meteo' : ''}`;
   const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
   mesh.frustumCulled = false;
@@ -1346,6 +1352,8 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
   groundDetailMode = GROUND_DETAILS.includes(groundDetail) ? groundDetail : 'fin';
   groundKeys.uNoise.value ??= makeBruitTexture();
   const px = lowPower ? 512 : 768; // 8 px/m sur téléphone, 12 px/m sur ordinateur (5.12)
+  // Fausses ombres sur téléphone (ombres-sol.js) : ni carte d'ombres du soleil, ni autre dessin à l'écran qu'une lecture de texture.
+  const shadows = lowPower && LUMIERE.shadows;
   const views = new Map();
   const pending = new Set(); // morceaux construits dont le décor attend une tuile voisine
   const gone = new Set(); // démontés : vus par isGone au calcul du décor, ou signalés par markGone
@@ -1369,6 +1377,8 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
   const root = new THREE.Group();
   scene.add(root);
   const baseMat = new THREE.MeshLambertMaterial({ color: PAL.ground });
+  baseMat.onBeforeCompile = (shader) => { if (LUMIERE.all) groundWeather(shader, groundKeys.uNoise); };
+  baseMat.customProgramCacheKey = () => `earthlife-sol-base${LUMIERE.all ? '-meteo' : ''}`;
   const base = new THREE.Mesh(new THREE.PlaneGeometry(1200, 1200).rotateX(-Math.PI / 2), baseMat);
   base.position.y = -0.04;
   base.receiveShadow = true;
@@ -1433,8 +1443,9 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
       map: tex, blending: THREE.CustomBlending, blendSrc: THREE.SrcAlphaFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
       blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
     });
-    mat.onBeforeCompile = groundShader;
-    mat.customProgramCacheKey = groundProgram;
+    const shade = shadows ? createShadowLayer({ cx, cz, size }) : null;
+    mat.onBeforeCompile = shade ? (shader) => { groundShader(shader); bindShadow(shader, shade); } : groundShader;
+    mat.customProgramCacheKey = shade ? () => `${groundProgram()}-ombre` : groundProgram;
     applyTint(mat);
     const geo = groundGeometry(plan, cx * size, cz * size, size, relief ? grid.chunks.get(key)?.relief ?? null : null, deckHalf);
     const mesh = new THREE.Mesh(geo, mat);
@@ -1442,7 +1453,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     mesh.receiveShadow = true;
     group.add(mesh);
     root.add(group);
-    return { group, mat, tex, groundGeo: geo, marks: geo.userData.marks, geo: null, trees: null, props: null, cx, cz, buildings: 0, done: false };
+    return { group, mat, tex, groundGeo: geo, marks: geo.userData.marks, geo: null, trees: null, props: null, cx, cz, buildings: 0, done: false, shade, shadeVersion: -1 };
   }
 
   // Second temps : bâtiments du morceau (un maillage) et décor.
@@ -1461,7 +1472,37 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     v.buildings = own.length;
     v.done = true;
     if (decorReady(v.cx, v.cz)) placeDecor(key, v);
-    else pending.add(key);
+    else { pending.add(key); bakeShadow(v); }
+  }
+
+  // Fausses ombres du morceau : bâtiments des morceaux voisins compris (leur ombre passe la limite), arbres et voitures déjà posés.
+  function bakeShadow(v) {
+    if (!v.shade) return;
+    const seen = new Set(), buildings = [];
+    for (const f of featuresAround(store, v.cx, v.cz)) for (const b of f.buildings) if (!seen.has(b)) { seen.add(b); buildings.push(b); }
+    const trees = [], cars = [];
+    for (let i = v.cx - 1; i <= v.cx + 1; i++) {
+      for (let j = v.cz - 1; j <= v.cz + 1; j++) {
+        for (const p of views.get(chunkKey(i, j))?.props ?? []) {
+          if (hidden(p.id)) continue;
+          if (p.kind === 'tree') trees.push(p);
+          else if (p.kind === 'car') cars.push(p);
+        }
+      }
+    }
+    v.shade.bake(shadowShapes(shadowLook.dir, { buildings, trees, cars }));
+    v.shadeVersion = shadowLook.version;
+  }
+
+  // Le soleil a tourné : refait l'ombre d'un morceau par image, le plus proche du joueur d'abord.
+  function refreshShadows(x, z) {
+    let best = null, bestD = Infinity;
+    for (const v of views.values()) {
+      if (!v.shade || !v.done || v.shadeVersion === shadowLook.version) continue;
+      const d = distance(v.cx, v.cz, x, z);
+      if (d < bestD) { best = v; bestD = d; }
+    }
+    if (best) bakeShadow(best);
   }
 
   // Le décor regarde jusqu'à PROP_REACH autour du morceau : il attend aussi les tuiles voisines à cette distance
@@ -1484,6 +1525,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     v.props = [...d.trees, ...d.cars, ...d.benches];
     if (relief) for (const p of v.props) seatProp(p, ground);
     for (const p of v.props) if (!gone.has(p.id) && isGone(p.id)) gone.add(p.id);
+    bakeShadow(v);
     if (propsView) propsView.setChunk(key, v.props.filter((p) => !gone.has(p.id)), d.cars.filter((p) => gone.has(p.id)));
     else showTrees(v);
     if (floreView) {
@@ -1512,6 +1554,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     if (!v) return;
     root.remove(v.group);
     v.tex.dispose();
+    v.shade?.dispose();
     v.mat.dispose();
     v.groundGeo.dispose();
     v.geo?.dispose();
@@ -1579,6 +1622,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     }
     // Fond lointain : troué là où le sol fin est construit (un creux pourrait le faire passer au-dessus).
     far?.hole(x, z, covered ?? R);
+    if (shadows && performance.now() - t0 < budgetMs) refreshShadows(x, z);
     return { waiting, built: views.size, covered: covered ?? R, radius: R };
   }
 
@@ -1593,9 +1637,11 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     return around(x, z, VIEW_RADIUS).filter((c) => !views.get(c.key)?.done).length;
   }
 
+  // Avec la lumière nouvelle, l'eau et la neige du sol sont dessinées dans son shader (meteo-sol.js) ; l'ancienne teinte du
+  // matériau ne reste que pour ?lumiere=0.
   function setWeather(kind) {
-    tint = kind === 'snow' ? { r: 0.62, g: 0.63, b: 0.65, snow: 0.42 }
-      : kind === 'rain' || kind === 'storm' ? { r: 0.68, g: 0.72, b: 0.79, snow: 0 } : { r: 1, g: 1, b: 1, snow: 0 };
+    tint = !LUMIERE.all && kind === 'snow' ? { r: 0.62, g: 0.63, b: 0.65, snow: 0.42 }
+      : !LUMIERE.all && (kind === 'rain' || kind === 'storm') ? { r: 0.68, g: 0.72, b: 0.79, snow: 0 } : { r: 1, g: 1, b: 1, snow: 0 };
     applyTint(baseMat);
     if (far) applyTint(far.mat);
     for (const v of views.values()) applyTint(v.mat);
@@ -1647,6 +1693,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
   function markGone(id) {
     if (gone.has(id)) return;
     gone.add(id);
+    if (shadows) for (const v of views.values()) if (v.props?.some((p) => p.id === id)) v.shadeVersion = -1; // son ombre disparaît
     if (propsView) {
       propsView.setGone(id, true);
       return;
