@@ -161,8 +161,9 @@ export function needAccountCard({ invited = false } = {}) {
 }
 
 // Liste des amis, dans l'ordre d'orderFriends : une ligne par ami (« Rejoindre » s'il est joignable, « Gérer » ouvre sa fiche), puis
-// « Inviter un ami » et « J'ai un code ». `where` : où ils sont (whereMap) ; `note` : ce qui vient de se passer.
-export function friendsCard({ friends = [], where = {}, cityOf = () => null, max = FRIEND_RULES.max, pending = null, note = '', warn = false, nowMs = Date.now() } = {}) {
+// « Inviter un ami » et « J'ai un code ». `where` : où ils sont (whereMap) ; `note` : ce qui vient de se passer ; `deposits` : dépôts d'amis
+// qui t'attendent (reçus, rendus ou à remettre : ils se retirent dans le sac, en partie).
+export function friendsCard({ friends = [], where = {}, cityOf = () => null, max = FRIEND_RULES.max, pending = null, note = '', warn = false, nowMs = Date.now(), deposits = 0 } = {}) {
   const lines = friends.map((f, i) => {
     const w = where[f.fid];
     const since = dayText(f.since) ? `ami depuis le ${dayText(f.since)}` : '';
@@ -174,6 +175,8 @@ export function friendsCard({ friends = [], where = {}, cityOf = () => null, max
   });
   if (!friends.length) lines.push("Pas encore d'amis. Envoie un lien à quelqu'un, ou entre le code qu'il t'a donné.");
   else lines.push({ text: 'Tes amis te voient en ligne ; ils ne voient où tu es que quand ta position est partagée (jamais depuis une zone privée), à 55 m près.', off: true });
+  if (deposits > 0) lines.push(`${deposits === 1 ? 'Un dépôt t\'attend' : `${deposits} dépôts t'attendent`} : ouvre ton sac en partie, section « Dépôts d'amis ».`);
+  if (friends.length) lines.push({ text: 'Pour donner des vivres ou des matériaux : en partie, ouvre ton sac, choisis l\'objet, puis « Donner à un ami ».', off: true });
   if (pending && pending.expiresMs > nowMs) lines.push(`Un code est en attente (jusqu'au ${untilText(pending.expiresMs)}) : « Inviter un ami » en fait un nouveau.`);
   return {
     title: `Mes amis (${friends.length}/${max})`, tone: warn ? 'warn' : undefined, lines: note ? [note, ...lines] : lines, scroll: true,
