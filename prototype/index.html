@@ -897,6 +897,22 @@ body.touch #controls { display: block; }
 .round-label { font: var(--fw-semibold) 10px / 1 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; }
 /* Au volant (conduite.js) : ni coup, ni course, ni tir ; E descend. */
 body.driving #attack, body.driving #run, body.driving #use-shoot { display: none; }
+/* Volant à l'écran et pédales (téléphone et tablette, au volant seulement ; conduite.js, input.js) : le volant à gauche tourne avec le pouce,
+   le gaz prend la place de Frapper et le frein celle de Courir. Au clavier, flèches ou ZQSD. */
+#wheel, .pedal { display: none; }
+body.touch.driving #wheel { display: block; }
+body.touch.driving .pedal { display: grid; }
+body.touch.driving #stick-base, body.touch.driving #stick-hint { display: none; }
+#wheel { position: absolute; left: calc(var(--hud-l) + 8px); bottom: calc(var(--hud-b) + 12px); width: 124px; height: 124px; color: color-mix(in srgb, var(--c-text) 85%, transparent); pointer-events: none; transform: rotate(calc(var(--steer, 0) * 100deg)); filter: drop-shadow(0 1px 3px color-mix(in srgb, var(--c-bg) 80%, transparent)); }
+#wheel svg { display: block; width: 100%; height: 100%; }
+#wheel .mark { stroke: var(--c-accent); }
+.pedal { gap: 4px; }
+.pedal .icon { width: 30px; height: 30px; }
+#pedal-gas { right: calc(var(--hud-r) + 10px); bottom: calc(var(--hud-b) + 18px); width: calc(var(--btn-attack) + 8px); height: calc(var(--btn-attack) + 8px); border: 2px solid var(--c-accent); background: color-mix(in srgb, var(--c-accent) 22%, var(--c-panel-solid)); }
+#pedal-brake { right: calc(var(--hud-r) + 114px); bottom: calc(var(--hud-b) + 18px); width: var(--btn-run); height: var(--btn-run); border: 2px solid var(--c-danger); background: color-mix(in srgb, var(--c-danger) 18%, var(--c-panel-solid)); }
+.pedal.on { transform: scale(.92); }
+#pedal-gas.on { background: color-mix(in srgb, var(--c-accent) 45%, var(--c-panel-solid)); }
+#pedal-brake.on { background: color-mix(in srgb, var(--c-danger) 40%, var(--c-panel-solid)); }
 /* Dans un bâtiment (vue de dessus, noir : src/main.js, syncScene) : l'écran se dégage. Restent les jauges, le sac, les actions et le zoom ;
    météo, objectif, pastille en ligne et carte des environs reviennent à la sortie. */
 body.indoor #conditions, body.indoor #quest, body.indoor #online-pill, body.indoor #mapbox:not(.big) #minimap { display: none; }
@@ -1046,6 +1062,7 @@ body.indoor #conditions, body.indoor #quest, body.indoor #online-pill, body.indo
   /* Courir et Frapper : l'icône seule (le nom reste dans aria-label), un peu plus petits. */
   .round-label { display: none; }
   #run { right: calc(var(--hud-r) + 98px); }
+  #pedal-brake { right: calc(var(--hud-r) + 106px); }
   #run .icon { width: 28px; height: 28px; }
   #hud > #gesture-toggle { right: calc(var(--hud-r) + 104px); }
   /* Fouiller et toast : centrés dans la place laissée à gauche de la colonne du sac. */
@@ -1165,7 +1182,7 @@ body.indoor #conditions, body.indoor #quest, body.indoor #online-pill, body.indo
 @media (min-width: 760px) and (min-height: 501px) and (max-height: 599px) { #hud { --mm-size: 136px; } .zoom-btns { display: none; } }
 @media (min-width: 760px) and (min-height: 501px) {
   /* Tablette : l'indice du pouce passe au-dessus de la carte et des boutons. */
-  #hud.has-map #stick-hint { bottom: calc(var(--hud-b) + var(--mm-size) + 6px + var(--touch) + 12px); }
+  #hud.has-map :is(#stick-hint, #wheel) { bottom: calc(var(--hud-b) + var(--mm-size) + 6px + var(--touch) + 12px); }
   /* Éléments centrés : même réserve des deux côtés, pour rester centrés. */
   #hud.has-map :is(#search, #action2, #toast) { max-width: min(420px, calc(100% - 2 * var(--mm-room))); }
 }
@@ -1217,7 +1234,7 @@ body.indoor #conditions, body.indoor #quest, body.indoor #online-pill, body.indo
   #hud.map-bl .zoom-btns { order: 2; flex-flow: row wrap; align-content: flex-end; width: calc(2 * var(--touch) + 4px); gap: 4px; }
   #hud.map-bl .zoom-btns #view-toggle { flex: 1 1 100%; }
   body:not(.touch) #hud.map-bl .zoom-btns { display: none; }
-  #hud.map-bl.has-map #stick-hint { bottom: calc(var(--hud-b) + var(--mm-size) + 12px); }
+  #hud.map-bl.has-map :is(#stick-hint, #wheel) { bottom: calc(var(--hud-b) + var(--mm-size) + 12px); }
 }
 /* Carte agrandie (côté --mm-big, posé par minimap.js) : sur ordinateur et tablette, au même coin ; sur téléphone en
    portrait, centrée sous la barre du haut, au-dessus du joueur ; à l'horizontale, en haut à droite sous la rangée du
@@ -1900,6 +1917,9 @@ body:has(> #card:not(.hidden):not(.rp-quiet)) #hud { opacity: var(--o-dim); }
     <div id="stick-hint">Pouce gauche&nbsp;: bouger</div>
     <div class="round" id="run" role="button" aria-label="Courir"><span class="round-icon" data-icon="courir"></span><span class="round-label">Courir</span></div>
     <div class="round" id="attack" role="button" aria-label="Frapper"><span class="round-icon" data-icon="frapper"></span><span class="round-label">Frapper</span></div>
+    <div id="wheel" aria-hidden="true"><svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-linecap="round"><circle cx="50" cy="50" r="42" stroke-width="9"/><circle cx="50" cy="50" r="8" stroke-width="5"/><path d="M42 50H13M58 50H87M50 58V87" stroke-width="6"/><path class="mark" d="M50 4V12" stroke-width="9"/></svg></div>
+    <div class="round pedal" id="pedal-brake" role="button" aria-label="Frein"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span class="round-label">Frein</span></div>
+    <div class="round pedal" id="pedal-gas" role="button" aria-label="Accélérer"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 14l6-6 6 6M6 19l6-6 6 6"/></svg><span class="round-label">Gaz</span></div>
   </div>
   <!-- Roue des 6 gestes (input.js : T, 1 à 6, clic ; hud.js : visible en ligne seulement). -->
   <button type="button" id="gesture-toggle" class="hidden" aria-expanded="false" aria-controls="gestures" aria-label="Gestes"><span class="gt-icon" data-icon="geste-salut"></span><span class="gt-text">Gestes</span><kbd>T</kbd></button>

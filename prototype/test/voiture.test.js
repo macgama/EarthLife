@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   CAR, litres, hashId, repairable, crowM, roadM, fuelFor, rangeM, driveSeconds, tripOf, circleRing,
   repairCheck, payRepair, repairedCar, siphonLoot, siphonKey, refuelCar, applyRefuel, refuelCheck, driveBlock, parkingSpot,
-  DRIVE, driveStep, driveFuel, canHit, hitDamage, hitWear, bodyHit, streetBlock, fixWearCost, fixWearCheck, payFixWear, angleDiff,
+  DRIVE, driveStep, wheelTarget, wheelStep, chaseDelta, driveFuel, canHit, hitDamage, hitWear, bodyHit, streetBlock, fixWearCost, fixWearCheck, payFixWear, angleDiff,
 } from '../src/voiture.js';
 import { ZOMBIE_TYPES } from '../src/game.js';
 
@@ -182,73 +182,116 @@ test('stationnement : sur le bas-côté droit de la route carrossable la plus pr
 });
 
 // ---------- Conduite dans les rues ----------
-const roll = (st, want, seconds, traction = 1, dt = 1 / 60) => {
+const roll = (st, ctl, seconds, traction = 1, dt = 1 / 60) => {
   let t = 0;
-  while (t < seconds - 1e-9) { st = driveStep(st, want, dt, traction); t += dt; }
+  while (t < seconds - 1e-9) { st = driveStep(st, ctl, dt, traction); t += dt; }
   return st;
 };
 
 test('conduite : 30 km/h au plus, atteints en quelques secondes, jamais dépassés', () => {
   assert.ok(Math.abs(DRIVE.maxMs * 3.6 - 30) < 1e-9);
-  let st = { yaw: 0, speed: 0 }, t = 0, peak = 0;
-  while (st.speed < DRIVE.maxMs * 0.95 && t < 20) { st = driveStep(st, { m: 1, heading: 0 }, 1 / 60); t += 1 / 60; peak = Math.max(peak, st.speed); }
+  let st = { yaw: 0, speed: 0 }, t = 0;
+  while (st.speed < DRIVE.maxMs * 0.95 && t < 20) { st = driveStep(st, { steer: 0, gas: 1 }, 1 / 60); t += 1 / 60; }
   assert.ok(t > 1.5 && t < 4, `accélération de ${t.toFixed(1)} s`);
-  st = roll(st, { m: 1, heading: 0 }, 10);
+  st = roll(st, { steer: 0, gas: 1 }, 10);
   assert.ok(st.speed <= DRIVE.maxMs + 1e-9, `vitesse ${st.speed}`);
   assert.ok(st.speed >= DRIVE.maxMs - 1e-6, 'le plein régime est atteint');
   // Le joueur court à 9,5 m/s : la voiture ne va jamais plus vite que lui (le monde construit au fil de la marche suit).
   assert.ok(DRIVE.maxMs < 9.5);
-  // Poussée à demi : demi-vitesse.
-  assert.ok(Math.abs(roll({ yaw: 0, speed: 0 }, { m: 0.5, heading: 0 }, 10).speed - DRIVE.maxMs / 2) < 0.05);
+  // Gaz à demi : demi-vitesse.
+  assert.ok(Math.abs(roll({ yaw: 0, speed: 0 }, { steer: 0, gas: 0.5 }, 10).speed - DRIVE.maxMs / 2) < 0.05);
 });
 
-test('conduite : relâcher le stick ralentit puis arrête, sans reculer', () => {
+test('conduite : pied levé, la voiture ralentit puis s\'arrête, sans reculer ni changer de cap', () => {
   let st = { yaw: 1, speed: DRIVE.maxMs };
   let t = 0;
   while (st.speed > 0 && t < 20) { st = driveStep(st, null, 1 / 60); t += 1 / 60; assert.ok(st.speed >= 0, 'jamais en marche arrière en roue libre'); if (st.speed < 1e-6) break; }
   assert.ok(t > 1.5 && t < 4, `arrêt en ${t.toFixed(1)} s`);
-  assert.equal(st.yaw, 1, 'sans poussée, le cap ne bouge pas');
-  assert.deepEqual(driveStep({ yaw: 0.5, speed: 0 }, { m: 0.1, heading: 3 }, 1), { yaw: 0.5, speed: 0 }, 'sous le seuil du stick, rien ne bouge');
+  assert.equal(st.yaw, 1, 'volant droit, le cap ne bouge pas');
+  assert.deepEqual(driveStep({ yaw: 0.5, speed: 0 }, { steer: 1, gas: 0.1 }, 1), { yaw: 0.5, speed: 0 }, 'sous le seuil du gaz, rien ne bouge');
 });
 
-test('conduite : la voiture tourne vers la direction poussée, plus lentement quand elle va vite', () => {
-  // À l'arrêt, elle ne pivote pas sur place : elle démarre en arc.
-  const still = driveStep({ yaw: 0, speed: 0 }, { m: 1, heading: Math.PI / 2 }, 1 / 60);
-  assert.ok(Math.abs(still.yaw) < 0.02 && still.speed > 0);
-  // Après une seconde, le cap s'est rapproché ; elle n'a jamais dépassé la direction voulue.
-  const slow = roll({ yaw: 0, speed: 3 }, { m: 1, heading: Math.PI / 2 }, 1);
-  const fast = roll({ yaw: 0, speed: DRIVE.maxMs }, { m: 1, heading: Math.PI / 2 }, 1);
-  assert.ok(slow.yaw > 0.9 && slow.yaw <= Math.PI / 2 + 1e-9, `cap lent ${slow.yaw}`);
-  assert.ok(fast.yaw > 0.5 && fast.yaw < slow.yaw + 0.8, `cap rapide ${fast.yaw}`);
-  assert.ok(angleDiff(Math.PI / 2, fast.yaw) > 0, 'pas de dépassement');
+test('volant : zone morte, courbe douce, braquage plein avant le bout de la course', () => {
+  assert.equal(wheelTarget(0), 0);
+  assert.equal(wheelTarget(0.05), 0, 'un pouce qui dérive un peu reste droit');
+  assert.equal(wheelTarget(-0.05), 0);
+  assert.ok(wheelTarget(0.3) > 0 && wheelTarget(0.3) < 0.3, 'autour du milieu, la voiture réagit doucement');
+  assert.equal(wheelTarget(0.8), 1, 'plein braquage à 80 % de la course');
+  assert.equal(wheelTarget(1), 1);
+  assert.equal(wheelTarget(-3), -1);
+  assert.equal(wheelTarget(NaN), 0);
+  let prev = 0;
+  for (let x = 0; x <= 1; x += 0.05) { const v = wheelTarget(x); assert.ok(v >= prev - 1e-12, `croissant en ${x}`); assert.ok(Math.abs(v + wheelTarget(-x)) < 1e-12, 'symétrique'); prev = v; }
+});
+
+test('volant : il rejoint le braquage voulu sans à-coup, et revient plus vite au centre', () => {
+  let w = 0, n = 0;
+  while (Math.abs(w - 1) > 0.02 && n < 600) { w = wheelStep(w, 1, 1 / 60); n++; assert.ok(w <= 1 + 1e-12); }
+  assert.ok(n > 10 && n < 60, `plein braquage en ${n} images`);
+  let back = 0;
+  w = 1;
+  while (Math.abs(w) > 0.02 && back < 600) { w = wheelStep(w, 0, 1 / 60); back++; }
+  assert.ok(back < n, `retour au centre en ${back} images, plus vite que l'aller (${n})`);
+});
+
+test('conduite : le volant tourne la voiture, plus lentement quand elle va vite, jamais sur place', () => {
+  // À l'arrêt, braquer ne la fait pas pivoter.
+  assert.equal(driveStep({ yaw: 0, speed: 0 }, { steer: 1, gas: 0 }, 1 / 60).yaw, 0);
+  // Droite : le cap diminue, gauche : il augmente (la caméra regarde le long du cap).
+  const right = roll({ yaw: 0, speed: 5 }, { steer: 1, gas: 0.6 }, 0.5), left = roll({ yaw: 0, speed: 5 }, { steer: -1, gas: 0.6 }, 0.5);
+  assert.ok(right.yaw < -0.3 && left.yaw > 0.3, `droite ${right.yaw}, gauche ${left.yaw}`);
+  assert.ok(Math.abs(left.yaw + right.yaw) < 1e-9, 'symétrique');
+  // Demi-braquage : demi-virage.
+  const half = roll({ yaw: 0, speed: 5 }, { steer: 0.5, gas: 0.6 }, 0.5);
+  assert.ok(Math.abs(half.yaw) > Math.abs(right.yaw) * 0.4 && Math.abs(half.yaw) < Math.abs(right.yaw) * 0.6);
+  // Plus vite, on tourne moins serré (en rad/s).
+  const slow = roll({ yaw: 0, speed: 3 }, { steer: 1, gas: 0.3 }, 1), fast = roll({ yaw: 0, speed: DRIVE.maxMs }, { steer: 1, gas: 1 }, 1);
+  assert.ok(Math.abs(slow.yaw) > Math.abs(fast.yaw), `lent ${slow.yaw}, rapide ${fast.yaw}`);
   // Rayon de braquage à 30 km/h : de l'ordre de 6 à 12 m (une voiture, pas un char).
   const omega = DRIVE.turn / (1 + DRIVE.maxMs / DRIVE.turnHalf);
   assert.ok(DRIVE.maxMs / omega > 5 && DRIVE.maxMs / omega < 12, `rayon ${(DRIVE.maxMs / omega).toFixed(1)} m`);
-  // Tourner à gauche ou à droite : symétrique.
-  const left = roll({ yaw: 0, speed: 5 }, { m: 1, heading: -1 }, 0.5), right = roll({ yaw: 0, speed: 5 }, { m: 1, heading: 1 }, 0.5);
-  assert.ok(Math.abs(left.yaw + right.yaw) < 1e-9);
   // Le cap reste dans ]−π, π].
-  assert.ok(Math.abs(roll({ yaw: 3, speed: 5 }, { m: 1, heading: -3 }, 2).yaw) <= Math.PI + 1e-9);
+  assert.ok(Math.abs(roll({ yaw: 3, speed: 5 }, { steer: -1, gas: 0.6 }, 2).yaw) <= Math.PI + 1e-9);
+  // Volant droit : tout droit, à n'importe quelle vitesse.
+  assert.equal(roll({ yaw: 0.7, speed: 6 }, { steer: 0, gas: 0.7 }, 3).yaw, 0.7);
 });
 
-test('conduite : une poussée derrière la voiture à l\'arrêt la fait reculer, lentement', () => {
-  const back = roll({ yaw: 0, speed: 0 }, { m: 1, heading: Math.PI }, 3);
-  assert.ok(back.speed < 0 && back.speed >= -DRIVE.reverseMs - 1e-9, `marche arrière ${back.speed}`);
-  assert.ok(Math.abs(back.yaw) < 1e-9, 'l\'arrière vise la poussée : le cap ne change pas');
-  // Poussée derrière à 30 km/h : elle freine et vire, elle ne passe pas en marche arrière d'un coup.
-  const braking = driveStep({ yaw: 0, speed: DRIVE.maxMs }, { m: 1, heading: Math.PI }, 1 / 60);
-  assert.ok(braking.speed > 0 && braking.speed < DRIVE.maxMs);
-  // Poussée vers l'avant en marche arrière : elle freine d'abord (poussée contraire) puis repart.
-  const fwd = driveStep({ yaw: 0, speed: -2 }, { m: 1, heading: 0 }, 1 / 60);
-  assert.ok(fwd.speed > -2);
+test('conduite : le frein arrête, puis la marche arrière démarre, lentement ; le volant s\'inverse en reculant', () => {
+  const brake = driveStep({ yaw: 0, speed: DRIVE.maxMs }, { steer: 0, gas: -1 }, 1 / 60);
+  const coast = driveStep({ yaw: 0, speed: DRIVE.maxMs }, null, 1 / 60);
+  assert.ok(brake.speed > 0 && brake.speed < coast.speed, 'le frein est plus fort que le pied levé');
+  // Frein tenu : arrêt net (jamais de marche arrière tant qu'elle roule vers l'avant), puis recul jusqu'à 3 m/s.
+  let st = { yaw: 0, speed: DRIVE.maxMs }, t = 0, stopped = null;
+  while (t < 12) {
+    st = driveStep(st, { steer: 0, gas: -1 }, 1 / 60); t += 1 / 60;
+    if (stopped === null && st.speed <= 0.5) stopped = t;
+    if (stopped === null) assert.ok(st.speed > 0, 'pas de recul avant l\'arrêt');
+  }
+  assert.ok(stopped > 0.4 && stopped < 2.5, `arrêt en ${stopped?.toFixed(1)} s`);
+  assert.ok(st.speed < 0 && st.speed >= -DRIVE.reverseMs - 1e-9 && Math.abs(st.speed + DRIVE.reverseMs) < 0.05, `marche arrière ${st.speed}`);
+  // Le gaz en marche arrière freine d'abord (poussée contraire) puis repart.
+  assert.ok(driveStep({ yaw: 0, speed: -2 }, { steer: 0, gas: 1 }, 1 / 60).speed > -2);
+  // En reculant, le même coup de volant fait virer l'arrière du même côté : le cap tourne dans l'autre sens.
+  const fwd = roll({ yaw: 0, speed: 3 }, { steer: 1, gas: 0.3 }, 0.3), back = roll({ yaw: 0, speed: -2.5 }, { steer: 1, gas: -1 }, 0.3);
+  assert.ok(fwd.yaw < 0 && back.yaw > 0, `avant ${fwd.yaw}, arrière ${back.yaw}`);
 });
 
 test('conduite : sol mouillé ou enneigé (traction faible) : on accélère et on tourne moins vite', () => {
-  const dry = roll({ yaw: 0, speed: 0 }, { m: 1, heading: 0 }, 1, 1), wet = roll({ yaw: 0, speed: 0 }, { m: 1, heading: 0 }, 1, 0.4);
+  const dry = roll({ yaw: 0, speed: 0 }, { steer: 0, gas: 1 }, 1, 1), wet = roll({ yaw: 0, speed: 0 }, { steer: 0, gas: 1 }, 1, 0.4);
   assert.ok(wet.speed < dry.speed);
-  const turnDry = roll({ yaw: 0, speed: 5 }, { m: 1, heading: 2 }, 0.5, 1), turnWet = roll({ yaw: 0, speed: 5 }, { m: 1, heading: 2 }, 0.5, 0.4);
-  assert.ok(turnWet.yaw < turnDry.yaw);
-  assert.deepEqual(driveStep({ yaw: 0, speed: 3 }, { m: 1, heading: 0 }, 1 / 60, 9), driveStep({ yaw: 0, speed: 3 }, { m: 1, heading: 0 }, 1 / 60, 1), 'traction bornée à 1');
+  const turnDry = roll({ yaw: 0, speed: 5 }, { steer: 1, gas: 0.6 }, 0.5, 1), turnWet = roll({ yaw: 0, speed: 5 }, { steer: 1, gas: 0.6 }, 0.5, 0.4);
+  assert.ok(Math.abs(turnWet.yaw) < Math.abs(turnDry.yaw));
+  assert.deepEqual(driveStep({ yaw: 0, speed: 3 }, { steer: 1, gas: 1 }, 1 / 60, 9), driveStep({ yaw: 0, speed: 3 }, { steer: 1, gas: 1 }, 1 / 60, 1), 'traction bornée à 1');
+});
+
+test('caméra au volant : elle revient derrière le cap de la voiture, par le plus court, même à l\'arrêt', () => {
+  let yaw = 0;
+  for (let i = 0; i < 90; i++) yaw += chaseDelta(yaw, 1.2, 1 / 60);
+  assert.ok(Math.abs(yaw - 1.2) < 0.08, `après 1,5 s : ${yaw}`);
+  // De 3 rad à −3 rad, le plus court passe par π (0,28 rad), pas par zéro.
+  const d = chaseDelta(3, -3, 1 / 60);
+  assert.ok(d > 0 && d < 0.1, `par le plus court : ${d}`);
+  assert.equal(chaseDelta(0.4, 0.4, 1 / 60), 0);
 });
 
 test('conduite : l\'essence brûle comme au trajet (8 L aux 100 km), un bidon fait 62 km', () => {
