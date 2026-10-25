@@ -190,6 +190,32 @@ jobs:
           path: prototype/browser-shots/camera
           retention-days: 14
 
+  acceptance-personnages:
+    # Personnages et effets (variantes sans appel de dessin de plus, soixante zombies, coup de feu, foule de survivants), téléphone puis
+    # ordinateur. Ne bloque pas la publication tant qu'il n'a pas fait ses preuves sur la machine du dépôt.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm install --no-save playwright@1
+      - run: npx playwright install --with-deps chromium
+      - run: node test/personnages-acceptance.mjs browser-shots/personnages
+        env:
+          ROUTES: test/fixtures/offline-routes.mjs
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: captures-personnages
+          path: prototype/browser-shots/personnages
+          retention-days: 14
+
   acceptance-online:
     # Jeu à plusieurs (spec multijoueur 9.3, O1 à O27) dans Chromium, contre le faux serveur (server/dev.mjs, magasin
     # en mémoire, lancé dans le même processus), sans réseau. Ce contrôle bloque la publication.

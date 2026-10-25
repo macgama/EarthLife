@@ -171,6 +171,17 @@ Pendant l'alerte et la vague, la caméra ne recule pas assez pour voir la horde 
 
 Le menu permet de forcer une météo ou la nuit pour tester.
 
+### Personnages et effets
+
+**Des visages.** Les autres survivants et les habitants du refuge ne se ressemblent plus : peau, cheveux (ras, courts, longs, queue-de-cheval, frisés), coiffe (aucune, casquette, bonnet, capuche), sac (aucun, sac à dos, sacoche), pantalon, taille et, pour les habitants, veste sont tirés de leur identifiant (`src/personnages.js`, module pur testé sous node : la même personne a toujours le même visage). Le joueur garde le sien (cheveux courts, casquette orange, sac à dos, batte), pour que sa silhouette reste lisible. **Aucun appel de dessin de plus** : toutes les options sont dans la même géométrie et le shader replie sur son pivot la pièce que l'instance n'a pas choisie ; les couleurs viennent de palettes (`uPal`, quarante teintes).
+
+**Des zombies usés.** Cheveux, capuche, manches (un bras nu, débardeur), vêtements fanés, teint plus ou moins livide et blessure en aplat de sang séché (brun, jamais vif, jamais en volume) sont tirés de l'identifiant du zombie. Chaque type a sa démarche : l'errant traîne la jambe, tête ballante ; le coureur fonce penché, bras fouettant l'air ; le costaud piétine, épaules qui roulent. À terre, le corps s'affaisse à gauche ou à droite, les bras s'écartent, la tête retombe, et une tache brun sombre reste sous lui jusqu'à son effacement.
+
+**Des poses.** Le joueur tire d'une main (pistolet) ou des deux (fusil), la batte repliée, avec le recul ; il fouille à tâtons, bricole, cueille ; voûté et plus lent dès que la fatigue passe 55, frissonnant quand le corps descend sous 36 °C (valeurs de `survival.js`, rien d'inventé). Le souffle ne se voit que par temps frais : la buée dépend de la vraie température d'Open-Meteo (rien au-dessus de 12 °C, pleine à 4 °C).
+
+**Des effets** (`src/effets.js`, `src/effets-view.js`) : une réserve de 96 particules (téléphone) ou 192, dessinées par **un seul maillage instancié** (un appel, aucun quand il n'y a rien). Au tir : éclair en étoile, jet de flamme, étincelles, fumée qui dérive avec le vent réel, douille éjectée qui rebondit (cuivre pour le pistolet, rouge pour le fusil) ; le traceur parcourt la ligne de tir. Aux impacts : éclat, gouttes de sang séché qui retombent (sans mare), poussière pour une balle perdue ; à la chute d'un zombie, un anneau de poussière. Au refuge, une fumée mince sort de la cheminée dès que le feu est installé. Ni lumière dynamique, ni ombre portée de plus.
+
+
 ### Relief (`?relief=1`)
 
 Le relief réel est un essai : il ne s'active qu'avec `?relief=1` dans l'adresse (par exemple `?lat=45.7578&lon=4.832&relief=1`). Sans ce paramètre, ou si les tuiles d'altitude n'arrivent pas, le jeu est plat, exactement comme avant ; le panneau des conditions dit « Relief indisponible » dans ce second cas.
@@ -242,6 +253,14 @@ node test/camera-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobi
 
 Le script joue la caméra basse à Lyon, sur ordinateur puis sur téléphone : la vue de dessus reste celle du départ (champ 48°, découpe des murs, rien d'écrit dans les réglages), le bouton (touche G) passe en vue basse et le choix est gardé et relu après un rechargement, puis le retour rend la vue de dessus ; dos à un mur la perche se raccourcit et la caméra reste hors du bâtiment, puis reprend sa longueur ; sur téléphone, le pouce droit tourne et baisse la caméra, un pincement l'approche ; le recentrage ne bouge pas pour une poussée tout droit et suit une poussée un peu de côté ; des flèches montrent les zombies hors du champ (aucune en vue de dessus) ; sur ordinateur, le bouton + rapproche la caméra, un bâtiment ouvert la remet de dessus (le bouton reste enfoncé) et la vue basse revient dehors, et au volant elle recule puis revient derrière la voiture qui roule. La CI le lance dans son propre travail, `acceptance-camera` ; il bloque la publication.
 
+### Acceptation des personnages et des effets
+
+```sh
+node test/personnages-acceptance.mjs [dossier-des-captures]   # ONLY=desktop (ou mobile) ; captures dans browser-shots/personnages
+```
+
+Hors ligne, téléphone puis ordinateur : aucune erreur de page ni de shader ; soixante zombies n'ajoutent pas d'appel de dessin (au plus un) et se distinguent entre eux ; un coup de feu fait naître des particules dans un seul maillage (au plus six appels de plus avec le traceur et l'arme en main) qui s'éteint ensuite ; une foule d'autres survivants ne montre pas toutes les mêmes têtes. Les tests purs sont dans `test/personnages.test.js` et `test/effets.test.js`.
+
 ### Acceptation de la fenêtre « Habillement »
 
 ```sh
@@ -274,7 +293,9 @@ Le script remplit le sac de pièces (bonnet, casques, blouson, pantalon, lampe, 
 - `src/minimap.js` : carte des environs (canvas 2D tourné avec la caméra, fond dessiné par tranches dans un cache, repères, garde-fou qui l'écarte des autres panneaux, carte agrandie)
 - `src/camera-basse.js`, `src/flancs.js` : vue basse derrière le personnage (pose, perche contre les murs, brouillard, recentrage, suivi de la voiture) et flèches vers les zombies hors du champ
 - `src/view.js` : zoom de la caméra (de 18 à 72 m, 56 m sur téléphone), tangage plancher, rayon construit et brouillard qui cache le bord du monde, réglage gardé (`localStorage['earthlife.vue']`)
-- `src/characters.js` : joueur et zombies low-poly animés (un seul appel de dessin pour tous les zombies), ombres de contact
+- `src/characters.js` : joueur, autres survivants et zombies low-poly animés (un seul appel de dessin pour tous les zombies, variantes dans la même géométrie), ombres de contact
+- `src/personnages.js` : variantes de visage, de tenue et de démarche tirées d'un identifiant, palettes, fatigue et froid (module pur)
+- `src/effets.js`, `src/effets-view.js` : particules du tir, des impacts, de la poussière, de la buée et de la cheminée (module pur, puis maillage instancié unique)
 - `src/icons.js` : icônes de l'interface (SVG au trait, `data-icon` dans la page)
 - `src/input.js` : clavier, souris (molette), joystick tactile et pincement
 - `assets/fonts/` : polices Chakra Petch et Barlow Semi Condensed auto-hébergées (licence OFL)

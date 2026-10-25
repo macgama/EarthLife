@@ -81,7 +81,8 @@ test('foule : géométrie du joueur avec une veste sarcelle, 2 maillages, animat
   assert.equal(crowd.root.children.length, 2);
   assert.ok(body.isInstancedMesh && outline.isInstancedMesh && body.geometry === outline.geometry);
   assert.ok(hasColor(body.geometry, SURVIVOR_JACKET) && !hasColor(body.geometry, PLAYER_JACKET), 'veste sarcelle');
-  assert.equal(body.geometry.getAttribute('position').count, player.getAttribute('position').count, 'même silhouette');
+  assert.equal(body.geometry.getAttribute('position').count, playerGeometry({ variants: true }).getAttribute('position').count, 'même silhouette, avec les variantes de cheveux, de coiffe et de sac');
+  assert.ok(body.geometry.getAttribute('position').count > player.getAttribute('position').count, 'les variantes ajoutent des pièces');
   assert.equal(body.castShadow, false, 'pas d\'ombre portée (budget 9.3)');
   assert.equal(body.visible, false);
 
