@@ -28,7 +28,7 @@ import {
   writeViewPrefs,
 } from './view.js';
 import {
-  BASSE, clampBasseDist, clampBassePitch, approachK, boomLimit, boomSmooth, lowPose, blendPose, recenterDelta, followDelta, flankAlerts,
+  BASSE, clampBasseDist, clampBassePitch, approachK, boomLimit, boomSmooth, lowPose, blendPose, recenterDelta, flankAlerts,
   halfFovH,
 } from './camera-basse.js';
 import { createFlancs } from './flancs.js';
@@ -64,6 +64,7 @@ import {
 import { createHud, distanceText } from './hud.js';
 import { createRideGame, createRideOverlay } from './trajet.js';
 import { createCarGame } from './conduite.js';
+import { chaseDelta } from './voiture.js';
 import { createCampagne } from './campagne-jeu.js';
 import { saisonDe, dateDuMois, mur as plantMure } from './campagne.js';
 import { createDriveMap } from './conduite-carte.js';
@@ -96,6 +97,7 @@ import { normFriendCode, showFriendCode, FRIEND_RULES } from './net/amis.js';
 import { REDUCED_LOOT, searchedLabel } from './shared-world.js';
 // Compte facultatif (spécification des comptes, 5.8) : partie sauvegardée sur le serveur, autre appareil.
 import { createAccount, NULL_ACCOUNT } from './account.js';
+import { createDepot } from './depot-jeu.js';
 import { createAccountUi } from './account-ui.js';
 
 const PREFETCH_RADIUS = 600; // tuiles demandées à l'avance autour du joueur
@@ -268,12 +270,22 @@ if (onlineOn) {
   online.on('session', () => account.sessionRefused());
   // Connexion ou déconnexion : le bloc « Saison 1 » du menu relit l'inscription.
   account.on('state', () => {
-    if (account.state !== 'in') resetFriendsLive();
+    if (account.state !== 'in') { resetFriendsLive(); depot.reset(); }
+    else setTimeout(() => depot.replay(), 0);                                   // dons partis sans réponse : ils repartent dès que le compte est là
     city.seasonChanged();
     // Connexion faite pour accepter une invitation d'ami : la carte revient quand le formulaire du compte s'est refermé.
     if (friendWait.get()) setTimeout(() => { renderFriendsMenu(); offerPendingFriend(); }, 800);
   });
 }
+// Boîte de dépôt entre amis (depot-jeu.js, étape 4) : dons et retraits du sac. Le survivant est celui de la partie en cours (le même sac
+// que la sauvegarde) ; sans partie, le sac enregistré. Sans compte connecté, rien ne s'affiche et rien ne part.
+const depot = createDepot({
+  account, save,
+  survivor: () => session?.survivor ?? { inventory: save.survivor.bag ??= {}, pack: save.survivor.pack ?? null },
+  markDirty: () => saveStore.markDirty(), flush: (why) => saveStore.flush(why),
+  canWrite: () => !saveStore.readOnly,
+  bytes: (n) => crypto.getRandomValues(new Uint8Array(n)),
+});
 // Écouteurs posés après ceux de save.js (créé plus haut) : la partie est écrite d'abord, puis envoyée. Une erreur du
 // jeu en ligne n'empêche pas l'envoi de la partie.
 window.addEventListener('pagehide', () => {
@@ -503,6 +515,7 @@ if (SOUND_AUTOSTART) son.attach(window);
 const input = createInput(canvas, {
   stickBase: $('stick-base'), stickKnob: $('stick-knob'), attackButton: $('attack'), runButton: $('run'), searchButton: $('search'),
   action2Button: $('action2'), useButtons: [...document.querySelectorAll('#inventory .chip[data-use]')], autoRun: true,
+  gasButton: $('pedal-gas'), brakeButton: $('pedal-brake'),
   zoomIn: $('zoom-in'), zoomOut: $('zoom-out'), viewToggle: $('view-toggle'), wheelTargets: [$('mapbox')],
 });
 // Zoom gardé d'une partie et d'une visite à l'autre, hors de la sauvegarde (src/view.js) ; écrit 800 ms après le
@@ -578,6 +591,7 @@ const cars = createCarGame({
   showCard: (...a) => showCard(...a), toast: (...a) => toast(...a), propsView, online, overlay: createRideOverlay(document),
   addLoot, lootNotes: (res) => lootNotes(res), gainSkill: (...a) => gainSkill(...a), craftXp,
   arrive: (place, arrival, season) => arriveByCar(place, arrival, season), openMap: (args) => driveMap.open(args), tripCities: () => city.tripCities(),
+  touch: () => isTouch(),
   // Zombies renversés au volant : comptés comme des coups portés (profil, Combat).
   runOver: (s, { hits, kills }) => {
     if (kills) {
@@ -1619,16 +1633,16 @@ function step(s, inp, dt) {
     if (Math.abs(Math.atan2(Math.sin(s.yawBefore - s.cameraYaw), Math.cos(s.yawBefore - s.cameraYaw))) < 0.01) { s.cameraYaw = s.yawBefore; s.yawBefore = undefined; }
   } else {
     s.yawBefore = undefined;
-    s.cameraYaw += inp.cameraYawDelta;
+    // Au volant, la caméra ne se manie plus : elle reste derrière la voiture, à l'arrêt comme en route.
+    if (s.driving) s.cameraYaw += chaseDelta(s.cameraYaw, s.driving.yaw, dt);
+    else s.cameraYaw += inp.cameraYawDelta;
   }
   // Vue basse : le pouce droit tourne la caméra (côté) et la baisse ou la monte (haut-bas) ; au repos, elle revient lentement derrière
   // le personnage qui avance tout droit, ou derrière la voiture au volant.
   const lowOn = lowActive(s) && !topDown;
   s.lookIdle = inp.cameraYawDelta || inp.cameraPitchDelta ? 0 : Math.min(60, s.lookIdle + dt);
-  if (lowOn && s.lowK > 0.5 && s.yawBefore === undefined && !p.hidden) {
-    s.cameraYaw += s.driving
-      ? followDelta({ yaw: s.cameraYaw, heading: s.driving.yaw, speed: s.driving.speed, idle: s.lookIdle, dt })
-      : recenterDelta({ mx: inp.move.x, my: inp.move.y, speed: Math.hypot(p.vx ?? 0, p.vz ?? 0), idle: s.lookIdle, dt });
+  if (lowOn && !s.driving && s.lowK > 0.5 && s.yawBefore === undefined && !p.hidden) {
+    s.cameraYaw += recenterDelta({ mx: inp.move.x, my: inp.move.y, speed: Math.hypot(p.vx ?? 0, p.vz ?? 0), idle: s.lookIdle, dt });
   }
   if (inp.cameraPitchDelta && lowOn) {
     s.lowPitch = viewPrefs.pitch = clampBassePitch(s.lowPitch + inp.cameraPitchDelta);
@@ -1804,6 +1818,8 @@ const BUSY_LABELS = { nail: 'Clouage…', repair: 'Réparation…', plate: 'Pose
 // En deçà, la flèche de boussole s'estompe (la balise ou le repère 3D prend le relais).
 const NEAR_ARROW = 25;
 
+let wheelDeg = 0;
+const wheelEl = document.getElementById('wheel');
 const isTouch = () => document.body.classList.contains('touch') || !!input.state.touch;
 const actionIcon = (a) => (a.id === 'prop' ? ACTION_ICONS[a.arg.kind] : ACTION_ICONS[a.id]) ?? 'fouiller';
 
@@ -2121,8 +2137,11 @@ function toggleBag(s) {
   dressing.close(); // du sac à l'habillement et retour : l'un remplace l'autre
   if (!s?.player || s.ended || session !== s || (card.isOpen() && cardInfo?.blocking)) return;
   if (asleep(s)) { toast('Tu dors : tu ne peux rien faire d\'autre', 1.5); return; }
+  const online = depot.available();
   finds.open(s, {
     title: 'Mon sac', kicker: 'Inventaire', found: {}, mode: 'bag',
+    // Section « Dépôts d'amis » et « Donner à un ami » : seulement avec un compte connecté.
+    depot: online ? { snapshot: depot.snapshot(), give: (a) => depot.give(a), act: (a) => depot.act(a) } : null,
     onClose: (left) => {
       if (session !== s) return;
       const text = findsLeftText(left, 'bag');
@@ -2130,7 +2149,32 @@ function toggleBag(s) {
       for (const t of findsToasts.splice(0)) toast(...t);
     },
   });
+  if (online) refreshDepot(s);
 }
+
+// Sac ouvert : les dons restés sans réponse repartent, puis la liste des amis et la boîte se relisent ; la fenêtre se refait.
+async function refreshDepot(s) {
+  const mine = () => finds.isOpen() && finds.mode() === 'bag' && session === s;
+  await depot.replay();
+  if (mine()) finds.setDepot(depot.snapshot());
+  await depot.load();
+  if (mine()) finds.setDepot(depot.snapshot());
+}
+
+// En partie, toutes les 2 minutes (onglet visible, fenêtres du sac fermées) : un dépôt reçu se dit une seule fois, par une ligne en bas
+// de l'écran ; rien dans la barre du haut. Les dons restés sans réponse repartent à chaque relève. Essais : ?depotPollMs=3000.
+const DEPOT_POLL_MS = DEBUG ? Math.min(120000, Math.max(3000, Number(params.get('depotPollMs')) || 120000)) : 120000;
+let depotPollAt = 0;
+setInterval(async () => {
+  const s = session;
+  if (!s?.player || s.ended || s.paused || !depot.available() || document.visibilityState === 'hidden' || !menuEl.classList.contains('hidden')) return;
+  if (finds.isOpen() || Date.now() - depotPollAt < DEPOT_POLL_MS) return;
+  depotPollAt = Date.now();
+  if (saveStore.readOnly) return;
+  await depot.replay();
+  const fresh = await depot.poll();
+  if (fresh.length && session === s) toast('Un ami t\'a laissé des objets : ouvre ton sac.', 4);
+}, 5000);
 
 // Touche H et bouton « Habillement » du sac : ce que le survivant porte, et les pièces du sac qu'il peut y mettre. Même règles que le
 // sac : jeu en pause, fermée pendant le sommeil, devant une carte qui attend une réponse ou après la mort ; un second appui ferme.
@@ -3160,6 +3204,9 @@ function syncScene(s, dt) {
   // Vue basse : le personnage disparaît quand la perche est si courte que son dos remplirait l'écran (dos au mur).
   for (const m of playerMeshes) m.visible = !p.hidden && !s.driving && !(pose.k > 0.5 && pose.dist < 1.5);
   document.body.classList.toggle('driving', !!s.driving);
+  // Volant à l'écran (téléphone) : il tourne avec le braquage.
+  const steerDeg = s.driving ? Math.round((s.driving.steer ?? 0) * 100) : 0;
+  if (steerDeg !== wheelDeg) { wheelDeg = steerDeg; wheelEl?.style.setProperty('--steer', String(steerDeg / 100)); }
   s.sightAt = INTERIOR_DARK && s.interior?.entered ? interiorView.shadow.lightAtWorld : null; // zombies dans le noir : cachés
   characters.sync(s, dt, camera, atmosphere.state.daylight);
   tirView.update(dt, p, s.grid?.terrain?.enabled ? s.grid : null);
@@ -3880,7 +3927,8 @@ async function showFriends(note = '', warn = false) {
   }
   const { where, max, pending } = friendsLive;
   const friends = orderFriends(friendsLive.friends, where);
-  friendsShow(friendsCard({ friends, where, cityOf: seasonCityOf, max, pending, note, warn, nowMs: Date.now() }), friendsButtons(friends));
+  await depot.poll();                                                          // dépôts qui t'attendent : une ligne de la carte
+  friendsShow(friendsCard({ friends, where, cityOf: seasonCityOf, max, pending, note, warn, nowMs: Date.now(), deposits: depot.waiting() }), friendsButtons(friends));
 }
 
 function friendsButtons(friends) {
@@ -4302,7 +4350,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, finds, dressing, ...(debug ? { debug, online, tirView, cars, driveMap, propsView, floreView, groundDetail, son } : {}),
+  saveStore, picker, renderer, finds, dressing, ...(debug ? { debug, online, input, tirView, cars, driveMap, propsView, floreView, groundDetail, son, depot } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.
