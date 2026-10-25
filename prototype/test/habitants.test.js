@@ -120,7 +120,7 @@ test('habitants civils : la même silhouette que les survivants, sans sac à dos
   assert.ok(civil.getAttribute('position').count < armed.getAttribute('position').count, 'moins de sommets : ni sac, ni batte');
   const crowd = createSurvivorCrowd({ capacity: 12, jacket: HABITANTS.jacket, civil: true });
   assert.equal(crowd.capacity, 12);
-  assert.equal(crowd.meshes.body.geometry.getAttribute('position').count, civil.getAttribute('position').count);
+  assert.equal(crowd.meshes.body.geometry.getAttribute('position').count, playerGeometry({ jacket: HABITANTS.jacket, civil: true, variants: true }).getAttribute('position').count);
   // y : la silhouette suit le sol quand le relief le demande.
   crowd.sync([{ key: 1, x: 3, z: 4, y: 2.5, yaw: 0, flags: 0, alpha: 1 }], 1 / 30);
   const m = new THREE.Matrix4();

@@ -8,21 +8,20 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { ZOMBIE_TYPES } from './game.js';
 import { groundAt, groundNormal } from './collision.js';
+import {
+  PART, MASK, SLOT, maskCode, PAL_HEX, GAIT, humanVariant, playerVariant, zombieVariant, bodyLook, activityOf, ACTIVITY,
+} from './personnages.js';
+import { breathChance } from './effets.js';
 
-// Membres (aLimb.w) : 0 corps, 1 bras gauche, 2 bras droit, 3 jambe gauche, 4 jambe droite, 5 cargaison.
-const BODY = 0, ARM_L = 1, ARM_R = 2, LEG_L = 3, LEG_R = 4, CARGO = 5;
-// Masque (aMask) : 0 couleur du sommet, 1 teinte du type de zombie, 2 lueur (yeux, bandes réfléchissantes).
-const PLAIN = 0, TINT = 1, GLOW = 2;
-// Le personnage regarde vers +z ; sa droite est en -x.
-const SHOULDER_Y = 1.54, HIP_Y = 0.92;
+// Membres (aLimb.w) : voir PART (personnages.js) ; le personnage regarde vers +z ; sa droite est en -x.
+const { BODY, ARM_L, ARM_R, LEG_L, LEG_R, CARGO, HEAD } = PART;
+const { PLAIN, TINT, GLOW } = MASK;
+const SHOULDER_Y = 1.54, HIP_Y = 0.92, NECK_Y = 1.68;
 
 const WALK = 5.5; // vitesse de marche du joueur (game.js), référence du rebond et de l'inclinaison
-const ZOMBIE_LOOK = {
-  errant: { scale: [1, 1, 1], hunch: 0.18, arms: -1.3, armSwing: 0.25 },
-  coureur: { scale: [0.9, 1.05, 0.9], hunch: 0.28, arms: -0.55, armSwing: 0.9 },
-  costaud: { scale: [1.35, 1.2, 1.35], hunch: 0.18, arms: -0.85, armSwing: 0.35 },
-};
+const PALE = new THREE.Color(0xb9bfae); // teint livide : les zombies usés tirent vers lui
 const DEAD_TINT = new THREE.Color(0x5d625c);
+const STAIN = new THREE.Color(0x45120f); // tache sous un zombie à terre (sang séché, brun-rouge sombre)
 // Veste du joueur (accent de l'interface) et des autres survivants (sarcelle, spec 1 et 7.2).
 export const PLAYER_JACKET = 0xff7f1f;
 export const SURVIVOR_JACKET = 0x2bb3a3;
@@ -42,21 +41,37 @@ function prism(rTop, rBottom, h, x, y, z, { depth = 1, open = false } = {}) {
   return new THREE.CylinderGeometry(rTop, rBottom, h, 6, 1, open, Math.PI / 6).scale(1, 1, depth).translate(x, y, z);
 }
 
-// Assemble les pièces en une seule géométrie : couleur, membre (pivot et numéro) et masque par sommet.
+// Aplat posé sur une surface (taches de sang séché) : un carré de deux triangles ; `top` : à plat, tourné vers le haut.
+function patch(w, h, x, y, z, { top = false } = {}) {
+  const g = new THREE.PlaneGeometry(w, h);
+  if (top) g.rotateX(-Math.PI / 2);
+  return g.translate(x, y, z);
+}
+
+// Pivot de chaque membre (le cou pour la tête).
+const PIVOTS = {
+  [ARM_L]: [0.31, SHOULDER_Y, 0], [ARM_R]: [-0.31, SHOULDER_Y, 0], [LEG_L]: [0.12, HIP_Y, 0], [LEG_R]: [-0.12, HIP_Y, 0],
+  [CARGO]: [0, 1.3, -0.3], [HEAD]: [0, NECK_Y, 0],
+};
+
+// Assemble les pièces en une seule géométrie : couleur, membre (pivot et numéro) et matière par sommet. Une pièce à variante
+// (`gate: [emplacement, [options]]`) n'est montrée que si l'instance a l'une de ces options (voir LIMB_MAIN).
 function figure(pieces) {
-  const geos = pieces.map(({ geo, color, part = BODY, mask = PLAIN }) => {
+  const flat = []; // pièces sans contour (détails du visage : le liseré les noierait)
+  const geos = pieces.map(({ geo, color, part = BODY, mask = PLAIN, gate = null, noOutline = false }) => {
     const g = geo.index ? geo.toNonIndexed() : geo;
     if (g !== geo) geo.dispose();
     g.deleteAttribute('uv');
     const n = g.attributes.position.count;
     const c = new THREE.Color(color);
-    const pivot = part === ARM_L ? [0.31, SHOULDER_Y, 0] : part === ARM_R ? [-0.31, SHOULDER_Y, 0]
-      : part === LEG_L ? [0.12, HIP_Y, 0] : part === LEG_R ? [-0.12, HIP_Y, 0] : part === CARGO ? [0, 1.3, -0.3] : [0, 0, 0];
+    const pivot = PIVOTS[part] ?? [0, 0, 0];
+    const code = gate ? maskCode(mask, gate[0], gate[1]) : mask;
+    flat.push(noOutline ? n : -n);
     const col = new Float32Array(n * 3), limb = new Float32Array(n * 4), msk = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       col.set([c.r, c.g, c.b], i * 3);
       limb.set([pivot[0], pivot[1], pivot[2], part], i * 4);
-      msk[i] = mask;
+      msk[i] = code;
     }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     g.setAttribute('aLimb', new THREE.BufferAttribute(limb, 4));
@@ -66,6 +81,14 @@ function figure(pieces) {
   const merged = mergeGeometries(geos);
   geos.forEach((g) => g.dispose());
   addOutlineNormals(merged);
+  // Sans contour : la coque n'est pas gonflée (elle reste cachée derrière la pièce).
+  const outline = merged.attributes.aOutline;
+  let at = 0;
+  for (const n of flat) {
+    const count = Math.abs(n);
+    if (n > 0) for (let i = at; i < at + count; i++) outline.setXYZ(i, 0, 0, 0);
+    at += count;
+  }
   return merged;
 }
 
@@ -103,18 +126,18 @@ function dressLook(look) {
   const out = { cap: !L.head, torso: LOOK_TORSO[L.clothing] ?? null, puff: LOOK_PUFF[L.clothing] ?? 1, legs: LOOK_LEGS[L.legs] ?? null, body: [], legPieces: [], hand: [] };
   const SHELL = 0x262b31;
   if (L.head === 'bonnet') {
-    out.body.push({ geo: box(0.32, 0.17, 0.32, 0, 1.985, 0), color: 0x3d4a5c });
-    out.body.push({ geo: box(0.08, 0.08, 0.08, 0, 2.12, 0), color: PLAYER_JACKET }); // pompon : l'accent orange
+    out.body.push({ geo: box(0.32, 0.17, 0.32, 0, 1.985, 0), color: 0x3d4a5c, part: HEAD });
+    out.body.push({ geo: box(0.08, 0.08, 0.08, 0, 2.12, 0), color: PLAYER_JACKET, part: HEAD }); // pompon : l'accent orange
   } else if (L.head === 'chapeau_pluie') {
-    out.body.push({ geo: box(0.3, 0.12, 0.3, 0, 2.03, 0), color: 0xd8b21e });
-    out.body.push({ geo: box(0.52, 0.03, 0.52, 0, 1.975, 0), color: 0xd8b21e });
+    out.body.push({ geo: box(0.3, 0.12, 0.3, 0, 2.03, 0), color: 0xd8b21e, part: HEAD });
+    out.body.push({ geo: box(0.52, 0.03, 0.52, 0, 1.975, 0), color: 0xd8b21e, part: HEAD });
   } else if (L.head === 'casque_chantier') {
-    out.body.push({ geo: box(0.34, 0.15, 0.34, 0, 2.0, 0), color: 0xe5c11a });
-    out.body.push({ geo: box(0.4, 0.03, 0.4, 0, 1.935, 0.02), color: 0xe5c11a });
+    out.body.push({ geo: box(0.34, 0.15, 0.34, 0, 2.0, 0), color: 0xe5c11a, part: HEAD });
+    out.body.push({ geo: box(0.4, 0.03, 0.4, 0, 1.935, 0.02), color: 0xe5c11a, part: HEAD });
   } else if (L.head === 'casque_moto') {
-    out.body.push({ geo: box(0.37, 0.38, 0.37, 0, 1.86, 0), color: SHELL });
-    out.body.push({ geo: box(0.29, 0.1, 0.04, 0, 1.88, 0.19), color: 0x6fa8c8 }); // visière
-    out.body.push({ geo: box(0.06, 0.04, 0.38, 0, 2.06, 0), color: PLAYER_JACKET }); // bande orange : l'accent
+    out.body.push({ geo: box(0.37, 0.38, 0.37, 0, 1.86, 0), color: SHELL, part: HEAD });
+    out.body.push({ geo: box(0.29, 0.1, 0.04, 0, 1.88, 0.19), color: 0x6fa8c8, part: HEAD }); // visière
+    out.body.push({ geo: box(0.06, 0.04, 0.38, 0, 2.06, 0), color: PLAYER_JACKET, part: HEAD }); // bande orange : l'accent
   }
   if (look?.clothing) out.body.push({ geo: box(0.1, 0.07, 0.1, 0.31, 1.5, 0), color: PLAYER_JACKET, part: ARM_L }); // brassard
   if (L.clothing === 'gilet_renforce') {
@@ -138,121 +161,247 @@ function dressLook(look) {
   return out;
 }
 
-// Joueur : veste et casquette orange (l'accent de l'interface, lisible de dessus), bas sombre, sac à dos olive, batte.
-// `jacket` : veste et casquette d'une autre couleur (sarcelle pour les autres survivants). `civil` : sans sac à dos ni batte
-// (les habitants sauvés).
-export function playerGeometry({ jacket = PLAYER_JACKET, civil = false, look = null } = {}) {
+// Humain : joueur, autres survivants, habitants. Le joueur a toujours le même visage (cheveux courts, casquette orange, sac à dos,
+// batte) : veste et casquette orange (l'accent de l'interface, lisible de dessus), bas sombre, sac à dos olive.
+// `jacket` : veste et casquette d'une autre couleur (sarcelle pour les autres survivants). `civil` : sans batte (les habitants sauvés).
+// `variants` : la foule (autres survivants, habitants) : toutes les options de cheveux, de coiffe et de sac sont dans la même
+// géométrie, une par une, et chaque personne n'en montre qu'une (humanVariant) ; peau, cheveux, pantalon et sac tirent leur teinte de
+// palettes (uPal). Même nombre d'appels de dessin, quelques centaines de sommets de plus.
+export function playerGeometry({ jacket = PLAYER_JACKET, civil = false, look = null, variants = false } = {}) {
+  const V = variants;
   const dress = dressLook(look);
-  const JACKET = dress.torso ?? jacket, PANTS = dress.legs ?? 0x3a3f46, SKIN = 0xd9a07a, DARK = 0x262b31, PACK = 0x5b6b3a, STRIP = 0xdfe3e6;
+  const JACKET = dress.torso ?? jacket, DARK = 0x262b31, PACK = 0x5b6b3a, STRIP = 0xdfe3e6;
+  const WHITE = 0xffffff;
+  // Matières : en foule, une couleur de palette (sommet blanc) ; pour le joueur, la couleur d'avant.
+  const skin = V ? { color: WHITE, mask: MASK.SKIN } : { color: 0xd9a07a };
+  const hair = V ? { color: WHITE, mask: MASK.HAIR } : { color: 0x3b2a20 };
+  const pants = V && !dress.legs ? { color: WHITE, mask: MASK.PANTS } : { color: dress.legs ?? 0x3a3f46 };
+  const jack = V ? { color: JACKET, mask: MASK.JACKET } : { color: JACKET };
+  const cap = V ? { color: jacket, mask: MASK.JACKET } : { color: jacket };
+  const cloth = V ? { color: WHITE, mask: MASK.CLOTH } : null;
   const pieces = [];
+  const put = (geo, spec, extra = {}) => pieces.push({ geo, ...spec, ...extra });
+  // Option d'un emplacement : toutes les options en foule (à variante), seulement le choix du joueur (a : cheveux, b : coiffe,
+  // c : sac) sinon. `skip` : raison de ne pas la montrer (le joueur coiffé d'un casque).
+  const mine = { [SLOT.A]: 1, [SLOT.B]: 1, [SLOT.C]: 1 };
+  const option = (slot, options, list, skip = false) => {
+    if (V) for (const p of list) pieces.push({ ...p, gate: [slot, options] });
+    else if (!skip && options.includes(mine[slot])) pieces.push(...list);
+  };
   for (const [side, leg] of [[1, LEG_L], [-1, LEG_R]]) {
     const x = side * 0.12;
-    pieces.push({ geo: box(0.16, 0.1, 0.28, x, 0.05, 0.04), color: DARK, part: leg });
-    pieces.push({ geo: prism(0.1, 0.085, 0.82, x, 0.5, 0, { open: true }), color: PANTS, part: leg });
+    put(box(0.16, 0.1, 0.28, x, 0.05, 0.04), { color: DARK }, { part: leg });
+    put(prism(0.1, 0.085, 0.82, x, 0.5, 0, { open: true }), pants, { part: leg });
   }
-  pieces.push({ geo: box(0.42, 0.2, 0.26, 0, 0.95, 0), color: PANTS });
-  pieces.push({ geo: prism(0.29 * dress.puff, 0.23 * dress.puff, 0.62, 0, 1.33, 0, { depth: 0.72 }), color: JACKET });
-  pieces.push({ geo: box(0.18, 0.06, 0.2, 0, 1.66, 0.01), color: DARK }); // col
-  pieces.push({ geo: box(0.3, 0.3, 0.29, 0, 1.83, 0.01), color: SKIN });
-  if (dress.cap) {
-    pieces.push({ geo: box(0.33, 0.1, 0.33, 0, 1.99, 0), color: jacket }); // casquette
-    pieces.push({ geo: box(0.28, 0.035, 0.14, 0, 1.955, 0.21), color: DARK }); // visière : sens du regard
+  put(box(0.42, 0.2, 0.26, 0, 0.95, 0), pants);
+  put(prism(0.29 * dress.puff, 0.23 * dress.puff, 0.62, 0, 1.33, 0, { depth: 0.72 }), jack);
+  put(box(0.18, 0.06, 0.2, 0, 1.66, 0.01), { color: DARK }); // col
+  // Tête : visage (yeux, nez, bouche) visible de face et en vue basse, cheveux, coiffe.
+  put(box(0.3, 0.3, 0.29, 0, 1.83, 0.01), skin, { part: HEAD });
+  put(box(0.045, 0.05, 0.012, 0.07, 1.85, 0.158), { color: 0x1a1410 }, { part: HEAD, noOutline: true });
+  put(box(0.045, 0.05, 0.012, -0.07, 1.85, 0.158), { color: 0x1a1410 }, { part: HEAD, noOutline: true });
+  put(box(0.045, 0.06, 0.04, 0, 1.805, 0.172), skin, { part: HEAD, noOutline: true });
+  put(box(0.09, 0.016, 0.012, 0, 1.745, 0.158), { color: 0x6a3a30 }, { part: HEAD, noOutline: true });
+  const H = (geo) => ({ geo, ...hair, part: HEAD });
+  option(SLOT.A, [0], [H(box(0.31, 0.06, 0.3, 0, 1.975, 0.005))], !!look?.head);
+  option(SLOT.A, [1, 2, 3], [H(box(0.32, 0.1, 0.31, 0, 1.955, 0)), H(box(0.3, 0.045, 0.02, 0, 1.925, 0.157))], !!look?.head);
+  option(SLOT.A, [1], [H(box(0.31, 0.2, 0.05, 0, 1.85, -0.16))]);
+  option(SLOT.A, [2], [H(box(0.33, 0.46, 0.07, 0, 1.72, -0.175)), H(box(0.04, 0.3, 0.22, 0.175, 1.78, -0.02)), H(box(0.04, 0.3, 0.22, -0.175, 1.78, -0.02))]);
+  option(SLOT.A, [3], [H(box(0.31, 0.14, 0.05, 0, 1.87, -0.16)), H(box(0.09, 0.3, 0.09, 0, 1.74, -0.225)), { geo: box(0.11, 0.04, 0.1, 0, 1.87, -0.2), color: DARK, part: HEAD }]);
+  option(SLOT.A, [4], [H(box(0.42, 0.22, 0.4, 0, 1.98, -0.01))], !!look?.head);
+  option(SLOT.B, [1], [{ geo: box(0.34, 0.1, 0.34, 0, 1.995, 0), ...cap, part: HEAD }, { geo: box(0.28, 0.035, 0.14, 0, 1.955, 0.21), color: DARK, part: HEAD }], !dress.cap);
+  if (V) {
+    option(SLOT.B, [2], [{ geo: box(0.35, 0.15, 0.35, 0, 1.995, 0), ...cloth, part: HEAD }, { geo: box(0.37, 0.05, 0.37, 0, 1.93, 0), ...cloth, part: HEAD }]);
+    option(SLOT.B, [3], [
+      { geo: box(0.4, 0.12, 0.4, 0, 2.0, -0.02), ...jack, part: HEAD }, { geo: box(0.4, 0.34, 0.2, 0, 1.84, -0.1), ...jack, part: HEAD },
+    ]);
   }
-  pieces.push({ geo: box(0.08, 0.05, 0.04, -0.1, 1.5, 0.2), color: STRIP, mask: GLOW }); // lampe de poitrine
+  put(box(0.08, 0.05, 0.04, -0.1, 1.5, 0.2), { color: STRIP, mask: GLOW }); // lampe de poitrine
   pieces.push(...dress.body, ...dress.legPieces);
-  if (!civil) {
-    pieces.push({ geo: box(0.32, 0.4, 0.18, 0, 1.3, -0.24), color: PACK });
-    pieces.push({ geo: new THREE.CylinderGeometry(0.07, 0.07, 0.36, 6).rotateZ(Math.PI / 2).translate(0, 1.54, -0.25), color: 0x8a7f5a });
+  // Sac : à dos (olive pour le joueur, couleur de palette en foule) ou sacoche en bandoulière.
+  option(SLOT.C, [1], [
+    { geo: box(0.32, 0.4, 0.18, 0, 1.3, -0.24), ...(cloth ?? { color: PACK }) },
+    { geo: new THREE.CylinderGeometry(0.07, 0.07, 0.36, 6).rotateZ(Math.PI / 2).translate(0, 1.54, -0.25), color: 0x8a7f5a },
+  ], civil && !V);
+  if (V) {
+    option(SLOT.C, [2], [
+      { geo: new THREE.BoxGeometry(0.045, 0.66, 0.02).rotateZ(0.5).translate(0, 1.34, 0.185), color: DARK },
+      { geo: new THREE.BoxGeometry(0.045, 0.66, 0.02).rotateZ(0.5).translate(0, 1.34, -0.185), color: DARK },
+      { geo: box(0.22, 0.22, 0.1, 0.43, 1.0, -0.02), ...cloth },
+    ]);
   }
   for (const [side, arm] of [[1, ARM_L], [-1, ARM_R]]) {
     const x = side * 0.31;
-    pieces.push({ geo: prism(0.08 * dress.puff, 0.07 * dress.puff, 0.44, x, 1.32, 0), color: JACKET, part: arm });
-    pieces.push({ geo: prism(0.087, 0.087, 0.05, x, 1.42, 0), color: STRIP, part: arm, mask: GLOW }); // bande réfléchissante
-    pieces.push({ geo: box(0.1, 0.12, 0.11, x, 1.05, 0), color: DARK, part: arm });
+    put(prism(0.08 * dress.puff, 0.07 * dress.puff, 0.44, x, 1.32, 0), jack, { part: arm });
+    put(prism(0.087, 0.087, 0.05, x, 1.42, 0), { color: STRIP, mask: GLOW }, { part: arm }); // bande réfléchissante
+    put(box(0.1, 0.12, 0.11, x, 1.05, 0), { color: DARK }, { part: arm });
   }
   for (const h of dress.hand) pieces.push({ ...h, part: ARM_L });
-  // Batte dans la main droite, pointée vers l'avant et un peu vers le bas (garde basse).
+  // Batte dans la main droite, pointée vers l'avant et un peu vers le bas (garde basse) ; repliée quand le joueur tire (emplacement D).
   if (!civil) {
     const bat = new THREE.CylinderGeometry(0.048, 0.024, 0.86, 6).translate(0, 0.43, 0).rotateX(Math.PI / 2 + 0.52).translate(-0.31, 1.03, 0.04);
-    pieces.push({ geo: bat, color: 0x8b6a4a, part: ARM_R });
+    pieces.push({ geo: bat, color: 0x8b6a4a, part: ARM_R, gate: [SLOT.D, [0]] });
   }
   // Cargaison de la quête (caisse blanche à croix verte), sur le sac, visible une fois récupérée.
-  pieces.push({ geo: box(0.46, 0.34, 0.32, 0, 1.34, -0.42), color: 0xf2f2ee, part: CARGO });
-  pieces.push({ geo: box(0.26, 0.08, 0.02, 0, 1.34, -0.585), color: 0x2fae55, part: CARGO });
-  pieces.push({ geo: box(0.08, 0.24, 0.02, 0, 1.34, -0.585), color: 0x2fae55, part: CARGO });
+  put(box(0.46, 0.34, 0.32, 0, 1.34, -0.42), { color: 0xf2f2ee }, { part: CARGO });
+  put(box(0.26, 0.08, 0.02, 0, 1.34, -0.585), { color: 0x2fae55 }, { part: CARGO });
+  put(box(0.08, 0.24, 0.02, 0, 1.34, -0.585), { color: 0x2fae55 }, { part: CARGO });
   return figure(pieces);
 }
 
-// Zombie : peau et chemise teintées par type (couleur d'instance), bas sombre, yeux qui luisent.
-function zombieGeometry() {
-  const PANTS = 0x3d4a3a, SHOE = 0x2a2f2a;
+// Zombie : peau teintée par type (couleur d'instance, plus ou moins livide), vêtements fanés tirés d'une palette, bas tiré d'une
+// palette, yeux qui luisent. Variantes (zombieVariant) : cheveux (chauve, touffes, filasses, capuche), manches (longues, un bras nu,
+// débardeur), blessure (poitrine, épaule et cou, bouche et menton) : tout est dans la même géométrie, une par une.
+export function zombieGeometry() {
+  const SHOE = 0x2a2f2a, BLOOD = 0x5a1616, WHITE = 0xffffff;
   const pieces = [];
+  const put = (geo, spec, extra = {}) => pieces.push({ geo, ...spec, ...extra });
+  const pants = { color: WHITE, mask: MASK.PANTS }, shirt = { color: WHITE, mask: MASK.CLOTH }, skin = { color: WHITE, mask: TINT };
+  const option = (slot, options, list) => { for (const p of list) pieces.push({ ...p, gate: [slot, options] }); };
   for (const [side, leg] of [[1, LEG_L], [-1, LEG_R]]) {
     const x = side * 0.12;
-    pieces.push({ geo: box(0.15, 0.09, 0.26, x, 0.045, 0.03), color: SHOE, part: leg });
-    pieces.push({ geo: prism(0.095, 0.08, 0.82, x, 0.5, 0, { open: true }), color: PANTS, part: leg });
+    put(box(0.15, 0.09, 0.26, x, 0.045, 0.03), { color: SHOE }, { part: leg });
+    put(prism(0.095, 0.08, 0.82, x, 0.5, 0, { open: true }), pants, { part: leg });
   }
-  pieces.push({ geo: box(0.4, 0.2, 0.25, 0, 0.95, 0), color: PANTS });
-  pieces.push({ geo: prism(0.27, 0.22, 0.6, 0, 1.32, 0, { depth: 0.72 }), color: 0xb0b0b0, mask: TINT }); // chemise
-  pieces.push({ geo: box(0.4, 0.1, 0.27, 0.02, 1.07, 0.01).rotateZ(0.12), color: 0x7a7a7a, mask: TINT }); // lambeaux
-  pieces.push({ geo: box(0.29, 0.29, 0.29, 0, 1.78, 0.05), color: 0xffffff, mask: TINT });
-  pieces.push({ geo: box(0.21, 0.08, 0.2, 0, 1.62, 0.08), color: 0xc8c8c8, mask: TINT }); // mâchoire
-  pieces.push({ geo: box(0.15, 0.05, 0.02, 0, 1.67, 0.19), color: 0x1a1410 }); // bouche
-  for (const side of [1, -1]) pieces.push({ geo: box(0.065, 0.045, 0.02, side * 0.07, 1.82, 0.2), color: 0xffffff, mask: GLOW });
+  put(box(0.4, 0.2, 0.25, 0, 0.95, 0), pants);
+  put(prism(0.27, 0.22, 0.6, 0, 1.32, 0, { depth: 0.72 }), { ...shirt, color: 0xe6e6e6 }); // chemise
+  put(box(0.4, 0.1, 0.27, 0.02, 1.07, 0.01).rotateZ(0.12), { ...shirt, color: 0xb0b0b0 }); // lambeaux
+  put(box(0.14, 0.08, 0.27, -0.12, 1.01, 0.02).rotateZ(-0.2), { ...shirt, color: 0xc4c4c4 });
+  // Tête : peau, mâchoire, bouche, yeux ; cheveux et capuche.
+  put(box(0.29, 0.29, 0.29, 0, 1.78, 0.05), skin, { part: HEAD });
+  put(box(0.21, 0.08, 0.2, 0, 1.62, 0.08), { ...skin, color: 0xdcdcdc }, { part: HEAD }); // mâchoire
+  put(box(0.15, 0.05, 0.02, 0, 1.67, 0.19), { color: 0x1a1410 }, { part: HEAD }); // bouche
+  for (const side of [1, -1]) put(box(0.065, 0.045, 0.02, side * 0.07, 1.82, 0.2), { color: WHITE, mask: GLOW }, { part: HEAD });
+  const hairSpec = { color: WHITE, mask: MASK.HAIR, part: HEAD };
+  option(SLOT.A, [1], [
+    { geo: box(0.09, 0.06, 0.1, 0.07, 1.945, 0.0), ...hairSpec }, { geo: box(0.08, 0.05, 0.09, -0.08, 1.945, 0.1), ...hairSpec }, { geo: box(0.07, 0.12, 0.05, -0.1, 1.82, -0.08), ...hairSpec },
+  ]);
+  option(SLOT.A, [2], [
+    { geo: box(0.3, 0.06, 0.3, 0, 1.945, 0.04), ...hairSpec }, { geo: box(0.3, 0.38, 0.06, 0, 1.76, -0.12), ...hairSpec },
+    { geo: box(0.05, 0.22, 0.14, 0.15, 1.8, 0.0), ...hairSpec }, { geo: box(0.05, 0.22, 0.14, -0.15, 1.8, 0.0), ...hairSpec },
+  ]);
+  option(SLOT.A, [3], [
+    { geo: box(0.36, 0.1, 0.36, 0, 1.95, 0.02), ...shirt, part: HEAD }, { geo: box(0.38, 0.3, 0.16, 0, 1.79, -0.085), ...shirt, part: HEAD },
+  ]);
+  // Bras : manche (haut), puis avant-bras et main de la peau. Manches : 0 longues, 1 bras gauche nu, 2 débardeur (deux bras nus).
   for (const [side, arm] of [[1, ARM_L], [-1, ARM_R]]) {
     const x = side * 0.31;
-    pieces.push({ geo: prism(0.075, 0.068, 0.34, x, 1.36, 0), color: 0xb0b0b0, part: arm, mask: TINT });
-    pieces.push({ geo: prism(0.058, 0.05, 0.24, x, 1.08, 0, { open: true }), color: 0xffffff, part: arm, mask: TINT });
-    pieces.push({ geo: box(0.09, 0.1, 0.1, x, 0.93, 0.01), color: 0xe6e6e6, part: arm, mask: TINT });
+    const sleeved = side > 0 ? [0] : [0, 1], bare = side > 0 ? [1, 2] : [2];
+    option(SLOT.C, sleeved, [{ geo: prism(0.075, 0.068, 0.34, x, 1.36, 0, { open: true }), ...shirt, color: 0xcfcfcf, part: arm }]);
+    option(SLOT.C, bare, [
+      { geo: prism(0.07, 0.064, 0.34, x, 1.36, 0, { open: true }), ...skin, part: arm },
+      { geo: prism(0.08, 0.075, 0.1, x, 1.5, 0, { open: true }), ...shirt, color: 0xcfcfcf, part: arm }, // reste de manche à l'épaule
+    ]);
+    put(prism(0.058, 0.05, 0.24, x, 1.08, 0, { open: true }), skin, { part: arm });
+    put(box(0.09, 0.1, 0.1, x, 0.93, 0.01), { ...skin, color: 0xe6e6e6 }, { part: arm });
   }
+  // Blessures (sang séché, jamais vif) : des aplats posés sur le corps ; poitrine, épaule et cou (lisible de dessus), bouche et menton.
+  option(SLOT.D, [1], [{ geo: patch(0.2, 0.22, 0.03, 1.38, 0.169), color: BLOOD }, { geo: patch(0.07, 0.2, 0.05, 1.2, 0.16), color: BLOOD }]);
+  option(SLOT.D, [2], [{ geo: patch(0.17, 0.2, 0.17, 1.627, 0.02, { top: true }), color: BLOOD }, { geo: patch(0.1, 0.22, 0.2, 1.5, 0.175), color: BLOOD }]);
+  option(SLOT.D, [3], [{ geo: patch(0.15, 0.1, 0, 1.65, 0.199), color: BLOOD, part: HEAD }, { geo: patch(0.1, 0.22, 0, 1.5, 0.172), color: BLOOD }]);
   return figure(pieces);
 }
 
 // ---------- Shaders ----------
 
+// Attributs d'instance (aAnim, aPose, aCrowd) :
+//  aAnim  : phase de marche (ou d'activité), amplitude du pas, éclair (+ blanc, - rouge), action (coup de batte, morsure, recul du tir).
+//  aPose  : angle de repos des bras, part du balancement des bras, variantes (trois bits par emplacement), couleurs (index de palette).
+//  aCrowd : humains : cargaison visible (0 ou 1), opacité du fondu (1 : entier ; moins : pixels retirés par tramage), visée (0, 1 une
+//           main, 2 deux mains), activité (entier : 1 fouille, 2 bricolage, 3 cueillette ; décimales : part de la pose, jusqu'à 0,99).
+//           zombies : chute (0 debout, 1 à terre), fondu, boiterie (jambe gauche qui traîne), roulis de la tête.
 const LIMB_PARS = /* glsl */`
 attribute vec4 aLimb;
 attribute vec4 aAnim;
-attribute vec2 aPose;
-attribute vec2 aCrowd;
+attribute vec4 aPose;
+attribute vec4 aCrowd;
+attribute float aMask;
 uniform float uKind;
 uniform float uRightArm;
 mat3 persoRotX(float a) { float c = cos(a), s = sin(a); return mat3(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c); }
 mat3 persoRotY(float a) { float c = cos(a), s = sin(a); return mat3(c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c); }
+mat3 persoRotZ(float a) { float c = cos(a), s = sin(a); return mat3(c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0); }
 `;
 
-// aAnim : phase de marche, amplitude du pas, éclair (+ blanc, - rouge), action (coup de batte, morsure) de 0 à 1.
-// aPose : angle de repos des bras, part du balancement des bras.
-// aCrowd : cargaison visible (0 ou 1), opacité du fondu (1 : entier ; moins : pixels retirés par tramage).
 const LIMB_MAIN = /* glsl */`
+  // Pièce à variante : repliée sur son pivot quand l'option de l'instance n'est pas l'une des siennes.
+  int persoCode = int(aMask + 0.5);
+  int persoAllowed = persoCode >> 5;
+  bool persoOn = true;
+  if (persoAllowed > 0) {
+    int persoHave = (int(aPose.z + 0.5) >> (3 * ((persoCode >> 3) & 3))) & 7;
+    persoOn = ((persoAllowed >> persoHave) & 1) == 1;
+  }
   float persoPart = aLimb.w;
+  float persoStride = sin(aAnim.x) * aAnim.y;
+  float persoDead = uKind > 0.5 ? aCrowd.x : 0.0;
   if (persoPart > 0.5 && persoPart < 4.5) {
-    float stride = sin(aAnim.x) * aAnim.y;
-    float pitch = 0.0, yaw = 0.0;
+    float pitch = 0.0, yaw = 0.0, roll = 0.0;
     if (persoPart < 2.5) {
       float side = persoPart < 1.5 ? 1.0 : -1.0;
-      pitch = aPose.x + stride * aPose.y * side;
-      if (uKind > 0.5) pitch -= aAnim.w * 0.55;
-      else if (persoPart > 1.5) {
-        pitch += uRightArm;
-        // Coup de batte : bras levé devant, balayage de la droite vers la gauche.
-        float t = aAnim.w;
-        float up = sin(t * PI);
-        pitch = mix(pitch, -1.05, smoothstep(0.0, 0.25, t) * (1.0 - smoothstep(0.8, 1.0, t)));
-        yaw = mix(-1.5, 1.2, smoothstep(0.1, 0.75, t)) * step(0.001, t) * up;
+      pitch = aPose.x + persoStride * aPose.y * side;
+      if (uKind > 0.5) {
+        // Zombie : bras tendus, qui lâchent et s'écartent à terre.
+        pitch -= aAnim.w * 0.55;
+        pitch = mix(pitch, -0.25, persoDead);
+        roll = -side * 0.95 * persoDead;
+      } else {
+        float aim = aCrowd.z;
+        float act = floor(aCrowd.w);
+        float actK = clamp(fract(aCrowd.w) / 0.99, 0.0, 1.0);
+        float ph = aAnim.x;
+        float kick = aim > 0.5 ? aAnim.w : 0.0;
+        if (persoPart > 1.5) {
+          pitch += uRightArm;
+          // Coup de batte : bras levé devant, balayage de la droite vers la gauche.
+          float t = aim > 0.5 ? 0.0 : aAnim.w;
+          float up = sin(t * PI);
+          pitch = mix(pitch, -1.05, smoothstep(0.0, 0.25, t) * (1.0 - smoothstep(0.8, 1.0, t)));
+          yaw = mix(-1.5, 1.2, smoothstep(0.1, 0.75, t)) * step(0.001, t) * up;
+          // Tir : bras tendu vers l'avant, relevé par le recul.
+          float one = min(aim, 1.0);
+          pitch = mix(pitch, -1.45 - kick * 0.32, one);
+          yaw = mix(yaw, -0.04, one);
+          // Activités : bricolage (marteau), cueillette (balayage vers le bas), fouille (fouille à tâtons).
+          if (act > 0.5 && act < 1.5) pitch = mix(pitch, -0.95 + 0.4 * sin(ph * 1.0 + 1.7), actK);
+          else if (act > 1.5 && act < 2.5) pitch = mix(pitch, -1.05 + 0.75 * max(0.0, sin(ph * 2.2)), actK);
+          else if (act > 2.5) pitch = mix(pitch, -1.15 + 0.3 * sin(ph * 0.9), actK);
+        } else {
+          // Deuxième main du fusil, et activités.
+          float two = clamp(aim - 1.0, 0.0, 1.0);
+          pitch = mix(pitch, -1.25 - kick * 0.2, two);
+          yaw = 0.34 * two;
+          if (act > 0.5 && act < 1.5) pitch = mix(pitch, -0.95 + 0.4 * sin(ph * 1.0), actK);
+          else if (act > 1.5 && act < 2.5) pitch = mix(pitch, -0.95, actK);
+          else if (act > 2.5) pitch = mix(pitch, -0.6 + 0.12 * sin(ph * 0.9 + 1.0), actK);
+        }
       }
     } else {
-      pitch = stride * (persoPart < 3.5 ? -0.62 : 0.62);
+      // Jambes ; le zombie qui boite traîne la gauche.
+      float limp = uKind > 0.5 ? aCrowd.z : 0.0;
+      pitch = persoStride * (persoPart < 3.5 ? -0.62 * (1.0 - limp * 0.75) : 0.62);
+      pitch += persoPart < 3.5 ? persoDead * 0.35 : -persoDead * 0.2;
     }
-    transformed = persoRotY(yaw) * (persoRotX(pitch) * (transformed - aLimb.xyz)) + aLimb.xyz;
+    transformed = persoRotZ(roll) * persoRotY(yaw) * (persoRotX(pitch) * (transformed - aLimb.xyz)) + aLimb.xyz;
+  } else if (persoPart > 5.5) {
+    // Tête : hoche au pas ; celle des zombies ballotte (roulis), et retombe sur le côté à terre.
+    float nod = sin(aAnim.x * 2.0) * aAnim.y * 0.05;
+    float lean = 0.0;
+    if (uKind > 0.5) {
+      float lag = sin(aAnim.x * 0.5 + 1.3);
+      lean = lag * aCrowd.w * (0.5 + 0.5 * min(1.0, aAnim.y)) + 0.45 * persoDead;
+      nod = -0.1 + sin(aAnim.x) * aAnim.y * 0.07 - 0.3 * persoDead;
+    }
+    transformed = persoRotZ(lean) * (persoRotX(nod) * (transformed - aLimb.xyz)) + aLimb.xyz;
   } else if (persoPart > 4.5) {
     transformed = mix(aLimb.xyz, transformed, aCrowd.x);
   }
+  if (!persoOn) transformed = aLimb.xyz;
 `;
 
 const LOOK_VERTEX_PARS = /* glsl */`
-attribute float aMask;
 attribute vec4 aLook;
+uniform vec3 uPal[40];
 varying vec3 vPersoTint;
 varying float vPersoTintMask;
 varying float vPersoGlow;
@@ -261,11 +410,26 @@ varying float vPersoFlash;
 varying float vPersoFade;
 `;
 
+// Matière : 1 teinte du type de zombie ; 3 à 7 peau, cheveux, pantalon, veste, vêtement : couleur de palette (uPal, huit teintes par
+// groupe) à l'index de l'instance. Pour la veste, l'index 0 laisse la couleur du sommet (sarcelle, orange du joueur).
 const LOOK_VERTEX_MAIN = /* glsl */`
-  vPersoTint = aLook.rgb;
-  vPersoTintMask = abs(aMask - 1.0) < 0.5 ? 1.0 : 0.0;
+  int persoType = persoCode & 7;
+  vPersoTint = vec3(1.0);
+  vPersoTintMask = 0.0;
+  if (persoType == 1) {
+    vPersoTint = aLook.rgb;
+    vPersoTintMask = 1.0;
+  } else if (persoType >= 3) {
+    int persoGroup = persoType - 3;
+    int persoIndex = (int(aPose.w + 0.5) >> (3 * persoGroup)) & 7;
+    if (persoGroup != 3 || persoIndex > 0) {
+      vec3 persoPal = uPal[persoGroup * 8 + persoIndex];
+      vPersoTint = persoGroup == 3 ? persoPal / max(color, vec3(0.02)) : persoPal;
+      vPersoTintMask = 1.0;
+    }
+  }
   // aLook.w : 0 lueur éteinte (mort), 1 lueur normale, 2 en chasse (yeux rouges).
-  vPersoGlow = aMask > 1.5 ? min(aLook.w, 1.0) : 0.0;
+  vPersoGlow = persoType == 2 ? min(aLook.w, 1.0) : 0.0;
   vPersoAlert = step(1.5, aLook.w);
   vPersoFlash = aAnim.z;
   vPersoFade = aCrowd.y;
@@ -335,13 +499,14 @@ function patchOutline(material, uniforms) {
 
 // ---------- Ombre de contact ----------
 
+// Disque flou blanc : la couleur de chaque ombre est celle de l'instance (noir, ou la tache brun-rouge sous un zombie à terre).
 function blobTexture() {
   const c = Object.assign(document.createElement('canvas'), { width: 64, height: 64 });
   const ctx = c.getContext('2d');
   const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-  g.addColorStop(0, 'rgba(0,0,0,1)');
-  g.addColorStop(0.45, 'rgba(0,0,0,0.75)');
-  g.addColorStop(1, 'rgba(0,0,0,0)');
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.75)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 64, 64);
   const tex = new THREE.CanvasTexture(c);
@@ -351,15 +516,18 @@ function blobTexture() {
 
 // ---------- Ensemble ----------
 
-// Attributs d'instance communs à tous les personnages (animation, teinte, pose, cargaison et fondu).
+// Attributs d'instance communs à tous les personnages (animation, teinte, pose et variantes, cargaison, fondu et activités).
 function instanced(geo, capacity) {
   geo.setAttribute('aAnim', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(THREE.DynamicDrawUsage));
   geo.setAttribute('aLook', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4).fill(1), 4).setUsage(THREE.DynamicDrawUsage));
-  geo.setAttribute('aPose', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2).setUsage(THREE.DynamicDrawUsage));
-  const crowd = new Float32Array(capacity * 2);
-  for (let i = 0; i < capacity; i++) crowd[i * 2 + 1] = 1; // sans cargaison, opacité 1
-  geo.setAttribute('aCrowd', new THREE.InstancedBufferAttribute(crowd, 2).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aPose', new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4).setUsage(THREE.DynamicDrawUsage));
+  const crowd = new Float32Array(capacity * 4);
+  for (let i = 0; i < capacity; i++) crowd[i * 4 + 1] = 1; // sans cargaison, opacité 1
+  geo.setAttribute('aCrowd', new THREE.InstancedBufferAttribute(crowd, 4).setUsage(THREE.DynamicDrawUsage));
 }
+
+// Palettes des variantes (peau, cheveux, pantalon, veste, vêtement) : couleurs linéaires, partagées par tous les matériaux.
+const PALETTE = PAL_HEX.map((h) => new THREE.Color(h));
 
 function lambert(uniforms) {
   const m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
@@ -377,17 +545,18 @@ function outlineMaterial(uniforms) {
   return m;
 }
 const humanUniforms = () => ({
-  uKind: { value: 0 }, uRightArm: { value: -0.22 },
+  uKind: { value: 0 }, uRightArm: { value: -0.22 }, uPal: { value: PALETTE },
   uRim: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uAlert: { value: new THREE.Color(0, 0, 0) }, uOutline: { value: 0.045 },
 });
 
-export function createCharacters({ lowPower = false } = {}) {
+// `effects` : les effets (effets.js, createEffectsView(...).fx) : poussière, sang séché projeté, buée du souffle ; sans lui, rien de tout cela.
+export function createCharacters({ lowPower = false, effects = null } = {}) {
   const root = new THREE.Group();
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   const playerUniforms = humanUniforms();
   const zombieUniforms = {
-    uKind: { value: 1 }, uRightArm: { value: 0 },
+    uKind: { value: 1 }, uRightArm: { value: 0 }, uPal: { value: PALETTE },
     uRim: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uAlert: { value: new THREE.Color() },
   };
 
@@ -425,7 +594,7 @@ export function createCharacters({ lowPower = false } = {}) {
   const zombieDepth = depth(zombieUniforms);
   const blobGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
   // Obligatoires en basse consommation (ombres portées coupées), discrètes sinon.
-  const blobMat = new THREE.MeshBasicMaterial({ map: blobTexture(), color: 0x000000, transparent: true, opacity: lowPower ? 0.38 : 0.26, depthWrite: false });
+  const blobMat = new THREE.MeshBasicMaterial({ map: blobTexture(), color: 0xffffff, transparent: true, opacity: lowPower ? 0.38 : 0.26, depthWrite: false });
   let zombies = null, blobs = null;
   function makeCrowd(capacity) {
     if (zombies) {
@@ -441,7 +610,9 @@ export function createCharacters({ lowPower = false } = {}) {
     zombies.castShadow = true;
     zombies.frustumCulled = false;
     zombies.count = 0;
-    blobs = new THREE.InstancedMesh(blobGeo, blobMat, capacity + 1 + GUEST_SHADOWS + RESIDENT_SHADOWS);
+    const n = capacity + 1 + GUEST_SHADOWS + RESIDENT_SHADOWS;
+    blobs = new THREE.InstancedMesh(blobGeo, blobMat, n);
+    blobs.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage); // noir
     blobs.frustumCulled = false;
     blobs.count = 0;
     root.add(zombies, blobs);
@@ -467,11 +638,12 @@ export function createCharacters({ lowPower = false } = {}) {
   const PLAYER_RIM = new THREE.Color(0xffb37a), ZOMBIE_RIM = new THREE.Color(0xb8ff8a);
   // Yeux des zombies : vert malsain, rouges quand ils te chassent (menace lisible d'un coup d'œil).
   const PLAYER_GLOW = new THREE.Color(0xfff0d8), ZOMBIE_GLOW = new THREE.Color(0xd8ff6a), ZOMBIE_ALERT = new THREE.Color(0xff4a2a);
+  const PLAYER_SLOTS = playerVariant().slots, PLAYER_AIM_SLOTS = playerVariant({ aiming: true }).slots;
 
   function stateOf(obj, x, z) {
     let st = states.get(obj);
     if (!st) {
-      st = { lastX: x, lastZ: z, ox: 0, oz: 0, speed: 0, phase: Math.random() * 6.28, hit: 0, hurt: 0, squash: 0, bite: 0 };
+      st = { lastX: x, lastZ: z, ox: 0, oz: 0, speed: 0, phase: Math.random() * 6.28, hit: 0, hurt: 0, squash: 0, bite: 0, dead: 0, puffed: false, var: null, breath: 1.5 + Math.random() };
       states.set(obj, st);
     }
     return st;
@@ -496,13 +668,16 @@ export function createCharacters({ lowPower = false } = {}) {
   // Ombre de contact posée sur le sol (gy : hauteur du sol) ; avec le relief (grid), penchée selon la pente.
   const blobPos = new THREE.Vector3(), blobScl = new THREE.Vector3(), blobQuat = new THREE.Quaternion(), blobUp = new THREE.Vector3(0, 1, 0), blobN = new THREE.Vector3();
   const nrm = [0, 1, 0];
-  function writeBlob(i, x, z, r, gy = 0, grid = null) {
+  function writeBlob(i, x, z, r, gy = 0, grid = null, stain = 0) {
     if (grid) {
       groundNormal(grid, x, z, nrm);
       blobQuat.setFromUnitVectors(blobUp, blobN.set(nrm[0], nrm[1], nrm[2]));
       m4.compose(blobPos.set(x, gy + 0.025, z), blobQuat, blobScl.set(r * 2, 1, r * 2));
     } else m4.makeScale(r * 2, 1, r * 2).setPosition(x, gy + 0.025, z);
     blobs.setMatrixAt(i, m4);
+    // Noir (ombre) ou, sous un zombie à terre, la tache brun-rouge qui s'étale (stain de 0 à 1).
+    const c = blobs.instanceColor.array;
+    c[i * 3] = STAIN.r * stain; c[i * 3 + 1] = STAIN.g * stain; c[i * 3 + 2] = STAIN.b * stain;
   }
 
   // Ombres de contact des autres survivants (others-view.js), après celles du joueur et des zombies : aucun appel
@@ -516,6 +691,7 @@ export function createCharacters({ lowPower = false } = {}) {
     for (let i = 0; i < residentCount; i++) writeBlob(from + guestCount + i, residents[i * 3], residents[i * 3 + 1], residents[i * 3 + 2]);
     blobs.count = from + guestCount + residentCount;
     blobs.instanceMatrix.needsUpdate = true;
+    blobs.instanceColor.needsUpdate = true;
   }
   const blobRoom = () => Math.min(guestFrom, blobs.instanceMatrix.count - GUEST_SHADOWS - RESIDENT_SHADOWS);
   function fill(target, cap, list) {
@@ -537,7 +713,8 @@ export function createCharacters({ lowPower = false } = {}) {
     writeGuests(blobRoom());
   }
 
-  function sync(s, dt, camera, daylight = 1) {
+  // view : { shot } (tirView.pose() : { aiming, kick, gun }) ; le temps et la température viennent de s.weather.
+  function sync(s, dt, camera, daylight = 1, view = {}) {
     const t = performance.now() / 1000;
     const calm = reduceMotion.matches;
     const night = 1 - daylight;
@@ -558,24 +735,41 @@ export function createCharacters({ lowPower = false } = {}) {
     // Partie finie ou en pause : la vitesse n'est plus mise à jour, le joueur s'arrête net.
     const speed = s.ended || s.paused ? 0 : Math.hypot(p.vx ?? 0, p.vz ?? 0);
     ps.speed = speed;
-    ps.phase += dt * 2.2 * Math.pow(speed, 0.8);
-    const pace = Math.min(1.4, speed / WALK);
+    const body = bodyLook(s.survivor, { hp: p.health, maxHp: p.maxHealth ?? 100 });
+    const pace = Math.min(1.4, speed / WALK) * (calm ? 1 : body.pace);
     const moving = speed > 0.3;
+    // Activité en cours (fouille, bricolage, cueillette) : debout sur place, la pose s'installe en un quart de seconde.
+    const activity = !p.hidden && !s.paused && !s.ended && !moving && !s.driving ? activityOf(s.action) : 0;
+    ps.act = activity ? Math.min(0.99, (ps.act ?? 0) + dt / 0.25) : Math.max(0, (ps.act ?? 0) - dt / 0.2);
+    if (activity) ps.actId = activity;
+    ps.phase += dt * (ps.act > 0 && !moving ? 4.5 : 2.2 * Math.pow(speed, 0.8));
     const swing = p.swing > 0 ? 1 - p.swing / 0.25 : 0;
+    // Tir : bras tendu tant que l'arme est en main (sauf si le joueur frappe), recul juste après le coup.
+    const shot = view.shot;
+    const aimK = shot?.aiming && !p.swing && !p.hidden && !s.driving && !s.ended ? (shot.gun === 'fusil' ? 2 : 1) : 0;
+    const kick = aimK ? shot.kick ?? 0 : 0;
     // Morsure : teinte rouge qui s'éteint en 0,35 s (même partie finie, où p.hurt n'est plus décompté).
-    if ((p.hurt ?? 0) > ps.hurt + 0.05) { addShake(0.12, 0.15); ps.red = 0.35; }
+    if ((p.hurt ?? 0) > ps.hurt + 0.05) {
+      addShake(0.12, 0.15);
+      ps.red = 0.35;
+      const near = s.director.zombies.reduce((best, z) => (!z.dead && Math.hypot(z.x - p.x, z.z - p.z) < (best ? Math.hypot(best.x - p.x, best.z - p.z) : 9) ? z : best), null);
+      const bx = near ? near.x - p.x : Math.sin(p.yaw), bz = near ? near.z - p.z : Math.cos(p.yaw), bl = Math.hypot(bx, bz) || 1;
+      effects?.bite({ x: p.x, y: gy(p.x, p.z) + 1.3, z: p.z, dx: bx / bl, dz: bz / bl });
+    }
     ps.hurt = p.hurt ?? 0;
     ps.red = Math.max(0, (ps.red ?? 0) - dt);
     // Mort : le joueur tombe à la renverse en un demi-seconde.
     ps.down = p.health <= 0 ? Math.min(1, (ps.down ?? 0) + dt / 0.5) : 0;
+    const crouch = ps.act * (ps.actId === ACTIVITY.work ? 0.16 : 0.42);
     euler.set(
-      (moving ? (p.running ? 0.12 : 0.06) * Math.min(1, pace) : 0) - ps.down * ps.down * (Math.PI / 2),
+      (moving ? (p.running ? 0.12 : 0.06) * Math.min(1, pace) : 0) + (calm ? 0 : body.slouch) + crouch - kick * 0.1 - ps.down * ps.down * (Math.PI / 2),
       p.yaw + (calm ? 0 : -0.35 * Math.sin(swing * Math.PI) * (1 - 2 * swing)),
-      moving && !calm ? Math.sin(ps.phase) * 0.05 * Math.min(1, pace) : 0,
+      (moving && !calm ? Math.sin(ps.phase) * 0.05 * Math.min(1, pace) : 0) + (calm ? 0 : Math.sin(t * 43) * 0.03 * body.shiver),
     );
     quat.setFromEuler(euler);
     const playerY = gy(p.x, p.z);
-    pos.set(p.x, playerY + (moving ? Math.abs(Math.sin(ps.phase)) * 0.08 * pace : 0), p.z);
+    const back = kick * 0.07;
+    pos.set(p.x - Math.sin(p.yaw) * back, playerY + (moving ? Math.abs(Math.sin(ps.phase)) * 0.08 * pace : 0) - ps.act * 0.04, p.z - Math.cos(p.yaw) * back);
     scl.set(1, moving || ps.down ? 1 : 1 + Math.sin(t * 2) * 0.01, 1);
     m4.compose(pos, quat, scl);
     player.setMatrixAt(0, m4);
@@ -583,33 +777,47 @@ export function createCharacters({ lowPower = false } = {}) {
     player.instanceMatrix.needsUpdate = true;
     outline.instanceMatrix.needsUpdate = true;
     const pa = playerGeo.attributes;
-    pa.aAnim.setXYZW(0, ps.phase, moving ? Math.min(1.25, 0.35 + pace * 0.75) : 0, -ps.red / 0.35, swing);
-    pa.aPose.setXY(0, 0.05, 0.75);
+    pa.aAnim.setXYZW(0, ps.phase, moving ? Math.min(1.25, 0.35 + pace * 0.75) : 0, -ps.red / 0.35, aimK ? kick : swing);
+    pa.aPose.setXYZW(0, 0.05, 0.75, aimK ? PLAYER_AIM_SLOTS : PLAYER_SLOTS, 0);
     pa.aLook.setXYZW(0, 1, 1, 1, 1);
-    pa.aAnim.needsUpdate = pa.aPose.needsUpdate = pa.aLook.needsUpdate = true;
     // Cargaison de la quête sur le sac (attribut d'instance : les autres survivants ont chacun la leur).
     const cargo = p.carrying ? 1 : 0;
-    if (pa.aCrowd.getX(0) !== cargo) {
-      pa.aCrowd.setXY(0, cargo, 1);
-      pa.aCrowd.needsUpdate = true;
-    }
+    pa.aCrowd.setXYZW(0, cargo, 1, aimK, ps.act > 0.01 ? ps.actId + ps.act : 0);
+    pa.aAnim.needsUpdate = pa.aPose.needsUpdate = pa.aLook.needsUpdate = pa.aCrowd.needsUpdate = true;
     writeBlob(0, p.x, p.z, 0.55, playerY, grid);
+
+    // Souffle visible quand l'air est froid (température réelle d'Open-Meteo) : un petit nuage devant le visage, à peu près au rythme
+    // d'une respiration (un peu plus vite à l'effort).
+    ps.breath -= dt;
+    if (effects && ps.breath <= 0 && !p.hidden && !s.driving && !s.ended && !s.paused) {
+      ps.breath = (moving ? 1.3 : 2.2) + Math.random() * 0.7;
+      if (Math.random() < breathChance(s.weather?.temperature)) {
+        effects.breath({ x: p.x, y: playerY + 1.72 - crouch * 0.6, z: p.z, aim: p.yaw });
+      }
+    }
 
     // ----- Zombies -----
     const list = s.director.zombies;
     if (list.length > zombies.instanceMatrix.count) makeCrowd(Math.ceil(list.length * 1.5));
     const za = zombies.geometry.attributes;
+    const stains = blobs.instanceColor.array;
     let hitAt = null;
     for (let i = 0; i < list.length; i++) {
       const z = list[i];
-      const look = ZOMBIE_LOOK[z.type] ?? ZOMBIE_LOOK.errant;
+      const look = GAIT[z.type] ?? GAIT.errant;
       const st = stateOf(z, z.x, z.z);
+      const v = st.var ?? (st.var = zombieVariant(z.id, z.type));
       const struck = z.hit > st.hit + 0.05;
       track(st, z.x, z.z, dt, struck || z.hit > 0);
       if (struck) {
         st.squash = 0.12;
         hitAt = z;
         if (Math.hypot(z.x - p.x, z.z - p.z) < 4) addShake(z.dead ? 0.09 : 0.05, 0.12);
+        // Sang séché projeté dans le sens du coup : balle (le tir vient d'avoir lieu) ou coup de batte.
+        if (effects) {
+          const hx = z.x - p.x, hz = z.z - p.z, hl = Math.hypot(hx, hz) || 1;
+          effects.hitFlesh({ x: z.x + st.ox, y: gy(z.x, z.z) + 1.15, z: z.z + st.oz, dx: hx / hl, dz: hz / hl, power: kick > 0.05 ? 1 : 0.6 });
+        }
       }
       st.hit = z.hit;
       st.squash = Math.max(0, st.squash - dt);
@@ -623,23 +831,32 @@ export function createCharacters({ lowPower = false } = {}) {
       st.phase += dt * 2.2 * Math.pow(zSpeed, 0.8);
       const zPace = Math.min(1.4, zSpeed / WALK);
       const walking = zSpeed > 0.15;
-      let fall = 0, sink = 0;
+      // Mort : les genoux lâchent (0,2 s), puis le corps bascule (avant ou arrière selon le zombie) en 0,45 s ; les membres
+      // retombent et la tête roule (shader, aCrowd.x). Un nuage de poussière part quand le corps touche le sol.
+      let fall = 0, sink = 0, kneel = 0, limp = 0;
       if (z.dead) {
         const k = Math.min(1, z.dead / 0.45);
-        fall = k * k * (Math.PI / 2);
+        fall = k * k * (Math.PI / 2) * v.fall * 0.98;
+        kneel = Math.sin(Math.min(1, z.dead / 0.2) * Math.PI) * 0.3 * look.scale[1];
         sink = Math.max(0, z.dead - 1.2) * 0.8;
-      }
+        limp = Math.min(1, z.dead / 0.35);
+        if (!st.puffed && z.dead > 0.4) {
+          st.puffed = true;
+          effects?.collapse({ x: z.x + st.ox, y: gy(z.x, z.z), z: z.z + st.oz, big: look.scale[0] });
+        }
+      } else st.puffed = false;
       euler.set(
-        look.hunch + lunge * 0.25 + (walking ? 0.06 * zPace : 0) - fall,
+        look.hunch + lunge * 0.25 + (walking ? 0.06 * zPace : 0) + fall,
         z.yaw,
-        z.dead || calm ? 0 : Math.sin(st.phase * 0.5) * 0.12,
+        z.dead || calm ? v.tilt : Math.sin(st.phase * 0.5) * look.roll + v.tilt,
       );
       quat.setFromEuler(euler);
       const x = z.x + st.ox, zz = z.z + st.oz;
       const zy = gy(x, zz);
-      pos.set(x, zy + (z.dead ? -sink : (walking ? Math.abs(Math.sin(st.phase)) * 0.08 * Math.max(0.35, zPace) : 0)), zz);
+      pos.set(x, zy + (z.dead ? -sink - kneel : (walking ? Math.abs(Math.sin(st.phase)) * look.bob * Math.max(0.35, zPace) : 0)), zz);
       const sq = calm ? 0 : st.squash / 0.12;
-      scl.set(look.scale[0] * (1 + 0.12 * sq), look.scale[1] * (1 - 0.12 * sq) * (walking || z.dead ? 1 : 1 + Math.sin(t * 2 + z.id) * 0.01), look.scale[2] * (1 + 0.12 * sq));
+      const sx = look.scale[0] * v.width, sy = look.scale[1] * v.height;
+      scl.set(sx * (1 + 0.12 * sq), sy * (1 - 0.12 * sq) * (walking || z.dead ? 1 : 1 + Math.sin(t * 2 + z.id) * 0.01), sx * (1 + 0.12 * sq));
       // Intérieur dans le noir (interieur-ombre.js) : un zombie que la lampe n'éclaire pas n'est pas dessiné (ni son ombre de contact).
       const unseen = !!s.sightAt && s.sightAt(z.x, z.z) < 0.15;
       if (unseen) scl.set(0, 0, 0);
@@ -649,17 +866,22 @@ export function createCharacters({ lowPower = false } = {}) {
       // Coup reçu : blanc 80 ms, puis rouge qui s'éteint en 150 ms.
       const since = 0.25 - z.hit;
       const flash = z.hit > 0 ? (since < 0.08 ? 1 : -Math.max(0, 1 - (since - 0.08) / 0.15)) : 0;
-      za.aAnim.setXYZW(i, st.phase, walking ? Math.min(1.2, 0.45 + zPace) : 0, flash, lunge);
-      za.aPose.setXY(i, look.arms + (walking ? 0 : Math.sin(t * 1.3 + z.id) * 0.05), look.armSwing);
-      tint.setHex((ZOMBIE_TYPES[z.type] ?? ZOMBIE_TYPES.errant).color);
+      za.aAnim.setXYZW(i, st.phase, walking ? Math.min(1.2, 0.45 + zPace) * look.stride : 0, flash, lunge);
+      za.aPose.setXYZW(i, look.arms + (walking ? 0 : Math.sin(t * 1.3 + z.id) * 0.05), look.armSwing, v.slots, v.colors);
+      za.aCrowd.setXYZW(i, limp, 1, walking ? v.limp : v.limp * 0.4, v.headRoll);
+      tint.setHex((ZOMBIE_TYPES[z.type] ?? ZOMBIE_TYPES.errant).color).lerp(PALE, v.pallor);
       if (z.dead) tint.lerp(DEAD_TINT, Math.min(1, z.dead / 0.4));
       za.aLook.setXYZW(i, tint.r, tint.g, tint.b, z.dead ? 0 : z.state === 'chase' || z.state === 'horde' ? 2 : 1);
-      writeBlob(i + 1, x, zz, unseen ? 0 : z.dead ? Math.max(0, 0.5 * look.scale[0] * (1 - sink)) : 0.5 * look.scale[0], zy, grid);
+      // Ombre de contact ; sous un zombie à terre, une tache brun-rouge qui s'étale pendant qu'il s'enfonce.
+      const stain = z.dead ? Math.min(1, z.dead / 0.6) : 0;
+      writeBlob(i + 1, x, zz, unseen ? 0 : z.dead ? Math.max(0, 0.5 * look.scale[0] * (1 + 0.45 * stain) * (1 - sink)) : 0.5 * look.scale[0], zy, grid, stain * 0.9);
     }
     zombies.count = list.length;
     zombies.visible = list.length > 0;
     zombies.instanceMatrix.needsUpdate = true;
-    za.aAnim.needsUpdate = za.aPose.needsUpdate = za.aLook.needsUpdate = true;
+    za.aAnim.needsUpdate = za.aPose.needsUpdate = za.aLook.needsUpdate = za.aCrowd.needsUpdate = true;
+    // Les ombres qui suivent (survivants, habitants) repartent de noir : elles ne reprennent pas la tache d'un zombie disparu.
+    for (let k = (list.length + 1) * 3; k < Math.min(stains.length, (list.length + 1 + GUEST_SHADOWS + RESIDENT_SHADOWS) * 3); k++) stains[k] = 0;
     writeGuests(list.length + 1);
 
     // ----- Anneau d'impact -----
@@ -696,6 +918,7 @@ export function createCharacters({ lowPower = false } = {}) {
 // un pour le contour (2 appels de dessin). Avec `characters` (createCharacters), les matériaux du joueur sont
 // partagés (même programme, liseré et lampe suivent le jour et la nuit) ; sans lui, la foule a les siens (tests).
 // Pas d'ombre portée (budget de la spec 9.3, O18) : leurs ombres de contact vont dans le maillage commun.
+// Chacun a son visage : peau, cheveux, coiffe, sac, pantalon et taille tirés de sa clé (humanVariant), dans la même géométrie.
 export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVOR_JACKET, characters = null, civil = false } = {}) {
   const root = new THREE.Group();
   root.name = 'survivants';
@@ -707,7 +930,7 @@ export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVO
     own.uGlow.value.setHex(0xfff0d8).multiplyScalar(0.15);
   }
   const reduceMotion = characters?.reduceMotion ?? characters?.shared?.reduceMotion ?? null;
-  const geo = playerGeometry({ jacket, civil });
+  const geo = playerGeometry({ jacket, civil, variants: true });
   instanced(geo, capacity);
   const body = new THREE.InstancedMesh(geo, bodyMat, capacity);
   const outline = new THREE.InstancedMesh(geo, outlineMat, capacity);
@@ -721,7 +944,7 @@ export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVO
   body.name = 'survivants-corps';
   root.add(outline, body);
 
-  const states = new Map(); // clé (sid) → { lastX, lastZ, speed, phase, down }
+  const states = new Map(); // clé (sid) → { lastX, lastZ, speed, phase, down, var }
   const m4 = new THREE.Matrix4(), pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3();
   const euler = new THREE.Euler(0, 0, 0, 'YXZ');
   const seen = new Set();
@@ -740,9 +963,10 @@ export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVO
       seen.add(g.key);
       let st = states.get(g.key);
       if (!st) {
-        st = { lastX: g.x, lastZ: g.z, speed: 0, phase: Math.random() * 6.28, down: g.flags & FLAG_DOWN ? 1 : 0 };
+        st = { lastX: g.x, lastZ: g.z, speed: 0, phase: Math.random() * 6.28, down: g.flags & FLAG_DOWN ? 1 : 0, var: humanVariant(g.key, { civil, tones: civil }) };
         states.set(g.key, st);
       }
+      const v = st.var;
       // Vitesse mesurée sur les positions rejouées (régulières) ; une réapparition ailleurs repart de l'arrêt.
       const d = Math.hypot(g.x - st.lastX, g.z - st.lastZ);
       if (d > 3) st.speed = 0;
@@ -762,14 +986,14 @@ export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVO
       );
       quat.setFromEuler(euler);
       pos.set(g.x, (g.y ?? 0) + (moving ? Math.abs(Math.sin(st.phase)) * 0.08 * pace : 0), g.z);
-      scl.set(1, moving || st.down ? 1 : 1 + Math.sin(t * 2 + i) * 0.01, 1);
+      scl.set(v.width, v.height * (moving || st.down ? 1 : 1 + Math.sin(t * 2 + i) * 0.01), v.width);
       m4.compose(pos, quat, scl);
       body.setMatrixAt(i, m4);
       outline.setMatrixAt(i, m4);
       a.aAnim.setXYZW(i, st.phase, moving ? Math.min(1.25, 0.35 + pace * 0.75) : 0, 0, 0);
-      a.aPose.setXY(i, 0.05, 0.75);
+      a.aPose.setXYZW(i, 0.05, 0.75, v.slots, v.colors);
       a.aLook.setXYZW(i, 1, 1, 1, 1);
-      a.aCrowd.setXY(i, g.flags & FLAG_CARRY ? 1 : 0, Math.max(0, Math.min(1, g.alpha ?? 1)));
+      a.aCrowd.setXYZW(i, g.flags & FLAG_CARRY ? 1 : 0, Math.max(0, Math.min(1, g.alpha ?? 1)), 0, 0);
     }
     for (const k of states.keys()) if (!seen.has(k)) states.delete(k);
     body.count = outline.count = n;
@@ -784,7 +1008,7 @@ export function createSurvivorCrowd({ capacity = GUEST_SHADOWS, jacket = SURVIVO
   // Vitesse lissée et chute d'un survivant (tests, débogage).
   function stateOf(key) {
     const st = states.get(key);
-    return st ? { speed: st.speed, down: st.down } : null;
+    return st ? { speed: st.speed, down: st.down, variant: st.var } : null;
   }
 
   function clear() {
