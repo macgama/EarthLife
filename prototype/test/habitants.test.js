@@ -251,3 +251,8 @@ test('vue : un obstacle déplace les places, nettoyer et défaire ne laissent ri
     assert.equal(root.children.length, 0, 'le chiffre quitte le DOM');
   } finally { restore(); }
 });
+
+test('mort du joueur : le texte dit la ville qui perd un habitant, ou qui est perdue', () => {
+  assert.equal(HABITANT_TEXT.fell({ name: 'Pérouges', lost: false }), 'Pérouges perd un habitant : il devient zombie');
+  assert.equal(HABITANT_TEXT.fell({ name: 'Pérouges', lost: true }), 'Pérouges est perdue : plus aucun habitant n\'y est épargné');
+});

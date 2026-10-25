@@ -204,6 +204,7 @@ export function startVille({
     population, source, approx: !!approx, level, mode, start: at, flags: 0,
     zombies0: Z, hidden0: Math.max(0, population - Z - 1), reserve0: Rv,
     killed: [0, 0, 0], saved: 0, me: null, meOut: false, vn: null, zl: zoneLevelOf(zoneLevel), leak: null,
+    turned: 0, lost: false,
     qk: [], units: {}, done: {}, tiles: {},
   };
   const inh = {};
@@ -817,9 +818,11 @@ function hiddenLeft(ville) {
 }
 
 // État d'avancement : 'en-cours' ; 'coeur' (tous les pâtés vidés, reste la Nuit du cœur) ; 'nettoyee' (plus aucun
-// zombie : la ville est sauvée dès que le jeu l'annonce, finishVille).
+// zombie : la ville est sauvée dès que le jeu l'annonce, finishVille) ; 'perdue' (plus aucun non infecté : la mort des
+// joueurs a tout fait basculer, infectOne ; une ville perdue ne se sauve plus, même vidée de ses zombies).
 export function cityStatus(ville) {
   const left = zombiesLeft(ville);
+  if (ville.lost) return 'perdue';
   if (left === 0) return 'nettoyee';
   return left === reserveLeft(ville) ? 'coeur' : 'en-cours';
 }
@@ -831,17 +834,18 @@ export function counters(ville) {
     zombies: zombiesLeft(ville), zombies0: ville.zombies0, reserve: reserveLeft(ville), saved: ville.saved, toSave: ville.hidden0,
     killed: { toi: ville.killed[0], volontaires: ville.killed[1], autres: ville.killed[2] }, flags: ville.flags,
     units: Object.keys(ville.units).length, done: Object.keys(ville.done).length, status: cityStatus(ville),
+    turned: nat(ville.turned), lost: !!ville.lost,
   };
 }
 
-// Vérifie la conservation : zombies restants = zombies au départ − abattus ; habitants cachés + sauvés = habitants
+// Vérifie la conservation : zombies restants = zombies au départ − abattus + devenus zombies (turned) ; habitants cachés + sauvés = habitants
 // non zombies des parts des tuiles (− toi une fois ton pâté libéré) ; parts des tuiles = population ; nombres entiers
 // positifs, rangée par rangée. Pour les essais et le diagnostic.
 export function checkVille(ville) {
   const errors = [];
-  const zombies = { expected: ville.zombies0 - killedTotal(ville), actual: zombiesLeft(ville) };
+  const zombies = { expected: ville.zombies0 - killedTotal(ville) + nat(ville.turned), actual: zombiesLeft(ville) };
   if (zombies.expected !== zombies.actual) errors.push(`zombies ${zombies.actual} au lieu de ${zombies.expected}`);
-  let pop = 0, humans = 0;
+  let pop = 0;
   const finished = Object.keys(ville.done).length > 0;
   for (const [tk, t] of Object.entries(ville.tiles)) {
     let o = t.rest[0];
@@ -858,10 +862,9 @@ export function checkVille(ville) {
     }
     if (finished ? o > t.p[0] : o !== t.p[0]) errors.push(`${tk} : ${o} habitants pour une part de ${t.p[0]}`);
     pop += t.p[0];
-    humans += t.p[0] - t.p[1];
   }
   if (pop !== ville.population) errors.push(`parts des tuiles ${pop} pour ${ville.population} habitants`);
-  const hidden = { expected: humans - (ville.meOut ? 1 : 0), actual: hiddenLeft(ville) + ville.saved };
+  const hidden = { expected: ville.population - ville.zombies0 - nat(ville.turned) - (ville.meOut ? 1 : 0), actual: hiddenLeft(ville) + ville.saved };
   if (hidden.expected !== hidden.actual) errors.push(`habitants ${hidden.actual} au lieu de ${hidden.expected}`);
   for (const [k, n] of LENT.get(ville) ?? []) {
     const have = k.startsWith('@') ? ville.units[k.slice(1)]?.r ?? 0 : rowOf(ville, k)?.[S] ?? 0;
@@ -1098,6 +1101,69 @@ export function rescueOne(ville, key) {
   return 1;
 }
 
+// Non infectés que la mort du joueur peut encore faire tomber : cachés et sauvés, toi non compté (ta place n'est jamais
+// prise tant que ton pâté n'est pas libéré).
+export function humansLeft(ville) {
+  return Math.max(0, hiddenLeft(ville) + ville.saved - (ville.meOut ? 0 : 1));
+}
+
+// Mort du joueur : un habitant non infecté de la ville devient zombie, sans limite (la ville peut être perdue). Un caché
+// d'abord : celui du pâté où le joueur est tombé (`key`), sinon du pâté placé le plus proche qui en cache encore, sinon
+// d'une tuile pas encore placée (il passe de sa part à la rangée du joueur : parts des tuiles et rangée bougent ensemble,
+// comme un report) ; un sauvé seulement s'il ne reste plus aucun caché. Le zombie apparaît dans le pâté où le joueur est
+// tombé (à défaut, le pâté placé le plus proche) : un pâté nettoyé ou libéré redevient rouge, son fanion tombe. Quand plus
+// aucun non infecté ne reste, la ville est perdue (`lost`). Rend { from: 'cache' | 'sauve' | null, key, lost }, ou null
+// si rien n'a lieu (ville déjà perdue ou sauvée, ou aucun pâté placé). La conservation tient : un habitant de moins
+// (cachés ou sauvés), un zombie de plus, `turned` de plus (checkVille).
+export function infectOne(ville, key) {
+  if (ville.lost || zombiesLeft(ville) === 0) return null;
+  const rows = [];
+  for (const t of Object.values(ville.tiles)) if (t.b) for (const [k, row] of Object.entries(t.b)) rows.push([k, row]);
+  if (!rows.length) return null;
+  rows.sort((a, b) => byKey(a[0], b[0]));
+  const here = rowOf(ville, key);
+  const pt = keyPoint(key);
+  const nearest = (ok) => {
+    let best = null, bd = Infinity;
+    for (const [k, row] of rows) {
+      if (!ok(k, row)) continue;
+      const q = keyPoint(k);
+      const d = pt && q ? distM(pt, q) : 0;
+      if (d < bd) { best = k; bd = d; }
+    }
+    return best;
+  };
+  const hides = (k, row) => row[E] !== ETAT.libere && row[H] - (k === ville.me && !ville.meOut ? 1 : 0) >= 1;
+  const src = here && hides(key, here) ? key : nearest(hides);
+  const pool = src ? null : Object.keys(ville.tiles).sort(byKey).map((k) => ville.tiles[k])
+    .find((t) => !t.o && t.rest[0] - t.rest[1] >= 1 && t.p[0] - t.p[1] >= 1) ?? null;
+  if (!src && !pool && ville.saved < 1) {
+    ville.lost = humansLeft(ville) === 0;
+    return { from: null, key: null, lost: ville.lost };
+  }
+  const landing = here ? key : nearest(() => true);
+  const row = rowOf(ville, landing);
+  let from = 'cache';
+  if (src) {
+    rowOf(ville, src)[H]--;
+  } else if (pool) {
+    const dest = ville.tiles[indexOf(ville).get(landing)];
+    pool.p[0]--; pool.rest[0]--;
+    dest.p[0]++; dest.p[1]++; dest.k = 0;
+    row[S0]++;
+  } else {
+    ville.saved--;
+    const u = Object.values(ville.units).find((x) => x.sv > 0);
+    if (u) u.sv--;
+    from = 'sauve';
+  }
+  row[S]++;
+  if (row[E] > ETAT.nid) { row[E] = ETAT.rouge; row[F] = 0; }
+  ville.turned = nat(ville.turned) + 1;
+  if (humansLeft(ville) === 0) ville.lost = true;
+  return { from, key: landing, lost: !!ville.lost };
+}
+
 // Un pâté libéré par un autre survivant (en ligne) arrive avec la moitié de ses zombies : l'autre moitié est
 // comptée « abattue par les autres survivants ». À n'appliquer qu'une fois par trace (lot H).
 export function othersCleared(ville, key) {
@@ -1165,7 +1231,7 @@ export function takeHome(ville, key) {
 // et des pâtés vides libérés d'office (règle 1 de la section 4) ; pas pendant une sortie (zombies prêtés), ni après un
 // quartier repris ou une réserve du cœur entamée.
 export function canChangeLevel(ville) {
-  if (ville.flags > 0 || Object.keys(ville.done).length) return false;
+  if (ville.flags > 0 || Object.keys(ville.done).length || nat(ville.turned) > 0) return false;
   if (LENT.get(ville)?.size) return false;
   return Object.values(ville.units).every((u) => u.r === u.r0);
 }

@@ -612,6 +612,43 @@ test('habitants : un bâtiment qui n\'en cache plus n\'en donne jamais ; en tout
   assert.ok(whole > room, `bâtiment entier : ${whole}, une pièce sur 6 : ${room}`);
 });
 
+// ---------- Mort du joueur : un habitant devient zombie ----------
+
+test('infectAt : la mort du joueur fait passer un habitant caché de la ville à zombie, là où il est tombé', async () => {
+  const g = await newGame({ level: 'facile', seed: 11 });
+  const { rt, ville } = g;
+  const key = [...rt.pos.keys()].find((k) => blockInfo(ville, k).hidden >= 2);
+  const p = rt.pos.get(key);
+  const before = counters(ville);
+  const out = rt.infectAt(p.x, p.z);
+  assert.equal(out.from, 'cache');
+  assert.equal(out.name, ville.name);
+  assert.equal(out.lost, false);
+  const after = rt.stats();
+  assert.equal(after.zombies, before.zombies + 1);
+  assert.equal(after.saved, before.saved);
+  assert.equal(after.turned, 1);
+  assert.match(after.line, /Devenus zombies 1$/);
+  assert.ok(checkVille(ville).ok, checkVille(ville).errors.join(' ; '));
+  // Après la mort, le nouveau zombie est dans le stock : le directeur peut le prêter.
+  assert.ok(blockInfo(ville, key).zombies >= 1);
+});
+
+test('infectAt : jusqu\'à la ville perdue, puis plus rien ; la ligne et le statut le disent', async () => {
+  const g = await newGame({ level: 'facile', seed: 12 });
+  const { rt, ville } = g;
+  const p = rt.pos.values().next().value;
+  let n = 0, out;
+  while ((out = rt.infectAt(p.x, p.z)) && n < 5000) n++;
+  assert.ok(n > 10);
+  assert.equal(ville.lost, true);
+  assert.equal(rt.status(), 'perdue');
+  assert.match(rt.stats().line, /Ville perdue$/);
+  assert.equal(rt.objective({ x: p.x, z: p.z }).kind, 'lost', 'l\'objectif dit que la ville est perdue');
+  assert.equal(rt.infectAt(p.x, p.z), null);
+  assert.ok(checkVille(ville).ok, checkVille(ville).errors.join(' ; '));
+});
+
 test('file d\'attente : carte du rang (1er, 7e, seul), puis « Une place est à toi » avec Entrer, Quitter la file dans les deux', () => {
   const rank = (r, size) => queueCard('Vulliens', { state: 'wait', rank: r, size });
   assert.equal(rank(7, 23).title, 'File d\'attente');
