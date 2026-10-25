@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { edgeSpec, junctionFillets, arcPoints, minusCuts, FILLET_RADIUS } from '../src/carrefours.js';
-import { groundPlan, PAL } from '../src/chunks.js';
+import { groundPlan, PAL, setRuesDetail } from '../src/chunks.js';
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 const P = (x, z) => ({ x, z });
@@ -132,7 +132,10 @@ test('plan du sol : pas de bande de bord sur un pont, ni de congé sur une autor
   const autoroute = world({ roads: [
     road([P(10, 32), P(54, 32)], 12, 'motorway'), road([P(32, 32), P(32, 54)], 12, 'motorway'),
   ] });
-  assert.equal(arcs(groundPlan(autoroute, 0, 0, 64)).length, 0);
+  const ops = groundPlan(autoroute, 0, 0, 64);
+  assert.ok(!ops.some((o) => o.tag === 'corner'), 'pas de remplissage d\'angle');
+  // Les seuls arcs sont ceux des bouts libres des voies (x = 10 et x = 54), pas ceux du carrefour au milieu.
+  for (const o of arcs(ops)) for (const l of o.lines) for (const p of l) assert.ok(Math.hypot(p.x - 32, p.z - 32) > 14 || Math.abs(p.x - 32) > 14 || Math.abs(p.z - 32) > 14, 'arc au carrefour');
 });
 
 test('plan du sol : un carrefour de campagne a un congé plus large qu\'en ville', () => {
@@ -144,4 +147,33 @@ test('plan du sol : un carrefour de campagne a un congé plus large qu\'en ville
   const ops = groundPlan(campagne, 0, 0, 64);
   assert.ok(arcs(ops).length >= 2);
   assert.ok(ops.some((o) => o.t === 'fill' && o.tag === 'corner'));
+});
+
+test('bout libre : une voie qui finit en cul-de-sac a un bout rond net, pas une rue posée sur une autre', () => {
+  const impasse = world({ roads: [road([P(8, 32), P(40, 32)], 6, 'minor', { setting: 'village' })] });
+  const caps = arcs(groundPlan(impasse, 0, 0, 64));
+  assert.ok(caps.length >= 2, 'bande d\'arc à chaque bout');
+  // Les arcs de bout sont à la demi-largeur de la chaussée (plus la bande) du bout, du côté de l'extérieur.
+  for (const o of caps) {
+    for (const l of o.lines) {
+      for (const p of l) {
+        const d = Math.min(Math.hypot(p.x - 8, p.z - 32), Math.hypot(p.x - 40, p.z - 32));
+        assert.ok(d > 2.4 && d < 4.6, `rayon ${d.toFixed(2)} hors de 2,4-4,6 m`);
+        assert.ok(p.x <= 8 + 1e-6 || p.x >= 40 - 1e-6, 'arc par l\'avant du bout');
+      }
+    }
+  }
+  // Une rue qui finit sur une autre n'a pas de bout rond au-dessus de l'enrobé de celle-ci.
+  const en_T = world({ roads: [road([P(10, 32), P(54, 32)], 7, 'tertiary'), road([P(32, 32), P(32, 56)], 6, 'minor')] });
+  for (const o of arcs(groundPlan(en_T, 0, 0, 64))) for (const l of o.lines) for (const p of l) assert.ok(Math.abs(p.z - 32) > 3.2 || Math.abs(p.x - 32) > 6, 'arc de bout sur l\'enrobé de la rue qui passe');
+});
+
+test('?rues=avant : le plan du sol d\'avant le soin des rues, sans bandes de bord, congés ni détails', () => {
+  try {
+    setRuesDetail(false);
+    const ops = groundPlan(T(), 0, 0, 64);
+    for (const tag of ['edge', 'edgeArc', 'corner', 'giveWay', 'manhole', 'drain', 'rut', 'lineLane']) assert.equal(ops.filter((o) => o.tag === tag).length, 0, tag);
+    assert.ok(ops.some((o) => o.tag === 'road'), 'les chaussées sont toujours là');
+  } finally { setRuesDetail(true); }
+  assert.ok(groundPlan(T(), 0, 0, 64).some((o) => o.tag === 'edge'));
 });

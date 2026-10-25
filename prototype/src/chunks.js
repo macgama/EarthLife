@@ -14,6 +14,7 @@ import { buildingsGeometry, buildingMaterial, treesInstanced, followTreeWeather 
 import { groundGeometry } from './markings.js';
 import { SETTING_INDEX, SIDEWALK, carriageway, markBoxes } from './roadway.js';
 import { planEdges } from './carrefours.js';
+import { planStops, planFurniture, planTracks, laneDividers } from './rues-details.js';
 
 // Rayon construit et visible autour du joueur (Gaël : environ 100 m) ; la caméra reculée en demande parfois plus, sans
 // dépasser la grille de collision (src/view.js, update({ radius })).
@@ -591,6 +592,9 @@ const bandOnOther = (box, q, others) => boxCorners(box).some((c) => others.some(
 // 4 bordures ; 5 caniveaux puis chaussées par classe croissante, voies ferrées ; 6 marquages ; 7 ponts ; 8 marquages
 // des ponts. f : éléments du morceau (chunkFeatures) ou de son voisinage (featuresAround), pour les carrefours du bord.
 // Les marquages (op.mark) débordent du carré : le jeu les pose en géométrie coupée au carré (markings.js).
+// Soin des rues (carrefours.js, rues-details.js) : ?rues=avant le coupe pour comparer le rendu et son coût (main.js).
+let ruesDetail = true;
+export const setRuesDetail = (on) => { ruesDetail = !!on; };
 export function groundPlan(f, x0, z0, size) {
   const rect = { minX: x0, maxX: x0 + size, minZ: z0, maxZ: z0 + size };
   const g = gatherGround(f, rect, 44);
@@ -826,13 +830,16 @@ export function groundPlan(f, x0, z0, size) {
         placed.push(box);
         const op = zebra(q.x, q.z, q.dx, q.dz, v.w, 'junctionZebra');
         if (op) ops.push(op);
-        if (STOP.has(v.r.cls) && !v.style.oneway) {
+        b.stopAt = b.d + ZEBRA.length / 2 + 0.65; // recul de la ligne d'arrêt ou du cédez-le-passage (rues-details.js)
+        // Pas d'arrêt sur la rue prioritaire : celle de plus haut rang, quand une rue plus petite y débouche.
+        if (STOP.has(v.r.cls) && !v.style.oneway && !(ruesDetail && streets.some((o) => o.c.rank < v.rank))) {
           // Ligne d'arrêt sur la voie de droite de qui arrive au carrefour.
           const p2 = pointAt(v.p, b.s + b.sign * (b.d + ZEBRA.length / 2 + 0.5 + 0.15));
           const tx = -b.sign * p2.dx, tz = -b.sign * p2.dz; // sens de marche vers le carrefour
           const rx = -tz, rz = tx; // sa droite
           const w = v.w / 2 - 0.5;
           ops.push(strokeOp('stop', PAL.line, 0.3, [[{ x: p2.x, z: p2.z }, { x: p2.x + rx * w, z: p2.z + rz * w }]], { cap: 'butt', mark: 'ground' }));
+          b.stop = true;
         }
         // Lignes coupées jusqu'au-delà de la bande.
         cut(v, Math.min(b.s, b.s + b.sign * (b.d + ZEBRA.length / 2 + 0.8)), Math.max(b.s, b.s + b.sign * (b.d + ZEBRA.length / 2 + 0.8)));
@@ -856,9 +863,12 @@ export function groundPlan(f, x0, z0, size) {
       const cls = v.r.cls;
       const center = !v.style.oneway && (STRONG.has(cls) || (cls === 'minor' && v.r.width >= 9));
       const edge = EDGE_LINE.has(cls);
-      if (!center && !edge) continue;
+      // Sens unique à plusieurs voies : lignes discontinues entre les voies (le nombre de voies est estimé d'après la largeur).
+      const lanes = ruesDetail && v.style.oneway && STRONG.has(cls) ? laneDividers(v.w) : [];
+      if (!center && !edge && !lanes.length) continue;
       const d = v.w / 2 - 0.4 - 0.06;
-      const offsets = [...(center ? [0] : []), ...(edge ? [d, -d] : [])];
+      const offsets = [...(center ? [0] : []), ...(edge ? [d, -d] : []), ...lanes];
+      const laneFrom = offsets.length - lanes.length; // les derniers décalages sont des lignes de voies
       const others = pool.filter((o) => o !== v && o.runs.length && boxesMeet(o.p.box, v.p.box, o.w / 2 + 1));
       const spans = keptSpans(v.p.len, cuts.get(v) ?? []);
       // Bornes : partie de la voie dans sa tuile (mark), tablier rogné d'un pont posé sur une chaussée (trim).
@@ -876,8 +886,12 @@ export function groundPlan(f, x0, z0, size) {
             for (const [c0, c1] of clear[j]) {
               // Trait continu pris entre deux coupures (carrefour, passage, débouché d'une rue) : 4 m au moins.
               const seam = (seamA && c0 <= m0 + 1e-6) || (seamB && c1 >= m1 - 1e-6);
-              if (c1 - c0 < ((offsets[j] !== 0 || solid) && !seam ? LINE_MIN : 1)) continue;
-              if (offsets[j] === 0) {
+              const dashed = j >= laneFrom;
+              if (c1 - c0 < ((offsets[j] !== 0 || solid) && !dashed && !seam ? LINE_MIN : 1)) continue;
+              if (dashed) {
+                const ds = dashSpan(v.phase, c0, c1);
+                if (ds) ops.push(strokeOp(`${tag}Lane`, PAL.line, 0.12, [offsetLine(slice(v.p, ds[0], ds[1]), offsets[j])], { cap: 'butt', dash: [DASH, DASH_GAP], offset: Math.round(modp(v.phase + ds[0], DASH + DASH_GAP) * 1000) / 1000, mark }));
+              } else if (offsets[j] === 0) {
                 if (solid) { ops.push(strokeOp(`${tag}Center`, PAL.line, 0.15, [slice(v.p, c0, c1)], { cap: 'butt', mark })); continue; }
                 const ds = dashSpan(v.phase, c0, c1);
                 if (ds) ops.push(strokeOp(`${tag}Center`, PAL.line, 0.15, [slice(v.p, ds[0], ds[1])], { cap: 'butt', dash: [DASH, DASH_GAP], offset: Math.round(modp(v.phase + ds[0], DASH + DASH_GAP) * 1000) / 1000, mark }));
@@ -890,9 +904,16 @@ export function groundPlan(f, x0, z0, size) {
   };
   paintLines(cars, 'line', cars);
   // Bords nets de chaque chaussée (bandes en géométrie) et angles arrondis des carrefours (carrefours.js).
-  const edges = planEdges({ cars, junctions, H: { pointAt, slice, offsetLine, onOtherRoad, boxesMeet, prep }, PAL, strokeOp, fillOp, rank: (c) => c.rank });
-  ops.splice(asphaltEnd, 0, ...edges.fills);
-  ops.push(...edges.strips);
+  if (ruesDetail) {
+    const detail = { H: { pointAt, slice, offsetLine, onOtherRoad, boxesMeet, prep }, PAL, strokeOp };
+    const edges = planEdges({ ...detail, cars, junctions, fillOp, rank: (c) => c.rank });
+    ops.splice(asphaltEnd, 0, ...edges.fills);
+    ops.push(...edges.strips);
+    // Cédez-le-passage et arrêts des rues qui débouchent sur une plus grande, bouches d'égout, avaloirs, ornières (rues-details.js).
+    ops.push(...planStops({ ...detail, junctions, real, rank: (c) => c.rank }));
+    ops.push(...planFurniture({ ...detail, cars, cuts }));
+    ops.push(...planTracks({ ...detail, walks: walkOrder, visible }));
+  }
 
   // 7. Ponts : tablier, trottoirs, bordures et chaussée, voie par voie. Bout rond seulement contre un autre morceau
   // de pont ; un bout posé sur une chaussée au sol (carrefour du quai) s'arrête au bord de celle-ci, à bout droit.
@@ -1184,8 +1205,9 @@ vec3 groundDetail(vec3 col, vec3 c, vec2 xz, vec4 nA, vec4 nB, float gw) {
     float repair = smoothstep(0.62, 0.7, nA.a);
     float lum = 0.96 + 0.3 * (nA.b - 0.5) - 0.08 * repair + 0.14 * (nB.r - 0.5);
     float worn = smoothstep(0.45, 0.6, nA.r);
-    float crack = (1.0 - smoothstep(0.0, max(gw * 1.6, 0.002), abs(nA.g - 0.5))) * worn;
-    col = mix(col, col * (lum + (nB.b - 0.5) * 0.14 * G_FINE - 0.22 * crack), w);
+    // Courbes de niveau coupées en tronçons par le bruit fin (des arcs entiers sur l'enrobé faisaient des cercles) et peu marquées.
+    float crack = (1.0 - smoothstep(0.0, max(gw * 1.3, 0.002), abs(nA.g - 0.5))) * worn * smoothstep(0.42, 0.62, nB.g * G_FINE + 0.5 * (1.0 - G_FINE));
+    col = mix(col, col * (lum + (nB.b - 0.5) * 0.14 * G_FINE - 0.13 * crack), w);
   }
   return col;
 }

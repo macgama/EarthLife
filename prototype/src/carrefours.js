@@ -9,8 +9,10 @@
 
 const TAU = Math.PI * 2;
 export const EDGE_OVERLAP = 0.12; // m : une bande déborde de 12 cm dans le congé (pas de jour à la jonction)
-const EDGE_STEP = 0.5; // m : pas de recherche des bords coupés par l'enrobé d'une autre voie, puis dichotomie
+const EDGE_STEP = 0.5; // m : pas des points d'un arc
+const BLOCK_STEP = 1; // m : pas de recherche des bords coupés par l'enrobé d'une autre voie, puis dichotomie (5 coupes : 3 cm)
 const GUTTER_BACK = 0.55; // m : largeur repeinte vers la chaussée (caniveau de 35 cm et sa transition floue)
+const FREE_CAP = 0.6; // part minimale d'un bout rond hors de l'enrobé des autres voies
 const FILLET_MIN = 2.5, FILLET_GAP = 1.5; // rayon minimal ; marge entre le congé et le bout de la branche (m)
 const ANGLE_MIN = 0.3, ANGLE_MAX = Math.PI - 0.25; // angles de carrefour arrondis (rad) : ni trop aigus, ni quasi plats
 // Rayon de la bordure d'un carrefour selon le contexte (ville, village, campagne), en mètres.
@@ -143,7 +145,7 @@ function clearEdge(H, v, s0, s1, sgn, dist, others) {
     for (const o of others) if (H.onOtherRoad(o, x, z, q)) return true;
     return false;
   };
-  const n = Math.max(1, Math.ceil((s1 - s0) / EDGE_STEP));
+  const n = Math.max(1, Math.ceil((s1 - s0) / BLOCK_STEP));
   const out = [];
   let open = null, prevS = s0, prevB = blocked(s0);
   if (!prevB) open = s0;
@@ -223,6 +225,33 @@ function chainWholes(cars, junctions, H) {
   return out;
 }
 
+// Bout rond d'une voie : demi-cercle de rayon `radius` autour du bout E (dir : direction sortante), du côté droit au côté
+// gauche, par l'avant. Rend les parties de 0,8 m au moins dont les points à `edgeRadius` (le bord de l'enrobé) sont hors de
+// l'enrobé des autres voies : le bout d'une rue posé sur une autre n'est pas un bout libre.
+function capRuns(H, E, dir, radius, edgeRadius, others) {
+  const nx = -dir.z, nz = dir.x;
+  const steps = Math.min(24, Math.max(4, Math.ceil((Math.PI * radius) / EDGE_STEP)));
+  const at = (r, i) => {
+    const th = (Math.PI * i) / steps;
+    return { x: E.x + r * (nx * Math.cos(th) + dir.x * Math.sin(th)), z: E.z + r * (nz * Math.cos(th) + dir.z * Math.sin(th)) };
+  };
+  const c = { x: E.x, z: E.z, dx: dir.x, dz: dir.z };
+  const runs = [];
+  let cur = [];
+  for (let i = 0; i <= steps; i++) {
+    const p = at(edgeRadius, i);
+    const blocked = others.some((o) => H.onOtherRoad(o, p.x, p.z, c));
+    if (blocked) {
+      if (cur.length) runs.push(cur);
+      cur = [];
+    } else cur.push(i);
+  }
+  if (cur.length) runs.push(cur);
+  // Un bout libre dégage l'essentiel du demi-cercle ; si une autre voie le recouvre en grande partie, c'est un carrefour.
+  if (runs.reduce((n, r) => n + r.length, 0) < FREE_CAP * (steps + 1)) return [];
+  return runs.filter((r) => r.length >= 3 && (r.length - 1) * Math.PI * edgeRadius / steps >= 0.8).map((r) => r.map((i) => at(radius, i)));
+}
+
 // Opérations du plan du sol pour les bords et les coins des carrefours.
 //   strips : bandes en géométrie (op.mark = 'ground', couleur propre), sous les marquages ;
 //   fills : remplissages d'enrobé des coins, à peindre dans la texture après toutes les chaussées.
@@ -266,6 +295,9 @@ export function planEdges({ cars, junctions, H, PAL, strokeOp, fillOp, rank }) {
         if (radius <= st.hu + 0.05) continue;
         strips.push(strokeOp('edgeArc', st.color, 2 * st.hu, [arcPoints(f, radius)], { cap: 'butt', mark: 'ground' }));
       }
+      // Distance du carrefour jusqu'où chaque branche s'évase vers le congé (les lignes d'arrêt se posent au-delà).
+      f.a.reach = Math.max(f.a.reach ?? 0, f.ta);
+      f.b.reach = Math.max(f.b.reach ?? 0, f.tb);
       // Côté de chaque voie qui regarde l'angle : à droite du sens de parcours pour a (b est à sa gauche dans l'ordre des
       // angles), à gauche pour b, inversé quand la branche part vers l'arrière de la voie (sign = -1).
       for (const [br, side, t] of [[f.a, f.a.sign, f.ta], [f.b, -f.b.sign, f.tb]]) {
@@ -290,14 +322,30 @@ export function planEdges({ cars, junctions, H, PAL, strokeOp, fillOp, rank }) {
       if (!m.has(d)) m.set(d, H.offsetLine(chain ? chain.pts : whole.points, d));
       return m.get(d);
     };
+    // Voies dont l'enrobé peut toucher le bord de ce tronçon (boîte du tronçon élargie de la demi-largeur de chaque voie).
+    const near = (run) => others.filter((o) => o.runs.some((r) => H.boxesMeet(r.box, run.box, v.w / 2 + 1 + o.w / 2)));
     // Bornes : partie de la voie dans sa tuile (mark), comme les lignes (paintLines, chunks.js).
     const m0 = v.r.mark ? v.r.mark[0] : 0, m1 = v.r.mark ? v.r.mark[1] : v.p.len;
+    // Bouts ronds libres de la voie entière (ni prolongée chez une voisine, ni coupée au bord de la tuile).
+    for (const end of [0, 1]) {
+      if (chain && (end === 0 ? chain.a : chain.b)) continue;
+      const own = end === 0 ? at < 0.02 : at + v.p.len > wholeLen - 0.02;
+      if (!own || !v.runs.some((run) => (end === 0 ? run.s0 < 0.02 : run.s1 > v.p.len - 0.02))) continue;
+      const q = H.pointAt(v.p, end === 0 ? 0 : v.p.len);
+      if (junctions.some((J) => J.streets.length >= 3 && Math.hypot(J.x - q.x, J.z - q.z) < 1.5)) continue; // coins et congés du carrefour
+      const dir = end === 0 ? { x: -q.dx, z: -q.dz } : { x: q.dx, z: q.dz };
+      for (const st of spec) {
+        const radius = v.w / 2 + st.off;
+        if (radius <= st.hu + 0.05) continue;
+        for (const pts of capRuns(H, q, dir, radius, v.w / 2, others)) strips.push(strokeOp('edgeArc', st.color, 2 * st.hu, [pts], { cap: 'butt', mark: 'ground' }));
+      }
+    }
     for (const sgn of [1, -1]) {
       const cuts = cutsOf.get(v)?.[sgn] ?? [];
       for (const run of v.runs) {
         const s0 = Math.max(run.s0, m0), s1 = Math.min(run.s1, m1);
         if (s1 - s0 < 0.3) continue;
-        const clear = clearEdge(H, v, s0, s1, sgn, v.w / 2, others);
+        const clear = clearEdge(H, v, s0, s1, sgn, v.w / 2, near(run));
         for (const [a, b] of clear) {
           for (const [c0, c1] of minusCuts(a, b, cuts)) {
             if (c1 - c0 < 0.3) continue;
