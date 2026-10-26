@@ -502,7 +502,7 @@ const softRender = (() => {
 })();
 const groundDetail = GROUND_DETAILS.includes(params.get('sol')) ? params.get('sol') : softRender ? 'plat' : lowPower ? 'simple' : 'fin';
 // ?rues=avant : sol des rues d'avant le soin (bords nets, coins arrondis, lignes, bouches d'égout), pour comparer à l'écran et au chrono.
-setRuesDetail(params.get('rues') !== 'avant');
+setRuesDetail(params.get('rues') === 'apres');
 setBati(params.get('bati'), lowPower); // ?bati=base|simple|fin : détail des bâtiments (matières, toits), 'base' = comme avant
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000); // champ : FOV_TOP, plus large en vue basse
