@@ -14,7 +14,7 @@
     "admin": "node admin.mjs"
   },
   "dependencies": {
-    "mysql2": "3.24.5",
+    "mysql2": "3.24.6",
     "ws": "8.22.0"
   }
 }
