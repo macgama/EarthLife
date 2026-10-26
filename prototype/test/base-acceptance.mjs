@@ -3713,8 +3713,8 @@ async function conduiteScenario(device) {
     await until(page, () => (Math.abs(window.__earthlife.session.driving?.speed ?? 9) < 0.3 ? 1 : null), null, 120000);
   }
 
-  // 6. Contre un mur : un mur de face à 25 m ou plus est cherché autour (la même distance sur trois lignes parallèles, à 1 m de part et d'autre :
-  // un mur large et droit, pas un coin ni un passage où la voiture glisserait), la voiture est posée à 8 m devant, vitesse nulle, poussée en avant ;
+  // 6. Contre un mur : un mur de face à 25 m ou plus est cherché autour (la même distance sur cinq lignes parallèles, à 1 et 2 m de part et d'autre :
+  // un mur large et droit, pas un coin, un mur oblique ni un passage où la voiture glisserait), la voiture est posée à 8 m devant, vitesse nulle, poussée en avant ;
   // elle s'arrête sans entrer dans le mur. Le mur est celui d'un bâtiment : une voiture garée, un arbre ou un banc (décor plein, obstacles.js)
   // arrête aussi le disque de la voiture sur les trois lignes, mais elle glisse ensuite autour (moveWithCollisions avance axe par axe).
   const edge = await ev(page, async () => {
@@ -3732,7 +3732,7 @@ async function conduiteScenario(device) {
     let best = null;
     for (let k = 0; k < 72; k++) {
       const a = (k / 72) * Math.PI * 2;
-      const ns = [0, 1, -1].map((o) => free(p.x + Math.cos(a) * o, p.z - Math.sin(a) * o, a));
+      const ns = [0, 1, -1, 2, -2].map((o) => free(p.x + Math.cos(a) * o, p.z - Math.sin(a) * o, a));
       const n = ns[0];
       if (n >= 25 && Math.min(...ns) >= 0 && Math.max(...ns) < 160 && Math.max(...ns) - Math.min(...ns) <= 1 && (!best || Math.abs(n - 60) < Math.abs(best.n - 60))) best = { a, n };
     }
@@ -3753,7 +3753,9 @@ async function conduiteScenario(device) {
   }, [edge.x, edge.z], 180000);
   const rec2 = await ev(page, () => ({ ...window.__drv }));
   const rolled = blocked ? Math.hypot(blocked.x - edge.x, blocked.z - edge.z) : null;
-  check(!!wallSpeed && !!blocked && rolled <= 8, `${tag} : le mur à ${edge.n} m : la voiture s'arrête après ${rolled === null ? '?' : round(rolled, 1)} m sur les 8 m laissés devant elle`);
+  // La distance libre est comptée au mètre (free : un pas de 1 m) : le mur peut être jusqu'à 1 m plus loin que les 8 m prévus ; qu'elle n'y entre pas
+  // est contrôlé à part (aucune image dedans).
+  check(!!wallSpeed && !!blocked && rolled <= 9, `${tag} : le mur à ${edge.n} m : la voiture s'arrête après ${rolled === null ? '?' : round(rolled, 1)} m sur les 8 m laissés devant elle (9 m au plus, distance libre comptée au mètre)`);
   check(rec2.inside === 0 && rec2.max <= 30 / 3.6 + 0.01, `${tag} : jamais dans le mur (${rec2.inside} images dedans), vitesse max ${round(rec2.max * 3.6, 1)} km/h`);
   await shot(page, `${name}-mur`);
   await page.keyboard.up('ArrowUp');

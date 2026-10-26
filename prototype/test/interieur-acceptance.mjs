@@ -385,7 +385,8 @@ async function resumeScenario() {
   await wait(500);
   // Retour au menu : sauvegarde, et la ligne le dit.
   await ev(page, () => document.getElementById('quit')?.click());
-  const line = await until(page, () => { const e = document.getElementById('save-ok'); return e && !e.hidden ? e.textContent.trim() : null; }, null, 10000);
+  // Sans carte graphique la sauvegarde et le retour au menu prennent plus de 10 s sur un exécuteur lent : l'attente est large, elle rend la main dès que la ligne paraît.
+  const line = await until(page, () => { const e = document.getElementById('save-ok'); return e && !e.hidden ? e.textContent.trim() : null; }, null, 60000);
   check(/^Partie sauvegardée à \d{1,2} h \d{2}\./.test(line ?? ''), `${tag} : ligne du menu « ${line} »`);
   const playLabel = await ev(page, () => document.getElementById('play-label')?.textContent.trim());
   check(playLabel === 'Reprendre ma partie', `${tag} : le bouton du menu dit « ${playLabel} » (pas la porte du refuge)`);

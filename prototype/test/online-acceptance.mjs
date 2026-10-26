@@ -1595,9 +1595,9 @@ await scenario('O9', 'B part « Autour de moi », marche 60 s dans la zone puis 
   // si l'étiquette manque encore, l'état vu par A (B dans online.others, survivants dessinés, caméra) dans le message.
   // L'autre se rapproche de sa position reçue au temps du jeu (0,05 s par image au plus) : sur un exécuteur lent il est encore
   // dessiné à 40 m quand il est à 25 m, hors de portée de l'étiquette. On attend qu'il soit dessiné à moins de 5 m de sa
-  // distance vraie (images comptées à la cadence de A : 10 s plus 100 images).
+  // distance vraie (images comptées à la cadence de A : 10 s plus 400 images : la cadence de A baisse avec les dix autres pages).
   const frame9 = Math.round(1000 / Math.max(0.5, await fpsOf(A)));
-  await until(A, ([sid, real]) => { const o = window.__earthlife.othersView?.stats().survivors.find((x) => x.sid === sid); return o && o.d <= real + 5 ? 1 : null; }, [sidB, await apart(A, B)], 10000 + 100 * frame9);
+  await until(A, ([sid, real]) => { const o = window.__earthlife.othersView?.stats().survivors.find((x) => x.sid === sid); return o && o.d <= real + 5 ? 1 : null; }, [sidB, await apart(A, B)], 10000 + 400 * frame9);
   let labs = [];
   for (const pitch of [0.6, 0.4, 0.8]) {
     await face(A, await where(B), pitch);
