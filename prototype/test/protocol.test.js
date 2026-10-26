@@ -45,7 +45,7 @@ function seeded(seed) {
 
 test('constantes de la spécification 7.2', () => {
   assert.equal(PROTOCOL, 1);
-  assert.equal(CLIENT_LEVEL, 3);
+  assert.equal(CLIENT_LEVEL, 4);
   assert.deepEqual(FLAGS, { run: 1, inside: 2, carrying: 4, down: 8, crown: 16 });
   assert.equal(CELL_DEG, 0.0036);
   const expected = { maxPayload: 2048, hz: 4, beatMs: 5000, tickMs: 250, nearM: 150, farM: 400, nameM: 30,
@@ -212,7 +212,7 @@ test('placeOfId : vrais bâtiments de la tuile de Lyon, objets du décor, ville 
 const VALID_CLIENT = [
   { t: 'hello', v: 1, cl: 1, tok: null, c: 'a1b2c3d' },
   { t: 'hello', v: 1, cl: 1, tok: TOK, c: 'dev', inv: 'BETA-2026' },
-  { t: 'hello', v: 1, cl: 3 },
+  { t: 'hello', v: 1, cl: 4 },
   { t: 'p', s: 4521, ct: 1234567, a: 45757312, o: 4831004, h: 200, m: 1 },
   { t: 'p', s: 4522, ct: 1234817, a: 45757330, o: 4831010, h: 200, m: 1, an: 1 },
   { t: 'p', s: 1, ct: 0, a: -85000000, o: 180000000, h: 0, m: 15, an: 0, j: 1 },

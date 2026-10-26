@@ -448,8 +448,12 @@ export function createCityGame(host) {
       return null;
     }
     host.setLoading(null);
-    if (!prep.ok) { await askCard(infoCard('Ville impossible', prep.reason === 'too-big' ? CITY_TEXT.tooBig : prep.reason === 'empty' ? CITY_TEXT.empty : CITY_TEXT.noStreets), 'ok'); return null; }
-    if (prep.mode === 'quartiers') { await askCard(infoCard('Ville trop grande', SEASON_TEXT.mode), 'ok'); return null; }
+    if (!prep.ok) {
+      const tooBig = prep.reason === 'too-big';
+      await askCard(infoCard(tooBig ? 'Ville trop grande' : 'Ville impossible', tooBig ? CITY_TEXT.seasonTooBig(prep.unit?.name ?? place.name, prep.unit?.population) : prep.reason === 'empty' ? CITY_TEXT.empty : CITY_TEXT.noStreets), 'ok');
+      return null;
+    }
+    const big = prep.mode === 'quartiers';
     if (announced && prep.unit.key !== announced.key) { await askCard(infoCard('Ville impossible', seasonText('annoncee')), 'ok'); return null; }
     // La commune du lieu touché est celle où tu joues déjà : rien à changer.
     if (own && prep.unit.key === own.key) return { city: own, prep: null, same: true };
@@ -458,8 +462,9 @@ export function createCityGame(host) {
     const name = announced?.name ?? prep.unit.name;
     const open = known(prep.unit.key);
     const lines = open
-      ? [`${name} est déjà ouverte en ${levelName(level)} : ${groupDigits(open.zombies)} zombies restants, ${groupDigits(open.saved)} / ${groupDigits(open.toSave)} habitants sauvés${open.online ? `, ${plural(open.online, 'survivant', 'survivants')} en ligne` : ''}.`]
-      : [`Tu es le premier à y jouer en ${levelName(level)} : ${groupDigits(sum.zombies)} zombies, ${groupDigits(sum.hidden)} habitants à sauver. Ceux qui la choisiront après toi la sauveront avec toi.`];
+      ? [`${name} est déjà ouverte en ${levelName(level)} : ${groupDigits(open.zombies)} zombies restants, ${groupDigits(open.saved)} / ${groupDigits(open.toSave)} habitants sauvés${open.online ? `, ${plural(open.online, 'survivant', 'survivants')} en ligne` : ''}${open.done ? `, ${plural(open.done, 'quartier repris', 'quartiers repris')}` : ''}.`]
+      : [`Tu es le premier à y jouer en ${levelName(level)} : ${groupDigits(sum.zombies)} zombies${big ? ' dans la ville' : ''}, ${groupDigits(sum.hidden)} habitants à sauver. Ceux qui la choisiront après toi la sauveront avec toi.`];
+    if (big) lines.push(CITY_TEXT.quartiersSeason);
     if (announced && !open) lines.push('Cette ville est annoncée pour ce niveau. Tu commenceras où tu as touché la carte, si c\'est dans la ville.');
     if (own) lines.push(moveLine(own));
     const id = await askCard({
@@ -479,7 +484,7 @@ export function createCityGame(host) {
     const r = await net().seed({
       key: prep.unit.key, name, place: { lat: place.lat, lon: place.lon, name }, pop: prep.unit.population,
       src: typeof prep.unit.source === 'string' ? prep.unit.source : 'insee', approx: prep.unit.source === 'estimation' || prep.commune.approx === true,
-      zl: prep.unit.level, tiles: weights, failed: prep.census.failed, mode: 'entiere',
+      zl: prep.unit.level, tiles: weights, failed: prep.census.failed, mode: prep.mode === 'quartiers' ? 'quartiers' : 'entiere',
     });
     host.setLoading(null);
     if (r.ok) return { city: r.city, prep: r.created ? prep : null, home: r.home ?? null };
@@ -874,7 +879,7 @@ export function createCityGame(host) {
     s.cityObj = obj;
     const st = rt.stats();
     const here = rt.blockLine(rt.blockAt(s.player.x, s.player.z));
-    const text = `Zombies restants ${groupDigits(st.zombies)} · Habitants sauvés ${groupDigits(st.saved)} / ${groupDigits(st.toSave)}${st.approx ? ' (environ)' : ''} · Pâtés libérés ${st.free} / ${st.known}`;
+    const text = `Zombies restants ${groupDigits(st.zombies)} · Habitants sauvés ${groupDigits(st.saved)} / ${groupDigits(st.toSave)}${st.approx ? ' (environ)' : ''} · Pâtés libérés ${st.free} / ${st.known}${rt.ville.mode === 'quartiers' ? ` · Quartiers repris ${st.done}` : ''}`;
     const meta = $('city-meta');
     if (meta) {
       const l1 = meta.firstElementChild, l2 = meta.lastElementChild;
@@ -921,6 +926,7 @@ export function createCityGame(host) {
         { label: 'Habitants sauvés', value: `${groupDigits(st.saved)} / ${groupDigits(st.toSave)}` },
         { label: 'Zombies restants', value: groupDigits(st.zombies) },
         { label: 'Pâtés libérés', value: `${st.free} / ${st.known}` },
+        ...(rt.ville.mode === 'quartiers' ? [{ label: 'Quartiers repris', value: groupDigits(st.done) }] : []),
         ...(st.lost ? [{ label: 'Ville', value: 'perdue' }] : st.turned > 0 ? [{ label: 'Devenus zombies', value: groupDigits(st.turned) }] : []),
       ],
     };
@@ -1024,6 +1030,8 @@ export function createCityGame(host) {
         host.toast(`Quartier ${e.name || ''} commencé : ${groupDigits(e.zombies)} zombies`.replace('  ', ' '), 4);
         break;
       case 'unit-done':
+        // Saison : n'importe quel joueur peut reprendre un quartier, pendant que tu joues ailleurs : un message qui passe, pas une carte qui arrête la partie.
+        if (e.season) { host.toast(`Quartier ${e.line[0] || ''} repris : ${groupDigits(e.line[10])} habitants sauvés, ses pâtés quittent la ville`.replace('  ', ' '), 6, 'success'); break; }
         host.showCard({ title: `Quartier ${e.line[0] || ''} repris`.replace('  ', ' '), tone: 'success', lines: [`${groupDigits(e.line[10])} habitants sauvés.`, 'Ses pâtés quittent ta sauvegarde : il tient en une ligne.'], buttons: [{ id: 'ok', label: 'Continuer', primary: true }] }, null, { escape: 'ok' });
         break;
       case 'season-end':

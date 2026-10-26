@@ -333,6 +333,15 @@ function indexOf(ville) {
   return m;
 }
 const reindex = (ville) => INDEX.delete(ville);
+// Copie d'une ville commune (saison) : le serveur ajoute ou retire des rangées sans passer par placeTile. L'index des pâtés les suit, sinon
+// blockInfo ne connaîtrait pas un pâté arrivé après la première lecture (zombies invisibles dans les tuiles découpées plus tard).
+export function noteRow(ville, tk, key, present = true) {
+  const m = INDEX.get(ville);
+  if (!m) return;
+  if (present) m.set(key, tk); else m.delete(key);
+}
+// Les tuiles de la copie ont été remplacées en bloc (tuile adoptée, état relu) : l'index est refait à la prochaine lecture.
+export const resetIndex = reindex;
 function lentOf(ville) {
   let m = LENT.get(ville);
   if (!m) { m = new Map(); LENT.set(ville, m); }
@@ -727,8 +736,9 @@ function takeReserve(ville, ukey) {
   const list = [];
   for (const t of Object.values(ville.tiles)) if (t.b) for (const [k, row] of Object.entries(t.b)) if (row[Q] === qi) list.push({ key: k, row });
   const z = list.reduce((a, it) => a + it.row[S], 0);
-  // Chaque pâté donne au plus son stock de départ (sa part d'origine), même s'il a reçu des zombies voisins.
-  const w = (it) => Math.min(it.row[S], it.row[S0]);
+  // Chaque pâté donne au plus son stock de départ (sa part d'origine), même s'il a reçu des zombies voisins, et jamais les zombies
+  // prêtés (ils sont dehors, à la poursuite d'un joueur : le stock du pâté ne descend pas sous ce qui est prêté).
+  const w = (it) => Math.max(0, Math.min(it.row[S] - lentAt(ville, it.key), it.row[S0]));
   const Rq = Math.min(list.length < QUARTIER.hamlet ? 0 : reserveFor(z), list.reduce((a, it) => a + w(it), 0));
   const sh = apportion(list, w, Rq, (it) => it.key);
   for (const it of list) {

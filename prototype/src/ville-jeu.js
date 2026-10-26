@@ -12,7 +12,9 @@ import {
   regrow, volunteersNight, homeWeights, hiddenByBuilding, takeHome, heartWaves, nestSize, keyPoint, startUnit, finishUnit,
   unitTilesMissing, unitKeyOf, zombiesLeft, supplyFor, villeLine, flagNights,
 } from './quartier.js';
-import { soloOps, seasonOps, applyRows, applyTile, applyCounts, applyLent, adoptTiles, resync as resyncVille } from './saison-miroir.js';
+import {
+  soloOps, seasonOps, applyRows, applyTile, applyCounts, applyLent, adoptTiles, applyPlaces, applyUnit, applyUnitDone, resync as resyncVille,
+} from './saison-miroir.js';
 import { beginVille, rekeyTerritory, finishVille, currentVille, supplyDay, noteFirst } from './territory-store.js';
 import {
   censusUnit, contourTiles, hasContour, chapterMode, communeMembership, neighboursFromZones, offlinePlace, offlineCommune,
@@ -43,6 +45,7 @@ export const CITY = {
   wearMax: 3,            // fanions visés par une vraie nuit
   homeMin: 150, homeMax: 600, aroundMin: 450, aroundMax: 1300,
   dirtyMs: 1200,         // écriture du territoire regroupée
+  unitAskMs: 6000,       // saison, grande ville : le serveur n'a pas commencé le quartier (tuiles, prêts en cours) ; on redemande après 6 s
 };
 
 const isAbort = (e) => e?.name === 'AbortError';
@@ -67,6 +70,9 @@ export const CITY_TEXT = {
   empty: 'Presque personne n\'habite ici : choisis un endroit plus peuplé.',
   entiere: 'Un village qui se sauve en entier : tous ses pâtés, puis une dernière nuit au cœur.',
   quartiers: 'Une grande ville : elle se sauve quartier par quartier. Commence par le tien.',
+  quartiersSeason: 'Grande ville : elle se sauve quartier par quartier. Le quartier où tu entres commence pour tous les joueurs ; la ville est sauvée quand tous ses quartiers sont repris.',
+  // Saison : la commune dépasse ce que le recensement sait compter (CENSUS_MAX_TILES tuiles de carte, environ 1 000 km²).
+  seasonTooBig: (name, population) => `${name || 'Cette commune'}${Number.isInteger(population) && population > 0 ? ` (${groupDigits(population)} habitants)` : ''} s'étend sur plus de 400 tuiles de carte, environ 1 000 km² : le recensement ne sait pas la compter d'un coup. Choisis une commune plus petite : les grandes villes se jouent par quartiers, jusqu'à cette taille.`,
   liberated: (n) => `${groupDigits(n)} habitant${n > 1 ? 's sortent' : ' sort'} de ${n > 1 ? 'leurs cachettes' : 'sa cachette'}`,
 };
 
@@ -413,6 +419,7 @@ export function createCityRuntime(deps) {
   const state = {
     counter: null, nightDone: null, lastDirty: 0, dirtyPending: false, ended: false, acc: 0, unitAcc: 0, heartAt: -Infinity, heartVal: null, capAt: -Infinity, capVal: 0,
     forceFind: false,   // essais (?debug=1) : un bâtiment qui cache quelqu'un le donne à coup sûr
+    unitAsk: new Map(), // saison, grande ville : quartier -> instant de la dernière demande d'entrée
   };
   let disposed = false;
 
@@ -515,7 +522,7 @@ export function createCityRuntime(deps) {
     if (unknown && !force) { waiting.set(key, res); return { ok: false, waiting: unknown }; }
     const nb = [];
     list.forEach((p, i) => { for (const j of p.nb ?? []) if (j > i && j < list.length) nb.push([i, j]); });
-    const body = { t: key, pates: rows, nb };
+    const body = { t: key, pates: rows, nb, qn: ville.qk?.length ?? 0 };      // qn : les lieux que cette copie connaît déjà (grande ville)
     if (typeof member.leak === 'boolean') body.l = member.leak;
     if (force) body.f = true;
     const job = S.net.tile(body).then((r) => {
@@ -527,6 +534,7 @@ export function createCityRuntime(deps) {
         upFailed.set(key, now());
         return { ok: false };
       }
+      applyPlaces(ville, r);
       adoptTiles(ville, r.tiles);
       if (ville.tiles[key]?.b) { readyTile(key, res); return { ok: true }; }
       if (r.waiting) { waiting.set(key, res); return { ok: false, waiting: 1 }; }
@@ -1174,19 +1182,24 @@ export function createCityRuntime(deps) {
 
   // Le joueur entre dans un quartier : il commence quand ses tuiles sont placées (startUnit) ; un quartier sans zombie
   // ni réserve est repris (finishUnit : une ligne, ses pâtés quittent la sauvegarde).
+  // Saison : le serveur commence et reprend les quartiers pour tous les joueurs (il garde la ville) ; ici seulement la demande d'entrée, une fois les
+  // tuiles du quartier placées (la copie est celle du serveur : mêmes tuiles, mêmes lieux).
   function unitsTick(player) {
-    if (S || ville.mode !== 'quartiers') return;
+    if (ville.mode !== 'quartiers') return;
     const here = blockAt(player.x, player.z), p = here ? pos.get(here) : null;
-    const uk = p?.qkey || '';
+    const uk = (S ? unitKeyOf(ville, here) : p?.qkey) || '';
     if (uk && !ville.units[uk] && !ville.done[uk]) {
       const missing = unitTilesMissing(ville, uk);
       if (missing.length) {
         for (const k of missing.slice(0, 3)) { const [, x, y] = k.split('/').map(Number); cutTile(x, y, { silent: true }); }
+      } else if (S) {
+        if (now() - (state.unitAsk.get(uk) ?? -Infinity) >= CITY.unitAskMs) { state.unitAsk.set(uk, now()); ops.startUnit(here, p?.place ?? ''); }
       } else {
         const u = startUnit(ville, uk, { name: p.place, coeur: here, at: now() });
         if (u) { markDirty(true); onEvent({ type: 'unit-start', unit: uk, name: p.place, zombies: u.z0, reserve: u.r }); }
       }
     }
+    if (S) return;
     for (const k of Object.keys(ville.units)) {
       if (zombiesInUnit(k) > 0) continue;
       const line = finishUnit(ville, k, now());
@@ -1242,7 +1255,21 @@ export function createCityRuntime(deps) {
     if (disposed) return;
     switch (msg.o) {
       case 'rows': applyRows(ville, msg.r); break;
-      case 'tile': applyTile(ville, msg.k, msg.v); break;
+      case 'tile': applyPlaces(ville, msg); applyTile(ville, msg.k, msg.v); break;
+      case 'un':
+        if (applyUnit(ville, msg.k, msg.u)) onEvent({ type: 'unit-start', unit: msg.k, name: msg.u.n, zombies: msg.u.z0, reserve: msg.u.r, season: true });
+        break;
+      case 'ud':
+        if (applyUnitDone(ville, msg.k, msg.l)) {
+          for (const key of [...pos.keys()]) {                                                // ses pâtés ont quitté la ville
+            if (blockInfo(ville, key)) continue;
+            pos.delete(key);
+            for (const o of adj.get(key) ?? []) adj.get(o)?.delete(key);
+            adj.delete(key);
+          }
+          onEvent({ type: 'unit-done', unit: msg.k, line: msg.l, season: true });
+        }
+        break;
       case 'cnt': applyCounts(ville, msg.c); state.srv = { z: msg.c.z }; break;
       case 'ls': applyLent(ville, msg.l); break;
       case 'deny': applyDeny(msg.d); break;
@@ -1250,7 +1277,7 @@ export function createCityRuntime(deps) {
       case 'no': onEvent({ type: 'season-no', why: msg.why }); break;
       default: return;
     }
-    if (msg.o === 'rows' || msg.o === 'tile' || msg.o === 'ls') { state.capAt = -Infinity; state.heartAt = -Infinity; }
+    if (msg.o === 'rows' || msg.o === 'tile' || msg.o === 'ls' || msg.o === 'un' || msg.o === 'ud') { state.capAt = -Infinity; state.heartAt = -Infinity; }
     if (msg.o === 'rows' || msg.o === 'tile') adoptKnown();
   }
 

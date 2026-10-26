@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { CLIENT_LEVEL } from '../src/net/protocol.js';
 import { createSeasonNet, SEASON_NET, SEASON_TEXT } from '../src/net/season.js';
 import {
   soloOps, seasonOps, applyRows, applyTile, adoptTiles, applyCounts, applyLent, resync, insideTiles, resumeHome,
@@ -72,7 +73,7 @@ test('requêtes : POST simple, session en tête, codes de réponse en clair', as
   assert.equal(c.url, 'https://srv.example/v1/season/join');
   assert.equal(c.opts.method, 'POST');
   assert.equal(c.opts.headers['Content-Type'], 'text/plain;charset=UTF-8');
-  assert.deepEqual(Object.keys(c.body), ['ses', 'level']);
+  assert.deepEqual(Object.keys(c.body), ['ses', 'cl', 'level']);
   assert.equal(c.body.ses, 'ses-1');
   assert.equal((await t.net.state()).code, 'session');
   assert.equal((await t.net.state()).code, 'trop');
@@ -126,7 +127,7 @@ test('abonnement : état lu après `in`, messages arrivés entre les deux rejou�
   const got = [];
   const t = makeNet({ responses: [reply(200, { ok: true, rv: 10, ville: { key: 'c1' }, lent: {} })] });
   const p = t.net.open('c01283', { msg: (m) => got.push(m) });
-  assert.deepEqual(t.online.sent[0], { o: 'in', c: 'c01283', q: true });
+  assert.deepEqual(t.online.sent[0], { o: 'in', c: 'c01283', q: true, cl: CLIENT_LEVEL });
   assert.equal(t.online.listeners('sv'), 1);
   t.online.emit('sv', { t: 'sv', o: 'in', rv: 8 });
   // Entre l'abonnement et la lecture de l'état : mis de côté.
@@ -200,7 +201,7 @@ test('file d\'attente : `wait` suspend le délai et prévient le jeu, `go` aussi
   t.online.emit('sv', { t: 'sv', o: 'go', ms: 120000 });
   assert.deepEqual(seen, [{ state: 'wait', rank: 7, size: 23 }, { state: 'wait', rank: 6, size: 22 }, { state: 'go', ms: 120000 }]);
   assert.equal(t.net.claim(), true);
-  assert.deepEqual(t.online.sent.at(-1), { o: 'in', c: 'c1', q: true });
+  assert.deepEqual(t.online.sent.at(-1), { o: 'in', c: 'c1', q: true, cl: CLIENT_LEVEL });
   assert.equal(t.timers.pending(), 1, 'délai de réponse réarmé pour l\'entrée');
   t.online.emit('sv', { t: 'sv', o: 'in', rv: 3 });
   const r = await p;
@@ -257,7 +258,7 @@ test('coupure : le jeu est prévenu, puis état relu, copie remplacée et zombie
   assert.equal(t.net.subscribed, false);
   t.online.emit('link', true);
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(t.online.sent.at(-1), { o: 'in', c: 'c1', q: true });
+  assert.deepEqual(t.online.sent.at(-1), { o: 'in', c: 'c1', q: true, cl: CLIENT_LEVEL });
   t.online.emit('sv', { t: 'sv', o: 'in', rv: 19 });
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));

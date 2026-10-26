@@ -104,7 +104,7 @@ export function frontModel(level, entry, ctx = {}) {
   // Un serveur d'avant le choix libre ne compte les survivants en ligne que par niveau : avec une seule ville, ce sont les siens.
   const list = rows.map((r) => ({ key: r.key, name: typeof r.name === 'string' ? r.name : '', where: pointOf(r), status: STATUS[r.status] ? r.status : 'en-cours',
     online: int(r.online ?? (rows.length === 1 ? entry?.online : 0)), own: r.key === own?.key, announced: false,
-    started: startedOf(r), saved: int(r.saved), toSave: int(r.toSave) }));
+    started: startedOf(r), saved: int(r.saved), toSave: int(r.toSave), mode: r.mode === 'quartiers' ? 'quartiers' : 'entiere', done: int(r.done) }));
   if (ann && !annRow) list.push({ key: ann.key, name: ann.name, where: pointOf(ann), status: 'annoncee', online: 0, own: false, announced: true, started: false, saved: 0, toSave: 0 });
   if (own && pending) list.push({ key: own.key, name: typeof own.name === 'string' ? own.name : '', where: pointOf(own), status: 'en-cours', online: 0, own: true, announced: false, started: false, saved: 0, toSave: 0 });
   const totals = { cities: 0, cleaned: 0, zombies: 0, saved: 0 };
@@ -119,7 +119,7 @@ export function frontModel(level, entry, ctx = {}) {
     status, badge: STATUS[status].label, tone: STATUS[status].tone,
     cityName: typeof shown?.name === 'string' ? shown.name : null, cityKey: shown?.key ?? null, where, announced: !!a, pending,
     cleared, clearedText: `${Math.round(cleared * 100)} %`,
-    zombies, zombies0, saved: int(c?.saved), toSave: int(c?.toSave), flags: int(c?.flags),
+    zombies, zombies0, saved: int(c?.saved), toSave: int(c?.toSave), flags: int(c?.flags), mode: c?.mode === 'quartiers' ? 'quartiers' : 'entiere', done: int(c?.done),
     online: int(entry?.online), players: int(entry?.players), seats: int(entry?.seats) || 100,
     cities: list, open: rows.length, others: Math.max(0, rows.length - (c ? 1 : 0)), proposal, totals,
     mine, locked, picked: !locked && (enrolled ? mine : ctx.pick === level),
@@ -288,7 +288,9 @@ export function createSalon({ doc, storage = null, host = {} } = {}) {
     const stats = loaded && f.cityName && !f.announced && !f.pending;
     setText(c.zombies, !loaded ? '' : f.announced ? 'Ville annoncée : proposée en premier, elle démarre dès qu\'un joueur entre.' : f.pending ? 'Ta ville vient d\'ouvrir : les chiffres arrivent.'
       : f.cityName ? `${groupDigits(f.zombies)} zombie${f.zombies > 1 ? 's' : ''} restant${f.zombies > 1 ? 's' : ''} (${f.clearedText} éliminés)` : 'Touche la carte pour choisir ta ville.');
-    setText(c.saved, stats ? `${groupDigits(f.saved)} / ${groupDigits(f.toSave)} habitants sauvés` : '');
+    // Grande ville en quartiers : le total à sauver grandit à mesure qu'on l'explore, on dit les quartiers repris plutôt qu'un total.
+    setText(c.saved, !stats ? '' : f.mode === 'quartiers' ? `${plural(f.done, 'quartier repris', 'quartiers repris')} · ${groupDigits(f.saved)} habitants sauvés`
+      : `${groupDigits(f.saved)} / ${groupDigits(f.toSave)} habitants sauvés`);
     setText(c.online, loaded ? `${plural(f.online, 'survivant en ligne', 'survivants en ligne')} · ${groupDigits(f.players)} inscrit${f.players > 1 ? 's' : ''}${f.open > 1 ? ` · ${f.open} villes` : ''}` : '');
     c.b.querySelector('.front-dot').dataset.live = f.online > 0 ? '1' : '0';
     c.b.title = f.locked ? 'Ton niveau est déjà choisi pour la saison : il ne change plus.' : f.rule;
