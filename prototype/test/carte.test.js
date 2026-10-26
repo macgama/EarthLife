@@ -5,8 +5,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   PHONE_MAP_CORNER, MAP, MAP_COLORS, PASSES, mapPoint, edgePoint, arrowAngle, nearZombies, mapMarkers, cacheMargin,
-  cacheExtent, cacheJob, fitMap, bigSize, mapCorner,
+  cacheExtent, cacheJob, fitMap, bigSize, mapCorner, legendRows, SEARCHED,
 } from '../src/minimap.js';
+import { makeMapMarks } from '../src/carte-marques.js';
+import { ETAT } from '../src/quartier.js';
 import { createWorldStore, addFeatures } from '../src/world.js';
 
 const near = (a, b, eps, what = '') => assert.ok(Math.abs(a - b) <= eps, `${what} ${a} ≠ ${b} (± ${eps})`);
@@ -207,6 +209,59 @@ test('carte : cache construit bucket par bucket, en passes (aires, eau, chemins,
   const low = recorder();
   for (const _ of cacheJob(low.ctx, store, { cx: 64, cz: 32, E: 50, homeId: null, low: true, ppm: 1.6 }));
   assert.ok(low.calls.some((c) => c[0] === '=strokeStyle' && c[1] === MAP_COLORS.buildingLine));
+});
+
+// Ville à sauver : trois pâtés (libéré, nettoyé, rouge) et quatre bâtiments, un par pâté plus un hors des pâtés placés.
+const row = (etat) => [etat, 0, 10, 0, 5, 0, 0, 0, 1];
+function savedCity({ searched = (b) => b.id === 'b', other = (b) => b.id === 'd' } = {}) {
+  const rows = { sauve: row(ETAT.libere), net: row(ETAT.nettoye), rouge: row(ETAT.rouge) };
+  const ville = { key: 'c1', mode: 'entiere', qk: [''], me: null, meOut: false, tiles: { t: { b: rows } } };
+  const rt = { ville, placedTiles: 1, blockAt: (x) => ({ 10: 'sauve', 30: 'net', 50: 'rouge' }[Math.round(x)] ?? null) };
+  const marks = makeMapMarks({ rt, searched, searchedCount: () => 1, other, otherCount: () => 0 });
+  return { rows, rt, marks };
+}
+const sq = (id, x) => ({ id, rings: [rect(x - 5, 20, x + 5, 30)], cx: x, cz: 25, area: 100, height: 9, minHeight: 0, bounds: bounds([rect(x - 5, 20, x + 5, 30)]) });
+
+test('carte : bâti teinté par pâté (libéré, nettoyé), contour ambre des fouillés, rien de plus sans ville', () => {
+  const { marks, rows, rt } = savedCity();
+  const [a, b, c, d] = [sq('a', 10), sq('b', 30), sq('c', 50), sq('d', 70)];
+  assert.deepEqual([a, b, c, d].map((x) => marks.look(x)), [2, 1 | SEARCHED, 0, SEARCHED], 'a : sauvé ; b : nettoyé et fouillé par toi ; c : rouge ; d : hors pâtés, fouillé par un autre');
+  const sig = marks.sig();
+  assert.equal(marks.sig(), sig, 'rien n\'a bougé : la carte garde son fond');
+  rows.rouge[0] = ETAT.libere;
+  assert.notEqual(marks.sig(), sig, 'un pâté libéré : la carte relit son fond');
+  assert.equal(marks.look(c), 2, 'le pâté rouge est devenu sauvé');
+  // Hors ville (partie libre) : pas de teinte, seulement les fouilles.
+  const free = makeMapMarks({ rt: null, searched: (x) => x.id === 'a', searchedCount: () => 1 });
+  assert.equal(free.city, false);
+  assert.deepEqual([a, b].map((x) => free.look(x)), [SEARCHED, 0]);
+  // Tuiles placées : un bâtiment sans pâté la veille le trouve ensuite.
+  let key = null;
+  const late = makeMapMarks({ rt: { ville: rt.ville, placedTiles: 0, blockAt: () => key }, searched: () => false, searchedCount: () => 0 });
+  late.sig();
+  assert.equal(late.look(a), 0);
+  key = 'sauve';
+  assert.equal(late.look(a), 0, 'résultat gardé tant que les tuiles ne changent pas');
+});
+
+test('carte : le cache dessine le bâti sauvé en vert, le nettoyé en bleu, le fouillé cerné d\'ambre ; légende selon la ville', () => {
+  const { marks } = savedCity();
+  const store = createWorldStore({ lat: 45.7578, lon: 4.832 });
+  const items = [sq('a', 10), sq('b', 30), sq('c', 50), sq('d', 70)];
+  addFeatures(store, { buildings: items.filter((x) => x.id !== 'd').concat(items.filter((x) => x.id === 'd')), roads: [], water: [], waterLines: [], areas: [], zones: [], pois: [] });
+  const { ctx, calls } = recorder();
+  for (const _ of cacheJob(ctx, store, { cx: 40, cz: 25, E: 60, ppm: 1, marks }));
+  const first = (id) => { const p = items.find((x) => x.id === id).rings[0][0]; return calls.findIndex((c) => c[0] === 'moveTo' && c[1] === p.x && c[2] === p.z); };
+  const after = (i, key) => calls.slice(i).find((c) => c[0] === key)?.[1];
+  assert.equal(after(first('a'), '=fillStyle'), MAP_COLORS.saved);
+  assert.equal(after(first('b'), '=fillStyle'), MAP_COLORS.cleared);
+  assert.equal(after(first('c'), '=fillStyle'), MAP_COLORS.building);
+  const moves = (id) => { const p = items.find((x) => x.id === id).rings[0][0]; return calls.filter((c) => c[0] === 'moveTo' && c[1] === p.x && c[2] === p.z).length; };
+  assert.deepEqual(['a', 'b', 'c', 'd'].map(moves), [1, 2, 1, 2], 'b et d (fouillés) sont dessinés une seconde fois, cernés');
+  assert.ok(calls.some((c) => c[0] === '=strokeStyle' && c[1] === MAP_COLORS.searchedLine));
+  assert.deepEqual(legendRows(marks).map((r) => r.label), ['Sauvé', 'Nettoyé', 'Fouillé']);
+  assert.deepEqual(legendRows({ city: false }).map((r) => r.label), ['Fouillé'], 'partie libre : seulement les fouilles');
+  assert.deepEqual(legendRows(null), []);
 });
 
 test('carte : garde-fou (plein, sans boutons, réduite ancrée dans son coin, masquée)', () => {

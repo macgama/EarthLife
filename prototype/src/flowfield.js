@@ -20,7 +20,9 @@ function copyFree(g, mask, n, i0, j0, a0, a1, b0, b1) {
       if (j < 0 || j >= g.size) continue;
       const base = j * g.size - g.ox;
       const x0 = Math.max(a0, g.ox), x1 = Math.min(a1, g.ox + g.size);
-      for (let x = x0; x < x1; x++) if (g.data[base + x] === FREE) mask[row + x] = 1;
+      // Décor plein (collision.js, PROP) : tronc, haie, muret ferment la case comme un mur.
+      const solid = g.solid;
+      for (let x = x0; x < x1; x++) if (g.data[base + x] === FREE && !(solid !== undefined && solid[base + x] !== 0)) mask[row + x] = 1;
     } else {
       for (let x = a0; x < a1; x++) if (getAt(g, x + 0.5, z + 0.5) === FREE) mask[row + x] = 1;
     }

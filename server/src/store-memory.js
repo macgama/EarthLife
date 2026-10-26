@@ -112,6 +112,7 @@
 //   seasonJoin({ accountId, season, level, nowMs }) → { ok: true, player } | { ok: false, player }   (le premier niveau gagne)
 //   seasonPlayerSet(accountId, season, patch)                    patch : commune, homeKey, homeLat, homeLon, seenMs, kills
 //   seasonCounts(season) → { [niveau]: inscrits }
+//   seasonHomes(season) → { 'niveau|commune': joueurs installés (une maison posée dans la commune où ils jouent) }
 //   seasonDocs(world, commune?) → [{ commune, part, rev, data }] (une seule commune si donnée), seasonDocPut({ world, commune, part, rev, data, nowMs }),
 //   seasonDocsPut({ world, commune, parts: [{ part, rev, data }], nowMs }) : plusieurs pièces d'une commune en une transaction
 //                                                               compare-et-écrit : écrit si rev = base (toujours si
@@ -709,6 +710,16 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       guard();
       const out = {};
       for (const p of seasonPlayers.values()) if (p.season === season) out[p.level] = (out[p.level] ?? 0) + 1;
+      return out;
+    },
+    async seasonHomes(season) {
+      guard();
+      const out = {};
+      for (const p of seasonPlayers.values()) {
+        if (p.season !== season || !p.commune || !p.homeKey) continue;
+        const k = `${p.level}|${p.commune}`;
+        out[k] = (out[k] ?? 0) + 1;
+      }
       return out;
     },
     async seasonDocs(world, commune = null) {

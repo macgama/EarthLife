@@ -693,10 +693,10 @@ test('décor : l\'objet le plus proche ignore les objets démontés et ceux hors
   const props = [
     { id: 'c1_1', kind: 'car', x: 2, z: 0, yaw: 0, s: 1 },
     { id: 't1_1', kind: 'tree', x: 1, z: 0, yaw: 0, s: 1 },
-    { id: 'k1_1', kind: 'bench', x: 0, z: 1.7, yaw: 0, s: 1 },
+    { id: 'k1_1', kind: 'bench', x: 0, z: 2, yaw: 0, s: 1 },
   ];
   assert.equal(nearestProp(props, 0, 0).id, 't1_1');
-  assert.equal(nearestProp(props, 0, 0, { kinds: ['car', 'bench'] }).id, 'c1_1', 'banc hors de portée (1,6 m)');
+  assert.equal(nearestProp(props, 0, 0, { kinds: ['car', 'bench'] }).id, 'c1_1', 'banc hors de portée (2 m)');
   assert.equal(nearestProp(props, 0, 0, { kinds: new Set(['bench']) }), null);
   const dismantled = { t1_1: 1000 };
   let now = 1000 + 3600e3;

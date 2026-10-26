@@ -4,24 +4,28 @@
 // instances. Rien ne gêne le joueur : pas de collision. Ce qui a été cueilli (ou n'est pas mûr) n'est pas dessiné : `setHidden`
 // donne la règle, `hide` retire tout de suite une instance.
 import * as THREE from 'three';
-import { PETITS } from './flore-geo.js';
+import { PETITS, vergerGeometry } from './flore-geo.js';
 import { tracker, touch, flush } from './props-view.js';
+import { agiter } from './vivant.js';
 
 const KINDS = Object.keys(PETITS);
 // Trop petits pour porter une ombre.
-const SANS_OMBRE = new Set(['touffe', 'baie', 'champi', 'legume']);
+const SANS_OMBRE = new Set(['touffe', 'baie', 'champi', 'legume', 'cloture']);
+// Ce qui plie sous le vent (vivant.js, VENT_TYPES) : le type de vent de chaque décor ; les baies suivent leur buisson, rochers,
+// paille, champignons et puits ne bougent pas.
+const VENT_DE = { buisson: 'buisson', baie: 'buisson', haie: 'haie', touffe: 'herbe', legume: 'legume', verger: 'fruitier' };
 // Teinte neutre (pierre, paille, chapeaux, baies) : seule la clarté change d'un pied à l'autre.
-const NEUTRES = new Set(['rocher', 'balle', 'puits', 'champi', 'baie']);
+const NEUTRES = new Set(['rocher', 'balle', 'puits', 'champi', 'baie', 'muret', 'cloture']);
 
-export function createFloreView(scene, { lowPower = false } = {}) {
+export function createFloreView(scene, { lowPower = false, mois } = {}) {
   const group = new THREE.Group();
   group.name = 'flore';
   scene.add(group);
 
   const pools = new Map(KINDS.map((kind) => {
     const spec = PETITS[kind];
-    const geo = spec.build(lowPower);
-    const mat = new THREE.MeshLambertMaterial({ color: spec.color, flatShading: true, vertexColors: true, side: spec.doubleSide ? THREE.DoubleSide : THREE.FrontSide });
+    const geo = kind === 'verger' && mois !== undefined ? vergerGeometry(lowPower, mois) : spec.build(lowPower);
+    const mat = agiter(new THREE.MeshLambertMaterial({ color: spec.color, flatShading: true, vertexColors: true, side: spec.doubleSide ? THREE.DoubleSide : THREE.FrontSide }), VENT_DE[kind]);
     const mesh = new THREE.InstancedMesh(geo, mat, spec.cap);
     mesh.name = `flore-${kind}`;
     mesh.count = 0;
@@ -132,16 +136,28 @@ export function createFloreView(scene, { lowPower = false } = {}) {
 
   const stats = () => ({
     buissons: pools.get('buisson').count, rochers: pools.get('rocher').count, touffes: pools.get('touffe').count,
-    haies: pools.get('haie').count, balles: pools.get('balle').count,
+    haies: pools.get('haie').count, balles: pools.get('balle').count, vergers: pools.get('verger').count,
+    clotures: pools.get('cloture').count, murets: pools.get('muret').count,
     baies: pools.get('baie').count, champis: pools.get('champi').count, legumes: pools.get('legume').count, puits: pools.get('puits').count,
     drawCalls: [...pools.values()].filter((pl) => pl.count > 0).length, chunks: chunks.size, dropped,
   });
 
   // Matériaux que la météo teinte : neige sur les feuillages et l'herbe, pluie sur tout (scene.js, followTreeWeather).
   const treeMaterials = () => ({
-    crowns: [pools.get('buisson').mat, pools.get('touffe').mat, pools.get('haie').mat, pools.get('legume').mat],
-    trunks: [pools.get('rocher').mat, pools.get('balle').mat, pools.get('baie').mat, pools.get('champi').mat, pools.get('puits').mat],
+    crowns: [pools.get('buisson').mat, pools.get('touffe').mat, pools.get('haie').mat, pools.get('legume').mat, pools.get('verger').mat],
+    trunks: [pools.get('rocher').mat, pools.get('balle').mat, pools.get('baie').mat, pools.get('champi').mat, pools.get('puits').mat, pools.get('cloture').mat, pools.get('muret').mat],
   });
+
+  // Les arbres fruitiers changent d'allure avec le mois (champs.js, saisonVerger) : leur géométrie est refaite d'un coup.
+  let moisVerger = mois;
+  function setMois(m) {
+    if (m === moisVerger) return;
+    moisVerger = m;
+    const pl = pools.get('verger');
+    pl.geo.dispose();
+    pl.geo = vergerGeometry(lowPower, m);
+    pl.mesh.geometry = pl.geo;
+  }
 
   function dispose() {
     scene.remove(group);
@@ -149,5 +165,5 @@ export function createFloreView(scene, { lowPower = false } = {}) {
     chunks.clear();
   }
 
-  return { setChunk, dropChunk, setHidden, hide, stats, treeMaterials, dispose, group };
+  return { setChunk, dropChunk, setHidden, hide, setMois, stats, treeMaterials, dispose, group };
 }

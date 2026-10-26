@@ -9,10 +9,14 @@ import { chunkFeatures, chunkReady, buildPatch, insideRings } from './world.js';
 import { tilesForRect, tileKey } from './tiles.js';
 import { propsForChunk, featuresAround, nearestProp, PROP_KINDS, PROP_REACH } from './props.js';
 import { floreForChunk } from './flore.js';
+import { footprint, solidCells, addSolid, removeSolid, chunkKeysOf, touches } from './obstacles.js';
 import { makeBruitTexture } from './bruit.js';
 import { buildingsGeometry, buildingMaterial, treesInstanced, followTreeWeather } from './scene.js';
 import { groundGeometry } from './markings.js';
 import { SETTING_INDEX, SIDEWALK, carriageway, markBoxes } from './roadway.js';
+import { EAU_DECL, EAU_FN, EAU_UNIFORMS, RIVE } from './eau.js';
+import { VIVANT_ON } from './vivant.js';
+import { facteursCultures, rangsDeVigne, MOIS_TROPIQUE } from './champs.js';
 
 // Rayon construit et visible autour du joueur (Gaël : environ 100 m) ; la caméra reculée en demande parfois plus, sans
 // dépasser la grille de collision (src/view.js, update({ radius })).
@@ -20,7 +24,7 @@ export const VIEW_RADIUS = 110;
 export const GRID_RADIUS = 150; // collisions un peu plus loin, pour les zombies qui arrivent
 const DROP_VIEW = 170, DROP_GRID = 230; // retrait : au-delà du rayon construit + 60 m (170 au moins), de la grille + 80 m
 const PLAN_CACHE = 96; // plans du sol gardés pour les morceaux qui reviennent
-// Portée d'action la plus longue du décor (voiture : 2,2 m).
+// Portée d'action la plus longue du décor (voiture : 3,2 m).
 const PROP_ACT = Math.max(...Object.values(PROP_KINDS).map((k) => k.reach));
 
 // ---------- Sol : couleurs ----------
@@ -31,10 +35,10 @@ export const PAL = {
   ground: '#c8c2b3', grass: '#a2cd7f', wood: '#86b56c', farmland: '#d9d6a6', sand: '#e7dab0', wetland: '#a9c8a2',
   rock: '#c6c0b6', ice: '#eef2f6', pitch: '#8dc672', cemetery: '#aac69c', playground: '#cbd9a3', railway: '#c8c1b6',
   stadium: '#b9d3a0', track: '#c98f6d', quarry: '#c9c0b2', garages: '#cbc6bd',
-  water: '#4b9ed6', sidewalk: '#b3ad9f', asphalt: '#4d525b', major: '#464b55', line: '#e8e1c8', path: '#cfc1a1',
+  water: '#4b9ed6', shallow: '#7cc4e4', sidewalk: '#b3ad9f', asphalt: '#4d525b', major: '#464b55', line: '#e8e1c8', path: '#cfc1a1',
   steps: '#b5a88c', rail: '#6f685f', tie: '#9a9083', bridge: '#6c6457',
   sidewalkJoint: '#a59f92', curb: '#d6d1c4', gutter: '#3d4148', pave: '#c2b7a3', paveJoint: '#a99e8b', paveEdge: '#9d927f',
-  gravel: '#cfc1a1', villageRoad: '#5d5f63', verge: '#b0aa8a', cycle: '#5b6461', platform: '#a19d94', pier: '#8c8072',
+  gravel: '#cfc1a1', rut: '#a8946f', villageRoad: '#5d5f63', verge: '#b0aa8a', cycle: '#5b6461', platform: '#a19d94', pier: '#8c8072',
   quay: '#9c968a', pitchLine: '#e9eee6', trackPaved: '#8f8b80',
 };
 // Les places passent sous les pelouses ; pontons et tabliers de pont sont peints après l'eau.
@@ -494,7 +498,36 @@ function zebra(x, z, dx, dz, width, tag) {
 
 const fillOp = (tag, color, rings) => ({ t: 'fill', tag, color, rings });
 const strokeOp = (tag, color, width, lines, extra = null) => ({ t: 'stroke', tag, color, width, lines, cap: 'round', dash: null, offset: 0, alpha: 1, closed: false, ...extra });
-const bandOp = (tag, color, width, rings) => ({ t: 'band', tag, color, width, rings });
+// `edges` : seules ces lignes sont tracées (bande coupée par le polygone) au lieu de tout le contour.
+const bandOp = (tag, color, width, rings, edges = null) => ({ t: 'band', tag, color, width, rings, ...(edges ? { edges } : null) });
+
+// Contour d'un plan d'eau sans les coupes de tuile : une arête longue qui suit exactement un axe du monde est presque toujours la
+// coupe de la tuile (l'eau continue de l'autre côté), pas une vraie rive. Rend des polylignes ; un contour sans coupe se ferme.
+const COUPE_LONGUE = 20, COUPE_AXE = 0.05;
+export function riveLignes(rings) {
+  const out = [];
+  for (const ring of rings) {
+    const n = ring.length;
+    if (n < 3) continue;
+    const cut = (i) => {
+      const p = ring[i], q = ring[(i + 1) % n], dx = q.x - p.x, dz = q.z - p.z;
+      return Math.hypot(dx, dz) >= COUPE_LONGUE && (Math.abs(dx) < COUPE_AXE || Math.abs(dz) < COUPE_AXE);
+    };
+    let first = -1;
+    for (let i = 0; i < n; i++) if (cut(i)) { first = i; break; }
+    if (first < 0) { out.push([...ring, ring[0]]); continue; }
+    // Parcours depuis la première coupe : chaque série d'arêtes entre deux coupes devient une polyligne.
+    let run = null;
+    for (let k = 1; k <= n; k++) {
+      const e = (first + k) % n;
+      if (cut(e)) { if (run && run.length > 1) out.push(run); run = null; continue; }
+      if (!run) run = [ring[e]];
+      run.push(ring[(e + 1) % n]);
+    }
+    if (run && run.length > 1) out.push(run);
+  }
+  return out;
+}
 
 // Écarte de la ligne les tronçons coupés (carrefours, passages) ; rend les morceaux gardés [s0, s1]. Un morceau pris
 // entre deux coupures et plus court que 8 m (bout de médiane entre un carrefour et son passage) n'est pas gardé.
@@ -590,7 +623,7 @@ const bandOnOther = (box, q, others) => boxCorners(box).some((c) => others.some(
 // 4 bordures ; 5 caniveaux puis chaussées par classe croissante, voies ferrées ; 6 marquages ; 7 ponts ; 8 marquages
 // des ponts. f : éléments du morceau (chunkFeatures) ou de son voisinage (featuresAround), pour les carrefours du bord.
 // Les marquages (op.mark) débordent du carré : le jeu les pose en géométrie coupée au carré (markings.js).
-export function groundPlan(f, x0, z0, size) {
+export function groundPlan(f, x0, z0, size, mois = MOIS_TROPIQUE) {
   const rect = { minX: x0, maxX: x0 + size, minZ: z0, maxZ: z0 + size };
   const g = gatherGround(f, rect, 44);
   const ops = [];
@@ -639,7 +672,15 @@ export function groundPlan(f, x0, z0, size) {
   }
   const areas = g.areas.filter((a) => boxesMeet(a.bounds ?? rect, rect));
   const order = (a) => { const i = AREA_ORDER.indexOf(a.cls); return i === -1 ? AREA_ORDER.length : i; };
-  const areaColor = (a) => (a.cls === 'square' && a.surface === 'unpaved' ? PAL.gravel : PAL[AREA_COLOR[a.cls] ?? a.cls] ?? PAL.grass);
+  // Vignes et vergers (sous-classes d'OpenFreeMap) : sol d'herbe, les rangs ou les arbres viennent par-dessus (champs.js, flore.js).
+  const fruitiere = (a) => VIVANT_ON && a.cls === 'farmland' && (a.sub === 'vineyard' || a.sub === 'orchard');
+  const areaColor = (a) => (a.cls === 'square' && a.surface === 'unpaved' ? PAL.gravel : fruitiere(a) ? PAL.grass : PAL[AREA_COLOR[a.cls] ?? a.cls] ?? PAL.grass);
+  // Rangs d'une vigne : tracés dans le sens de la parcelle (champs.js), après son sol, avant ce qui la recouvre.
+  const rect2 = { minX: x0 - 2, maxX: x0 + size + 2, minZ: z0 - 2, maxZ: z0 + size + 2 };
+  const vigne = (a) => {
+    const b = a.bounds, r = rangsDeVigne(a.rings, rect2, mois, `${Math.round((b.minX + b.maxX) / 2)}_${Math.round((b.minZ + b.maxZ) / 2)}`);
+    if (r.lines.length) ops.push(strokeOp('vigne', r.color, r.width, r.lines, { cap: 'butt' }));
+  };
   const byClass = new Map();
   for (const a of areas.slice().sort((a, b) => order(a) - order(b))) {
     if (!byClass.has(a.cls)) byClass.set(a.cls, []);
@@ -651,7 +692,10 @@ export function groundPlan(f, x0, z0, size) {
       // Bordure de place : trait sur le contour recouvert ensuite par toutes les places (les coupures de tuile
       // ne laissent pas de trait au milieu), il en reste 0,4 m autour.
       if (cls === 'square') for (const a of list) ops.push(strokeOp('squareEdge', PAL.paveEdge, 0.8, a.rings, { closed: true }));
-      for (const a of list) ops.push(fillOp(cls === 'square' ? 'square' : 'area', areaColor(a), a.rings));
+      for (const a of list) {
+        ops.push(fillOp(cls === 'square' ? 'square' : 'area', areaColor(a), a.rings));
+        if (fruitiere(a) && a.sub === 'vineyard') vigne(a);
+      }
       if (cls === 'platform') for (const a of list) ops.push(bandOp('platformEdge', PAL.curb, 0.3, a.rings));
       if (cls === 'pitch') {
         for (const a of list) {
@@ -669,9 +713,17 @@ export function groundPlan(f, x0, z0, size) {
     if (QUAY_WATER.has(w.cls) && city) ops.push(strokeOp('quay', PAL.quay, 2.4, w.rings, { closed: true }));
     else if (w.cls === 'swimming_pool') ops.push(strokeOp('quay', PAL.curb, 1, w.rings, { closed: true }));
   }
+  // Rive peu profonde (eau vivante, eau.js) : bande plus claire le long du bord des plans d'eau (sans les coupes de tuile), de chaque
+  // côté des ruisseaux et rivières qui ne passent pas dans un plan d'eau (le cours d'une rivière dessinée en plan d'eau est au milieu).
+  const inLake = (l) => water.some((w) => boxesMeet(w.bounds ?? rect, l.bounds));
   const paintWater = (tag, blockingOnly = false) => {
-    for (const w of water) ops.push(fillOp(tag, PAL.water, w.rings));
-    for (const w of waterLines) if (!blockingOnly || w.blocking) ops.push(strokeOp(tag, PAL.water, w.width, [w.points]));
+    const lines = waterLines.filter((w) => !blockingOnly || w.blocking);
+    if (VIVANT_ON) for (const w of lines) if (!inLake(w)) ops.push(strokeOp('shore', PAL.shallow, w.width + 2 * RIVE.cours, [w.points]));
+    for (const w of water) {
+      ops.push(fillOp(tag, PAL.water, w.rings));
+      if (VIVANT_ON && w.cls !== 'swimming_pool') ops.push(bandOp('shore', PAL.shallow, RIVE.plan, w.rings, riveLignes(w.rings)));
+    }
+    for (const w of lines) ops.push(strokeOp(tag, PAL.water, w.width, [w.points]));
   };
   paintWater('water');
   paintAreas(true);
@@ -696,6 +748,11 @@ export function groundPlan(f, x0, z0, size) {
   const paintWalk = (v, extra = null) => {
     const w = v.r.width;
     ops.push(strokeOp(v.walk.kind, v.walk.color, w, lines(v), extra));
+    // Chemin de terre : une bande d'herbe au milieu, deux ornières de roues (peint en 2D, sans coût à l'image).
+    if (VIVANT_ON && v.walk.kind === 'gravel' && v.r.cls === 'track' && w >= 2.8) {
+      ops.push(strokeOp('trackGrass', PAL.grass, 0.6, lines(v), { cap: 'butt' }));
+      ops.push(strokeOp('trackRut', PAL.rut, 0.42, v.runs.flatMap((run) => [offsetLine(run.pts, 0.8), offsetLine(run.pts, -0.8)]), { cap: 'butt' }));
+    }
     if (v.walk.kind === 'steps') ops.push(strokeOp('stepLines', PAL.sidewalkJoint, w, lines(v), { cap: 'butt', dash: [0.06, 0.29] }));
     if (v.walk.kind === 'cycleway' && v.walk.color === PAL.cycle) {
       for (const run of v.runs) {
@@ -992,6 +1049,7 @@ export function drawGround(ctx, f, x0, z0, size, px, plan = groundPlan(f, x0, z0
       ctx.beginPath();
       tracePolygon(ctx, op.rings);
       ctx.clip('evenodd');
+      if (op.edges) { ctx.beginPath(); traceLines(ctx, op.edges, false); ctx.lineCap = 'round'; }
       ctx.strokeStyle = op.color;
       ctx.lineWidth = op.width * 2;
       ctx.setLineDash([]);
@@ -1049,6 +1107,7 @@ const groundKeys = {
   uLineColor: { value: new THREE.Color(PAL.line) },
   uWaterKey: { value: new THREE.Color(PAL.water) },
   uWaterShade: { value: new THREE.Color(PAL.water).multiplyScalar(0.62) },
+  uShoreKey: { value: new THREE.Color(PAL.shallow) },
   uBridgeColor: { value: new THREE.Color(PAL.bridge) },
   // Détail des sols naturels et de l'enrobé (herbe, bois, champs, sable, terre, marais, route) : une clé par famille de sol.
   // Les familles proches (terre, roche, carrière, voies ferrées ; enrobé, grande voirie) partagent une clé.
@@ -1059,6 +1118,11 @@ const groundKeys = {
   uDustKey: { value: new THREE.Color(PAL.ground) },
   uWetKey: { value: new THREE.Color(PAL.wetland) },
   uTarKey: { value: new THREE.Color(PAL.asphalt) },
+  // Quatre sortes de parcelles cultivées (facteurs de la couleur des champs) ; d'avant la saison, puis réglées au mois du lieu (champs.js).
+  uCrop0: { value: new THREE.Vector3(1.08, 1.02, 0.66) },
+  uCrop1: { value: new THREE.Vector3(0.8, 1.0, 0.72) },
+  uCrop2: { value: new THREE.Vector3(0.96, 0.8, 0.64) },
+  uCrop3: { value: new THREE.Vector3(1.0, 1.0, 0.88) },
   uNoise: { value: null }, // texture de bruit (bruit.js), faite au premier morceau
 };
 // Détail du sol, choisi à la création du gestionnaire de morceaux et compilé dans le shader (rien n'est calculé pour un
@@ -1068,7 +1132,7 @@ export const GROUND_DETAILS = ['fin', 'simple', 'plat'];
 let groundDetailMode = 'fin';
 
 function groundShader(shader) {
-  Object.assign(shader.uniforms, groundKeys);
+  Object.assign(shader.uniforms, groundKeys, EAU_UNIFORMS);
   const defines = groundDetailMode === 'plat' ? '' : groundDetailMode === 'simple' ? '#define GROUND_DETAIL\n' : '#define GROUND_DETAIL\n#define GROUND_FINE\n';
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nvarying vec2 vGroundXZ;\nattribute vec4 aMark;\nattribute vec2 aMarkInfo;\nvarying vec4 vMark;\nvarying vec2 vMarkInfo;')
@@ -1088,7 +1152,12 @@ uniform vec3 uSandKey;
 uniform vec3 uDustKey;
 uniform vec3 uWetKey;
 uniform vec3 uTarKey;
+uniform vec3 uCrop0;
+uniform vec3 uCrop1;
+uniform vec3 uCrop2;
+uniform vec3 uCrop3;
 uniform sampler2D uNoise;
+${EAU_DECL}
 varying vec2 vGroundXZ;
 varying vec4 vMark;
 varying vec2 vMarkInfo;
@@ -1116,6 +1185,7 @@ float gKey(vec3 c, vec3 k, float lo, float hi) {
   vec3 d = abs(c - k);
   return 1.0 - smoothstep(lo, hi, max(d.x, max(d.y, d.z)));
 }
+${EAU_FN}
 // Détail des sols naturels et de l'enrobé, en coordonnées du monde. Les bruits viennent de deux lectures de la texture de
 // bruit (bruit.js) faites une fois par pixel : nA à l'échelle du terrain (cases de 16, 8, 4 et 2 m dans les canaux r, g, b, a),
 // nB à celle du brin d'herbe (1 m, 50, 25 et 12 cm). Les mipmaps effacent seuls les motifs plus fins que le pixel ; le grain
@@ -1147,7 +1217,7 @@ vec3 groundDetail(vec3 col, vec3 c, vec2 xz, vec4 nA, vec4 nB, float gw) {
     vec2 q = vec2(xz.x * 0.8 - xz.y * 0.6, xz.x * 0.6 + xz.y * 0.8) + 12.0 * (nA.rg - 0.5) * 2.0;
     vec2 cell = floor(q / 34.0);
     float h = groundHash(cell + 5.0);
-    vec3 plot = h < 0.28 ? vec3(1.08, 1.02, 0.66) : h < 0.56 ? vec3(0.8, 1.0, 0.72) : h < 0.8 ? vec3(0.96, 0.8, 0.64) : vec3(1.0, 1.0, 0.88);
+    vec3 plot = h < 0.28 ? uCrop0 : h < 0.56 ? uCrop1 : h < 0.8 ? uCrop2 : uCrop3;
     float ang = groundHash(cell + 9.0) * 3.14;
     float row = 0.5 + 0.5 * sin(dot(xz, vec2(cos(ang), sin(ang))) * 5.7);
     float amp = (h >= 0.56 && h < 0.8) ? 0.14 : 0.07;
@@ -1180,6 +1250,7 @@ vec3 groundDetail(vec3 col, vec3 c, vec2 xz, vec4 nA, vec4 nB, float gw) {
     float crack = (1.0 - smoothstep(0.0, max(gw * 1.6, 0.002), abs(nA.g - 0.5))) * worn;
     col = mix(col, col * (lum + (nB.b - 0.5) * 0.14 * G_FINE - 0.22 * crack), w);
   }
+  col = eauDetail(col, c, xz);
   return col;
 }
 #endif
@@ -1192,6 +1263,7 @@ float markCover(float x, float h, float w) {
 #ifdef USE_MAP
   {
     vec2 fw = fwidth(vGroundXZ);
+    eauFw = fw;
 #ifdef GROUND_DETAIL
     // Bruits du sol (deux lectures par pixel, hors des branches : les dérivées des mipmaps restent définies).
     vec4 nA = texture2D(uNoise, vGroundXZ * (1.0 / 64.0));
@@ -1217,7 +1289,8 @@ float markCover(float x, float h, float w) {
       // Ombre d'un tablier de pont sur l'eau (markings.js, deckBuffers) : l'eau et le tablier peint dessous (alpha 0,9)
       // deviennent l'eau assombrie ; ailleurs (la terre), le sol dessous se voit tel quel.
       vec3 dq = abs(sampledDiffuseColor.rgb - uWaterKey);
-      float under = max(1.0 - smoothstep(0.022, 0.035, max(dq.x, max(dq.y, dq.z))), 1.0 - smoothstep(0.93, 0.97, sampledDiffuseColor.a));
+      vec3 dr = abs(sampledDiffuseColor.rgb - uShoreKey);
+      float under = max(max(1.0 - smoothstep(0.022, 0.035, max(dq.x, max(dq.y, dq.z))), 1.0 - smoothstep(0.022, 0.035, max(dr.x, max(dr.y, dr.z)))), 1.0 - smoothstep(0.93, 0.97, sampledDiffuseColor.a));
       if (under < 0.01) discard;
       diffuseColor = vec4(mix(diffuseColor.rgb, diffuse * uWaterShade, under), 1.0);
     } else {
@@ -1341,15 +1414,80 @@ export function treeSpots(f, patch, cx, cz, size, proj) {
 // propsView (props-view.js) : décor dessiné en instances globales. Sans lui (ancien chemin), seuls les arbres sont
 // dessinés, un groupe par morceau. isGone(id) : objet démonté il y a moins de 72 h (save.dismantled).
 // groundDetail : détail du sol (GROUND_DETAILS) ; par défaut 'simple' sur un appareil peu puissant, sinon 'fin'.
-export function createChunkManager({ scene, store, grid, lowPower = false, groundDetail = lowPower ? 'simple' : 'fin', anisotropy = 4, proj = store.proj, propsView = null, floreView = null, isGone = () => false }) {
+export function createChunkManager({ scene, store, grid, lowPower = false, groundDetail = lowPower ? 'simple' : 'fin', anisotropy = 4, proj = store.proj, propsView = null, floreView = null, isGone = () => false, mois = MOIS_TROPIQUE }) {
   const size = store.chunkSize;
   groundDetailMode = GROUND_DETAILS.includes(groundDetail) ? groundDetail : 'fin';
   groundKeys.uNoise.value ??= makeBruitTexture();
+  // Cultures du mois du lieu (champs.js) ; sans ?vivant=0, les parcelles gardent leurs couleurs d'avant.
+  if (VIVANT_ON) facteursCultures(mois).forEach((f, i) => groundKeys[`uCrop${i}`].value.set(...f));
   const px = lowPower ? 512 : 768; // 8 px/m sur téléphone, 12 px/m sur ordinateur (5.12)
   const views = new Map();
   const pending = new Set(); // morceaux construits dont le décor attend une tuile voisine
   const gone = new Set(); // démontés : vus par isGone au calcul du décor, ou signalés par markGone
   const hidden = (id) => gone.has(id) || isGone(id);
+  // Décor plein : les cases qu'il ferme dans la couche `solid` des morceaux de grille (obstacles.js), objet par objet, pour les rouvrir
+  // quand il est démonté. Par propriétaire : le morceau qui l'a posé (sa clé), ou `@id` pour un objet posé à part (`setSolid`, ta voiture
+  // garée). Un objet près du bord ferme aussi ses cases chez le voisin ; un voisin construit plus tard les reçoit à sa naissance.
+  const solids = new Map(); // propriétaire → Map(id → { fp, parts: [{ patch, cells }] })
+  function stampOn(rec, patch) {
+    const cells = solidCells(patch, rec.fp);
+    if (!cells.length) return;
+    addSolid(patch, cells);
+    rec.parts.push({ patch, cells });
+  }
+  function release(rec) {
+    for (const { patch, cells } of rec.parts) removeSolid(patch, cells);
+    rec.parts.length = 0;
+  }
+  function clearSolids(owner) {
+    const entry = solids.get(owner);
+    if (!entry) return;
+    for (const rec of entry.values()) release(rec);
+    solids.delete(owner);
+  }
+  function putSolids(owner, items) {
+    clearSolids(owner);
+    const entry = new Map();
+    for (const it of items) {
+      const fp = footprint(it);
+      if (!fp) continue;
+      const rec = { fp, parts: [] };
+      for (const k of chunkKeysOf(fp, size)) {
+        const patch = grid.chunks.get(k);
+        if (patch) stampOn(rec, patch);
+      }
+      entry.set(it.id, rec);
+    }
+    solids.set(owner, entry);
+  }
+  // Un morceau de grille vient de naître : les objets des voisins qui débordent chez lui s'y posent.
+  function receiveSolids(patch) {
+    for (const entry of solids.values()) for (const rec of entry.values()) if (touches(rec.fp, patch)) stampOn(rec, patch);
+  }
+  function openSolid(id) {
+    for (const entry of solids.values()) {
+      const rec = entry.get(id);
+      if (!rec) continue;
+      release(rec);
+      entry.delete(id);
+      return;
+    }
+  }
+  // Objet plein hors du décor des morceaux, { id, kind, x, z, yaw, s } : posé dans la grille sous lui (sans effet tant qu'elle n'est
+  // pas construite : l'appelant recommence), une seule fois par place.
+  const aside = new Map(); // id → 'x|z|yaw'
+  function setSolid(item) {
+    if (!grid.chunks.has(chunkKey(Math.floor(item.x / size), Math.floor(item.z / size)))) { clearSolid(item.id); return false; }
+    const at = `${item.x}|${item.z}|${item.yaw ?? 0}`;
+    if (aside.get(item.id) === at) return true;
+    putSolids(`@${item.id}`, [item]);
+    aside.set(item.id, at);
+    return true;
+  }
+  function clearSolid(id) {
+    clearSolids(`@${id}`);
+    aside.delete(id);
+  }
   // Arbres du décor teintés par la météo comme ceux de l'ancien chemin (neige, pluie).
   const untint = propsView ? followTreeWeather(propsView.treeMaterials()) : null;
   const untintFlore = floreView ? followTreeWeather(floreView.treeMaterials()) : null;
@@ -1361,7 +1499,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     for (const b of near) sig += `${b.roads.length},${b.areas.length},${b.water.length},${b.waterLines.length};`;
     const hit = plans.get(key);
     plans.delete(key);
-    const plan = hit && hit.sig === sig ? hit.plan : groundPlan(near, cx * size, cz * size, size);
+    const plan = hit && hit.sig === sig ? hit.plan : groundPlan(near, cx * size, cz * size, size, mois);
     plans.set(key, { sig, plan });
     if (plans.size > PLAN_CACHE) plans.delete(plans.keys().next().value);
     return plan;
@@ -1407,7 +1545,11 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
   }
 
   function ensurePatch(cx, cz, key) {
-    if (!grid.chunks.has(key)) grid.chunks.set(key, buildPatch(store, cx, cz));
+    if (!grid.chunks.has(key)) {
+      const patch = buildPatch(store, cx, cz);
+      grid.chunks.set(key, patch);
+      receiveSolids(patch);
+    }
     return grid.chunks.get(key);
   }
 
@@ -1486,15 +1628,19 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     for (const p of v.props) if (!gone.has(p.id) && isGone(p.id)) gone.add(p.id);
     if (propsView) propsView.setChunk(key, v.props.filter((p) => !gone.has(p.id)), d.cars.filter((p) => gone.has(p.id)));
     else showTrees(v);
+    const plein = v.props.filter((p) => !gone.has(p.id));
     if (floreView) {
-      // Buissons, rochers et touffes : pas d'identifiant mémorisé, pas de collision ; posés sur le relief comme les arbres.
-      const flore = floreForChunk(near, patch, v.cx, v.cz, size, proj, { lowPower });
+      // Buissons, rochers, touffes, haies : pas d'identifiant mémorisé (rien ne se démonte) ; rochers, haies et le reste du décor plein
+      // bloquent (obstacles.js), pas les buissons ni l'herbe ; posés sur le relief comme les arbres.
+      const flore = floreForChunk(near, patch, v.cx, v.cz, size, proj, { lowPower, vivant: VIVANT_ON });
       if (relief) for (const kind in flore) for (const it of flore[kind]) seatProp(it, ground);
       floreView.setChunk(key, flore);
       v.flore = true;
       // Ce qui se cueille ou se puise (campagne.js) : gardé pour floreNear.
       v.recolte = { baie: flore.baie, champi: flore.champi, legume: flore.legume, puits: flore.puits };
+      for (const kind in flore) plein.push(...flore[kind]); // rochers, haies, clôtures, murets, puits, balles : footprint() écarte le reste
     }
+    putSolids(key, plein);
   }
 
   // Ancien chemin (sans propsView) : un groupe d'arbres par morceau, refait quand un arbre est abattu.
@@ -1518,6 +1664,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     v.trees?.userData.instanced.forEach((m) => m.dispose());
     if (propsView && v.props) propsView.dropChunk(key);
     if (floreView && v.flore) floreView.dropChunk(key);
+    clearSolids(key);
     pending.delete(key);
     views.delete(key);
   }
@@ -1647,6 +1794,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
   function markGone(id) {
     if (gone.has(id)) return;
     gone.add(id);
+    openSolid(id); // un tronc abattu, une voiture démontée : leurs cases se rouvrent
     if (propsView) {
       propsView.setGone(id, true);
       return;
@@ -1669,6 +1817,8 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     for (const key of [...views.keys()]) dropView(key);
     pending.clear();
     gone.clear();
+    solids.clear();
+    aside.clear();
     plans.clear();
     untint?.();
     untintFlore?.();
@@ -1689,5 +1839,5 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     return { views: views.size, patches: grid.chunks.size, buildings, props: decor, decorPending: pending.size, marks };
   }
 
-  return { update, buildAll, missing, setWeather, dispose, stats, propNear, floreNear, recolte, markGone, props, root };
+  return { update, buildAll, missing, setWeather, dispose, stats, propNear, floreNear, recolte, markGone, props, root, setSolid, clearSolid };
 }
