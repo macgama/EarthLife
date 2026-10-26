@@ -810,6 +810,10 @@ async function desktop() {
     check(sleepTime === 25 && sleepOpen.length === 0 && sleepState.inside && sleepState.sleeping,
       `${tag} 2b : pendant le sommeil (${sleepTime} s) aucun bouton actif (${sleepOpen.join(', ') || 'aucun'}), Échap sans effet`);
     await shot(page, `${tag}-04b-sommeil`);
+    // La montre va plus vite que le jeu sans carte graphique : à une image par seconde, 25 s de sommeil dépassent l'attente et
+    // la fatigue restée haute allonge toutes les actions suivantes (démontage de 3,5 à 4,6 s). Les contrôles ci-dessus ont vu le
+    // sommeil en cours ; on l'amène à 0,3 s de sa fin, comme le siphonnage, et le réveil (fatigue −60, santé +15) reste vérifié.
+    await ev(page, () => { const a = window.__earthlife.session.action; if (a?.id === 'sleep') a.t = Math.max(a.t, a.time - 0.3); });
     const woke = await until(page, () => (window.__earthlife.session.action ? null : window.__earthlife.session.survivor.fatigue), null, 300000);
     check(woke !== null && woke < 80, `${tag} 2b : réveillé, fatigue ${woke === null ? '?' : woke.toFixed(0)} (80 avant)`);
   }
@@ -907,7 +911,7 @@ async function desktop() {
     }, bagAt);
     await debug(page, 'teleport', near.x, near.z);
   }
-  const picked = await until(page, () => window.__earthlife.save.dropBag === null, null, 10000);
+  const picked = await until(page, () => window.__earthlife.save.dropBag === null, null, 60000);
   const pickedMsg = await toastSeen(page, 'Sac récupéré');
   check(!!picked && !!pickedMsg, `${tag} 5 : sac récupéré à 1 m (« ${pickedMsg} », dropBag ${await ev(page, () => JSON.stringify(window.__earthlife.save.dropBag))})`);
 
@@ -2050,7 +2054,8 @@ async function mapOpenClose(page, device, tag) {
       d.update = (...a) => { window.__steps++; return orig(...a); };
       window.__unwrap = () => { d.update = orig; };
     });
-    await wait(1000);
+    // Au moins un pas dans les 15 s de montre : à une image par seconde, une seconde fixe peut n'en laisser passer aucun.
+    await until(page, () => (window.__steps > 0 ? 1 : null), null, 15000);
     return ev(page, () => { window.__unwrap(); return window.__steps; });
   };
   const hasRefuge = await ev(page, () => !!window.__earthlife.refuge.anchor());
@@ -2060,7 +2065,7 @@ async function mapOpenClose(page, device, tag) {
     const aria = await ev(page, () => document.getElementById('minimap').getAttribute('aria-expanded'));
     const steps = await running();
     check(big.open && aria === 'true' && big.radius === 320 && steps > 0,
-      `${tag} 13.7 : clic : carte agrandie (aria-expanded ${aria}, ${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur en 1 s)`);
+      `${tag} 13.7 : clic : carte agrandie (aria-expanded ${aria}, ${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur)`);
     await shot(page, `${tag}-13-carte-agrandie`);
     const inside0 = await ev(page, () => window.__earthlife.refuge.inside);
     await page.keyboard.press('Escape');
@@ -2099,7 +2104,7 @@ async function mapOpenClose(page, device, tag) {
   await page.tap('#minimap');
   const big = await mapAfter(page);
   const steps = await running();
-  check(big.open && big.radius === 240 && steps > 0, `${tag} 13.7 : toucher : carte agrandie (${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur en 1 s)`);
+  check(big.open && big.radius === 240 && steps > 0, `${tag} 13.7 : toucher : carte agrandie (${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur)`);
   await shot(page, `${tag}-13-carte-agrandie`);
   await page.tap('#minimap');
   const closed = await mapAfter(page);
