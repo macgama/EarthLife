@@ -4291,8 +4291,11 @@ async function campagneScenario(device) {
   const fl = await until(page, () => { const x = window.__label('search'); return x && x.startsWith('Pêcher') ? x : null; }, null, 10000);
   const l2 = await ev(page, () => window.__label('action2'));
   check(/^Pêcher/.test(fl ?? '') && /^Puiser de l'eau/.test(l2 ?? ''), `${tag} : avec une canne, E « ${fl} » et R « ${l2} »`);
-  // Le tirage est truqué (0,5) le temps de la pêche : une prise, pas de seconde.
+  // Le tirage est truqué (0,5) le temps de la pêche : une prise, pas de seconde. Aucun errant ne doit mordre le temps de la
+  // pêche (une morsure l'annule) : ceux arrivés depuis la berge sont écartés, puis à chaque pas de la montre jusqu'à la fin.
   await ev(page, () => { window.__rand = Math.random; Math.random = () => 0.5; });
+  await clearZombies(page);
+  await ev(page, () => { window.__calme = setInterval(() => { window.__earthlife.session.director.zombies.length = 0; }, 100); });
   const fish0 = (await bagNow(page)).poisson ?? 0;
   await press(page, device, 'KeyE', 'search');
   action = await campagneAction(page);
@@ -4300,7 +4303,7 @@ async function campagneScenario(device) {
   await wait(500);
   await shot(page, `${name}-peche`);
   await actionDone(page);
-  await ev(page, () => { Math.random = window.__rand; });
+  await ev(page, () => { Math.random = window.__rand; clearInterval(window.__calme); });
   bag = await bagNow(page);
   const caught = (bag.poisson ?? 0) - fish0;
   check(caught === 1, `${tag} : 1 poisson au sac, « ${await toastSeen(page, 'Poisson pêché', 20000)} »`);
