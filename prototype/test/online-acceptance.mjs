@@ -3468,8 +3468,14 @@ await scenario('O38', 'grande ville de la saison, par quartiers', async () => {
   LIM.codesPerIpHour = 1000;
   LIM.coldCodesPerIpHour = 1000;
   LIM.ipPerMin = 1000;
+  // Le serveur ne crée que 20 identités par heure et par adresse (createPerIpHour) : les scénarios d'avant ont déjà comblé ce compte, et les
+  // trois comptes de celui-ci (W, Y, Q) resteraient hors ligne. Le compte de 127.0.0.1 est mis à zéro le temps du scénario, puis rendu.
+  const ipEntries = [...srv.room.debug().perIp.values()];
+  const createsWas = ipEntries.map((e) => e.creates);
+  for (const e of ipEntries) e.creates = { add: () => 0, count: () => 0 };
+  const restoreLimits = () => { Object.assign(LIM, was); ipEntries.forEach((e, i) => { e.creates = createsWas[i]; }); };
   let w, old;
-  try { w = await node(W); old = await node(O); } catch (e) { Object.assign(LIM, was); throw e; }
+  try { w = await node(W); old = await node(O); } catch (e) { restoreLimits(); throw e; }
   try {
     check(w.ok, 'W : compte créé et en ligne');
     check((await w.net.join('facile')).ok, 'W : inscrit en « Facile »');
@@ -3607,7 +3613,7 @@ await scenario('O38', 'grande ville de la saison, par quartiers', async () => {
     check((A.errors ?? []).filter((e) => /exception/.test(e.text)).length === 0, `Q : aucune exception dans la page (${JSON.stringify((A.errors ?? []).slice(-2))})`);
     await closeCtx(A);
   } finally {
-    Object.assign(LIM, was);
+    restoreLimits();
     for (const p of [w, old]) { try { p.net.close(); p.online.bye(); } catch { /* déjà fermé */ } }
   }
 });
