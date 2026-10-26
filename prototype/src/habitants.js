@@ -58,6 +58,8 @@ export function moreLabel(count) {
 }
 
 export const HABITANT_TEXT = {
+  // Mort du joueur (quartier.js, infectOne) : un habitant de la ville devient zombie ; plus aucun non infecté, la ville est perdue.
+  fell: (fall) => (fall.lost ? `${fall.name} est perdue : plus aucun habitant n'y est épargné` : `${fall.name} perd un habitant : il devient zombie`),
   found: (refuge) => (refuge ? 'Un habitant se cachait ici : il rejoint ton refuge' : 'Un habitant se cachait ici : il est sauvé'),
   line: (count) => (count > 0 ? `${count} habitant${count > 1 ? 's' : ''} au refuge` : ''),
 };
