@@ -439,12 +439,14 @@ export function createZombieDirector(grid, rand = Math.random) {
     if (!zb.horde && !zb.siege && zb.state === 'horde') zb.state = 'wander';
   }
 
-  // opts : { isNight, desired, field = null, openings = [], centre = null, steer = null }
+  // opts : { isNight, desired, field = null, openings = [], centre = null, steer = null, roam = null, muffle = 1 }
   //   field : champ de distances (flowfield.js) ou null ; openings : DirectorOpening[] ({ id, ax, az, broken, trap },
   //   `trap` décrémenté ici) ; centre : centre du refuge { x, z } ou null ; steer : (zombie, joueur) -> { x, z } | null,
-  //   point de passage d'un zombie en chasse (la porte d'un intérieur ouvert, interieur.js) au lieu de la ligne droite.
+  //   point de passage d'un zombie en chasse (la porte d'un intérieur ouvert, interieur.js) au lieu de la ligne droite ;
+  //   roam : (zombie, dt) -> { x, z } | null | undefined, où va un zombie qui loge (tags.lodger) dans l'intérieur ouvert (null :
+  //   il se repose, undefined : marche ordinaire) ; muffle : part de la portée d'ouïe gardée par ceux-là (les cloisons).
   function update(dt, player, mods, opts = {}) {
-    const { isNight = false, desired = 0, field = null, openings = [], centre = null, steer = null } = opts;
+    const { isNight = false, desired = 0, field = null, openings = [], centre = null, steer = null, roam = null, muffle = 1 } = opts;
     const events = [];
     // Population : on retire les zombies trop loin (200 m pour la horde, 120 m pour les autres), puis les zombies
     // ordinaires visent min(cible, 60 − horde vivante) : une apparition par image en dessous, et au-dessus du
@@ -500,7 +502,11 @@ export function createZombieDirector(grid, rand = Math.random) {
         if (player.hidden && z.state === 'chase') z.state = 'wander';
         // Après une poursuite sans issue : sourd au joueur à travers les murs tant qu'il est à portée de vue.
         if (z.deaf > 0) z.deaf = dist < Math.max(sight, hearing) ? CHASE_AI.deaf : z.deaf - dt;
-        if (exposed && z.state === 'wander' && (dist < hearing || dist < sight * facingFactor(z, dx, dz))
+        // Qui loge dans l'intérieur ouvert : les cloisons étouffent le bruit, et il ne voit que ce qui est en vue directe.
+        const lodging = roam !== null && z.tags?.lodger === true;
+        const heard = dist < hearing * (lodging ? muffle : 1);
+        const seen = dist < sight * facingFactor(z, dx, dz) && (!lodging || lineFree(grid, z.x, z.z, player.x, player.z));
+        if (exposed && z.state === 'wander' && (heard || seen)
           && (!(z.deaf > 0) || lineFree(grid, z.x, z.z, player.x, player.z))) {
           z.state = 'chase';
           events.push({ type: 'spotted', zombie: z });
@@ -518,12 +524,19 @@ export function createZombieDirector(grid, rand = Math.random) {
           z.target = { x: player.x, z: player.z };
         } else {
           z.state = 'wander';
-          z.wanderTimer -= dt;
-          if (z.wanderTimer <= 0) { z.yaw += (rand() - 0.5) * 2; z.wanderTimer = 2 + rand() * 4; }
-          speed = t.speed;
-          heading = z.yaw;
           z.target = null;
-          wander = true;
+          const way = lodging ? roam(z, dt) : undefined;
+          if (way !== undefined) {
+            // Il loge ici : de pièce en pièce par les portes, avec des arrêts.
+            heading = way ? Math.atan2(way.x - z.x, way.z - z.z) : z.yaw;
+            speed = way ? t.speed : 0;
+          } else {
+            z.wanderTimer -= dt;
+            if (z.wanderTimer <= 0) { z.yaw += (rand() - 0.5) * 2; z.wanderTimer = 2 + rand() * 4; }
+            speed = t.speed;
+            heading = z.yaw;
+            wander = true;
+          }
         }
         move = dist > 1.1 ? { heading, speed } : null;
       } else z.chaseT = -1;

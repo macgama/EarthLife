@@ -9,6 +9,7 @@ import { chunkFeatures, chunkReady, buildPatch, insideRings } from './world.js';
 import { tilesForRect, tileKey } from './tiles.js';
 import { propsForChunk, featuresAround, nearestProp, PROP_KINDS, PROP_REACH } from './props.js';
 import { floreForChunk } from './flore.js';
+import { footprint, solidCells, addSolid, removeSolid, chunkKeysOf, touches } from './obstacles.js';
 import { makeBruitTexture } from './bruit.js';
 import { buildingsGeometry, buildingMaterial, treesInstanced, followTreeWeather } from './scene.js';
 import { groundGeometry } from './markings.js';
@@ -25,7 +26,7 @@ export const VIEW_RADIUS = 110;
 export const GRID_RADIUS = 150; // collisions un peu plus loin, pour les zombies qui arrivent
 const DROP_VIEW = 170, DROP_GRID = 230; // retrait : au-delà du rayon construit + 60 m (170 au moins), de la grille + 80 m
 const PLAN_CACHE = 96; // plans du sol gardés pour les morceaux qui reviennent
-// Portée d'action la plus longue du décor (voiture : 2,2 m).
+// Portée d'action la plus longue du décor (voiture : 3,2 m).
 const PROP_ACT = Math.max(...Object.values(PROP_KINDS).map((k) => k.reach));
 
 // ---------- Sol : couleurs ----------
@@ -204,11 +205,10 @@ export function roadStyle(r) {
   const verge = VERGE[r.cls]?.[i] ?? 0;
   const villageStreet = setting === 'village' && (r.cls === 'minor' || r.cls === 'service');
   const curb = !unpaved && (side > 0 || (setting === 'city' && r.cls === 'service'));
-  let cw = r.width, sides = [side, side], front = null;
+  let cw = carriageway(r), sides = [side, side], front = null;
   if (setting === 'city' && side > 0 && !r.bridge) {
     const f = Array.isArray(r.frontage) ? r.frontage : null, ws = Array.isArray(r.walkSide) ? r.walkSide : null;
     const known = (v) => typeof v === 'number' && Number.isFinite(v);
-    cw = carriageway(r);
     for (let k = 0; k < 2; k++) {
       if (ws && known(ws[k])) sides[k] = Math.max(side, Math.round((ws[k] + WALK_HALF - cw / 2) * 100) / 100);
       // Côté sans façade (parc, place, quai) : dalles comme en face ; les aires peintes ensuite les recouvrent.
@@ -1465,6 +1465,69 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
   const pending = new Set(); // morceaux construits dont le décor attend une tuile voisine
   const gone = new Set(); // démontés : vus par isGone au calcul du décor, ou signalés par markGone
   const hidden = (id) => gone.has(id) || isGone(id);
+  // Décor plein : les cases qu'il ferme dans la couche `solid` des morceaux de grille (obstacles.js), objet par objet, pour les rouvrir
+  // quand il est démonté. Par propriétaire : le morceau qui l'a posé (sa clé), ou `@id` pour un objet posé à part (`setSolid`, ta voiture
+  // garée). Un objet près du bord ferme aussi ses cases chez le voisin ; un voisin construit plus tard les reçoit à sa naissance.
+  const solids = new Map(); // propriétaire → Map(id → { fp, parts: [{ patch, cells }] })
+  function stampOn(rec, patch) {
+    const cells = solidCells(patch, rec.fp);
+    if (!cells.length) return;
+    addSolid(patch, cells);
+    rec.parts.push({ patch, cells });
+  }
+  function release(rec) {
+    for (const { patch, cells } of rec.parts) removeSolid(patch, cells);
+    rec.parts.length = 0;
+  }
+  function clearSolids(owner) {
+    const entry = solids.get(owner);
+    if (!entry) return;
+    for (const rec of entry.values()) release(rec);
+    solids.delete(owner);
+  }
+  function putSolids(owner, items) {
+    clearSolids(owner);
+    const entry = new Map();
+    for (const it of items) {
+      const fp = footprint(it);
+      if (!fp) continue;
+      const rec = { fp, parts: [] };
+      for (const k of chunkKeysOf(fp, size)) {
+        const patch = grid.chunks.get(k);
+        if (patch) stampOn(rec, patch);
+      }
+      entry.set(it.id, rec);
+    }
+    solids.set(owner, entry);
+  }
+  // Un morceau de grille vient de naître : les objets des voisins qui débordent chez lui s'y posent.
+  function receiveSolids(patch) {
+    for (const entry of solids.values()) for (const rec of entry.values()) if (touches(rec.fp, patch)) stampOn(rec, patch);
+  }
+  function openSolid(id) {
+    for (const entry of solids.values()) {
+      const rec = entry.get(id);
+      if (!rec) continue;
+      release(rec);
+      entry.delete(id);
+      return;
+    }
+  }
+  // Objet plein hors du décor des morceaux, { id, kind, x, z, yaw, s } : posé dans la grille sous lui (sans effet tant qu'elle n'est
+  // pas construite : l'appelant recommence), une seule fois par place.
+  const aside = new Map(); // id → 'x|z|yaw'
+  function setSolid(item) {
+    if (!grid.chunks.has(chunkKey(Math.floor(item.x / size), Math.floor(item.z / size)))) { clearSolid(item.id); return false; }
+    const at = `${item.x}|${item.z}|${item.yaw ?? 0}`;
+    if (aside.get(item.id) === at) return true;
+    putSolids(`@${item.id}`, [item]);
+    aside.set(item.id, at);
+    return true;
+  }
+  function clearSolid(id) {
+    clearSolids(`@${id}`);
+    aside.delete(id);
+  }
   // Arbres du décor teintés par la météo comme ceux de l'ancien chemin (neige, pluie).
   const untint = propsView ? followTreeWeather(propsView.treeMaterials()) : null;
   const untintFlore = floreView ? followTreeWeather(floreView.treeMaterials()) : null;
@@ -1522,7 +1585,11 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
   }
 
   function ensurePatch(cx, cz, key) {
-    if (!grid.chunks.has(key)) grid.chunks.set(key, buildPatch(store, cx, cz));
+    if (!grid.chunks.has(key)) {
+      const patch = buildPatch(store, cx, cz);
+      grid.chunks.set(key, patch);
+      receiveSolids(patch);
+    }
     return grid.chunks.get(key);
   }
 
@@ -1601,15 +1668,19 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     for (const p of v.props) if (!gone.has(p.id) && isGone(p.id)) gone.add(p.id);
     if (propsView) propsView.setChunk(key, v.props.filter((p) => !gone.has(p.id)), d.cars.filter((p) => gone.has(p.id)));
     else showTrees(v);
+    const plein = v.props.filter((p) => !gone.has(p.id));
     if (floreView) {
-      // Buissons, rochers et touffes : pas d'identifiant mémorisé, pas de collision ; posés sur le relief comme les arbres.
+      // Buissons, rochers, touffes, haies : pas d'identifiant mémorisé (rien ne se démonte) ; rochers, haies et le reste du décor plein
+      // bloquent (obstacles.js), pas les buissons ni l'herbe ; posés sur le relief comme les arbres.
       const flore = floreForChunk(near, patch, v.cx, v.cz, size, proj, { lowPower, vivant: VIVANT_ON });
       if (relief) for (const kind in flore) for (const it of flore[kind]) seatProp(it, ground);
       floreView.setChunk(key, flore);
       v.flore = true;
       // Ce qui se cueille ou se puise (campagne.js) : gardé pour floreNear.
       v.recolte = { baie: flore.baie, champi: flore.champi, legume: flore.legume, puits: flore.puits };
+      for (const kind in flore) plein.push(...flore[kind]); // rochers, haies, clôtures, murets, puits, balles : footprint() écarte le reste
     }
+    putSolids(key, plein);
   }
 
   // Ancien chemin (sans propsView) : un groupe d'arbres par morceau, refait quand un arbre est abattu.
@@ -1633,6 +1704,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     v.trees?.userData.instanced.forEach((m) => m.dispose());
     if (propsView && v.props) propsView.dropChunk(key);
     if (floreView && v.flore) floreView.dropChunk(key);
+    clearSolids(key);
     pending.delete(key);
     views.delete(key);
   }
@@ -1762,6 +1834,7 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
   function markGone(id) {
     if (gone.has(id)) return;
     gone.add(id);
+    openSolid(id); // un tronc abattu, une voiture démontée : leurs cases se rouvrent
     if (propsView) {
       propsView.setGone(id, true);
       return;
@@ -1784,6 +1857,8 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     for (const key of [...views.keys()]) dropView(key);
     pending.clear();
     gone.clear();
+    solids.clear();
+    aside.clear();
     plans.clear();
     untint?.();
     untintFlore?.();
@@ -1804,5 +1879,5 @@ export function createChunkManager({ scene, store, grid, lowPower = false, groun
     return { views: views.size, patches: grid.chunks.size, buildings, props: decor, decorPending: pending.size, marks };
   }
 
-  return { update, buildAll, missing, setWeather, dispose, stats, propNear, floreNear, recolte, markGone, props, root };
+  return { update, buildAll, missing, setWeather, dispose, stats, propNear, floreNear, recolte, markGone, props, root, setSolid, clearSolid };
 }

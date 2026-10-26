@@ -17,7 +17,7 @@ export const CAR = {
   siphon: { time: 8, chance: 0.4 },
   siphonMark: 's',      // préfixe de la marque « déjà siphonnée » dans save.dismantled (72 h, comme un arbre qui repousse)
   replaceM: 500,        // une autre voiture remplace l'ancienne si celle-ci est à plus de 500 m
-  reach: 2.6,           // distance pour monter dans sa voiture
+  reach: 3.3,           // distance pour monter dans sa voiture (elle bloque comme les voitures du décor : le bout du capot est à 2,8 m)
   noiseM: 60,           // le moteur s'entend à l'arrivée : les zombies à 60 m viennent voir
   noiseSec: 10,
   tint: 0x4f6f78,       // teinte de « ta voiture » (terne, rien d'orange ni de rouge vif : ces couleurs signalent le jeu)

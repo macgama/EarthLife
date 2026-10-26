@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MAX_LEVEL, GAIN, LEVEL_XP, XP_MAX, SKILL_KEYS, PER_LEVEL, clampXp, levelOf, progress, emptySkills, emptyProfileSkills, bucketFor, addXp,
-  craftXp, effectsOf, effectText, skillRows, levelUpText,
+  craftXp, effectsOf, effectText, skillRows, levelUpText, resetSkills,
 } from '../src/skills.js';
 import { wearWeapon, updateSurvivor, createSurvivor, FATIGUE } from '../src/survival.js';
 import { craftTime, RECIPES } from '../src/crafting.js';
@@ -224,4 +224,16 @@ test('survival : l\'arme s\'use moins avec Combat, la course fatigue moins avec 
   assert.ok(Math.abs(fat(false, 0.6) - FATIGUE.walk) < 1e-9, 'la marche ne profite pas de Course');
   assert.ok(Math.abs(fat(true, undefined) - (FATIGUE.walk + FATIGUE.run)) < 1e-9, 'sans bonus : comme avant');
   assert.ok(Math.abs(fat(true, 0.6) - (FATIGUE.walk + FATIGUE.run * 0.6)) < 1e-9, 'niveau 10 : −40 % sur la course');
+});
+
+test('resetSkills : un nouveau personnage repart de zéro, la remise à zéro dit s\'il y avait quelque chose à perdre', () => {
+  const b = emptySkills();
+  assert.equal(resetSkills(b), false, 'rien à perdre : rien ne change');
+  addXp(b, 'fouille', LEVEL_XP[3]);
+  addXp(b, 'course', 5);
+  assert.equal(resetSkills(b), true);
+  for (const k of SKILL_KEYS) assert.equal(b[k], 0, `${k} à zéro`);
+  assert.deepEqual(effectsOf(b), effectsOf(emptySkills()));
+  assert.equal(resetSkills(b), false);
+  assert.equal(resetSkills(null), false);
 });

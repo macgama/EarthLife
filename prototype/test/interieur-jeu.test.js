@@ -10,7 +10,7 @@ import {
 import { createPlayer, createZombieDirector, playerAttack } from '../src/game.js';
 import { gameplayModifiers, forcedWeather } from '../src/weather.js';
 import {
-  INTERIEUR, LAB, buildPlan, clearPlanCache, noInterior, overlayOf, labAt, roomAt, nearSearch, searchSpot, steerZombie, planBounds,
+  INTERIEUR, LAB, buildPlan, clearPlanCache, noInterior, overlayOf, labAt, roomAt, nearSearch, searchSpot, steerZombie, planBounds, roamStep, lodgerSpots, LODGE,
 } from '../src/interieur.js';
 import { createInteriorGame } from '../src/interieur-jeu.js';
 
@@ -328,7 +328,7 @@ test('pas de la surcouche : un pas de 0,12 m au plus dans un intérieur, déplac
 
 // ---------- Partie : ouverture, sortie, pièces fouillées ----------
 
-function fakeSession({ source = 'tiles', searched = {} } = {}) {
+function fakeSession({ source = 'tiles', searched = {}, onEnter = null } = {}) {
   const { b, grid, plan } = worlds[2];
   const director = createZombieDirector(grid, () => 0.5);
   const s = {
@@ -342,7 +342,7 @@ function fakeSession({ source = 'tiles', searched = {} } = {}) {
     update: () => {}, dispose: () => calls.push(['dispose']), setDone: () => {},
   };
   const closed = [];
-  const game = createInteriorGame({ view, enabled: true, save, maxAge: 24 * 3600 * 1000, searchTime: 2.2, onClose: (ss, it) => closed.push(it.b.id) });
+  const game = createInteriorGame({ view, enabled: true, save, maxAge: 24 * 3600 * 1000, searchTime: 2.2, onEnter, onClose: (ss, it) => closed.push(it.b.id) });
   return { s, game, save, calls, closed, b, grid, plan };
 }
 
@@ -509,6 +509,116 @@ test("sortie : un zombie resté dans le contour ressort par la porte, jamais emm
   assert.equal(labAt(plan, inside.x, inside.z), LAB.OUT);
   assert.ok(isFree(grid, inside.x, inside.z), 'sur une case libre');
   assert.ok(Math.hypot(inside.x - e.ox, inside.z - e.oz) < 4);
+});
+
+// Zombies qui logent : posés dans d'autres pièces que le joueur (lodgerSpots), ils se baladent de pièce en pièce par les portes
+// (roamStep), sans jamais traverser un mur ni sortir du plan.
+test('logeurs : ils font le tour du bâtiment par les portes, sans traverser un mur ni sortir', () => {
+  let tried = 0, toured = 0;
+  for (const { grid, plan } of worlds.slice(0, 40)) {
+    if (plan.rooms.length < 3) continue;
+    open(grid, plan);
+    const e = plan.entry;
+    const player = createPlayer({ x: e.ix, z: e.iz });
+    player.hidden = true; // ni vu ni entendu : seul le trajet est éprouvé
+    const dir = createZombieDirector(grid, () => 0.5);
+    const lodgers = lodgerSpots(plan, player, 2, () => 0.37).map((q) => dir.spawnAt(q.x, q.z, 'errant', { lodger: true })).filter(Boolean);
+    if (!lodgers.length) continue;
+    tried++;
+    const seen = lodgers.map(() => new Set());
+    const roam = (zb, dt) => roamStep(plan, zb, dt, () => 0.5 + 0.4 * Math.sin(zb.x * 12.9898 + zb.z * 78.233 + tried));
+    for (let i = 0; i < 30 * 180; i++) {
+      dir.update(1 / 30, player, mods, { isNight: true, desired: 0, roam, muffle: LODGE.hearing });
+      lodgers.forEach((z, j) => {
+        assert.ok(labAt(plan, z.x, z.z) !== LAB.OUT, `logeur sorti du plan (${z.x.toFixed(1)}, ${z.z.toFixed(1)})`);
+        assert.ok(isFree(grid, z.x, z.z), 'logeur dans un mur ou un meuble');
+        assert.equal(z.state, 'wander');
+        const r = roomAt(plan, z.x, z.z);
+        if (r >= 0) seen[j].add(r);
+      });
+    }
+    if (seen.some((set) => set.size >= 2)) toured++;
+  }
+  assert.ok(tried >= 20, `${tried} essais`);
+  assert.ok(toured >= tried * 0.9, `${toured} bâtiments sur ${tried} où un logeur change de pièce`);
+});
+
+test("logeurs : les cloisons étouffent le bruit et cachent le joueur ; en vue directe ou près d'eux, ils le repèrent", () => {
+  const cell = (plan, k) => { const i = k % plan.nu, j = Math.floor(k / plan.nu), f = plan.frame, u = plan.u0 + (i + 0.5) * plan.cell, v = plan.v0 + (j + 0.5) * plan.cell; return { x: f.ox + u * f.ux + v * f.vx, z: f.oz + u * f.uz + v * f.vz }; };
+  let behind = 0, inView = 0;
+  for (const { grid, plan } of worlds.slice(0, 60)) {
+    if (plan.rooms.length < 3 || (behind >= 6 && inView >= 6)) continue;
+    open(grid, plan);
+    const spots = [];
+    for (let k = 0; k < plan.size; k += 7) if (plan.lab[k] === LAB.FLOOR && plan.rid[k]) spots.push({ ...cell(plan, k), room: plan.rid[k] - 1 });
+    const pair = (want) => {
+      for (const a of spots) {
+        for (const b of spots) {
+          const d = Math.hypot(a.x - b.x, a.z - b.z);
+          if (d < 7 || d > 10) continue;
+          if (want === 'wall' ? a.room !== b.room && !lineFree(grid, a.x, a.z, b.x, b.z) : lineFree(grid, a.x, a.z, b.x, b.z, 0.5)) return [a, b];
+        }
+      }
+      return null;
+    };
+    const run = (a, b, lodger) => {
+      const player = createPlayer({ x: b.x, z: b.z });
+      const dir = createZombieDirector(grid, () => 0.5);
+      const zb = dir.spawnAt(a.x, a.z, 'errant', lodger ? { lodger: true } : {});
+      if (!zb) return null;
+      zb.yaw = Math.atan2(b.x - a.x, b.z - a.z); // il regarde vers le joueur
+      zb.roam = { goal: null, rest: 999, t: 0 };
+      for (let i = 0; i < 30; i++) dir.update(1 / 30, player, mods, { isNight: false, desired: 0, roam: (z, dt) => roamStep(plan, z, dt), muffle: LODGE.hearing });
+      return zb.state;
+    };
+    const wall = pair('wall');
+    if (wall && behind < 6) {
+      const [a, b] = wall;
+      const lodging = run(a, b, true), outside = run(a, b, false);
+      if (lodging !== null && outside !== null) {
+        behind++;
+        assert.equal(lodging, 'wander', `logeur derrière une cloison à ${Math.hypot(a.x - b.x, a.z - b.z).toFixed(1)} m`);
+        assert.equal(outside, 'chase', 'un zombie ordinaire entend à travers la cloison');
+      }
+    }
+    const view = pair('view');
+    if (view && inView < 6) {
+      const [a, b] = view;
+      const lodging = run(a, b, true);
+      if (lodging !== null) {
+        inView++;
+        assert.equal(lodging, 'chase', `logeur en vue directe à ${Math.hypot(a.x - b.x, a.z - b.z).toFixed(1)} m`);
+      }
+    }
+  }
+  assert.ok(behind >= 3 && inView >= 3, `${behind} cloisons, ${inView} vues directes essayées`);
+});
+
+test("logeurs : le seuil franchi prévient la partie une fois ; à la sortie ils disparaissent avec le plan, sauf ceux qui chassent", () => {
+  const entered = [];
+  const { s, game, grid, plan } = fakeSession({ onEnter: (ss, it) => entered.push(it.b.id) });
+  game.open(s, 0);
+  assert.equal(entered.length, 0, "pas à l'ouverture");
+  assert.equal(game.roamOf(s), s.interior.roam);
+  game.update(s, 0.1);
+  assert.equal(entered.length, 0, 'ni devant la porte');
+  Object.assign(s.player, { x: plan.entry.ix, z: plan.entry.iz });
+  game.update(s, 0.1);
+  game.update(s, 0.1);
+  assert.equal(entered.length, 1, 'une seule fois');
+  const [qa, qb, qc] = lodgerSpots(plan, s.player, 3, () => 0.2);
+  const calm = s.director.spawnAt(qa.x, qa.z, 'errant', { lodger: true });
+  const hunter = s.director.spawnAt(qb.x, qb.z, 'errant', { lodger: true });
+  const dead = s.director.spawnAt(qc.x, qc.z, 'errant', { lodger: true });
+  hunter.state = 'chase';
+  dead.dead = 0.5;
+  game.close(s);
+  assert.equal(game.roamOf(s), null);
+  assert.ok(!s.director.zombies.includes(calm), 'celui qui se baladait disparaît avec le plan');
+  assert.ok(s.director.zombies.includes(hunter) && labAt(plan, hunter.x, hunter.z) === LAB.OUT, 'celui qui chasse ressort par la porte');
+  assert.ok(isFree(grid, hunter.x, hunter.z));
+  assert.ok(s.director.zombies.includes(dead), 'un mort reste où il est');
+  assert.equal(roamStep(plan, hunter, 0.1), undefined, 'dehors il suit la marche ordinaire');
 });
 
 test("pièces fouillées : sauvegarde étendue, bâtiment fouillé quand toutes le sont, ville de secours en mémoire", () => {
