@@ -953,6 +953,14 @@ export function createCityRuntime(deps) {
     if (state.counter) endCounter(director, false, 'mort');
   }
 
+  // Un habitant non infecté de la ville devient zombie là où le joueur est tombé (quartier.js, infectOne). Rend { from, key,
+  // lost, name } (from : 'cache' ou 'sauve'), ou null si rien n'a lieu (ville déjà perdue ou sauvée).
+  function infectAt(x, z) {
+    const key = blockAt(x, z) ?? nearestBlock(x, z) ?? '';
+    const out = ops.infect(key);
+    return out ? { ...out, name: ville.name } : null;
+  }
+
   // ----- Nuits (4) : volontaires, repousse, usure -----
 
   function frontier() {
@@ -1072,6 +1080,7 @@ export function createCityRuntime(deps) {
       return { text: `Défends ton fanion : ${c.killed} / ${Math.max(1, Math.ceil(c.N * CITY.holdShare))}`, target: { x: c.x, z: c.z }, kind: 'defend' };
     }
     const status = cityStatus(ville);
+    if (status === 'perdue') return { text: `${ville.name} est perdue : plus aucun habitant à sauver`, target: null, kind: 'lost' };
     const here = blockAt(player.x, player.z);
     const info = here ? blockInfo(ville, here) : null;
     if (info && info.state !== 'libere') {
@@ -1108,7 +1117,7 @@ export function createCityRuntime(deps) {
     return { ...c, known, free, line: lineOf(c) };
   }
 
-  const lineOf = (c) => `${c.name} · Zombies restants ${groupDigits(c.zombies)} · Habitants sauvés ${groupDigits(c.saved)} / ${groupDigits(c.toSave)}${c.approx ? ' (environ)' : ''}`;
+  const lineOf = (c) => `${c.name} · Zombies restants ${groupDigits(c.zombies)} · Habitants sauvés ${groupDigits(c.saved)} / ${groupDigits(c.toSave)}${c.approx ? ' (environ)' : ''}${c.lost ? ' · Ville perdue' : c.turned > 0 ? ` · Devenus zombies ${groupDigits(c.turned)}` : ''}`;
 
   // Pâté d'un point : « Rue Émile Zola · 17 zombies · 77 habitants cachés », ou null.
   function blockLine(key) {
@@ -1274,7 +1283,7 @@ export function createCityRuntime(deps) {
     get season() { return !!S; },
     applyServer, resyncFrom, leases: () => ops.leases(),
     setMembership(next) { fn = next.fn ?? fn; member = next.member ?? member; },
-    ensureAround, place, blockAt, nearestBlock, reconcile, recall, tick, actions, openNestAt, plantFlagAt, endCounter, onDeath,
+    ensureAround, place, blockAt, nearestBlock, reconcile, recall, tick, actions, openNestAt, plantFlagAt, endCounter, onDeath, infectAt,
     settleEmpty, nightly, refugeCtx, objective, stats, blockLine, finish, networkBack, chooseHeart, frontier, markDirty, dispose,
     rescueIn, hiddenIn,
     status: () => cityStatus(ville),

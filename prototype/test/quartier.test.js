@@ -6,7 +6,7 @@ import {
   apportion, zombiesFor, reserveFor, nestSize, heartWaves, levelSummary, flagNights, supplyFor, tilePools,
   startVille, restartVille, placeTile, startUnit, setCoeur, blockInfo, counters, checkVille, cityStatus, zombiesLeft,
   lend, giveBack, recallAll, kill, take, drawReserve, settle, move, regrow, fallFlag, dropFlag, openNest, plantFlag,
-  liberate, rescueOne, othersCleared, volunteersNight, homeWeights, hiddenByBuilding, takeHome, canChangeLevel, changeLevel,
+  liberate, rescueOne, infectOne, humansLeft, othersCleared, volunteersNight, homeWeights, hiddenByBuilding, takeHome, canChangeLevel, changeLevel,
   finishUnit, villeLine, compactVille, rowCount, rekeyVille, watched, keyPoint, unitKeyOf,
   memberOf, censusWeights, censusBlocks, unitTilesMissing, ROW_LENGTH,
 } from '../src/quartier.js';
@@ -1129,4 +1129,158 @@ test('rescueOne : un pâté où des habitants ont été trouvés n\'est plus int
   assert.equal(rowOf(copy, key)[ROW.H0] - rowOf(copy, key)[ROW.H], 1);
   assert.ok(before >= rowCount(copy));
   ok(copy);
+});
+
+// ---------- Mort du joueur : un habitant devient zombie (« Mort et ville ») ----------
+
+test('infectOne : un caché du pâté où le joueur tombe devient zombie, la conservation tient', () => {
+  const v = perougesVille('facile');
+  const key = keysOf(v).find((k) => blockInfo(v, k).hidden >= 3 && blockInfo(v, k).state === 'rouge');
+  const b = blockInfo(v, key), c = counters(v);
+  const out = infectOne(v, key);
+  assert.deepEqual(out, { from: 'cache', key, lost: false });
+  assert.equal(blockInfo(v, key).hidden, b.hidden - 1);
+  assert.equal(blockInfo(v, key).zombies, b.zombies + 1);
+  const d = counters(v);
+  assert.equal(d.zombies, c.zombies + 1);
+  assert.equal(d.saved, c.saved, 'aucun sauvé de moins : un caché d\'abord');
+  assert.equal(d.turned, 1);
+  assert.equal(d.lost, false);
+  ok(v);
+});
+
+test('infectOne : la ville perd un habitant par mort, sans limite, jusqu\'à être perdue', () => {
+  const v = perougesVille('facile');
+  const key = keysOf(v)[0];
+  const humans = humansLeft(v);
+  assert.ok(humans > 100);
+  let n = 0, last = null;
+  for (let r = infectOne(v, key); r; r = infectOne(v, key)) { n++; last = r; if (n % 200 === 0) ok(v, `après ${n}`); }
+  assert.equal(n, humans, 'un habitant par appel, jusqu\'au dernier non infecté');
+  assert.equal(last.lost, true);
+  assert.equal(humansLeft(v), 0);
+  assert.equal(v.lost, true);
+  assert.equal(cityStatus(v), 'perdue');
+  const c = counters(v);
+  assert.equal(c.lost, true);
+  assert.equal(c.turned, humans);
+  assert.equal(infectOne(v, key), null, 'une ville perdue ne perd plus rien');
+  ok(v);
+});
+
+test('infectOne : sans caché dans le pâté, le plus proche qui en cache encore ; le zombie reste là où le joueur est tombé', () => {
+  const v = perougesVille('facile');
+  const key = keysOf(v).find((k) => blockInfo(v, k).hidden >= 2);
+  // Le pâté du joueur est vidé de ses cachés (trouvés un à un) : un caché d'un pâté voisin tombe à sa place.
+  while (rescueOne(v, key));
+  assert.equal(blockInfo(v, key).hidden, 0);
+  const before = counters(v);
+  const z = blockInfo(v, key).zombies;
+  const out = infectOne(v, key);
+  assert.equal(out.from, 'cache');
+  assert.equal(out.key, key, 'le zombie apparaît là où le joueur est tombé');
+  assert.equal(blockInfo(v, key).zombies, z + 1);
+  assert.equal(counters(v).saved, before.saved);
+  ok(v);
+});
+
+test('infectOne : un pâté nettoyé ou libéré où le joueur tombe redevient rouge, son fanion tombe', () => {
+  const v = perougesVille('facile');
+  const key = keysOf(v).find((k) => blockInfo(v, k).hidden >= 2 && blockInfo(v, k).zombies > 0);
+  kill(v, key, lend(v, key, 1000, { nest: true }));
+  assert.equal(blockInfo(v, key).state, 'nettoye');
+  assert.ok(plantFlag(v, key));
+  const out = infectOne(v, key);
+  assert.equal(out.key, key);
+  assert.equal(blockInfo(v, key).state, 'rouge');
+  assert.equal(blockInfo(v, key).zombies, 1);
+  assert.equal(rowOf(v, key)[ROW.F], 0, 'le fanion est tombé');
+  ok(v);
+  // Un pâté libéré : ses habitants sauvés restent sauvés, le zombie le rend rouge.
+  const w = perougesVille('facile');
+  const free = keysOf(w).find((k) => blockInfo(w, k).zombies === 0 && blockInfo(w, k).hidden > 0);
+  liberate(w, free);
+  const saved = counters(w).saved;
+  const o2 = infectOne(w, free);
+  assert.equal(o2.from, 'cache', 'un caché d\'un autre pâté, pas un sauvé');
+  assert.equal(blockInfo(w, free).state, 'rouge');
+  assert.equal(counters(w).saved, saved);
+  ok(w);
+});
+
+test('infectOne : un sauvé tombe seulement quand il ne reste plus aucun caché', () => {
+  const v = perougesVille('facile');
+  const key = keysOf(v)[0];
+  // On trouve tous les cachés (ta place exceptée) : plus que des sauvés.
+  for (const k of keysOf(v)) while (rescueOne(v, k));
+  const saved0 = counters(v).saved;
+  assert.ok(saved0 > 100);
+  const out = infectOne(v, key);
+  assert.equal(out.from, 'sauve');
+  assert.equal(counters(v).saved, saved0 - 1);
+  assert.equal(counters(v).turned, 1);
+  ok(v);
+});
+
+test('infectOne : toi, caché dans ton pâté, n\'es jamais pris ; la ville est perdue quand il ne reste que toi', () => {
+  const v = perougesVille('facile');
+  const home = keysOf(v).find((k) => blockInfo(v, k).hidden >= 2);
+  assert.ok(takeHome(v, home));
+  let r;
+  while ((r = infectOne(v, home)) && !r.lost);
+  assert.equal(v.lost, true);
+  assert.equal(rowOf(v, home)[ROW.H], 1, 'ta place est restée');
+  ok(v);
+});
+
+test('infectOne : une mort fige le niveau ; sans aucun pâté placé, rien n\'a lieu', () => {
+  const v = perougesVille('facile');
+  assert.ok(canChangeLevel(v));
+  infectOne(v, keysOf(v)[0]);
+  assert.equal(canChangeLevel(v), false, 'une mort fige le niveau (les zombies ne se recomptent plus)');
+  assert.equal(changeLevel(v, 'moyen'), false);
+  const { floors } = perougesCuts();
+  const empty = startVille({ key: 'c01290', name: 'Pérouges', population: 1387, source: 'insee', level: 'facile', tiles: floors, at: 1000 });
+  assert.equal(infectOne(empty, 'b45.9_5.17'), null);
+  assert.equal(empty.turned, 0);
+});
+
+test('infectOne puis l\'allègement : les pâtés touchés sont gardés, la conservation tient après relecture', () => {
+  const v = perougesVille('facile');
+  const key = keysOf(v).find((k) => blockInfo(v, k).hidden >= 2);
+  infectOne(v, key);
+  infectOne(v, key);
+  const copy = structuredClone(v);
+  compactVille(copy);
+  assert.ok(rowOf(copy, key));
+  assert.equal(rowOf(copy, key)[ROW.S], rowOf(v, key)[ROW.S]);
+  assert.equal(copy.turned, 2);
+  ok(copy);
+});
+
+test('infectOne : même résultat sur toute copie de la ville (déterministe)', () => {
+  const a = perougesVille('moyen'), b = perougesVille('moyen');
+  const key = keysOf(a)[3];
+  for (let i = 0; i < 30; i++) assert.deepEqual(infectOne(a, key), infectOne(b, key));
+  assert.deepEqual(a, b);
+});
+
+test('infectOne : les cachés d\'une tuile pas encore placée tombent aussi ; la tuile se place ensuite avec ses zombies en plus', () => {
+  const { cuts, member } = perougesCuts();
+  const v = perougesVille('facile', { order: [0] });
+  const key = keysOf(v)[0];
+  const humans = humansLeft(v);
+  const placedHidden = keysOf(v).reduce((a, k) => a + rowOf(v, k)[ROW.H], 0);
+  assert.ok(humans > placedHidden + 100, 'une bonne part des cachés attend dans la tuile voisine');
+  let n = 0;
+  for (let r = infectOne(v, key); r; r = infectOne(v, key)) { n++; if (n % 100 === 0) ok(v, `après ${n}`); }
+  assert.equal(n, humans, 'tous les non infectés finissent par tomber, ceux de la tuile voisine compris');
+  assert.equal(v.lost, true);
+  assert.equal(counters(v).turned, humans);
+  ok(v);
+  // La tuile voisine se place après coup : sa part a perdu ses cachés, les zombies sont déjà dans la rangée du joueur.
+  const z = counters(v).zombies;
+  assert.ok(placeTile(v, cuts[1], { member }).ok);
+  assert.equal(counters(v).zombies, z);
+  ok(v);
 });

@@ -149,6 +149,7 @@ export function validateVille(raw, c, path, budget) {
     me: c.key(raw.me, BLOCK_KEY, `${path}.me`), meOut: raw.meOut === true,
     vn: typeof raw.vn === 'string' && NIGHT.test(raw.vn) ? raw.vn : null,
     zl: zoneLevel(raw.zl), leak: typeof raw.leak === 'boolean' ? raw.leak : null,
+    turned: c.int(raw.turned, `${path}.turned`, { max: MAX_POP }), lost: raw.lost === true,
     qk: [], units: {}, done: {}, tiles: {},
   };
   if (raw.zl !== undefined && raw.zl !== ville.zl) c.fix(`${path}.zl`, `${JSON.stringify(raw.zl)} → ${ville.zl}`);

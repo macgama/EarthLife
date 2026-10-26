@@ -130,12 +130,20 @@ for (const device of ['mobile', 'desktop']) {
   const shotFrame = await frames(page, 2);
   check(shotFrame.calls - crowd.calls <= 6, `${device} : un coup de feu ajoute au plus 6 appels de dessin (${shotFrame.calls - crowd.calls}) : maillage des effets, traceur et arme en main, pas un maillage par particule`);
   await page.screenshot({ path: path.join(out, `${device}-tir.png`) });
+  // Plus rien ne doit en faire naître de nouvelles : les zombies du cercle mordent le joueur (une morsure = un nuage de sang séché) et,
+  // par temps frais, le souffle repart toutes les deux secondes. Sur un exécuteur lent, où le jeu avance de quelques images par seconde,
+  // ces émissions se chevauchent et le maillage ne se vide jamais. Le test regarde l'extinction, pas la bagarre.
+  await page.evaluate(() => {
+    const s = window.__earthlife.session;
+    s.director.zombies.length = 0;
+    s.weather = { ...s.weather, temperature: 20 };
+  });
   await page.waitForFunction(() => window.__earthlife.effectsView.fx.count === 0, null, { timeout: 90000, polling: 500 }).then(
     () => check(true, `${device} : les effets s'éteignent d'eux-mêmes`),
     () => check(false, `${device} : les effets s'éteignent d'eux-mêmes`),
   );
   // Le maillage lit ses particules avant de les faire vieillir : il s'éteint à l'image qui suit la dernière.
-  const idle = await page.waitForFunction(() => !window.__earthlife.effectsView.mesh.visible, null, { timeout: 20000, polling: 'raf' }).then(() => true, () => false);
+  const idle = await page.waitForFunction(() => !window.__earthlife.effectsView.mesh.visible, null, { timeout: 60000, polling: 'raf' }).then(() => true, () => false);
   check(idle, `${device} : sans particule, le maillage des effets n'est pas dessiné`);
 
   // Foule d'autres survivants : les têtes diffèrent d'une personne à l'autre.
