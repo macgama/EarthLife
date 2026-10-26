@@ -48,7 +48,7 @@ export function carriageway(r) {
 // Passages piétons (réels et de carrefour) et lignes d'arrêt d'un plan du sol (groundPlan) : rectangles orientés
 // { x, z, ux, uz, hl, hw } (centre ; direction unitaire de la chaussée ; demi-longueur le long de la chaussée,
 // demi-largeur en travers). Chacun est un trait à bouts droits tiré en travers de la chaussée, épais de op.width.
-const PARK_MARKS = new Set(['zebra', 'junctionZebra', 'stop']);
+const PARK_MARKS = new Set(['zebra', 'junctionZebra', 'stop', 'giveWay']);
 export function markBoxes(ops) {
   const out = [];
   for (const op of ops ?? []) {

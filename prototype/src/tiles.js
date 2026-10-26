@@ -976,6 +976,7 @@ export function tileFeatures(layers, tx, ty, z, origin) {
           rail: p.class === 'rail' || p.class === 'transit',
           bounds: boundsOf([points], width / 2 + 2),
           oneway: p.oneway === 1 || p.oneway === -1,
+          onewayDir: p.oneway === -1 ? -1 : p.oneway === 1 ? 1 : 0, // sens de circulation par rapport au tracé (rues-details.js)
           surface: p.surface === 'paved' || p.surface === 'unpaved' ? p.surface : null,
           service: typeof p.service === 'string' ? p.service : null,
           setting: 'city',

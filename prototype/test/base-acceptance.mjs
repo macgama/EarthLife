@@ -810,6 +810,10 @@ async function desktop() {
     check(sleepTime === 25 && sleepOpen.length === 0 && sleepState.inside && sleepState.sleeping,
       `${tag} 2b : pendant le sommeil (${sleepTime} s) aucun bouton actif (${sleepOpen.join(', ') || 'aucun'}), Échap sans effet`);
     await shot(page, `${tag}-04b-sommeil`);
+    // La montre va plus vite que le jeu sans carte graphique : à une image par seconde, 25 s de sommeil dépassent l'attente et
+    // la fatigue restée haute allonge toutes les actions suivantes (démontage de 3,5 à 4,6 s). Les contrôles ci-dessus ont vu le
+    // sommeil en cours ; on l'amène à 0,3 s de sa fin, comme le siphonnage, et le réveil (fatigue −60, santé +15) reste vérifié.
+    await ev(page, () => { const a = window.__earthlife.session.action; if (a?.id === 'sleep') a.t = Math.max(a.t, a.time - 0.3); });
     const woke = await until(page, () => (window.__earthlife.session.action ? null : window.__earthlife.session.survivor.fatigue), null, 300000);
     check(woke !== null && woke < 80, `${tag} 2b : réveillé, fatigue ${woke === null ? '?' : woke.toFixed(0)} (80 avant)`);
   }
@@ -907,7 +911,7 @@ async function desktop() {
     }, bagAt);
     await debug(page, 'teleport', near.x, near.z);
   }
-  const picked = await until(page, () => window.__earthlife.save.dropBag === null, null, 10000);
+  const picked = await until(page, () => window.__earthlife.save.dropBag === null, null, 60000);
   const pickedMsg = await toastSeen(page, 'Sac récupéré');
   check(!!picked && !!pickedMsg, `${tag} 5 : sac récupéré à 1 m (« ${pickedMsg} », dropBag ${await ev(page, () => JSON.stringify(window.__earthlife.save.dropBag))})`);
 
@@ -2050,7 +2054,8 @@ async function mapOpenClose(page, device, tag) {
       d.update = (...a) => { window.__steps++; return orig(...a); };
       window.__unwrap = () => { d.update = orig; };
     });
-    await wait(1000);
+    // Au moins un pas dans les 15 s de montre : à une image par seconde, une seconde fixe peut n'en laisser passer aucun.
+    await until(page, () => (window.__steps > 0 ? 1 : null), null, 15000);
     return ev(page, () => { window.__unwrap(); return window.__steps; });
   };
   const hasRefuge = await ev(page, () => !!window.__earthlife.refuge.anchor());
@@ -2060,7 +2065,7 @@ async function mapOpenClose(page, device, tag) {
     const aria = await ev(page, () => document.getElementById('minimap').getAttribute('aria-expanded'));
     const steps = await running();
     check(big.open && aria === 'true' && big.radius === 320 && steps > 0,
-      `${tag} 13.7 : clic : carte agrandie (aria-expanded ${aria}, ${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur en 1 s)`);
+      `${tag} 13.7 : clic : carte agrandie (aria-expanded ${aria}, ${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur)`);
     await shot(page, `${tag}-13-carte-agrandie`);
     const inside0 = await ev(page, () => window.__earthlife.refuge.inside);
     await page.keyboard.press('Escape');
@@ -2099,7 +2104,7 @@ async function mapOpenClose(page, device, tag) {
   await page.tap('#minimap');
   const big = await mapAfter(page);
   const steps = await running();
-  check(big.open && big.radius === 240 && steps > 0, `${tag} 13.7 : toucher : carte agrandie (${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur en 1 s)`);
+  check(big.open && big.radius === 240 && steps > 0, `${tag} 13.7 : toucher : carte agrandie (${big.radius} m, ${big.size} px), le jeu continue (${steps} pas du directeur)`);
   await shot(page, `${tag}-13-carte-agrandie`);
   await page.tap('#minimap');
   const closed = await mapAfter(page);
@@ -2398,7 +2403,7 @@ function watchToasts(page) {
 }
 // Mesure de la notification qui commence par `start`, ou null. Une notification attend que la précédente ait eu
 // 1,2 s de temps de jeu : sous swiftshader chargé (2 à 5 images par seconde), cela peut prendre une demi-minute.
-const toastBox = (page, start, timeout = 90000) => until(page, (t) => window.__toastBoxes?.find((b) => b.text.startsWith(t)) ?? null, start, timeout);
+const toastBox = (page, start, timeout = 300000) => until(page, (t) => window.__toastBoxes?.find((b) => b.text.startsWith(t)) ?? null, start, timeout);
 // Notifications vues depuis l'indice `from` de la liste (textes).
 const toastsSince = (page, from) => ev(page, (i) => (window.__toastBoxes ?? []).slice(i).map((b) => b.text), from);
 const toastCount = (page) => ev(page, () => window.__toastBoxes?.length ?? 0);
@@ -2415,8 +2420,10 @@ async function searchFor(page, device, spot, tag) {
   await press(page, device, 'KeyE', 'search');
   const search = await searchSafely(page, device, spot.id);
   if (!search.done) note(`${tag} : fouille inachevée, ${await state(page)}`);
-  // Le bouton secondaire peut ne pas exister (petit bâtiment) : on attend que le bouton principal ait quitté « Fouiller ».
+  // Le bouton secondaire peut ne pas exister (petit bâtiment) : on attend que le bouton principal ait quitté « Fouiller », puis
+  // que le secondaire paraisse (jusqu'à 20 s : il se redessine avec le menu, plus lentement que la montre sans carte graphique).
   await until(page, (id) => (window.__label(id)?.startsWith('Fouiller') ? null : true), 'search', 10000);
+  await until(page, () => (window.__label('action2') ? true : null), null, 20000);
   return ev(page, (id) => window.__label(id), 'action2');
 }
 
@@ -3706,8 +3713,8 @@ async function conduiteScenario(device) {
     await until(page, () => (Math.abs(window.__earthlife.session.driving?.speed ?? 9) < 0.3 ? 1 : null), null, 120000);
   }
 
-  // 6. Contre un mur : un mur de face à 25 m ou plus est cherché autour (la même distance sur trois lignes parallèles, à 1 m de part et d'autre :
-  // un mur large et droit, pas un coin ni un passage où la voiture glisserait), la voiture est posée à 8 m devant, vitesse nulle, poussée en avant ;
+  // 6. Contre un mur : un mur de face à 25 m ou plus est cherché autour (la même distance sur cinq lignes parallèles, à 1 et 2 m de part et d'autre :
+  // un mur large et droit, pas un coin, un mur oblique ni un passage où la voiture glisserait), la voiture est posée à 8 m devant, vitesse nulle, poussée en avant ;
   // elle s'arrête sans entrer dans le mur. Le mur est celui d'un bâtiment : une voiture garée, un arbre ou un banc (décor plein, obstacles.js)
   // arrête aussi le disque de la voiture sur les trois lignes, mais elle glisse ensuite autour (moveWithCollisions avance axe par axe).
   const edge = await ev(page, async () => {
@@ -3725,7 +3732,7 @@ async function conduiteScenario(device) {
     let best = null;
     for (let k = 0; k < 72; k++) {
       const a = (k / 72) * Math.PI * 2;
-      const ns = [0, 1, -1].map((o) => free(p.x + Math.cos(a) * o, p.z - Math.sin(a) * o, a));
+      const ns = [0, 1, -1, 2, -2].map((o) => free(p.x + Math.cos(a) * o, p.z - Math.sin(a) * o, a));
       const n = ns[0];
       if (n >= 25 && Math.min(...ns) >= 0 && Math.max(...ns) < 160 && Math.max(...ns) - Math.min(...ns) <= 1 && (!best || Math.abs(n - 60) < Math.abs(best.n - 60))) best = { a, n };
     }
@@ -3746,7 +3753,9 @@ async function conduiteScenario(device) {
   }, [edge.x, edge.z], 180000);
   const rec2 = await ev(page, () => ({ ...window.__drv }));
   const rolled = blocked ? Math.hypot(blocked.x - edge.x, blocked.z - edge.z) : null;
-  check(!!wallSpeed && !!blocked && rolled <= 8, `${tag} : le mur à ${edge.n} m : la voiture s'arrête après ${rolled === null ? '?' : round(rolled, 1)} m sur les 8 m laissés devant elle`);
+  // La distance libre est comptée au mètre (free : un pas de 1 m) : le mur peut être jusqu'à 1 m plus loin que les 8 m prévus ; qu'elle n'y entre pas
+  // est contrôlé à part (aucune image dedans).
+  check(!!wallSpeed && !!blocked && rolled <= 9, `${tag} : le mur à ${edge.n} m : la voiture s'arrête après ${rolled === null ? '?' : round(rolled, 1)} m sur les 8 m laissés devant elle (9 m au plus, distance libre comptée au mètre)`);
   check(rec2.inside === 0 && rec2.max <= 30 / 3.6 + 0.01, `${tag} : jamais dans le mur (${rec2.inside} images dedans), vitesse max ${round(rec2.max * 3.6, 1)} km/h`);
   await shot(page, `${name}-mur`);
   await page.keyboard.up('ArrowUp');
@@ -4299,8 +4308,11 @@ async function campagneScenario(device) {
   const fl = await until(page, () => { const x = window.__label('search'); return x && x.startsWith('Pêcher') ? x : null; }, null, 10000);
   const l2 = await ev(page, () => window.__label('action2'));
   check(/^Pêcher/.test(fl ?? '') && /^Puiser de l'eau/.test(l2 ?? ''), `${tag} : avec une canne, E « ${fl} » et R « ${l2} »`);
-  // Le tirage est truqué (0,5) le temps de la pêche : une prise, pas de seconde.
+  // Le tirage est truqué (0,5) le temps de la pêche : une prise, pas de seconde. Aucun errant ne doit mordre le temps de la
+  // pêche (une morsure l'annule) : ceux arrivés depuis la berge sont écartés, puis à chaque pas de la montre jusqu'à la fin.
   await ev(page, () => { window.__rand = Math.random; Math.random = () => 0.5; });
+  await clearZombies(page);
+  await ev(page, () => { window.__calme = setInterval(() => { window.__earthlife.session.director.zombies.length = 0; }, 100); });
   const fish0 = (await bagNow(page)).poisson ?? 0;
   await press(page, device, 'KeyE', 'search');
   action = await campagneAction(page);
@@ -4308,7 +4320,7 @@ async function campagneScenario(device) {
   await wait(500);
   await shot(page, `${name}-peche`);
   await actionDone(page);
-  await ev(page, () => { Math.random = window.__rand; });
+  await ev(page, () => { Math.random = window.__rand; clearInterval(window.__calme); });
   bag = await bagNow(page);
   const caught = (bag.poisson ?? 0) - fish0;
   check(caught === 1, `${tag} : 1 poisson au sac, « ${await toastSeen(page, 'Poisson pêché', 20000)} »`);

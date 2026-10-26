@@ -14,6 +14,8 @@ import { makeBruitTexture } from './bruit.js';
 import { buildingsGeometry, buildingMaterial, treesInstanced, followTreeWeather } from './scene.js';
 import { groundGeometry } from './markings.js';
 import { SETTING_INDEX, SIDEWALK, carriageway, markBoxes } from './roadway.js';
+import { planEdges } from './carrefours.js';
+import { planStops, planFurniture, planTracks, laneDividers } from './rues-details.js';
 import { EAU_DECL, EAU_FN, EAU_UNIFORMS, RIVE } from './eau.js';
 import { VIVANT_ON } from './vivant.js';
 import { facteursCultures, rangsDeVigne, MOIS_TROPIQUE } from './champs.js';
@@ -586,7 +588,7 @@ function drawnParts(r) {
     // Tirets calés sur le point de coupe (le même pour la copie de la tuile voisine).
     const at = cutA ? a : cutB ? b : 0, q = pointAt(p, at);
     const phase = cutA || cutB ? q.x * q.dx + q.z * q.dz - at : phaseOf(r.points);
-    list.push({ ...r, points, span: null, phase: phase + a2, mark: [a - a2, b - a2], whole: r });
+    list.push({ ...r, points, span: null, phase: phase + a2, mark: [a - a2, b - a2], whole: r, at: a2 });
   }
   pieces.set(r, list);
   return list;
@@ -622,6 +624,9 @@ const bandOnOther = (box, q, others) => boxCorners(box).some((c) => others.some(
 // 4 bordures ; 5 caniveaux puis chaussées par classe croissante, voies ferrées ; 6 marquages ; 7 ponts ; 8 marquages
 // des ponts. f : éléments du morceau (chunkFeatures) ou de son voisinage (featuresAround), pour les carrefours du bord.
 // Les marquages (op.mark) débordent du carré : le jeu les pose en géométrie coupée au carré (markings.js).
+// Soin des rues (carrefours.js, rues-details.js) : ?rues=avant le coupe pour comparer le rendu et son coût (main.js).
+let ruesDetail = true;
+export const setRuesDetail = (on) => { ruesDetail = !!on; };
 export function groundPlan(f, x0, z0, size, mois = MOIS_TROPIQUE) {
   const rect = { minX: x0, maxX: x0 + size, minZ: z0, maxZ: z0 + size };
   const g = gatherGround(f, rect, 44);
@@ -747,8 +752,10 @@ export function groundPlan(f, x0, z0, size, mois = MOIS_TROPIQUE) {
   const paintWalk = (v, extra = null) => {
     const w = v.r.width;
     ops.push(strokeOp(v.walk.kind, v.walk.color, w, lines(v), extra));
-    // Chemin de terre : une bande d'herbe au milieu, deux ornières de roues (peint en 2D, sans coût à l'image).
-    if (VIVANT_ON && v.walk.kind === 'gravel' && v.r.cls === 'track' && w >= 2.8) {
+    // Chemin de terre : une bande d'herbe au milieu, deux ornières de roues (peint en 2D, sans coût à l'image). Avec le soin des
+    // rues (ruesDetail), planTracks (rues-details.js) les dessine en géométrie nette et coupée aux chaussées : ceci ne reste que
+    // pour ?rues=avant.
+    if (VIVANT_ON && !ruesDetail && v.walk.kind === 'gravel' && v.r.cls === 'track' && w >= 2.8) {
       ops.push(strokeOp('trackGrass', PAL.grass, 0.6, lines(v), { cap: 'butt' }));
       ops.push(strokeOp('trackRut', PAL.rut, 0.42, v.runs.flatMap((run) => [offsetLine(run.pts, 0.8), offsetLine(run.pts, -0.8)]), { cap: 'butt' }));
     }
@@ -783,6 +790,7 @@ export function groundPlan(f, x0, z0, size, mois = MOIS_TROPIQUE) {
     ops.push(strokeOp('rail', PAL.rail, 1.5, list, extra));
   };
   for (const v of ground) if (v.kind === 'rail' && visible(v)) paintRail(v);
+  const asphaltEnd = ops.length; // les angles arrondis des carrefours se peignent ici (étape 6)
 
   // 6. Marquages : passages piétons réels et de carrefour, lignes d'arrêt, médianes, rives.
   const crossCars = cars.filter((v) => CROSSABLE.has(v.r.cls) && v.style.marked && boxesMeet(v.p.box, markZone));
@@ -880,13 +888,16 @@ export function groundPlan(f, x0, z0, size, mois = MOIS_TROPIQUE) {
         placed.push(box);
         const op = zebra(q.x, q.z, q.dx, q.dz, v.w, 'junctionZebra');
         if (op) ops.push(op);
-        if (STOP.has(v.r.cls) && !v.style.oneway) {
+        b.stopAt = b.d + ZEBRA.length / 2 + 0.65; // recul de la ligne d'arrêt ou du cédez-le-passage (rues-details.js)
+        // Pas d'arrêt sur la rue prioritaire : celle de plus haut rang, quand une rue plus petite y débouche.
+        if (STOP.has(v.r.cls) && !v.style.oneway && !(ruesDetail && streets.some((o) => o.c.rank < v.rank))) {
           // Ligne d'arrêt sur la voie de droite de qui arrive au carrefour.
           const p2 = pointAt(v.p, b.s + b.sign * (b.d + ZEBRA.length / 2 + 0.5 + 0.15));
           const tx = -b.sign * p2.dx, tz = -b.sign * p2.dz; // sens de marche vers le carrefour
           const rx = -tz, rz = tx; // sa droite
           const w = v.w / 2 - 0.5;
           ops.push(strokeOp('stop', PAL.line, 0.3, [[{ x: p2.x, z: p2.z }, { x: p2.x + rx * w, z: p2.z + rz * w }]], { cap: 'butt', mark: 'ground' }));
+          b.stop = true;
         }
         // Lignes coupées jusqu'au-delà de la bande.
         cut(v, Math.min(b.s, b.s + b.sign * (b.d + ZEBRA.length / 2 + 0.8)), Math.max(b.s, b.s + b.sign * (b.d + ZEBRA.length / 2 + 0.8)));
@@ -910,9 +921,12 @@ export function groundPlan(f, x0, z0, size, mois = MOIS_TROPIQUE) {
       const cls = v.r.cls;
       const center = !v.style.oneway && (STRONG.has(cls) || (cls === 'minor' && v.r.width >= 9));
       const edge = EDGE_LINE.has(cls);
-      if (!center && !edge) continue;
+      // Sens unique à plusieurs voies : lignes discontinues entre les voies (le nombre de voies est estimé d'après la largeur).
+      const lanes = ruesDetail && v.style.oneway && STRONG.has(cls) ? laneDividers(v.w) : [];
+      if (!center && !edge && !lanes.length) continue;
       const d = v.w / 2 - 0.4 - 0.06;
-      const offsets = [...(center ? [0] : []), ...(edge ? [d, -d] : [])];
+      const offsets = [...(center ? [0] : []), ...(edge ? [d, -d] : []), ...lanes];
+      const laneFrom = offsets.length - lanes.length; // les derniers décalages sont des lignes de voies
       const others = pool.filter((o) => o !== v && o.runs.length && boxesMeet(o.p.box, v.p.box, o.w / 2 + 1));
       const spans = keptSpans(v.p.len, cuts.get(v) ?? []);
       // Bornes : partie de la voie dans sa tuile (mark), tablier rogné d'un pont posé sur une chaussée (trim).
@@ -930,8 +944,12 @@ export function groundPlan(f, x0, z0, size, mois = MOIS_TROPIQUE) {
             for (const [c0, c1] of clear[j]) {
               // Trait continu pris entre deux coupures (carrefour, passage, débouché d'une rue) : 4 m au moins.
               const seam = (seamA && c0 <= m0 + 1e-6) || (seamB && c1 >= m1 - 1e-6);
-              if (c1 - c0 < ((offsets[j] !== 0 || solid) && !seam ? LINE_MIN : 1)) continue;
-              if (offsets[j] === 0) {
+              const dashed = j >= laneFrom;
+              if (c1 - c0 < ((offsets[j] !== 0 || solid) && !dashed && !seam ? LINE_MIN : 1)) continue;
+              if (dashed) {
+                const ds = dashSpan(v.phase, c0, c1);
+                if (ds) ops.push(strokeOp(`${tag}Lane`, PAL.line, 0.12, [offsetLine(slice(v.p, ds[0], ds[1]), offsets[j])], { cap: 'butt', dash: [DASH, DASH_GAP], offset: Math.round(modp(v.phase + ds[0], DASH + DASH_GAP) * 1000) / 1000, mark }));
+              } else if (offsets[j] === 0) {
                 if (solid) { ops.push(strokeOp(`${tag}Center`, PAL.line, 0.15, [slice(v.p, c0, c1)], { cap: 'butt', mark })); continue; }
                 const ds = dashSpan(v.phase, c0, c1);
                 if (ds) ops.push(strokeOp(`${tag}Center`, PAL.line, 0.15, [slice(v.p, ds[0], ds[1])], { cap: 'butt', dash: [DASH, DASH_GAP], offset: Math.round(modp(v.phase + ds[0], DASH + DASH_GAP) * 1000) / 1000, mark }));
@@ -943,6 +961,17 @@ export function groundPlan(f, x0, z0, size, mois = MOIS_TROPIQUE) {
     }
   };
   paintLines(cars, 'line', cars);
+  // Bords nets de chaque chaussée (bandes en géométrie) et angles arrondis des carrefours (carrefours.js).
+  if (ruesDetail) {
+    const detail = { H: { pointAt, slice, offsetLine, onOtherRoad, boxesMeet, prep }, PAL, strokeOp };
+    const edges = planEdges({ ...detail, cars, junctions, fillOp, rank: (c) => c.rank });
+    ops.splice(asphaltEnd, 0, ...edges.fills);
+    ops.push(...edges.strips);
+    // Cédez-le-passage et arrêts des rues qui débouchent sur une plus grande, bouches d'égout, avaloirs, ornières (rues-details.js).
+    ops.push(...planStops({ ...detail, junctions, real, rank: (c) => c.rank }));
+    ops.push(...planFurniture({ ...detail, cars, cuts }));
+    if (VIVANT_ON) ops.push(...planTracks({ ...detail, walks: walkOrder, cars, visible })); // ?vivant=0 : pas d'ornières, comme avant
+  }
 
   // 7. Ponts : tablier, trottoirs, bordures et chaussée, voie par voie. Bout rond seulement contre un autre morceau
   // de pont ; un bout posé sur une chaussée au sol (carrefour du quai) s'arrête au bord de celle-ci, à bout droit.
@@ -1134,8 +1163,8 @@ function groundShader(shader) {
   Object.assign(shader.uniforms, groundKeys, EAU_UNIFORMS);
   const defines = groundDetailMode === 'plat' ? '' : groundDetailMode === 'simple' ? '#define GROUND_DETAIL\n' : '#define GROUND_DETAIL\n#define GROUND_FINE\n';
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nvarying vec2 vGroundXZ;\nattribute vec4 aMark;\nattribute vec2 aMarkInfo;\nvarying vec4 vMark;\nvarying vec2 vMarkInfo;')
-    .replace('#include <project_vertex>', '#include <project_vertex>\n  vGroundXZ = (modelMatrix * vec4(transformed, 1.0)).xz;\n  vMark = aMark;\n  vMarkInfo = aMarkInfo;');
+    .replace('#include <common>', '#include <common>\nvarying vec2 vGroundXZ;\nattribute vec4 aMark;\nattribute vec2 aMarkInfo;\nattribute vec3 aMarkColor;\nvarying vec4 vMark;\nvarying vec2 vMarkInfo;\nvarying vec3 vMarkColor;')
+    .replace('#include <project_vertex>', '#include <project_vertex>\n  vGroundXZ = (modelMatrix * vec4(transformed, 1.0)).xz;\n  vMark = aMark;\n  vMarkInfo = aMarkInfo;\n  vMarkColor = aMarkColor;');
   shader.fragmentShader = shader.fragmentShader
     .replace('#include <common>', `#include <common>
 ${defines}uniform vec3 uPaveKey;
@@ -1160,6 +1189,7 @@ ${EAU_DECL}
 varying vec2 vGroundXZ;
 varying vec4 vMark;
 varying vec2 vMarkInfo;
+varying vec3 vMarkColor;
 float groundHash(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -1246,8 +1276,9 @@ vec3 groundDetail(vec3 col, vec3 c, vec2 xz, vec4 nA, vec4 nB, float gw) {
     float repair = smoothstep(0.62, 0.7, nA.a);
     float lum = 0.96 + 0.3 * (nA.b - 0.5) - 0.08 * repair + 0.14 * (nB.r - 0.5);
     float worn = smoothstep(0.45, 0.6, nA.r);
-    float crack = (1.0 - smoothstep(0.0, max(gw * 1.6, 0.002), abs(nA.g - 0.5))) * worn;
-    col = mix(col, col * (lum + (nB.b - 0.5) * 0.14 * G_FINE - 0.22 * crack), w);
+    // Courbes de niveau coupées en tronçons par le bruit fin (des arcs entiers sur l'enrobé faisaient des cercles) et peu marquées.
+    float crack = (1.0 - smoothstep(0.0, max(gw * 1.3, 0.002), abs(nA.g - 0.5))) * worn * smoothstep(0.42, 0.62, nB.g * G_FINE + 0.5 * (1.0 - G_FINE));
+    col = mix(col, col * (lum + (nB.b - 0.5) * 0.14 * G_FINE - 0.13 * crack), w);
   }
   col = eauDetail(col, c, xz);
   return col;
@@ -1277,10 +1308,17 @@ float markCover(float x, float h, float w) {
     // Taille du pixel le long des coordonnées de la bande (hors des branches : dérivées toujours définies).
     vec2 mw = vec2(length(vec2(dFdx(vMark.x), dFdy(vMark.x))), length(vec2(dFdx(vMark.y), dFdy(vMark.y))));
     float shade = 1.0;
+    // Un seul appel de groundDetail pour tout le sol, après les branches : un processeur graphique sans vrai saut (rendu
+    // logiciel) fait toutes les branches, et un appel de plus dans chacune coûtait 17 % d'images par seconde en CI.
+    bool detailOn = false;
+    vec3 detailKey = vec3(0.0);
     if (vMark.z > 0.0) {
       float cover = markCover(vMark.x, vMark.z, mw.x) * markCover(vMark.y - 0.5 * vMark.w, 0.5 * vMark.w, mw.y);
       float open = vMarkInfo.y > 0.5 ? 1.0 : smoothstep(0.93, 0.97, sampledDiffuseColor.a);
-      diffuseColor = vec4(diffuse * uLineColor, cover * vMarkInfo.x * open);
+      // Couleur propre à la bande (lignes, bordures, caniveaux, bords de chaussée) ; celle de l'enrobé garde son grain.
+      diffuseColor = vec4(diffuse * vMarkColor, cover * vMarkInfo.x * open);
+      detailOn = true;
+      detailKey = vMarkColor;
     } else if (vMarkInfo.y > 3.5 && vMarkInfo.y < 4.5) {
       // Dalle du contour d'un pont (markings.js, deckBuffers) : couleur unie du tablier (la texture y a l'eau dessous).
       diffuseColor = vec4(diffuse * uBridgeColor, 1.0);
@@ -1305,7 +1343,10 @@ float markCover(float x, float h, float w) {
       vec3 dw = abs(sampledDiffuseColor.rgb - uWalkKey);
       float onPave = 1.0 - smoothstep(0.022, 0.035, max(dp.x, max(dp.y, dp.z)));
       float onWalk = 1.0 - smoothstep(0.022, 0.035, max(dw.x, max(dw.y, dw.z)));
+      detailOn = true;
+      detailKey = sampledDiffuseColor.rgb;
       if (onPave > 0.0 || onWalk > 0.0) {
+        detailOn = false;
         // Pavés de 0,5 m en quinconce, joints de 6 cm (x 0,88) ; sinon dalles de 1 m, joints de 4 cm (x 0,93). Chaque pavé
         // ou dalle a une clarté un peu à lui. Un seul calcul des joints pour les deux : un processeur graphique sans
         // vrai saut (rendu logiciel) fait toutes les branches.
@@ -1316,10 +1357,10 @@ float markCover(float x, float h, float w) {
         shade = 1.0 - (pave ? 0.12 : 0.07) * on * groundJoints(q, pave ? fw * 2.0 : fw, pave ? 0.12 : 0.04);
         shade *= 1.0 + (pave ? 0.08 : 0.06) * on * (groundHash(floor(q) + (pave ? 7.0 : 3.0)) - 0.5);
       }
-#ifdef GROUND_DETAIL
-      else diffuseColor.rgb = groundDetail(diffuseColor.rgb, sampledDiffuseColor.rgb, vGroundXZ, nA, nB, gw);
-#endif
     }
+#ifdef GROUND_DETAIL
+    if (detailOn) diffuseColor.rgb = groundDetail(diffuseColor.rgb, detailKey, vGroundXZ, nA, nB, gw);
+#endif
     // Grain de 25 cm ancré dans le monde (peinture usée comme l'enrobé).
     float grain = groundHash(floor(vGroundXZ * 4.0)) - 0.5;
     shade *= 1.0 + 0.06 * grain * (1.0 - smoothstep(0.35, 0.7, max(fw.x, fw.y) * 4.0));
