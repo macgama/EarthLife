@@ -74,7 +74,7 @@ import { saisonDe, dateDuMois, mur as plantMure } from './campagne.js';
 import { createDriveMap } from './conduite-carte.js';
 import { networkOf, lineTitle } from './transport.js';
 import { addStep, statsCard, MAX_STEP_M } from './stats.js';
-import { bucketFor, addXp, effectsOf, craftXp, levelUpText, GAIN } from './skills.js';
+import { bucketFor, addXp, effectsOf, craftXp, levelUpText, resetSkills, GAIN } from './skills.js';
 import { createMinimap } from './minimap.js';
 import { makeMapMarks } from './carte-marques.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
@@ -2940,7 +2940,7 @@ function onDeath(s) {
   s.ended = true;
   // Les autres survivants le voient à terre pendant 10 s.
   s.downUntil = performance.now() + 10000;
-  city.onDeath(s);
+  const fall = city.onDeath(s); // ville à sauver : un habitant non infecté devient zombie là où tu es tombé
   cancelAction(s);
   cars.abort(s); // mort au volant : la voiture reste là où elle est
   panel.close();
@@ -2948,6 +2948,9 @@ function onDeath(s) {
   son.play('death');
   p.carrying = false;
   const lines = [s.deathCause && !s.lastBite ? s.deathCause : 'Les zombies ont eu raison de toi.'];
+  if (fall) lines.push(HABITANT_TEXT.fell(fall));
+  // Nouveau personnage : ses compétences repartent de zéro (elles sont liées au personnage), dans une ville à sauver.
+  if (s.city && resetSkills(skillSet(s))) { lines.push('Ton nouveau personnage repart sans compétences.'); saveStore.markDirty(); }
   const pen = deathPenalty(sv);
   if (countOf(pen.bag)) {
     const ll = dropAt ? s.store.proj.toLatLon(dropAt.x, dropAt.z) : playerLatLon(s);

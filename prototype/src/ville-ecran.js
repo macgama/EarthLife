@@ -921,6 +921,7 @@ export function createCityGame(host) {
         { label: 'Habitants sauvés', value: `${groupDigits(st.saved)} / ${groupDigits(st.toSave)}` },
         { label: 'Zombies restants', value: groupDigits(st.zombies) },
         { label: 'Pâtés libérés', value: `${st.free} / ${st.known}` },
+        ...(st.lost ? [{ label: 'Ville', value: 'perdue' }] : st.turned > 0 ? [{ label: 'Devenus zombies', value: groupDigits(st.turned) }] : []),
       ],
     };
   }
@@ -978,8 +979,16 @@ export function createCityGame(host) {
     if (a.id === 'nail' || a.id === 'exit' || a.id === 'plate' || a.id === 'repair') { s.goal = null; host.renderConditions(); }
   }
 
+  // Le joueur est tombé : la contre-attaque en cours est perdue, et un habitant non infecté de la ville devient zombie là où il est
+  // tombé. Rend { from, key, lost, name } si quelqu'un est tombé, ou null (hors ville à sauver, ville sauvée ou déjà perdue).
   function onDeath(s) {
-    s.city?.onDeath(s.director);
+    const rt = s.city;
+    if (!rt) return null;
+    rt.onDeath(s.director);
+    if (rt.ended) return null;
+    const fall = rt.infectAt(s.player.x, s.player.z);
+    if (fall) { host.saveDirty(); refreshHud(s, true); }
+    return fall;
   }
 
   // ---------- Événements de la ville ----------

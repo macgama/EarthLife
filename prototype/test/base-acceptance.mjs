@@ -4581,12 +4581,20 @@ async function habitantsScenario(device) {
 
   // Mort : la carte « Tu es tombé » résume la ville (habitants sauvés, zombies restants, pâtés libérés).
   const want = await ev(page, () => { const st = window.__earthlife.session.city.stats(); return { saved: st.saved, toSave: st.toSave, zombies: st.zombies }; });
+  // Mort dans une ville à sauver : un habitant non infecté devient zombie, le nouveau personnage repart sans compétence.
+  await setFreeSkill(page, 'fouille', 30);
   await ev(page, () => window.__earthlife.debug.hurt(200));
   const death = await deathCard(page);
   check(!!death && /Habitants sauvés/.test(death) && /Zombies restants/.test(death) && /Pâtés libérés/.test(death), `${tag} : carte « Tu es tombé » avec le résumé de la ville : ${death ?? 'pas de carte'}`);
   const tiles = await ev(page, () => [...document.querySelectorAll('#card .rp-stat')].map((e) => `${e.querySelector('dt').textContent}=${e.querySelector('dd').textContent.replace(/\s/g, '')}`));
   check(tiles.includes(`Habitants sauvés=${want.saved}/${want.toSave}`),
     `${tag} : la carte donne ${want.saved} / ${want.toSave} habitants sauvés (${tiles.join(' · ')})`);
+  check(/Pérouges perd un habitant : il devient zombie/.test(death ?? ''), `${tag} : la carte dit qu'un habitant devient zombie : ${death ?? 'pas de carte'}`);
+  check(tiles.includes('Devenus zombies=1'), `${tag} : la carte compte 1 habitant devenu zombie (${tiles.join(' · ')})`);
+  const fell = await ev(page, () => { const st = window.__earthlife.session.city.stats(); return { turned: st.turned, line: st.line }; });
+  check(fell.turned === 1 && /Devenus zombies 1/.test(fell.line ?? ''), `${tag} : la ville compte 1 habitant devenu zombie (${JSON.stringify(fell)})`);
+  const skills = await freeSkills(page);
+  check(Object.values(skills).every((v) => v === 0) && /repart sans compétences/.test(death ?? ''), `${tag} : le nouveau personnage repart sans compétence (${JSON.stringify(skills)})`);
   const fit = await ev(page, () => {
     const c = document.querySelector('#card .rp-card'), r = c.getBoundingClientRect();
     const b = [...c.querySelectorAll('.rp-cbtn')].map((e) => e.getBoundingClientRect());

@@ -6,8 +6,9 @@
 //  - Fabrication : fabrications terminées ; durée de fabrication.
 //  - Course : distance courue ; fatigue de course.
 //  - Tir : tirs au pistolet ou au fusil (tir.js), surtout les zombies abattus ; précision et cadence.
-// Les compétences sont gardées à la mort. Deux jeux de compétences, jamais mélangés : « free » (jeu libre) et « season » (la
-// saison en cours, remise à zéro quand une nouvelle saison commence).
+// Les compétences repartent de zéro à la mort, dans une ville à sauver (resetSkills : le nouveau personnage). Deux jeux de
+// compétences, jamais mélangés : « free » (jeu libre) et « season » (la saison en cours, remise à zéro quand une nouvelle
+// saison commence).
 
 export const MAX_LEVEL = 10;
 
@@ -69,6 +70,17 @@ export function progress(xp) {
 
 // Un jeu de compétences à zéro : { combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 } (points).
 export const emptySkills = () => ({ combat: 0, fouille: 0, fabrication: 0, course: 0, tir: 0 });
+
+// Mort du joueur : le nouveau personnage repart de zéro (les compétences sont liées au personnage). Remet à zéro le jeu `bucket`
+// sur place ; rend vrai s'il avait des points à perdre.
+export function resetSkills(bucket) {
+  let had = false;
+  for (const k of SKILL_KEYS) {
+    if (clampXp(bucket?.[k]) > 0) had = true;
+    if (bucket) bucket[k] = 0;
+  }
+  return had;
+}
 
 // Profil.skills : { free: jeu libre, season: { id, ... } }. `id` est la saison à laquelle appartiennent les points (null : aucune).
 export const emptyProfileSkills = () => ({ free: emptySkills(), season: { id: null, ...emptySkills() } });

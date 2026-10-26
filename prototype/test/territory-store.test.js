@@ -8,7 +8,7 @@ import {
 } from '../src/territory-store.js';
 import {
   startVille, placeTile, kill, lend, giveBack, liberate, plantFlag, drawReserve, settle, counters, checkVille, blockInfo, rowCount,
-  restartVille, changeLevel, LINE, ROW, ROW_LENGTH, QUARTIER,
+  restartVille, changeLevel, infectOne, LINE, ROW, ROW_LENGTH, QUARTIER,
 } from '../src/quartier.js';
 import { SAVE_KEY, SAVE_VERSION, SAVE_MESSAGES, emptySave, createSaveStore, memoryStorage, parseSave, validateSave } from '../src/save.js';
 import { parseGeoApi, geoApiUrl } from '../src/commune.js';
@@ -77,6 +77,38 @@ test('territoire neuf et aller-retour : une ville en cours relue à l\'identique
   const back = currentVille(r.territory);
   assert.ok(checkVille(back).ok);
   assert.deepEqual(counters(back), counters(v));
+});
+
+test('mort du joueur : devenus zombies et ville perdue traversent la sauvegarde ; une ancienne sauvegarde repart à zéro', () => {
+  const t = emptyTerritory(NOW);
+  const v = ville();
+  const key = keysOf(v)[0];
+  for (let i = 0; i < 5; i++) infectOne(v, key);
+  beginVille(t, v);
+  const back = currentVille(parseTerritory(JSON.stringify(t), NOW).territory);
+  assert.equal(back.turned, 5);
+  assert.equal(back.lost, false);
+  assert.ok(checkVille(back).ok, checkVille(back).errors.join(' ; '));
+  assert.deepEqual(counters(back), counters(v));
+  // Jusqu'à la ville perdue : l'état perdu est relu tel quel.
+  while (infectOne(v, key));
+  assert.equal(v.lost, true);
+  const t2 = emptyTerritory(NOW);
+  beginVille(t2, v);
+  const lost = currentVille(parseTerritory(JSON.stringify(t2), NOW).territory);
+  assert.equal(lost.lost, true);
+  assert.equal(counters(lost).status, 'perdue');
+  assert.ok(checkVille(lost).ok, checkVille(lost).errors.join(' ; '));
+  // Une sauvegarde d'avant ce chantier n'a ni l'un ni l'autre : zéro et pas perdue.
+  const t3 = emptyTerritory(NOW);
+  beginVille(t3, ville());
+  const raw = JSON.parse(JSON.stringify(t3));
+  delete raw.play.c01290.turned;
+  delete raw.play.c01290.lost;
+  const old = currentVille(parseTerritory(JSON.stringify(raw), NOW).territory);
+  assert.equal(old.turned, 0);
+  assert.equal(old.lost, false);
+  assert.ok(checkVille(old).ok);
 });
 
 test('validation : valeurs bornées, clés et textes nettoyés, champs inconnus supprimés, compteur recalé', () => {
