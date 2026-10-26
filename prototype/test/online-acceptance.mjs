@@ -3461,7 +3461,15 @@ await scenario('O38', 'grande ville de la saison, par quartiers', async () => {
     return { ok: ver.status === 200 && online.live, ses: ver.body.ses, online, net: createSeasonNet({ server: SERVER, session: () => ver.body.ses, online }) };
   };
   const cityNow = () => srv.seasons.debug().levelCities('facile').find((w) => w.commune === KEY)?.city ?? null;
-  const w = await node(W), old = await node(O);
+  // Les scénarios d'avant ont déjà demandé des codes depuis 127.0.0.1 (le compte à l'heure de l'adresse n'est pas remis à zéro) : un
+  // simple « + 10 » ne suffit plus ici, les plafonds par adresse sont relevés largement le temps de celui-ci (429 sinon).
+  const { ACCOUNT_LIMITS: LIM } = await load('server/src/accounts.js');
+  const was = { codesPerIpHour: LIM.codesPerIpHour, coldCodesPerIpHour: LIM.coldCodesPerIpHour, ipPerMin: LIM.ipPerMin };
+  LIM.codesPerIpHour = 1000;
+  LIM.coldCodesPerIpHour = 1000;
+  LIM.ipPerMin = 1000;
+  let w, old;
+  try { w = await node(W); old = await node(O); } catch (e) { Object.assign(LIM, was); throw e; }
   try {
     check(w.ok, 'W : compte créé et en ligne');
     check((await w.net.join('facile')).ok, 'W : inscrit en « Facile »');
@@ -3599,6 +3607,7 @@ await scenario('O38', 'grande ville de la saison, par quartiers', async () => {
     check((A.errors ?? []).filter((e) => /exception/.test(e.text)).length === 0, `Q : aucune exception dans la page (${JSON.stringify((A.errors ?? []).slice(-2))})`);
     await closeCtx(A);
   } finally {
+    Object.assign(LIM, was);
     for (const p of [w, old]) { try { p.net.close(); p.online.bye(); } catch { /* déjà fermé */ } }
   }
 });
