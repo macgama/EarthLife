@@ -3325,10 +3325,11 @@ await scenario('O37', 'amis : donner et retirer depuis le sac', async () => {
     await click(A, '#finds [data-tv="give-to"]');
     check(!!(await until(A, () => window.__earthlife.save.gifts?.out?.length === 1 || null, null, 30000)), 'A : le don est inscrit dans la partie (réponse perdue : il reste en route)');
     check((await bagOf(A)).conserve === 4, `A : 2 conserves ont quitté le sac (${(await bagOf(A)).conserve})`);
-    check(stored.length === 1 && /"gifts":\{"out":\[\{"gid":"[0-9a-f]{32}"/.test(stored[0]), 'A : la partie écrite contenait déjà le don quand la requête est partie');
+    // La requête n'est vue (et la partie lue) qu'après un temps d'image de la page : on attend la réponse perdue avant de lire ce qui a été relevé.
+    check(!!(await until(A, () => /gardés/.test(document.querySelector('#finds .tv-msg')?.textContent ?? '') || null, null, 30000)), 'A : la fenêtre dit que le serveur ne répond pas et que les objets sont gardés');
+    check(stored.length === 1 && /"gifts":\{"out":\[\{"gid":"[0-9a-f]{32}"/.test(stored[0]), `A : la partie écrite contenait déjà le don quand la requête est partie (${stored.length} requête(s) vue(s))`);
     const box1 = (await ask('a', 'box')).body;
     check(box1.outgoing?.length === 1 && box1.outgoing[0].items.conserve === 2, `serveur : un seul dépôt de A (${box1.outgoing?.length})`);
-    check(!!(await until(A, () => /gardés/.test(document.querySelector('#finds .tv-msg')?.textContent ?? '') || null, null, 30000)), 'A : la fenêtre dit que le serveur ne répond pas et que les objets sont gardés');
     const row1 = await rowsOf(A);
     check(row1.some((r) => /En route vers/.test(r.text) && r.btn === null), `A : la ligne « En route vers… » sans bouton (${row1.map((r) => r.text).join(' | ')})`);
     netDone();

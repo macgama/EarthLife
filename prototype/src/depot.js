@@ -33,6 +33,7 @@ export const DEPOT_TEXTS = Object.freeze({
   gone: "Ce dépôt n'est plus là : il a déjà été retiré, ou l'amitié a pris fin.",
   fullBox: 'La boîte de cet ami est pleine (20 objets par jour, 40 en attente) : tes objets sont revenus dans ton sac.',
   refused: "Don refusé : tes objets sont revenus dans ton sac.",
+  unsaved: "La partie n'a pas pu être sauvegardée : le don est annulé, tes objets restent dans ton sac.",
 });
 
 export const emptyGifts = () => ({ out: [], held: [], done: [] });

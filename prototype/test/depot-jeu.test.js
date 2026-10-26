@@ -277,3 +277,14 @@ test('une relève de la boîte ne tient pas lieu de lecture des amis : le sac re
   await k.depot.load();                                  // lecture récente : pas de nouvelle demande
   assert.equal(k.account.calls.filter((c) => c.op === 'list').length, 1);
 });
+
+test('écriture de la partie refusée : le don est annulé, rien ne part, les objets restent dans le sac', async () => {
+  const k = kit(undefined, { flush: () => ({ ok: false, error: null }) });
+  const r = await k.depot.give({ fid: FID, key: 'conserve', n: 2 });
+  assert.equal(r.tone, 'warn');
+  assert.match(r.text, /pas pu être sauvegardée/);
+  assert.equal(k.survivor.inventory.conserve, 6);
+  assert.equal(k.save.gifts.out.length, 0);
+  assert.equal(k.save.gifts.held.length, 0);
+  assert.equal(k.account.calls.filter((c) => c.op === 'give').length, 0);
+});
