@@ -436,8 +436,10 @@ test('sol : chaussée et trottoir de ville mesurés sur les façades et les trot
   const walk = roadStyle({ cls: 'minor', width: 7, setting: 'city', frontage: [16, 16], walkSide: [6, 6] });
   assert.equal(walk.cw, 8.8);
   assert.ok(Math.abs(walk.sides[0] - (6 + 1.25 - 4.4)) < 1e-9, String(walk.sides[0]));
-  // Jamais plus étroite que la classe ; ni pont, ni campagne, ni voie sans trottoir.
-  assert.equal(roadStyle({ ...base, frontage: [5, 5] }).cw, 10);
+  // Façades à 5 m : la chaussée s'arrête 0,4 m avant elles (9,2 m au lieu des 10 m de classe), sans passer sous la moitié de
+  // la largeur de classe ; ni pont, ni campagne, ni voie sans trottoir.
+  assert.equal(roadStyle({ ...base, frontage: [5, 5] }).cw, 9.2);
+  assert.equal(roadStyle({ ...base, frontage: [2, 2] }).cw, 5);
   for (const r of [{ ...base, bridge: true }, { ...base, setting: 'rural' }, { ...base, cls: 'service', width: 4 }]) {
     assert.equal(roadStyle({ ...r, frontage: [16, 16], walkSide: [9, 9] }).cw, r.width);
   }

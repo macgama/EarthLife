@@ -203,11 +203,10 @@ export function roadStyle(r) {
   const verge = VERGE[r.cls]?.[i] ?? 0;
   const villageStreet = setting === 'village' && (r.cls === 'minor' || r.cls === 'service');
   const curb = !unpaved && (side > 0 || (setting === 'city' && r.cls === 'service'));
-  let cw = r.width, sides = [side, side], front = null;
+  let cw = carriageway(r), sides = [side, side], front = null;
   if (setting === 'city' && side > 0 && !r.bridge) {
     const f = Array.isArray(r.frontage) ? r.frontage : null, ws = Array.isArray(r.walkSide) ? r.walkSide : null;
     const known = (v) => typeof v === 'number' && Number.isFinite(v);
-    cw = carriageway(r);
     for (let k = 0; k < 2; k++) {
       if (ws && known(ws[k])) sides[k] = Math.max(side, Math.round((ws[k] + WALK_HALF - cw / 2) * 100) / 100);
       // Côté sans façade (parc, place, quai) : dalles comme en face ; les aires peintes ensuite les recouvrent.
