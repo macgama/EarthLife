@@ -597,7 +597,8 @@ async function packAndStats(page, tag) {
   await page.click('#rp-tab-craft');
   await page.click(panelButton('craft', 'sac_randonnee'));
   const act = await ev(page, () => { const a = window.__earthlife.session.action; return a ? { id: a.id, time: a.time } : null; });
-  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 120000);
+  // 11,5 s de jeu à 0,05 s par image : 230 images, soit 2 minutes à 1,9 image par seconde (exécuteur lent : moins d'une image par seconde).
+  await until(page, () => (window.__earthlife.session.action ? null : 1), null, 360000);
   const bagText = await until(page, () => {
     const t = document.getElementById('bag-count').textContent.replace(/\s+/g, ' ').trim();
     return /\/45$/.test(t) ? t : null;
@@ -3670,15 +3671,18 @@ async function conduiteScenario(device) {
 
   // 4. Un zombie en travers : renversé (abattu), voiture usée de 5 à 10 points, le joueur ne perd rien.
   const wear0 = run1.wear, hp0 = run1.health;
+  await clearZombies(page); // le moteur attire les errants alentour : ceux de la route ne comptent pas dans le choc voulu
   const z = await pinZombie(page, 16, run1.yaw ?? corridor.a);
   check(!!z, `${tag} : un zombie 16 m devant`);
   const hitDone = await until(page, () => { const s = window.__earthlife.session; const zs = s.director.zombies.filter((q) => q.tags?.test); return zs.length && zs.every((q) => q.dead > 0 || q.health <= 0) ? 1 : null; }, null, 180000);
   const run2 = await driveOf(page);
-  check(!!hitDone && run2.kills === run1.kills + 1, `${tag} : zombie renversé (abattus ${run1.kills} → ${run2.kills})`);
+  // Sur un exécuteur lent, un autre errant attiré par le moteur peut se trouver sur la route : chaque zombie renversé use la voiture de 5 à 10 points.
+  const killed = run2.kills - run1.kills;
+  check(!!hitDone && killed >= 1, `${tag} : zombie renversé (abattus ${run1.kills} → ${run2.kills})`);
   const lost = wear0 - run2.wear;
-  check(lost >= 5 && lost <= 10, `${tag} : la voiture s'use de ${round(lost, 1)} points (5 à 10)`);
+  check(lost >= 5 * Math.max(1, killed) - 1e-9 && lost <= 10 * Math.max(1, killed) + 1e-9, `${tag} : la voiture s'use de ${round(lost, 1)} points (5 à 10 par zombie renversé, ${killed} ici)`);
   check(run2.health >= hp0 - 0.01, `${tag} : le joueur au volant ne perd pas de vie (${round(hp0, 1)} → ${round(run2.health, 1)})`);
-  check(!!(await toastSeen(page, 'Zombie renversé', 15000)), `${tag} : notification « Zombie renversé »`);
+  check(!!(await toastSeen(page, 'Zombie renversé', 15000)) || !!(await toastSeen(page, '2 zombies renversés', 1000)), `${tag} : notification « Zombie renversé »`);
   await shot(page, `${name}-renverse`);
 
   // 5. Lâcher la poussée : la voiture ralentit et s'arrête.

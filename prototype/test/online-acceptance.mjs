@@ -350,14 +350,23 @@ const freeDir = (t, len) => ev(t, async (len) => {
 }, len);
 // Marche en ligne droite à `speed` m/s (positions posées toutes les 100 ms, cap tourné vers la cible).
 // `stopAt` : sélecteur CSS ; la marche s'arrête là (résultat false) dès qu'il trouve un élément.
+// Jamais à plus de 15 m de la position que la dernière image a vue : le client prend pour un saut (j: 1, ONLINE.jumpM,
+// 20 m) tout déplacement plus grand entre deux images, et le serveur cache alors le survivant 3 s puis ne reprend un saut
+// que 20 s après le précédent. Un joueur n'en fait jamais (le temps du jeu avance de 0,05 s par image au plus), mais ces
+// minuteries, elles, font 20 m par image dès que Chromium descend sous 0,4 image par seconde (exécuteur lent) : O13
+// attendait alors 20 à 30 s au lieu de 3. Sur une machine rapide (au moins 1 image tous les 1,9 s à 8 m/s) la limite n'agit pas.
 const walk = (t, x, z, speed = 7.5, stopAt = null) => ev(t, ([x, z, speed, stopAt]) => new Promise((resolve) => {
   const s = window.__earthlife.session;
   let last = performance.now();
+  let fc = window.__fc, seen = { x: s.player.x, z: s.player.z };
   const id = setInterval(() => {
     if (stopAt && document.querySelector(stopAt)) { clearInterval(id); resolve(false); return; }
     const now = performance.now(), dt = Math.min(0.3, (now - last) / 1000);
     last = now;
     const p = s.player, dx = x - p.x, dz = z - p.z, d = Math.hypot(dx, dz), step = speed * dt;
+    if (typeof window.__fc === 'number' && window.__fc !== fc) { fc = window.__fc; seen = { x: p.x, z: p.z }; }
+    const k = d <= step ? 1 : step / d;
+    if (typeof window.__fc === 'number' && Math.hypot(p.x + dx * k - seen.x, p.z + dz * k - seen.z) > 15) return; // attend l'image suivante
     if (d <= step) {
       Object.assign(p, { x, z, vx: 0, vz: 0 });
       s.chunks.buildAll(x, z);
@@ -1242,7 +1251,9 @@ await scenario('O10', 'A masque B', async () => {
   const sent = A.frames.find((f) => f.dir === 'up' && f.m?.t === 'hide' && f.at >= tClick - 20);
   await wait(3000);
   const tr = await traceStop(B);
-  const toastA = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => x === 'Vous ne vous verrez plus.') ?? null, null, 3000);
+  // Les notifications se relaient au temps du jeu (hud.js : au moins 1,2 s chacune, soit 24 images à 0,05 s) : derrière une
+  // autre, celle-ci attend 24 images de plus par notification en file (3 au plus) ; à 0,7 image par seconde, c'est plus de 30 s.
+  const toastA = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => x === 'Vous ne vous verrez plus.') ?? null, null, 3000 + 24 * 3 * frameA);
   check(sent?.m?.sid === sidB && !!toastA, `A : hide envoyé pour B, toast « ${toastA} »`);
   check(!!tA && tA - tClick < 1000 + frameA, `A : B retiré ${s1(tA && tA - tClick)} après le clic (seuil 1 s + une image de A, ${frameA} ms)`);
   const f = fadeOf(tr, sent?.at ?? tClick);
@@ -1582,6 +1593,11 @@ await scenario('O9', 'B part « Autour de moi », marche 60 s dans la zone puis 
   // Caméra de A tournée vers B et abaissée (comme en O1) : l'étiquette est à l'écran. O9 est rouge une fois sur deux sur main
   // (étiquette [] même après 30 s d'attente : ce n'est pas un retard) : trois cadrages (tangage 0,6, 0,4, 0,8) de 8 s, et,
   // si l'étiquette manque encore, l'état vu par A (B dans online.others, survivants dessinés, caméra) dans le message.
+  // L'autre se rapproche de sa position reçue au temps du jeu (0,05 s par image au plus) : sur un exécuteur lent il est encore
+  // dessiné à 40 m quand il est à 25 m, hors de portée de l'étiquette. On attend qu'il soit dessiné à moins de 5 m de sa
+  // distance vraie (images comptées à la cadence de A : 10 s plus 100 images).
+  const frame9 = Math.round(1000 / Math.max(0.5, await fpsOf(A)));
+  await until(A, ([sid, real]) => { const o = window.__earthlife.othersView?.stats().survivors.find((x) => x.sid === sid); return o && o.d <= real + 5 ? 1 : null; }, [sidB, await apart(A, B)], 10000 + 100 * frame9);
   let labs = [];
   for (const pitch of [0.6, 0.4, 0.8]) {
     await face(A, await where(B), pitch);
@@ -3293,7 +3309,7 @@ await scenario('O37', 'amis : donner et retirer depuis le sac', async () => {
     let lose = true;
     await A.ctx.route('**/v1/friends/give', async (route) => {
       stored.push(await A.page.evaluate(() => window.__earthlife.saveStore.storedText).catch(() => ''));
-      if (lose) { lose = false; await route.fetch(); await route.abort('failed'); } else await route.continue();
+      if (lose) { await route.fetch(); await route.abort('failed'); } else await route.continue();      // la requête arrive, la réponse se perd : tant que `lose` tient
     });
     const netDone = expectNet(A);
     await click(A, '#finds .tv-slot[data-side="bag"][data-key="conserve"]');
@@ -3309,18 +3325,24 @@ await scenario('O37', 'amis : donner et retirer depuis le sac', async () => {
     await click(A, '#finds [data-tv="give-to"]');
     check(!!(await until(A, () => window.__earthlife.save.gifts?.out?.length === 1 || null, null, 30000)), 'A : le don est inscrit dans la partie (réponse perdue : il reste en route)');
     check((await bagOf(A)).conserve === 4, `A : 2 conserves ont quitté le sac (${(await bagOf(A)).conserve})`);
-    check(stored.length === 1 && /"gifts":\{"out":\[\{"gid":"[0-9a-f]{32}"/.test(stored[0]), 'A : la partie écrite contenait déjà le don quand la requête est partie');
+    // La requête n'est vue (et la partie lue) qu'après un temps d'image de la page : on attend la réponse perdue avant de lire ce qui a été relevé.
+    check(!!(await until(A, () => /gardés/.test(document.querySelector('#finds .tv-msg')?.textContent ?? '') || null, null, 30000)), 'A : la fenêtre dit que le serveur ne répond pas et que les objets sont gardés');
+    // Le jeu renvoie aussi de lui-même (compte reconnecté, état de la copie en ligne) : une ou plusieurs requêtes, la première porte la partie déjà écrite.
+    check(stored.length >= 1 && /"gifts":\{"out":\[\{"gid":"[0-9a-f]{32}"/.test(stored[0]), `A : la partie écrite contenait déjà le don quand la requête est partie (${stored.length} requête(s) vue(s))`);
     const box1 = (await ask('a', 'box')).body;
     check(box1.outgoing?.length === 1 && box1.outgoing[0].items.conserve === 2, `serveur : un seul dépôt de A (${box1.outgoing?.length})`);
-    check(!!(await until(A, () => /gardés/.test(document.querySelector('#finds .tv-msg')?.textContent ?? '') || null, null, 30000)), 'A : la fenêtre dit que le serveur ne répond pas et que les objets sont gardés');
     const row1 = await rowsOf(A);
     check(row1.some((r) => /En route vers/.test(r.text) && r.btn === null), `A : la ligne « En route vers… » sans bouton (${row1.map((r) => r.text).join(' | ')})`);
-    netDone();
-    // ---- A referme et rouvre le sac : le don repart avec la même clé, le serveur ne dépose rien de plus ----
+    // Un renvoi de plus, réponse encore perdue : même clé, le serveur ne dépose rien de plus et le don reste en route.
+    await ev(A, () => window.__earthlife.depot.replay());
+    check((await ask('a', 'box')).body.outgoing?.length === 1 && (await ev(A, () => window.__earthlife.save.gifts.out.length)) === 1, 'A : un renvoi de plus (réponse perdue) ne dépose rien de plus et le don reste inscrit');
+    // ---- A referme et rouvre le sac, la réponse n'est plus perdue : le don repart avec la même clé, le serveur ne dépose rien de plus ----
+    lose = false;
     await click(A, '#finds [data-tv="close"].tv-x');
     check(!(await ev(A, () => window.__earthlife.finds.isOpen())), 'A : le sac se ferme');
     await click(A, '#bag-open');
     check(!!(await until(A, () => window.__earthlife.save.gifts?.out?.length === 0 || null, null, 30000)), 'A : à la réouverture, le don est confirmé (plus rien en route)');
+    netDone();
     const box2 = (await ask('a', 'box')).body;
     check(box2.outgoing?.length === 1, `serveur : toujours un seul dépôt après le renvoi (${box2.outgoing?.length})`);
     check(!!(await until(A, () => [...document.querySelectorAll('#finds .tv-dep li')].some((li) => /Pour .*2 conserves/.test(li.innerText)) || null, null, 20000)), 'A : la ligne « Pour … : 2 conserves » avec « Reprendre »');
