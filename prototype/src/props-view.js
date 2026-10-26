@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PROP_KINDS } from './props.js';
 import { ESPECES, ESPECE_NAMES } from './flore-geo.js';
+import { agiter } from './vivant.js';
 
 // Arbres : une réserve d'instances par espèce (feuillage) et une pour les troncs partagés ; `tree` est leur total de troncs.
 export const PROP_CAPACITY = { tree: 4096, car: 512, bench: 256 };
@@ -134,7 +135,7 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
     const spec = ESPECES[name];
     return {
       name, spec, geo: spec.build(lowPower),
-      mat: new THREE.MeshLambertMaterial({ color: spec.color, flatShading: true, vertexColors: true, side: spec.doubleSide ? THREE.DoubleSide : THREE.FrontSide }),
+      mat: agiter(new THREE.MeshLambertMaterial({ color: spec.color, flatShading: true, vertexColors: true, side: spec.doubleSide ? THREE.DoubleSide : THREE.FrontSide }), 'arbre'),
     };
   });
   const trunkGeo = new THREE.CylinderGeometry(0.25, 0.3, 2.6, 6);
@@ -147,7 +148,7 @@ export function createPropsView(scene, { lowPower = false, isGone = null, reduce
   const benchGeo = benchGeometry();
   const stainGeo = stainGeometry();
   const geometries = [...species.map((e) => e.geo), trunkGeo, bodyGeo, cabinGeo, benchGeo, stainGeo];
-  const trunkMat = new THREE.MeshLambertMaterial({ color: 0xffffff }); // la couleur vient de chaque instance
+  const trunkMat = agiter(new THREE.MeshLambertMaterial({ color: 0xffffff }), 'arbre'); // la couleur vient de chaque instance ; le tronc suit le vent comme le feuillage
   const materials = [
     ...species.map((e) => e.mat),
     trunkMat,

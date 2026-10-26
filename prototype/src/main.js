@@ -56,6 +56,8 @@ import { createFinds, leftText as findsLeftText } from './trouvailles.js';
 import { createDressing } from './habillement.js';
 import { createPropsView } from './props-view.js';
 import { createFloreView } from './flore-view.js';
+import { tickVivant, VIVANT_ON } from './vivant.js';
+import { moisDe, balleVisible } from './champs.js';
 import { createBaseView } from './base-view.js';
 import { createHabitantsView } from './habitants-view.js';
 import { habitantCount, HABITANT_TEXT } from './habitants.js';
@@ -1044,9 +1046,12 @@ async function launch(place, spawn, plan = { kind: 'free', place }, arrival = nu
   await nextFrame();
   // Saison du lieu (vrai mois de l'appareil, ou ?mois=) : baies, champignons et légumes pas mûrs ne sont pas dessinés (campagne.js).
   worldSeason = saisonDe(store.proj.toLatLon(0, 0).lat, dateDuMois(params.get('mois')) ?? new Date());
-  floreView.setHidden((kind, id) => (kind === 'baie' || kind === 'champi' || kind === 'legume') && (!plantMure(kind, id, worldSeason) || dismantledGone(id)));
+  // Même mois pour les cultures des champs, les vergers et les balles de paille (champs.js) ; ?vivant=0 : l'ancien décor, balles toute l'année.
+  const mois = moisDe(store.proj.toLatLon(0, 0).lat, dateDuMois(params.get('mois')) ?? new Date());
+  floreView.setMois(mois);
+  floreView.setHidden((kind, id) => (kind === 'baie' || kind === 'champi' || kind === 'legume') ? (!plantMure(kind, id, worldSeason) || dismantledGone(id)) : (VIVANT_ON && kind === 'balle' && !balleVisible(id, mois)));
   const chunks = createChunkManager({
-    scene, store, grid, lowPower, groundDetail, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
+    scene, store, grid, lowPower, groundDetail, mois, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
     // Démontages : les siens (sauvegarde, 72 h), et ceux des autres survivants en ligne (72 h).
     propsView, floreView, isGone: (id) => localGone(id) || online.isGone(id),
   });
@@ -1478,6 +1483,7 @@ renderer.setAnimationLoop(() => {
   const at = s.viewAt ?? s.player;
   focus.set(at?.x ?? 0, s.groundY ?? 0, at?.z ?? 0);
   atmosphere.update(dt, focus, s.player?.yaw ?? 0);
+  tickVivant(dt, atmosphere.state, scene.background);
   renderer.render(scene, camera);
   atmosphere.endFrame();
   if (s.player && !hudFrozen) hud.render(s, dt, hudInfo(s));

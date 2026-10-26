@@ -11,9 +11,9 @@ import { hashId } from './campagne.js';
 const { gather, sortFeatures, eachCell, cellId, cellRand, salt, step, blocked, onAny, patchFree, near, inOrNear, TAU } = PLACEMENT;
 
 // Plafonds par morceau de 64 m (les mêmes en tout lieu : temps de construction et mémoire bornés).
-export const FLORE_CAPS = { buisson: 40, rocher: 14, touffe: 110, haie: 80, balle: 5, champi: 8, legume: 14, puits: 2 };
+export const FLORE_CAPS = { buisson: 40, rocher: 14, touffe: 110, haie: 80, balle: 5, champi: 8, legume: 14, puits: 2, verger: 96, cloture: 60, muret: 60 };
 // Appareils peu puissants : moins de pièces (touffes surtout, nombreuses et petites) pour alléger le rendu.
-export const FLORE_CAPS_SOBRE = { buisson: 24, rocher: 8, touffe: 40, haie: 30, balle: 2, champi: 5, legume: 8, puits: 2 };
+export const FLORE_CAPS_SOBRE = { buisson: 24, rocher: 8, touffe: 40, haie: 30, balle: 2, champi: 5, legume: 8, puits: 2, verger: 48, cloture: 30, muret: 30 };
 // `baie` : les baies de certains buissons (même identifiant que le buisson, dessinées à part), jamais plus que les buissons gardés.
 const KINDS = [...Object.keys(FLORE_CAPS), 'baie'];
 
@@ -30,6 +30,8 @@ const REGLES = {
   wetland: { touffe: 0.55, buisson: 0.05, rocher: 0, champi: 0.04 },
   rock: { touffe: 0.02, buisson: 0.02, rocher: 0.5, champi: 0 },
 };
+// Dans un verger, l'herbe pousse entre les arbres (pas d'arbustes ni de rochers).
+const VERGER_REGLES = { touffe: 0.3, buisson: 0, rocher: 0, champi: 0.02 };
 // Part des buissons qui portent des baies (jardins et parcs : plus), des champs cultivés et des jardins qui portent un légume, et des
 // cellules d'herbe ou de champ qui ont un puits (si un bâtiment est à 4 à 30 m : la cour d'une ferme, pas le milieu d'un pré).
 const BAIE_PART = { wood: 0.45, grass: 0.5, wetland: 0.3 };
@@ -39,15 +41,16 @@ const PUITS_PART = 0.07, PUITS_PROCHE = 30, PUITS_LIBRE = 4;
 // Balles de paille : part des cellules des champs cultivés qui en portent une.
 const BALLE_PART = 0.1;
 const estChamp = (a) => a?.cls === 'farmland' && a.sub === 'farmland';
+const estVerger = (a) => a?.cls === 'farmland' && a.sub === 'orchard';
 // Jardins et parcs : plus d'arbustes que dans un pré.
 const BUISSON_SOUS = { garden: 0.26, park: 0.1, village_green: 0.08, recreation_ground: 0.06 };
 
-// Aire visible à un point (celle peinte en dernier), ou null.
+// Aire visible à un point (celle peinte en dernier : à rang égal, la dernière de la liste, comme le sol), ou null.
 function aireEn(areas, x, z) {
   let best = -1, found = null;
   for (const a of areas) {
     const r = RANG.get(a.cls);
-    if (r === undefined || r <= best || !near(a.bounds, x, z, 0) || !inOrNear(a.rings, x, z, 0)) continue;
+    if (r === undefined || r < best || !near(a.bounds, x, z, 0) || !inOrNear(a.rings, x, z, 0)) continue;
     best = r;
     found = a;
   }
@@ -71,7 +74,7 @@ function pose(ctx, patch, x, z, marge) {
 
 // Buissons, rochers et touffes du morceau (cx, cz) : { buisson: [], rocher: [], touffe: [] }, chaque élément
 // { id, kind, x, z, yaw, s, v } (v : tirage de variation de teinte, de 0 à 1).
-export function floreForChunk(f, patch, cx, cz, size, proj, { lowPower = false } = {}) {
+export function floreForChunk(f, patch, cx, cz, size, proj, { lowPower = false, vivant = true } = {}) {
   const caps = lowPower ? FLORE_CAPS_SOBRE : FLORE_CAPS;
   const x0 = cx * size, z0 = cz * size;
   const out = Object.fromEntries(KINDS.map((kind) => [kind, []]));
@@ -97,7 +100,7 @@ export function floreForChunk(f, patch, cx, cz, size, proj, { lowPower = false }
       } else if (kind === 'puits') {
         part = area && (area.cls === 'grass' || area.cls === 'farmland') ? PUITS_PART : 0;
       } else {
-        const rules = area && REGLES[area.cls];
+        const rules = area && (REGLES[area.cls] ?? (estVerger(area) ? VERGER_REGLES : undefined));
         if (!rules) return;
         part = rules[kind] ?? 0;
         if (kind === 'buisson' && area.cls === 'grass') part = BUISSON_SOUS[area.sub] ?? part;
@@ -117,7 +120,9 @@ export function floreForChunk(f, patch, cx, cz, size, proj, { lowPower = false }
   }
   out.baie = out.buisson.filter((b) => baies.has(b.id)).map((b) => ({ ...b, kind: 'baie' }));
   const seen = new Set();
-  out.haie = garder([...haies(nature, ctx, patch, x0, z0, size, proj, seen), ...haiesParcelles(nature, ctx, patch, x0, z0, size, seen)], caps.haie);
+  const limites = [...haies(nature, ctx, patch, x0, z0, size, proj, seen, vivant), ...haiesParcelles(nature, ctx, patch, x0, z0, size, seen)];
+  for (const kind of ['haie', 'cloture', 'muret']) out[kind] = garder(limites.filter((c) => c.item.kind === kind), caps[kind]);
+  if (vivant) out.verger = garder(vergers(nature, ctx, patch, x0, z0, size, proj), caps.verger);
   return out;
 }
 
@@ -139,11 +144,22 @@ function garder(cands, cap) {
 const HAIE_PAS = 2.6, HAIE_COUPE = 20, HAIE_TROU = 0.08;
 const HAIE_PART = { farmland: 0.4, meadow: 0.35 };
 const HAIE_SALT = 0x71c4a2e9;
+// Les tronçons du contour sans haie (la même case tirée au sort, plus haut) portent parfois une clôture de bois ou un muret de pierre :
+// OpenFreeMap ne dit rien des clôtures et des murets, ils sont inventés, mais pas au hasard d'un joueur à l'autre. Les prés sont plus
+// souvent clos que les champs ; le style (muret ou clôture) est celui d'une région d'environ 13 km, pas d'une case, pour qu'un pays
+// ait « ses » murets comme le Jura ou la Bretagne ont les leurs.
+const LIMITE_PART = { farmland: 0.1, meadow: 0.3 };
+const LIMITE_SALT = 0x27d4eb2f, REGION_MURET = 0.35, REGION_PAS = 0.12;
+function limiteDe(cls, u, ll, vivant) {
+  if (u < HAIE_PART[cls]) return 'haie';
+  if (!vivant || u >= HAIE_PART[cls] + LIMITE_PART[cls]) return null;
+  return cellRand(LIMITE_SALT, Math.round(ll.lat / REGION_PAS), Math.round(ll.lon / REGION_PAS))() < REGION_MURET ? 'muret' : 'cloture';
+}
 const haieClasse = (a) => (estChamp(a) ? 'farmland' : a.cls === 'grass' && a.sub === 'meadow' ? 'meadow' : null);
 
-function haies(areas, ctx, patch, x0, z0, size, proj, seen) {
+function haies(areas, ctx, patch, x0, z0, size, proj, seen, vivant) {
   const cands = [];
-  const x1 = x0 + size, z1 = z0 + size, pas = step('haie'), sel = salt('haie');
+  const x1 = x0 + size, z1 = z0 + size;
   for (const a of areas) {
     const cls = haieClasse(a);
     const b = a.bounds;
@@ -169,18 +185,19 @@ function haies(areas, ctx, patch, x0, z0, size, proj, seen) {
           const x = p.x + dx * (pos / len), z = p.z + dz * (pos / len);
           if (x < x0 || x >= x1 || z < z0 || z >= z1) continue;
           const ll = proj.toLatLon(x, z);
-          if (cellRand(HAIE_SALT, Math.round(ll.lat / 4e-4), Math.round(ll.lon / 6e-4))() >= HAIE_PART[cls]) continue;
+          const kind = limiteDe(cls, cellRand(HAIE_SALT, Math.round(ll.lat / 4e-4), Math.round(ll.lon / 6e-4))(), ll, vivant);
+          if (!kind) continue;
           // Un contour dessiné par deux champs donne deux fois la même pièce.
           const coarse = `${Math.round(x / 1.5)}_${Math.round(z / 1.5)}`;
           if (seen.has(coarse)) continue;
           seen.add(coarse);
           const top = aireEn(areas, x, z);
           if (top && !haieClasse(top) && top.cls !== 'grass') continue;
-          const ilat = Math.round(ll.lat / pas), ilon = Math.round(ll.lon / pas);
-          const rand = cellRand(sel, ilat, ilon);
+          const pas = step(kind), ilat = Math.round(ll.lat / pas), ilon = Math.round(ll.lon / pas);
+          const rand = cellRand(salt(kind), ilat, ilon);
           const keep = rand();
           if (rand() < HAIE_TROU || !pose(ctx, patch, x, z, 0.8)) continue;
-          cands.push({ keep, item: { id: cellId('haie', ilat, ilon), kind: 'haie', x, z, yaw: yaw + (rand() - 0.5) * 0.1, s: 1 + rand() * 0.3, v: rand() } });
+          cands.push({ keep, item: { id: cellId(kind, ilat, ilon), kind, x, z, yaw: yaw + (rand() - 0.5) * 0.1, s: kind === 'haie' ? 1 + rand() * 0.3 : 1, v: rand() } });
         }
         d = pos - len;
       }
@@ -232,6 +249,31 @@ function haiesParcelles(areas, ctx, patch, x0, z0, size, seen) {
         if (rand() < HAIE_TROU) continue;
         cands.push({ keep, item: { id, kind: 'haie', x, z, yaw: Math.atan2(gx, gz) + (rand() - 0.5) * 0.1, s: 1 + rand() * 0.3, v: rand() } });
       }
+    }
+  }
+  return cands;
+}
+
+// ---------- Vergers ----------
+// Arbres fruitiers en quinconce dans les vergers (sous-classe `orchard` d'OpenFreeMap) : une grille de 6,7 m en latitude et de 8,6e-5
+// degré en longitude (6,6 m à 46°), une rangée sur deux décalée d'une demi-case, chaque arbre écarté d'au plus 0,5 m de sa place.
+// Comme tout le reste, la grille est ancrée en latitude et longitude : mêmes arbres pour tous, quelle que soit l'origine du monde.
+// Sans collision (comme les haies et les buissons).
+const VERGER_PAS = { lat: PLACEMENT.step('verger'), lon: 8.6e-5 };
+function vergers(areas, ctx, patch, x0, z0, size, proj) {
+  const cands = [];
+  if (!areas.some(estVerger)) return cands;
+  const a = proj.toLatLon(x0, z0), b = proj.toLatLon(x0 + size, z0 + size), sel = salt('verger');
+  const lat0 = Math.floor(Math.min(a.lat, b.lat) / VERGER_PAS.lat) - 1, lat1 = Math.floor(Math.max(a.lat, b.lat) / VERGER_PAS.lat) + 1;
+  const lon0 = Math.floor(Math.min(a.lon, b.lon) / VERGER_PAS.lon) - 1, lon1 = Math.floor(Math.max(a.lon, b.lon) / VERGER_PAS.lon) + 1;
+  for (let ilat = lat0; ilat <= lat1; ilat++) {
+    for (let ilon = lon0; ilon <= lon1; ilon++) {
+      const rand = cellRand(sel, ilat, ilon);
+      const p = proj.toLocal((ilat + 0.5) * VERGER_PAS.lat, (ilon + 0.5 + (ilat & 1 ? 0.5 : 0)) * VERGER_PAS.lon);
+      const x = p.x + (rand() - 0.5), z = p.z + (rand() - 0.5);
+      if (x < x0 || x >= x0 + size || z < z0 || z >= z0 + size) continue;
+      if (!estVerger(aireEn(areas, x, z)) || !pose(ctx, patch, x, z, 1.4)) continue;
+      cands.push({ keep: rand(), item: { id: cellId('verger', ilat, ilon), kind: 'verger', x, z, yaw: rand() * TAU, s: 0.85 + rand() * 0.3, v: rand() } });
     }
   }
   return cands;
