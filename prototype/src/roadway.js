@@ -16,22 +16,39 @@ const known = (v) => typeof v === 'number' && Number.isFinite(v);
 // d'après les tuiles (tiles.js) : demi-largeur = la plus petite estimation des côtés connus (0,55 × distance des
 // façades, axe du trottoir cartographié − 1,6 m), entre la largeur de classe et 1,5 fois celle-ci. Sinon (village,
 // campagne, ville de secours, donnée absente) : la largeur de classe.
+// Les façades bornent ensuite cette largeur, en ville et au village : l'enrobé s'arrête avant la plus proche (frontage,
+// et facadeNear, les murs les plus proches de la voie ; l'axe cartographié n'est pas toujours au milieu de la rue : le côté
+// le plus serré décide), sans descendre sous la moitié de
+// la largeur de classe (3 m au moins). Sans cela, une ruelle de 5 m entre façades recevait 7 m d'enrobé et les bâtiments
+// mordaient la route. Ni autoroute ni voie rapide : leurs murs antibruit et leurs bords ne sont pas des façades.
+const FACADE_GAP = { city: 0.4, village: 0.3 };
+const MIN_CW = 3;
 export function carriageway(r) {
   const setting = r.setting in SETTING_INDEX ? r.setting : 'city';
-  if (setting !== 'city' || !(SIDEWALK[r.cls]?.[0] > 0) || r.bridge) return r.width;
+  if (r.bridge) return r.width;
   const f = Array.isArray(r.frontage) ? r.frontage : null, ws = Array.isArray(r.walkSide) ? r.walkSide : null;
-  let half = Infinity;
-  for (let k = 0; k < 2; k++) {
-    if (f && known(f[k])) half = Math.min(half, FRONT_CW * f[k] / 2);
-    if (ws && known(ws[k])) half = Math.min(half, ws[k] - WALK_CURB);
+  let cw = r.width;
+  if (setting === 'city' && SIDEWALK[r.cls]?.[0] > 0) {
+    let half = Infinity;
+    for (let k = 0; k < 2; k++) {
+      if (f && known(f[k])) half = Math.min(half, FRONT_CW * f[k] / 2);
+      if (ws && known(ws[k])) half = Math.min(half, ws[k] - WALK_CURB);
+    }
+    if (half < Infinity) cw = Math.min(CW_MAX * r.width, Math.max(r.width, 2 * half));
   }
-  return half < Infinity ? Math.round(Math.min(CW_MAX * r.width, Math.max(r.width, 2 * half)) * 100) / 100 : r.width;
+  const gap = FACADE_GAP[setting], fn = Array.isArray(r.facadeNear) ? r.facadeNear : null;
+  if (gap !== undefined && (f || fn) && r.cls !== 'motorway' && r.cls !== 'trunk') {
+    let near = Infinity;
+    for (const list of [f, fn]) if (list) for (let k = 0; k < 2; k++) if (known(list[k])) near = Math.min(near, list[k]);
+    if (near < Infinity) cw = Math.min(cw, Math.max(MIN_CW, 0.5 * r.width, 2 * (near - gap)));
+  }
+  return Math.round(cw * 100) / 100;
 }
 
 // Passages piétons (réels et de carrefour) et lignes d'arrêt d'un plan du sol (groundPlan) : rectangles orientés
 // { x, z, ux, uz, hl, hw } (centre ; direction unitaire de la chaussée ; demi-longueur le long de la chaussée,
 // demi-largeur en travers). Chacun est un trait à bouts droits tiré en travers de la chaussée, épais de op.width.
-const PARK_MARKS = new Set(['zebra', 'junctionZebra', 'stop']);
+const PARK_MARKS = new Set(['zebra', 'junctionZebra', 'stop', 'giveWay']);
 export function markBoxes(ops) {
   const out = [];
   for (const op of ops ?? []) {

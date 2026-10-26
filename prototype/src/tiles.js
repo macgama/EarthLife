@@ -543,6 +543,15 @@ function quantile(list, q) {
   const v = scratch.subarray(0, n).sort();
   return Math.round(v[Math.min(n - 1, Math.floor(q * (n - 1)))] * 100) / 100;
 }
+// Les rayons qui touchent un mur, au 10e centile (au moins deux par côté) : la façade que la chaussée doit éviter même
+// quand moins de la moitié des rayons en touchent une (road.facadeNear, roadway.js).
+function nearest(list, q) {
+  let n = 0;
+  for (let i = 0; i < list.length && n < scratch.length; i++) if (Number.isFinite(list[i])) scratch[n++] = list[i];
+  if (n < 2) return null;
+  const v = scratch.subarray(0, n).sort();
+  return Math.round(v[Math.floor(q * (n - 1))] * 100) / 100;
+}
 function roadFrontage(r, walls) {
   const pts = r.points, reach = 0.75 * r.width + 11;
   const [R, L] = frontTmp;
@@ -559,7 +568,11 @@ function roadFrontage(r, walls) {
     }
   }
   const f = [quantile(R, 0.25), quantile(L, 0.25)];
-  return f[0] === null && f[1] === null ? null : f;
+  const near = [nearest(R, 0.1), nearest(L, 0.1)];
+  return {
+    frontage: f[0] === null && f[1] === null ? null : f,
+    near: near[0] === null && near[1] === null ? null : near,
+  };
 }
 
 // Trottoirs cartographiés à part (footway le long d'une chaussée, comme à New York) : une allée dont 80 % des points
@@ -963,6 +976,7 @@ export function tileFeatures(layers, tx, ty, z, origin) {
           rail: p.class === 'rail' || p.class === 'transit',
           bounds: boundsOf([points], width / 2 + 2),
           oneway: p.oneway === 1 || p.oneway === -1,
+          onewayDir: p.oneway === -1 ? -1 : p.oneway === 1 ? 1 : 0, // sens de circulation par rapport au tracé (rues-details.js)
           surface: p.surface === 'paved' || p.surface === 'unpaved' ? p.surface : null,
           service: typeof p.service === 'string' ? p.service : null,
           setting: 'city',
@@ -971,10 +985,11 @@ export function tileFeatures(layers, tx, ty, z, origin) {
         // (chemin stabilisé dans les champs) ; les voies ferrées gardent 'city'.
         if (road.walkOnly) road.setting = pathSetting(road, boxes, all);
         else if (!road.rail) road.setting = roadSetting(road, boxes, all, front);
-        // Façades le long des chaussées de ville (pas des ponts ni des voies de service).
-        if (!road.walkOnly && !road.rail && !road.bridge && road.setting === 'city' && p.class !== 'service') {
+        // Façades le long des chaussées de ville et de village (pas des ponts ni des voies de service).
+        if (!road.walkOnly && !road.rail && !road.bridge && (road.setting === 'city' || road.setting === 'village') && p.class !== 'service') {
           const fr = roadFrontage(road, walls);
-          if (fr) road.frontage = fr;
+          if (fr.frontage) road.frontage = fr.frontage;
+          if (fr.near) road.facadeNear = fr.near;
         }
         const span = tileSpans(points, own);
         if (span) road.span = span;

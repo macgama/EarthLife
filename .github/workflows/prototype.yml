@@ -56,7 +56,7 @@ jobs:
     # test/fixtures) : le jeu solo (spec 9.2 et 9.3). Ce contrôle bloque la publication. Il tourne en même temps que
     # acceptance-online, sur une autre machine : deux fois moins longtemps que les deux séries à la suite.
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150 # les exécuteurs lents font 1 h 50 de série (52 min à 1 h 50 selon la machine)
     defaults:
       run:
         working-directory: prototype

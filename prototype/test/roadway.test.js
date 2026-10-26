@@ -36,6 +36,28 @@ test('chaussée dessinée : largeur de classe sans donnée, élargie d\'après f
   assert.equal(carriageway(road(line, 4, 'service', { setting: 'city', frontage: [9, 9] })), 4);
 });
 
+test('chaussée dessinée : les façades bornent la largeur (ville et village), le côté le plus serré décide, jamais sous la moitié de la classe', () => {
+  const line = [P(0, 0), P(100, 0)];
+  // Petite rue de 7 m dont l'axe est à 2,45 m d'une façade et à 4,28 m de l'autre (Lyon) : 2 × (2,45 − 0,4) = 4,1 m.
+  assert.equal(carriageway(road(line, 7, 'minor', { setting: 'city', frontage: [2.45, 4.28] })), 4.1);
+  assert.equal(carriageway(road(line, 7, 'minor', { setting: 'city', frontage: [4.28, 2.45] })), 4.1, 'même résultat de l\'autre côté');
+  // Un côté sans façade (parc, place) : l'autre décide ; deux côtés inconnus : largeur de classe.
+  assert.equal(carriageway(road(line, 7, 'minor', { setting: 'city', frontage: [null, 3] })), 5.2);
+  assert.equal(carriageway(road(line, 7, 'minor', { setting: 'city', frontage: [null, null] })), 7);
+  // Plancher : moitié de la largeur de classe, 3 m au moins.
+  assert.equal(carriageway(road(line, 7, 'minor', { setting: 'city', frontage: [1, 1] })), 3.5);
+  assert.equal(carriageway(road(line, 5, 'service', { setting: 'village', frontage: [0.5, 0.5] })), 3);
+  // Village : l'enrobé s'arrête 0,3 m avant les façades (pas de trottoir de classe).
+  assert.equal(carriageway(road(line, 7, 'minor', { setting: 'village', frontage: [3, 3.2] })), 5.4);
+  assert.equal(carriageway(road(line, 7, 'minor', { setting: 'village', frontage: [9, 9] })), 7, 'façades loin : largeur de classe');
+  // Façades proches mais élargissement d'après les façades (0,55 × distance) inchangé quand la rue est large.
+  assert.equal(carriageway(road(line, 7, 'minor', { setting: 'city', frontage: [9, 12] })), 9.9);
+  // Pas de changement pour une autoroute, un pont, la campagne.
+  assert.equal(carriageway(road(line, 16, 'motorway', { setting: 'city', frontage: [3, 3] })), 16);
+  assert.equal(carriageway(road(line, 12, 'primary', { setting: 'city', frontage: [3, 3], bridge: true })), 12);
+  assert.equal(carriageway(road(line, 7, 'minor', { setting: 'rural', frontage: [3, 3] })), 7);
+});
+
 test('chaussée dessinée : la même largeur que celle du sol (roadStyle) sur les tuiles enregistrées de Lyon et de Pérouges', () => {
   let n = 0, wider = 0;
   for (const [x, y, lat, lon] of [[8411, 5844, 45.7578, 4.832], [8412, 5845, 45.7578, 4.832], [8427, 5835, 45.9035, 5.1797]]) {

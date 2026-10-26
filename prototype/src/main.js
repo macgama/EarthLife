@@ -8,7 +8,7 @@ import { createChunkedGrid, nearestFree, nearestOpen, nearestFit, buildingNear, 
 import { buildingFloor } from './terrain.js';
 import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate, addFeatures } from './world.js';
 import { DEM_ATTRIBUTION } from './dem.js';
-import { createChunkManager, VIEW_RADIUS, GROUND_DETAILS } from './chunks.js';
+import { createChunkManager, VIEW_RADIUS, GROUND_DETAILS, setRuesDetail } from './chunks.js';
 import { bakeStats } from './ombres-sol.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
@@ -508,6 +508,8 @@ const softRender = (() => {
   } catch { return false; }
 })();
 const groundDetail = GROUND_DETAILS.includes(params.get('sol')) ? params.get('sol') : softRender ? 'plat' : lowPower ? 'simple' : 'fin';
+// ?rues=avant : sol des rues d'avant le soin (bords nets, coins arrondis, lignes, bouches d'égout), pour comparer à l'écran et au chrono.
+setRuesDetail(params.get('rues') !== 'avant');
 setBati(params.get('bati'), lowPower); // ?bati=base|simple|fin : détail des bâtiments (matières, toits), 'base' = comme avant
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000); // champ : FOV_TOP, plus large en vue basse

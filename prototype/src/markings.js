@@ -20,6 +20,18 @@ const SLAB_REACH = 30; // m : un point du contour prend la hauteur du tablier le
 const SLAB_SINK = 0.05; // m : sur la terre ferme, la dalle passe 5 cm sous le sol (pas de scintillement)
 export const SLAB_FLAG = 4; // drapeau de la dalle (aMarkInfo.y) : couleur unie du tablier dans le shader du sol (chunks.js)
 export const DECK_FLAG = 5; // drapeau des tabliers : le sol peint, mais l'eau y prend la couleur du tablier
+const LINE_COLOR = '#e8e1c8'; // couleur d'une bande sans couleur propre (PAL.line, chunks.js)
+// Couleur d'une bande (hexadécimal sRGB) en composantes linéaires, comme les clés du shader du sol.
+const linearColors = new Map();
+function linearOf(hex = LINE_COLOR) {
+  let c = linearColors.get(hex);
+  if (!c) {
+    const k = new THREE.Color(hex);
+    c = [k.r, k.g, k.b];
+    linearColors.set(hex, c);
+  }
+  return c;
+}
 const MITER_MIN = 0.35; // onglet borné dans les virages serrés (comme offsetLine)
 
 const modp = (a, m) => ((a % m) + m) % m;
@@ -90,7 +102,7 @@ export function chainLines(items) {
     const e = pts[pts.length - 1], de = outward(pts, true);
     for (let j = 0; j < items.length; j++) {
       const o = items[j];
-      if (used[j] || o.hu !== it.hu || o.alpha !== it.alpha || o.level !== it.level) continue;
+      if (used[j] || o.hu !== it.hu || o.alpha !== it.alpha || o.level !== it.level || o.color !== it.color) continue;
       for (const atEnd of [false, true]) {
         const p = atEnd ? o.pts[o.pts.length - 1] : o.pts[0];
         if (Math.abs(p.x - e.x) > JOIN_GAP || Math.abs(p.z - e.z) > JOIN_GAP || Math.hypot(p.x - e.x, p.z - e.z) > JOIN_GAP) continue;
@@ -236,12 +248,13 @@ function drape(poly, relief, x0, z0, put) {
 
 // Tampons des marquages d'un carré (x0, z0, size) : sommets en coordonnées locales au centre du carré.
 // Attributs : position, uv (texture du sol, pour le masque des tabliers de pont), mark (travers, long, demi-largeur,
-// longueur de la bande) et info (opacité, 1 si marquage d'un pont).
+// longueur de la bande), info (opacité, 1 si marquage d'un pont) et color (couleur linéaire de la bande : blanc cassé des
+// lignes, ou bordures, caniveaux et bords de chaussée posés en géométrie pour des bords nets sur téléphone).
 // relief : grille d'altitude du morceau (terrain.js, chunkHeights), ou rien sur sol plat. Sur un relief qui n'est pas plat,
 // chaque quadrilatère est recoupé sur la grille du sol et posé sur le plan de son triangle (+ MARK_LIFT), avec la normale
 // du sol (attribut normal) : aucun scintillement, aucun marquage enterré. Sur un morceau plat à une hauteur y, tout est à y.
 export function markingBuffers(plan, x0, z0, size, relief = null) {
-  const pos = [], uv = [], mark = [], info = [], index = [], nor = [];
+  const pos = [], uv = [], mark = [], info = [], col = [], index = [], nor = [];
   const hilly = !!relief && !relief.flat;
   const flatY = relief?.flat ? relief.h[(NODES >> 1) + 1 + ((NODES >> 1) + 1) * RELIEF_N] : 0;
   const normals = hilly ? reliefNormals(relief) : null;
@@ -249,7 +262,7 @@ export function markingBuffers(plan, x0, z0, size, relief = null) {
   const nrm = [0, 1, 0], hit = { piece: null };
   let quads = 0;
   // Un quadrilatère (quatre sommets [x, z, u, v] dans l'ordre du contour) coupé au carré.
-  const emit = (poly, hu, L, alpha, level) => {
+  const emit = (poly, hu, L, alpha, level, rgb) => {
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
     for (const p of poly) {
       if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
@@ -285,6 +298,7 @@ export function markingBuffers(plan, x0, z0, size, relief = null) {
         uv.push((p[0] - x0) / size, 1 - (p[1] - z0) / size);
         mark.push(p[2], p[3], hu, L);
         info.push(alpha, level);
+        col.push(rgb[0], rgb[1], rgb[2]);
       }
       for (let i = 1; i + 1 < piece.length; i++) {
         if (area < 0) index.push(base, base + i, base + i + 1);
@@ -296,7 +310,7 @@ export function markingBuffers(plan, x0, z0, size, relief = null) {
     quads++;
   };
   // Bande de demi-largeur hu le long de la polyligne pts (longueur L), prolongée de la marge à chaque bout.
-  const strip = (pts, hu, alpha, level) => {
+  const strip = (pts, hu, alpha, level, rgb) => {
     const n = pts.length;
     if (n < 2) return;
     const dirs = [];
@@ -324,7 +338,7 @@ export function markingBuffers(plan, x0, z0, size, relief = null) {
     }
     for (let i = 0; i + 1 < n; i++) {
       const p = cuts[i], q = cuts[i + 1];
-      emit([[p.lx, p.lz, h, p.v], [q.lx, q.lz, h, q.v], [q.rx, q.rz, -h, q.v], [p.rx, p.rz, -h, p.v]], hu, L, alpha, level);
+      emit([[p.lx, p.lz, h, p.v], [q.lx, q.lz, h, q.v], [q.rx, q.rz, -h, q.v], [p.rx, p.rz, -h, p.v]], hu, L, alpha, level, rgb);
     }
   };
   // Marquages des ponts d'abord : un marquage écrit la profondeur (même appel que le sol), celui d'une voie du dessous,
@@ -333,20 +347,20 @@ export function markingBuffers(plan, x0, z0, size, relief = null) {
     const solid = [];
     for (const op of plan) {
       if (!op.mark || (op.mark === 'bridge') !== bridge || op.t !== 'stroke') continue;
-      const hu = op.width / 2, alpha = op.alpha ?? 1, level = bridge ? 1 : 0;
+      const hu = op.width / 2, alpha = op.alpha ?? 1, level = bridge ? 1 : 0, color = op.color ?? LINE_COLOR;
       for (const points of op.lines) {
         if (!points || points.length < 2) continue;
         const line = cleanLine(points);
         if (line.pts.length < 2 || line.len < 1e-3) continue;
-        if (!op.dash?.length) solid.push({ pts: line.pts, hu, alpha, level });
-        else for (const [a, b] of dashRuns(line.len, op.dash, op.offset ?? 0)) strip(cut(line, a, b), hu, alpha, level);
+        if (!op.dash?.length) solid.push({ pts: line.pts, hu, alpha, level, color });
+        else for (const [a, b] of dashRuns(line.len, op.dash, op.offset ?? 0)) strip(cut(line, a, b), hu, alpha, level, linearOf(color));
       }
     }
-    for (const c of chainLines(solid)) strip(c.pts, c.hu, c.alpha, c.level);
+    for (const c of chainLines(solid)) strip(c.pts, c.hu, c.alpha, c.level, linearOf(c.color));
   }
   return {
     quads,
-    position: new Float32Array(pos), uv: new Float32Array(uv), mark: new Float32Array(mark), info: new Float32Array(info),
+    position: new Float32Array(pos), uv: new Float32Array(uv), mark: new Float32Array(mark), info: new Float32Array(info), color: new Float32Array(col),
     normal: hilly ? new Float32Array(nor) : null,
     index: pos.length / 3 > 65535 ? new Uint32Array(index) : new Uint16Array(index),
   };
@@ -631,7 +645,7 @@ export function groundGeometry(plan, x0, z0, size, relief = null, deckHalf = und
   const dk = hilly && relief.decks ? deckBuffers(relief, x0, z0, size, deckHalf) : null;
   const nm = m.position.length / 3, nb = hilly ? NODES * NODES : 4, nd = dk ? dk.position.length / 3 : 0, n = nb + nm + nd, h = size / 2;
   const position = new Float32Array(n * 3), normal = new Float32Array(n * 3), uv = new Float32Array(n * 2);
-  const mark = new Float32Array(n * 4), info = new Float32Array(n * 2);
+  const mark = new Float32Array(n * 4), info = new Float32Array(n * 2), color = new Float32Array(n * 3);
   const flatY = relief?.flat ? relief.h[(NODES >> 1) + 1 + ((NODES >> 1) + 1) * RELIEF_N] : 0;
   let nIndex = 6;
   if (hilly) {
@@ -654,6 +668,7 @@ export function groundGeometry(plan, x0, z0, size, relief = null, deckHalf = und
   uv.set(m.uv, nb * 2);
   mark.set(m.mark, nb * 4);
   info.set(m.info, nb * 2);
+  color.set(m.color, nb * 3);
   if (hilly) normal.set(m.normal, nb * 3);
   else for (let i = 0; i < n; i++) normal[i * 3 + 1] = 1;
   if (dk) {
@@ -683,6 +698,7 @@ export function groundGeometry(plan, x0, z0, size, relief = null, deckHalf = und
   geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   geo.setAttribute('aMark', new THREE.BufferAttribute(mark, 4));
   geo.setAttribute('aMarkInfo', new THREE.BufferAttribute(info, 2));
+  geo.setAttribute('aMarkColor', new THREE.BufferAttribute(color, 3));
   geo.setIndex(new THREE.BufferAttribute(index, 1));
   // Tout reste dans le carré : boîte et sphère connues sans parcourir les sommets (sphère au plus juste, comme celle
   // du plan d'avant, pour garder le même tri hors champ) ; sur un relief, serrées entre le point bas et le point haut.
