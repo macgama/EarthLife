@@ -16,9 +16,11 @@ import {
   removePack, packSurplus, packSwapRefusal, PACK_REMOVE_FULL, SICK, FEMININE_ITEMS, GEAR_SLOTS, SLOT_LABEL, gearStats, wearGuard, recoverGear, heldOnGround,
 } from './survival.js';
 import { createRenderer, makeBeacon, cutaway, roofTop } from './scene.js';
+import { setBati } from './batiment-style.js';
 import { createCharacters } from './characters.js';
 import { shoot as fireShot, shotWave, SHOT, SHOT_TEXT } from './tir.js';
 import { createTirView } from './tir-view.js';
+import { createEffectsView } from './effets-view.js';
 import { createSon } from './son.js';
 import { actionSound } from './son-logic.js';
 import { surfaceUnder } from './son-sol.js';
@@ -55,6 +57,8 @@ import { createFinds, leftText as findsLeftText } from './trouvailles.js';
 import { createDressing } from './habillement.js';
 import { createPropsView } from './props-view.js';
 import { createFloreView } from './flore-view.js';
+import { tickVivant, VIVANT_ON } from './vivant.js';
+import { moisDe, balleVisible } from './champs.js';
 import { createBaseView } from './base-view.js';
 import { createHabitantsView } from './habitants-view.js';
 import { habitantCount, HABITANT_TEXT } from './habitants.js';
@@ -73,6 +77,7 @@ import { networkOf, lineTitle } from './transport.js';
 import { addStep, statsCard, MAX_STEP_M } from './stats.js';
 import { bucketFor, addXp, effectsOf, craftXp, levelUpText, GAIN } from './skills.js';
 import { createMinimap } from './minimap.js';
+import { makeMapMarks } from './carte-marques.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
 import { makeProjection } from './geo.js';
 import { createTerritoryStore } from './territory-store.js';
@@ -270,9 +275,12 @@ if (onlineOn) {
   });
   online.on('session', () => account.sessionRefused());
   // Connexion ou déconnexion : le bloc « Saison 1 » du menu relit l'inscription.
+  let wasIn = false;                                                            // les dons non confirmés repartent à l'arrivée du compte, pas à chaque changement d'état de la copie en ligne
   account.on('state', () => {
-    if (account.state !== 'in') { resetFriendsLive(); depot.reset(); }
-    else setTimeout(() => depot.replay(), 0);                                   // dons partis sans réponse : ils repartent dès que le compte est là
+    const isIn = account.state === 'in';
+    if (!isIn) { resetFriendsLive(); depot.reset(); }
+    else if (!wasIn) setTimeout(() => depot.replay(), 0);
+    wasIn = isIn;
     city.seasonChanged();
     // Connexion faite pour accepter une invitation d'ami : la carte revient quand le formulaire du compte s'est refermé.
     if (friendWait.get()) setTimeout(() => { renderFriendsMenu(); offerPendingFriend(); }, 800);
@@ -500,6 +508,7 @@ const softRender = (() => {
   } catch { return false; }
 })();
 const groundDetail = GROUND_DETAILS.includes(params.get('sol')) ? params.get('sol') : softRender ? 'plat' : lowPower ? 'simple' : 'fin';
+setBati(params.get('bati'), lowPower); // ?bati=base|simple|fin : détail des bâtiments (matières, toits), 'base' = comme avant
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 2000); // champ : FOV_TOP, plus large en vue basse
 // Caméra isométrique, comme Project Zomboid, Dysmantle ou HumanitZ ; sa distance (zoom) et son tangage plancher : ZOOM
@@ -554,8 +563,10 @@ window.addEventListener('resize', resize);
 if (typeof ResizeObserver === 'function') new ResizeObserver(() => frameView()).observe(document.getElementById('hud'));
 resize();
 
+// Effets (éclair et étincelles du tir, sang séché projeté, poussière, buée, fumée du refuge) : un seul maillage de particules.
+const effectsView = createEffectsView(scene, { lowPower });
 // Joueur et zombies : silhouettes animées, créées une fois et réutilisées d'une partie à l'autre.
-const characters = createCharacters({ lowPower });
+const characters = createCharacters({ lowPower, effects: effectsView.fx });
 // Maillages du joueur (contour et corps) : masqués quand il est au refuge.
 const playerMeshes = characters.root.children.slice(0, 2);
 // Décor démontable (arbres, voitures, bancs) et refuge (ouvertures, drapeau, sac perdu, leurre) : un jeu par page.
@@ -566,7 +577,7 @@ const baseView = createBaseView(scene);
 // Habitants sauvés devant la porte du refuge : créé au premier habitant (habitants-view.js).
 let habitantsView = null;
 // Tir : l'arme en main, l'éclair et la trace de la balle (un jeu par page).
-const tirView = createTirView(scene);
+const tirView = createTirView(scene, { effects: effectsView.fx });
 // Intérieur des bâtiments : la vue (maillages créés à « Entrer », défaits à la sortie) et ses règles dans la partie.
 const interiorView = createInteriorView(scene, { dark: INTERIOR_DARK });
 const interior = createInteriorGame({
@@ -1040,9 +1051,12 @@ async function launch(place, spawn, plan = { kind: 'free', place }, arrival = nu
   await nextFrame();
   // Saison du lieu (vrai mois de l'appareil, ou ?mois=) : baies, champignons et légumes pas mûrs ne sont pas dessinés (campagne.js).
   worldSeason = saisonDe(store.proj.toLatLon(0, 0).lat, dateDuMois(params.get('mois')) ?? new Date());
-  floreView.setHidden((kind, id) => (kind === 'baie' || kind === 'champi' || kind === 'legume') && (!plantMure(kind, id, worldSeason) || dismantledGone(id)));
+  // Même mois pour les cultures des champs, les vergers et les balles de paille (champs.js) ; ?vivant=0 : l'ancien décor, balles toute l'année.
+  const mois = moisDe(store.proj.toLatLon(0, 0).lat, dateDuMois(params.get('mois')) ?? new Date());
+  floreView.setMois(mois);
+  floreView.setHidden((kind, id) => (kind === 'baie' || kind === 'champi' || kind === 'legume') ? (!plantMure(kind, id, worldSeason) || dismantledGone(id)) : (VIVANT_ON && kind === 'balle' && !balleVisible(id, mois)));
   const chunks = createChunkManager({
-    scene, store, grid, lowPower, groundDetail, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
+    scene, store, grid, lowPower, groundDetail, mois, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
     // Démontages : les siens (sauvegarde, 72 h), et ceux des autres survivants en ligne (72 h).
     propsView, floreView, isGone: (id) => localGone(id) || online.isGone(id),
   });
@@ -1310,6 +1324,7 @@ function disposeSession() {
   closeFinds();
   baseView.setLure(null);
   tirView.clear();
+  effectsView.clear();
   session.chunks.dispose();
   session.loader.dispose();
   baseView.setGround(null);
@@ -1481,6 +1496,7 @@ renderer.setAnimationLoop(() => {
   const at = s.viewAt ?? s.player;
   focus.set(at?.x ?? 0, s.groundY ?? 0, at?.z ?? 0);
   atmosphere.update(dt, focus, s.player?.yaw ?? 0);
+  tickVivant(dt, atmosphere.state, scene.background);
   renderer.render(scene, camera);
   atmosphere.endFrame();
   if (s.player && !hudFrozen) hud.render(s, dt, hudInfo(s));
@@ -3061,6 +3077,19 @@ function hudInfo(s) {
 
 // Ce que montre la carte des environs : centrée sur le point visé par la caméra (l'ancre du refuge quand on y est),
 // tournée avec elle ; refuge, mission (couleur de la balise), sac perdu, zombies proches et fronts de la horde.
+// Fond de la mini-carte (carte-marques.js) : bâti teinté selon son pâté, contour ambre s'il est fouillé (par toi, ou par un autre survivant).
+function mapMarksOf(s) {
+  const tiles = s.store.source === 'tiles';
+  s.mapMarks ??= makeMapMarks({
+    rt: s.city ?? null,
+    searched: (b) => isSearched(s, b),
+    searchedCount: () => (tiles ? Object.values(save.searched ?? {}).filter((e) => searchedWhole(e, Date.now(), LIMITS.searchedMs)).length : s.searchedLocal.size),
+    other: (b) => tiles && !!online.searchedByOther(b.id),
+    otherCount: () => online.searchedCount(),
+  });
+  return s.mapMarks;
+}
+
 function mapInfo(s) {
   const p = s.player, r = s.refuge, at = s.viewAt ?? p;
   const target = s.quest ? currentTarget(s.quest) : s.cityTarget ?? null;
@@ -3072,6 +3101,7 @@ function mapInfo(s) {
     bag: save.dropBag ? s.store.proj.toLocal(save.dropBag.lat, save.dropBag.lon) : null,
     zombies: s.director.zombies, fog: s.weather?.kind === 'fog',
     others: onlineOn ? s.othersNow.map((o) => s.store.proj.toLocal(o.lat, o.lon)) : [],
+    marks: mapMarksOf(s),
     fronts: centre ? r.hordeArrows().map((a) => { const v = frontVector(a); return { x: centre.x + v.x * 60, z: centre.z + v.z * 60 }; }) : [],
   };
 }
@@ -3218,8 +3248,10 @@ function syncScene(s, dt) {
   const steerDeg = s.driving ? Math.round((s.driving.steer ?? 0) * 100) : 0;
   if (steerDeg !== wheelDeg) { wheelDeg = steerDeg; wheelEl?.style.setProperty('--steer', String(steerDeg / 100)); }
   s.sightAt = INTERIOR_DARK && s.interior?.entered ? interiorView.shadow.lightAtWorld : null; // zombies dans le noir : cachés
-  characters.sync(s, dt, camera, atmosphere.state.daylight);
+  const shotPose = tirView.pose();
+  characters.sync(s, dt, camera, atmosphere.state.daylight, { shot: shotPose });
   tirView.update(dt, p, s.grid?.terrain?.enabled ? s.grid : null);
+  effectsView.update(dt, { weather: s.weather, daylight: atmosphere.state.daylight, ground: s.grid?.terrain?.enabled ? (x, z) => groundAt(s.grid, x, z) : null });
   camera.position.add(characters.shake);
   // Champ de la caméra, pour placer la horde hors écran à l'image suivante.
   camera.updateMatrixWorld();
@@ -3267,6 +3299,7 @@ function syncBase(s, dt) {
     // Relief : le refuge est posé sur le terrain comme son bâtiment (plancher à la porte) ; ouvertures et drapeau le suivent.
     const floor = a && bld && s.grid.terrain?.enabled ? buildingFloor(bld, (x, z) => groundAt(s.grid, x, z)).floor : 0;
     baseView.setBase(a ? { x: a.x, z: a.z, roofHeight: roof, floor, doorX: door?.ax ?? a.x, doorZ: door?.az ?? a.z } : null);
+    s.chimney = a ? { x: a.x + 0.9, y: roof + floor + 0.6, z: a.z + 0.3 } : null;
   }
   if (a && r.version !== s.viewVersion) {
     s.viewVersion = r.version;
@@ -3289,6 +3322,9 @@ function syncBase(s, dt) {
     baseView.setOrphan(oc ? s.store.proj.toLocal(oc.lat, oc.lon) : null);
   }
   baseView.update(dt, { night: s.isNight });
+  // Feu de camp aménagé au refuge : un filet de fumée monte du toit, poussé par le vrai vent ; seulement tant que le refuge est proche.
+  const smoking = !!s.chimney && !!b?.upgrades?.includes('feu') && Math.hypot(s.chimney.x - s.player.x, s.chimney.z - s.player.z) < 160;
+  effectsView.fx.setSource('refuge-cheminee', smoking ? { kind: 'cheminee', ...s.chimney, rate: 1.6 } : null);
   syncHabitants(s, dt);
 }
 
@@ -4360,7 +4396,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, finds, dressing, ...(debug ? { debug, atmosphere, shadowBake: bakeStats, online, input, tirView, cars, driveMap, propsView, floreView, groundDetail, son, depot } : {}),
+  saveStore, picker, renderer, finds, dressing, ...(debug ? { debug, atmosphere, shadowBake: bakeStats, online, input, tirView, effectsView, characters, cars, driveMap, propsView, floreView, groundDetail, son, depot } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.

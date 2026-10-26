@@ -584,6 +584,14 @@ select, button { font: inherit; }
 .drive-btns .secondary { flex: none; min-height: 48px; padding: 0 var(--sp-4); }
 .drive-pin { width: 18px; height: 18px; border: 2px solid #12171c; border-radius: 50%; box-shadow: 0 0 0 2px var(--c-car), 0 2px 6px rgba(0, 0, 0, .5); background: var(--c-car); }
 .drive-pin-dest { background: var(--c-accent); box-shadow: 0 0 0 2px var(--c-accent), 0 2px 6px rgba(0, 0, 0, .5); }
+/* Villes de la saison sur la carte de conduite : losange plein (sauvetage commencé, un joueur établi) ou pâle (ville ouverte, rien commencé) ; zone tactile de 44 px. */
+.drive-pin-city { position: relative; width: 44px; height: 44px; padding: 0; border: 0; background: none; cursor: pointer; color: var(--c-warn); }
+.drive-pin-city::before { content: ""; position: absolute; left: 50%; top: 50%; width: 14px; height: 14px; border: 2px solid #12171c; background: currentColor; box-shadow: 0 2px 6px rgba(0, 0, 0, .5); transform: translate(-50%, -50%) rotate(45deg); }
+.drive-pin-city[data-started="false"] { color: var(--c-text-2); }
+.drive-pin-city[data-started="false"]::before { background: transparent; border-color: currentColor; box-shadow: 0 0 0 1px #12171c, 0 2px 6px rgba(0, 0, 0, .5); }
+.drive-pin-city span { position: absolute; left: 50%; top: calc(50% + 11px); padding: 1px 5px; border-radius: var(--r-xs); background: var(--c-panel-solid); color: var(--c-text); font: var(--fw-semibold) var(--fs-2xs) / 1.2 var(--font-display); letter-spacing: var(--ls-label); text-transform: uppercase; white-space: nowrap; transform: translateX(-50%); pointer-events: none; }
+.drive-pin-city[data-started="false"] span { display: none; }
+.drive-pin-city:focus-visible { outline: 2px solid var(--c-accent); outline-offset: -6px; border-radius: var(--r-xs); }
 @media (max-height: 500px) and (orientation: landscape) { .drive-head h2 { font-size: var(--fs-md); } #drive-range { display: none; } }
 #loading-tip { margin: var(--sp-1) 0 0; color: var(--c-text-2); font-size: var(--fs-sm); line-height: var(--lh-snug); }
 .load-alert { display: none; width: 32px; height: 32px; color: var(--c-warn); }

@@ -927,10 +927,12 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   };
 
   // Une ville telle que le menu la montre (repère sur la carte, carte du niveau).
-  function cityRow(w) {
+  // homes : joueurs installés dans la ville (une maison posée), lus avec les inscriptions : avec saved et killed, ils disent si le sauvetage a commencé.
+  function cityRow(w, homes = {}) {
     const city = w.city, v = city.ville;
     return { key: city.key, name: city.name, ...coords(city.place), population: v.population, zombies: zombiesLeft(v), zombies0: v.zombies0, saved: v.saved,
-      toSave: v.hidden0, flags: v.flags, killed: v.killed[0] + v.killed[1] + v.killed[2], status: cityStatus(v), startMs: v.start, online: w.subs.size };
+      toSave: v.hidden0, flags: v.flags, killed: v.killed[0] + v.killed[1] + v.killed[2], status: cityStatus(v), startMs: v.start, online: w.subs.size,
+      homes: homes[`${w.level}|${city.key}`] ?? 0 };
   }
 
   // Évolution de la saison (écran du menu) : publique, gardée 30 s. Par niveau : `cities` (toutes les villes ouvertes, la ville annoncée
@@ -940,12 +942,12 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const t = now();
     if (lastProgress.body && t - lastProgress.at < R.progressMs) return { status: 200, body: lastProgress.body };
     try {
-      const counts = await store.seasonCounts(season.id);
+      const [counts, homes] = await Promise.all([store.seasonCounts(season.id), store.seasonHomes(season.id)]);
       const levels = {};
       for (const level of LEVELS) {
         await loadLevel(level);
         const annKey = announced[level]?.key ?? null;
-        const cities = levelCities(level).map(cityRow)
+        const cities = levelCities(level).map((w) => cityRow(w, homes))
           .sort((a, b) => (b.key === annKey) - (a.key === annKey) || b.online - a.online || a.startMs - b.startMs || (a.key < b.key ? -1 : 1));
         levels[level] = {
           players: counts[level] ?? 0, online: levelUsed(level), seats: R.seats,

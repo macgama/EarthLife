@@ -548,6 +548,8 @@ for (const B of BACKENDS) {
       assert.deepEqual(await s.seasonPlayer(id(61), 1), { accountId: id(61), season: 1, level: 'facile', commune: 'c01283', enrolledMs: T0,
         homeKey: 'b45.90000_5.20000', homeLat: 45900000, homeLon: -5200000, seenMs: T0 + 9, kills: 7 });
       assert.equal(await s.seasonPlayer(id(61), 2), null);
+      assert.deepEqual(await s.seasonHomes(1), { 'facile|c01283': 1 }, 'une maison posée dans la commune : un joueur installé (id 62 n\'a ni commune ni maison)');
+      assert.deepEqual(await s.seasonHomes(2), {});
       await s.seasonDocPut({ world: '1.facile', commune: 'c01283', part: 'meta', rev: 1, data: '{"nom":"Pérouges – lieu-dit « Le Bourg » ☀"}', nowMs: T0 });
       await s.seasonDocPut({ world: '1.facile', commune: 'c01283', part: 't:14/8500/5800', rev: 1, data: '{}', nowMs: T0 });
       await s.seasonDocPut({ world: '1.facile', commune: 'c01283', part: 'meta', rev: 2, data: '{"nom":"Pérouges – lieu-dit « Le Bourg » ☀","v":2}', nowMs: T0 + 1 });
@@ -573,6 +575,7 @@ for (const B of BACKENDS) {
       await s.seasonPlayerSet(id(61), 1, { commune: 'c99999', homeKey: null, homeLat: null, homeLon: null });
       const moved = await s.seasonPlayer(id(61), 1);
       assert.deepEqual([moved.commune, moved.homeKey, moved.homeLat, moved.homeLon, moved.kills], ['c99999', null, null, null, 7]);
+      assert.deepEqual(await s.seasonHomes(1), {}, 'changer de ville remet la maison à zéro : plus installé');
       await s.eraseAccount(id(61));
       assert.equal(await s.seasonPlayer(id(61), 1), null);
       assert.deepEqual(await s.seasonCounts(1), { moyen: 1 });

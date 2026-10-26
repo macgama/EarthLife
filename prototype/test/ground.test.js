@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { groundPlan, drawGround, roadStyle, PAL, DETAIL_FAMILIES } from '../src/chunks.js';
+import { groundPlan, drawGround, roadStyle, riveLignes, PAL, DETAIL_FAMILIES } from '../src/chunks.js';
 import { featuresFromBytes } from '../src/tiles.js';
 import { createWorldStore, addFeatures, useProceduralWorld } from '../src/world.js';
 import { featuresAround } from '../src/props.js';
@@ -339,6 +339,50 @@ test('sol : le détail des sols naturels ne touche que sa famille de couleurs (h
       assert.ok(dist(key, other) > 0.04, `${other} (${named.has(other) ? 'autre famille' : 'sans détail'}) à ${dist(key, other).toFixed(3)} de la clé ${family}`);
     }
   }
+});
+
+// ---------- Eau vivante : rive peu profonde (eau.js) ----------
+
+test('eau : la rive est un aplat à part, loin de l\'eau profonde et de toute clé du shader', () => {
+  const lin = (h) => [1, 3, 5].map((i) => { const c = parseInt(h.slice(i, i + 2), 16) / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+  const dist = (a, b) => Math.max(...lin(PAL[a]).map((v, i) => Math.abs(v - lin(PAL[b])[i])));
+  assert.ok(dist('shallow', 'water') > 0.1, 'rive et eau profonde reconnues séparément par le shader');
+  for (const other of Object.keys(PAL)) if (other !== 'shallow' && other !== 'water') assert.ok(dist('shallow', other) > 0.1, `${other} trop près de la rive`);
+});
+
+test('eau : riveLignes ferme un contour sans coupe et retire les arêtes qui suivent la coupe de la tuile', () => {
+  const lake = [P(10, 10), P(40, 8), P(55, 30), P(30, 50), P(8, 35)];
+  const closed = riveLignes([lake]);
+  assert.equal(closed.length, 1);
+  assert.deepEqual(closed[0][0], closed[0].at(-1), 'contour fermé');
+  assert.equal(closed[0].length, lake.length + 1);
+  // Plan d'eau coupé net à x = 64 (bord de tuile) : les 40 m de la coupe ne sont pas une rive.
+  const cut = [P(20, 12), P(64, 6), P(64, 50), P(20, 54), P(12, 30)];
+  const lines = riveLignes([cut]);
+  const edges = lines.flatMap((l) => l.slice(1).map((q, i) => [l[i], q]));
+  assert.equal(edges.length, 4, 'quatre arêtes sur cinq : la coupe de 40 m retirée');
+  assert.ok(!edges.some(([a, b]) => a.x === 64 && b.x === 64 && a.z !== b.z), 'aucune arête sur la coupe');
+  assert.ok(edges.some(([a, b]) => (a.x === 20 && a.z === 12 && b.x === 64) || (b.x === 20 && b.z === 12 && a.x === 64)), 'la rive du haut est gardée');
+  // Une arête courte alignée sur un axe est une vraie rive (un quai, un bassin carré).
+  const basin = [P(10, 10), P(26, 10), P(26, 26), P(10, 26)];
+  assert.equal(riveLignes([basin]).length, 1);
+});
+
+test('eau : le plan du sol peint la rive après l\'eau (bande dans les plans d\'eau, trait sous les ruisseaux), pas dans une piscine', () => {
+  const lake = { rings: [[P(8, 12), P(56, 8), P(52, 56), P(10, 50)]], cls: 'lake', bounds: { minX: 8, minZ: 8, maxX: 56, maxZ: 56 } };
+  const pool = { rings: [[P(2, 2), P(6, 2), P(6, 6), P(2, 6)]], cls: 'swimming_pool', bounds: { minX: 2, minZ: 2, maxX: 6, maxZ: 6 } };
+  const stream = { points: [P(-10, 62), P(100, 62)], width: 2.5, cls: 'stream', blocking: false, bounds: { minX: -11, minZ: 60, maxX: 101, maxZ: 64 } };
+  const inside = { points: [P(10, 30), P(50, 30)], width: 12, cls: 'river', blocking: true, bounds: { minX: 4, minZ: 23, maxX: 56, maxZ: 37 } };
+  const ops = plan({ water: [lake, pool], waterLines: [stream, inside] });
+  const shore = tags(ops, 'shore');
+  const bands = shore.filter((o) => o.t === 'band'), strokes = shore.filter((o) => o.t === 'stroke');
+  assert.equal(bands.length, 1, 'une bande pour le lac, aucune pour la piscine');
+  assert.equal(bands[0].color, PAL.shallow);
+  assert.ok(bands[0].edges.length >= 1);
+  assert.equal(strokes.length, 1, 'un trait sous le ruisseau, rien sous le cours qui passe dans le lac');
+  assert.equal(strokes[0].width, 2.5 + 2 * 0.8);
+  assert.ok(lastIndex(ops, 'shore') < ops.findIndex((o) => o.tag === 'water' && o.t === 'stroke'), 'rive du ruisseau sous son eau');
+  assert.ok(firstIndex(ops, 'water') > -1 && tags(ops, 'water').every((o) => o.color === PAL.water));
 });
 
 // ---------- Corrections du sol (Midtown, Lyon) : chaussées mesurées, trottoirs cartographiés, passages, tirets ----------

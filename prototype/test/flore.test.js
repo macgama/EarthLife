@@ -162,6 +162,51 @@ test('haies : le long des bords obliques des champs et des prés, reproductibles
   assert.ok(champ >= 6, `${champ} pièces de haie dans et autour d'un champ`);
 });
 
+test('clôtures et murets : sur d\'autres tronçons du contour des prés, jamais avec une haie, mêmes pour tous, éteints par ?vivant=0', () => {
+  let cloture = 0, muret = 0, haie = 0;
+  for (const origin of [...ORIGINES, { lat: 46.5, lon: 6.1 }, { lat: 44.2, lon: 1.9 }, { lat: 48.1, lon: -3.2 }, { lat: 45.0, lon: 6.3 }]) {
+    const c = chunk([losange('grass', 'meadow')], { origin, buildings: [house], roads: [road] });
+    const a = floreForChunk(c.f, c.patch, 0, 0, 64, c.store.proj), b = floreForChunk(c.f, c.patch, 0, 0, 64, c.store.proj);
+    assert.deepEqual(a.cloture, b.cloture);
+    assert.deepEqual(a.muret, b.muret);
+    assert.ok(a.cloture.length <= FLORE_CAPS.cloture && a.muret.length <= FLORE_CAPS.muret);
+    const prefixe = { cloture: /^fc-?\d+_-?\d+$/, muret: /^fw-?\d+_-?\d+$/ };
+    const ids = new Set(a.haie.map((h) => h.id));
+    for (const kind of ['cloture', 'muret']) {
+      for (const it of a[kind]) {
+        assert.equal(it.kind, kind);
+        assert.match(it.id, prefixe[kind]);
+        assert.ok(!ids.has(it.id), `identifiant en double ${it.id}`);
+        ids.add(it.id);
+        assert.ok(Math.abs(Math.abs(it.x - 32) + Math.abs(it.z - 32) - 42) < 0.01, `sur un bord du losange (${it.x}, ${it.z})`);
+        assert.ok(!(it.x > 5 && it.x < 20 && it.z > 5 && it.z < 20) && Math.abs(it.z - 32) > 3.5, 'ni dans la maison ni sur la route');
+        // jamais sur la place d'une haie (à moins de 1,5 m)
+        assert.ok(a.haie.every((h) => Math.hypot(h.x - it.x, h.z - it.z) > 1.4), `trop près d'une haie : ${it.id}`);
+      }
+    }
+    // Le style est celui de la région : pas de clôtures et de murets en même temps autour d'un même pré.
+    assert.ok(a.cloture.length === 0 || a.muret.length === 0, 'un seul style par pays');
+    cloture += a.cloture.length; muret += a.muret.length; haie += a.haie.length;
+    // ?vivant=0 : ni clôtures ni murets ni vergers, les haies d'avant restent.
+    const off = floreForChunk(c.f, c.patch, 0, 0, 64, c.store.proj, { vivant: false });
+    assert.equal(off.cloture.length + off.muret.length + off.verger.length, 0);
+    assert.deepEqual(off.haie, a.haie);
+  }
+  assert.ok(cloture >= 4, `${cloture} pièces de clôture`);
+  assert.ok(muret >= 1, `${muret} pièces de muret`);
+  assert.ok(haie >= 6);
+  // Un parc, un bois ou un jardin n'ont ni l'un ni l'autre.
+  for (const [cls, sub] of [['grass', 'park'], ['wood', 'forest'], ['grass', 'garden']]) {
+    const o = chunk([losange(cls, sub)]);
+    const out = floreForChunk(o.f, o.patch, 0, 0, 64, o.store.proj);
+    assert.equal(out.cloture.length + out.muret.length, 0, `${cls}:${sub}`);
+  }
+  // Les haies d'avant ne bougent pas : mêmes cases, mêmes identifiants (les clôtures ne prennent que des tronçons sans haie).
+  const seule = chunk([losange('grass', 'meadow')]);
+  const avec = floreForChunk(seule.f, seule.patch, 0, 0, 64, seule.store.proj), sans = floreForChunk(seule.f, seule.patch, 0, 0, 64, seule.store.proj, { vivant: false });
+  assert.deepEqual(avec.haie, sans.haie);
+});
+
 // Contour de 24 sommets (bords de 7,9 m) autour de (32, 32), de rayon 30 m : les champs d'une carte vectorielle ont ce genre
 // de contour souple, fait de bords courts.
 const rond = (cls, sub) => ({ rings: [Array.from({ length: 24 }, (_, i) => ({ x: 32 + 30 * Math.cos((i / 24) * TAU), z: 32 + 30 * Math.sin((i / 24) * TAU) }))], cls, sub, bounds: { minX: 2, minZ: 2, maxX: 62, maxZ: 62 } });
@@ -284,7 +329,7 @@ test('flore : sobre sur un appareil peu puissant, sans rien d\'autre de changé'
 
 test('flore : sans aire ni morceau voisin, rien et pas d\'erreur', () => {
   const { store, patch, f } = chunk([]);
-  const vide = { buisson: [], rocher: [], touffe: [], haie: [], balle: [], champi: [], legume: [], puits: [], baie: [] };
+  const vide = { buisson: [], rocher: [], touffe: [], haie: [], balle: [], champi: [], legume: [], puits: [], baie: [], verger: [], cloture: [], muret: [] };
   assert.deepEqual(floreForChunk(f, patch, 0, 0, 64, store.proj), vide);
   assert.deepEqual(floreForChunk(null, patch, 0, 0, 64, store.proj), vide);
 });
@@ -349,7 +394,7 @@ test('vue de la flore : construite, remplie, remplacée sans doublon, vidée et 
   const scene = new THREE.Scene();
   const view = createFloreView(scene, { lowPower: true });
   assert.equal(scene.children.length, 1);
-  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, haies: 0, balles: 0, baies: 0, champis: 0, legumes: 0, puits: 0, drawCalls: 0, chunks: 0, dropped: 0 });
+  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, haies: 0, balles: 0, vergers: 0, clotures: 0, murets: 0, baies: 0, champis: 0, legumes: 0, puits: 0, drawCalls: 0, chunks: 0, dropped: 0 });
   const { store, patch, f } = chunk([area('wood', 'forest', 0, 0, 64, 64)]);
   const flore = floreForChunk(f, patch, 0, 0, 64, store.proj);
   view.setChunk('a', flore);
@@ -368,16 +413,16 @@ test('vue de la flore : construite, remplie, remplacée sans doublon, vidée et 
   view.dropChunk('b');
   assert.equal(view.stats().touffes, flore.touffe.length, 'le morceau a ne bouge pas quand b part');
   view.dropChunk('a');
-  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, haies: 0, balles: 0, baies: 0, champis: 0, legumes: 0, puits: 0, drawCalls: 0, chunks: 0, dropped: 0 });
+  assert.deepEqual(view.stats(), { buissons: 0, rochers: 0, touffes: 0, haies: 0, balles: 0, vergers: 0, clotures: 0, murets: 0, baies: 0, champis: 0, legumes: 0, puits: 0, drawCalls: 0, chunks: 0, dropped: 0 });
   // Ombres : seules les masses (buissons, rochers, haies, balles, puits) en portent, et pas sur appareil peu puissant.
-  assert.deepEqual(view.group.children.map((m) => m.castShadow), [false, false, false, false, false, false, false, false, false]);
+  assert.deepEqual(view.group.children.map((m) => m.castShadow), [false, false, false, false, false, false, false, false, false, false, false, false]);
   const full = createFloreView(new THREE.Scene(), {});
-  assert.deepEqual(full.group.children.map((m) => m.castShadow), [true, true, false, true, true, false, false, false, true]);
+  assert.deepEqual(full.group.children.map((m) => m.castShadow), [true, true, false, true, true, false, true, false, false, false, true, true]);
   full.dispose();
   // Matériaux suivis par la météo.
   const tm = view.treeMaterials();
-  assert.equal(tm.crowns.length, 4);
-  assert.equal(tm.trunks.length, 5);
+  assert.equal(tm.crowns.length, 5);
+  assert.equal(tm.trunks.length, 7);
   view.dispose();
   assert.equal(scene.children.length, 0);
 });

@@ -3,6 +3,12 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { shapeUse } from './tiles.js';
 import { CLOUD_GLSL, bindClouds } from './nuages.js';
+import {
+  BATI, REGIONS, NREG, NMAT, NFEAT, FEAT, MAT, REGION_INDEX, USES, NUSE, USE_INDEX, wallPick, roofPick, shade, featuresOf, roofFeatures, rnd,
+} from './batiment-style.js';
+import { geo, tri, pushTri, roofTri, wallQuad, roofBox, roofCone } from './batiment-geo.js';
+import { pitchedRoofDetails, flatRoofDetails, chimney } from './batiment-toit.js';
+import { FACADE_VARYINGS, FACADE_VERTEX, FACADES, FACADES_LITE, facadeLib } from './batiment-shader.js';
 
 export function createRenderer(canvas, { lowPower }) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: !lowPower, powerPreference: 'high-performance' });
@@ -76,12 +82,7 @@ export const weatherLook = {
 // portes et vitrines des commerces réels, pignons aveugles, toits à pans ou plats à acrotère. Tout est dans le
 // maillage unique des bâtiments d'un morceau (couleurs et deux attributs par sommet) et dans son shader.
 
-const USES = ['house', 'apartments', 'hotel', 'civic', 'school', 'hospital', 'station', 'church', 'hall', 'industrial', 'shed', 'tower'];
-const NUSE = USES.length;
-const REGIONS = ['sud', 'nord', 'monde'];
 const FAMILIES = [null, 'food', 'health', 'service', 'retail'];
-const USE_INDEX = Object.fromEntries(USES.map((u, i) => [u, i]));
-const REGION_INDEX = Object.fromEntries(REGIONS.map((r, i) => [r, i]));
 const FAMILY_INDEX = new Map(FAMILIES.map((f, i) => [f, i]));
 const PUBLIC = new Set(['civic', 'school', 'hospital', 'station']);
 // Ville de secours : famille de la vitrine d'après le lieu du bâtiment.
@@ -90,42 +91,7 @@ const POI_FAMILY = {
   clothes: 'retail', outdoor: 'retail', hardware: 'retail', bank: 'service',
 };
 
-// Murs (§ 5.7) : liste selon la région pour l'habitat, selon le type pour le reste.
-const WALLS = {
-  sud: {
-    home: ['#ead7b5', '#e3c79e', '#efdfc6', '#e7c4ae', '#f2e8d6', '#dccaa9', '#e5d9c6', '#e9cfa0'],
-    house: ['#d6c8ab', '#cbbd9f', '#e4d8c0', '#d9c3a0', '#c9b79a'],
-  },
-  nord: {
-    home: ['#e8dfcc', '#ddd3c0', '#efe9dc', '#d9d6cf', '#c97f63', '#b8705a'],
-    house: ['#c47c62', '#d8cfbd', '#e9e3d6', '#a7a29a'],
-  },
-  monde: {
-    home: ['#d9d6cf', '#c9ccce', '#e6e1d6', '#b9b4aa', '#d4c7b0', '#aeb6bb'],
-    house: ['#d9d6cf', '#c9ccce', '#e6e1d6', '#b9b4aa', '#d4c7b0', '#aeb6bb'],
-  },
-  civic: ['#ebe5d8', '#e2d6bf'], station: ['#ebe5d8', '#e2d6bf'], school: ['#e9dcc2', '#e4e0d6'],
-  hospital: ['#f0eee8', '#e6e8e6'], church: ['#d8cdb5', '#cfc4ad'],
-  hall: ['#c3c6c4', '#cdbfa3', '#b9bcb9'], industrial: ['#c3c6c4', '#cdbfa3', '#b9bcb9'], shed: ['#8a7560', '#9b9a94'],
-  // Tours de bureaux : murs-rideaux gris bleutés, pierre claire.
-  tower: ['#9aa3a8', '#b7b2a6', '#8f9aa1', '#c4c0b5', '#a8a59c'],
-};
-// Toits (§ 5.8) : à pans, plats d'habitation, plats des autres types.
-const ROOFS = {
-  pitched: {
-    sud: ['#b0603f', '#a65a3e', '#bd7350', '#9a5741', '#8f6a52'],
-    nord: ['#5f6872', '#6b737c', '#5f6872', '#6b737c', '#5f6872', '#6b737c', '#a55f48', '#a55f48', '#a55f48', '#5f6872'],
-    monde: ['#6f7a74', '#7c7f82', '#8e6a5a'],
-  },
-  flat: {
-    // Sud : 70 % tuile, 30 % zinc.
-    sud: ['#b5654a', '#a85b44', '#c0775a', '#9c5a46', '#b5654a', '#a85b44', '#c0775a', '#7d858c', '#8a8f93', '#7d858c'],
-    nord: ['#5f6872', '#6b737c', '#7d858f'],
-    monde: ['#7c7f82', '#8e9194', '#6a6e72'],
-  },
-  civic: ['#6f7780'], school: ['#6f7780'], hospital: ['#6f7780'], station: ['#6f7780'],
-  hall: ['#9ea3a6', '#6a6d70'], industrial: ['#9ea3a6', '#6a6d70'], church: ['#59616b'], tower: ['#6f7780', '#7c7f82'],
-};
+// Murs, toits, matières et détails par région : batiment-style.js (palettes), batiment-look.js (type visuel), batiment-toit.js.
 // Stores bannes des cafés et restaurants : tons rompus, jamais de rouge vif, d'orange ni de jaune.
 const AWNINGS = ['#7a3b3b', '#3f5a46', '#34465a', '#8a7a5c'];
 // Haut du store au plus bas (bord bas 0,45 m plus bas) ; la découpe des murs l'efface 1,2 m plus loin que les murs.
@@ -135,16 +101,12 @@ const RHYTHM = {
   house: [3.0, 2.8, 0.25], apartments: [3.6, 3.0, 0.4], hotel: [4.0, 3.0, 0.4],
   civic: [4.2, 3.8, 0.5], school: [4.2, 3.8, 0.5], hospital: [4.2, 3.8, 0.5], station: [4.2, 3.8, 0.5],
   church: [0, 0, 0.5], hall: [0, 0, 0.3], industrial: [0, 0, 0.3], shed: [0, 0, 0.15], tower: [4.8, 3.4, 0.6],
+  barn: [0, 0, 0.2], silo: [0, 0, 0.1], greenhouse: [0, 0, 0.1], garage: [0, 0, 0.15], parking: [3.0, 3.0, 0.3],
+  highrise: [4.2, 3.2, 0.5],
 };
 // Genre d'une face (attribut aFacade.z, + 16 × graine du bâtiment) : 0 arrière, 1 sur rue, 2 mitoyenne,
 // 3 face intérieure d'acrotère, 4 store, 5 pignon de toit, + 8 si vitrine ; −1 = toit (pas de façade).
 const BACK = 0, STREET = 1, PARTY = 2, PARAPET = 3, AWNING = 4, GABLE = 5, SHOPFRONT = 8;
-
-// Couleur d'une constante GLSL, en espace linéaire comme les couleurs de sommets.
-function glsl(hex) {
-  const c = new THREE.Color(hex);
-  return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
-}
 
 // Niveaux d'un bâtiment : haut du rez-de-chaussée et hauteur d'étage (0 = pas d'étage), ajustés pour remplir
 // exactement la hauteur sous la corniche.
@@ -160,262 +122,7 @@ export function facadeLevels(use, region, shop, H, y0 = 0) {
   return { rdc, floor: avail / k, cornice: cor };
 }
 
-// Varyings des façades : tout ce qui ne dépend que du mur est décodé une fois par sommet (flat), le fragment ne fait
-// que dessiner. vFacK = (genre, vitrine, graine, type), vFacR = (région, volets, famille, part allumée),
-// vFacP = (entraxe, largeur et hauteur de fenêtre, allège), vSty = (rez-de-chaussée, étage, H, corniche),
-// vFacM = (longueur du mur, position de la porte, largeur et hauteur de porte).
-const FACADE_VARYINGS = `
-flat varying vec4 vFacK;
-flat varying vec4 vFacR;
-flat varying vec4 vFacP;
-flat varying vec4 vSty;
-flat varying vec4 vFacM;
-flat varying float vFacB;
-flat varying float vFloor;
-varying float vFacU;`;
-
-// Décodage par sommet des attributs aFacade = (u, L, genre + 16 × graine, porte) et aStyle = (rdc, étage, H, code).
-const FACADE_VERTEX = `
-  vFacU = aFacade.x;
-  vFloor = aFloor;
-  float fg = aFacade.z;
-  float fSeed = floor((fg + 0.5) / 16.0);
-  float fKind = fg - 16.0 * fSeed;
-  float fShop = step(7.5, fKind);
-  fKind = fg < -0.5 ? -1.0 : fKind - 8.0 * fShop;
-  float fR1 = floor((aStyle.w + 0.5) / ${NUSE}.0);
-  float fUse = aStyle.w - ${NUSE}.0 * fR1;
-  float fR2 = floor((fR1 + 0.5) / 3.0);
-  float fR3 = floor((fR2 + 0.5) / 5.0);
-  float fH = aStyle.z;
-  // Rythme du type (§ 5.6) : entraxe, fenêtre, allège, corniche, part allumée la nuit, porte.
-  float bay = 2.8, ww = 1.1, wh = 1.8, sill = 0.6, cor = 0.4, litP = 0.3, dw = 1.4, dh = 2.8;
-  if (fUse < 0.5) { bay = 3.2; ww = 1.0; wh = 1.3; sill = 0.9; cor = 0.25; litP = 0.25; dw = 1.0; dh = 2.2; }
-  else if (fUse > 1.5 && fUse < 2.5) { dw = 2.2; dh = 3.0; }
-  else if (fUse > 2.5 && fUse < 6.5) { bay = 3.4; ww = 1.4; wh = 2.4; sill = 0.9; cor = 0.5; litP = 0.06; dw = 2.2; dh = 3.0; }
-  else if (fUse > 6.5 && fUse < 7.5) { bay = 4.5; ww = 1.2; wh = min(4.0, fH - 3.0); sill = 2.5; cor = 0.5; litP = 0.0; dw = 2.2; dh = 3.0; }
-  else if (fUse > 7.5 && fUse < 9.5) { bay = 2.0; ww = 0.0; cor = 0.3; litP = 0.0; dw = 4.0; dh = 4.0; }
-  else if (fUse > 9.5 && fUse < 10.5) { bay = 0.0; ww = 0.0; cor = 0.15; litP = 0.0; dw = 0.9; dh = 2.0; }
-  else if (fUse > 10.5) { bay = 1.6; ww = 1.3; wh = 2.6; sill = 0.3; cor = 0.6; litP = 0.35; dw = 2.4; dh = 3.2; }
-  dw = min(dw, aFacade.y - 0.4);
-  // Largeur de travée ajustée à la longueur du mur (0 : pas de fenêtre), pour le shader allégé.
-  vFacB = ww > 0.0 && aFacade.y >= 1.6 ? (aFacade.y < bay ? aFacade.y : aFacade.y / floor(aFacade.y / bay)) : 0.0;
-  dh = min(dh, max(1.8, min(aStyle.x, fH - cor) - 0.3));
-  vFacK = vec4(fKind, fShop, fSeed, fUse);
-  vFacR = vec4(fR1 - 3.0 * fR2, fR2 - 5.0 * fR3, fR3, litP);
-  vFacP = vec4(bay, ww, wh, sill);
-  vSty = vec4(aStyle.xyz, cor);
-  vFacM = vec4(aFacade.y, aFacade.w, dw, dh);`;
-
-// Seuil clair au pied de la porte et lampe de porche (allumée la nuit), communs aux deux variantes : la porte se lit de loin.
-// Variables attendues : facU, facY, facDoor, dw, dh, facFw, facCol, facadeGlow, uNight.
-const DOOR_SILL = `
-            float doorSill = facBox(vec2(facU - facDoor, facY - 0.06), vec2(dw * 0.5 + 0.35, 0.06), facFw);
-            facCol = mix(facCol, ${glsl('#cdc7ba')}, doorSill);`;
-const DOOR_LAMP = `
-            float doorLamp = facBox(vec2(facU - facDoor, facY - dh - 0.3), vec2(0.16, 0.1), facFw) * step(dw, 3.0);
-            facCol = mix(facCol, ${glsl('#f1dca4')}, doorLamp);
-            facadeGlow = max(facadeGlow, doorLamp * uNight);`;
-
-// Fonctions du shader des façades (déclarées une fois, avant main).
-const FACADE_LIB = `${FACADE_VARYINGS}
-// Rectangle adouci sur un pixel (pas de scintillement sans anticrénelage) : p relatif au centre, h demi-taille.
-float facBox(vec2 p, vec2 h, vec2 fw) {
-  vec2 d = (h - abs(p)) / fw;
-  return clamp(min(d.x, d.y) + 0.5, 0.0, 1.0);
-}
-float facHash(vec3 p) {
-  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
-  p += dot(p, p.yzx + 33.33);
-  return fract((p.x + p.y) * p.z);
-}`;
-
-// Façades dessinées dans le shader : niveaux, fenêtres centrées par travée, rez-de-chaussée, portes, vitrines.
-// Les rectangles (fenêtres, volets, porte) ne sont évalués que près de leur emplacement.
-const FACADES = `
-  vec3 facadeN = normalize(cross(dFdx(vCutWorld), dFdy(vCutWorld)));
-  vec2 facFw = max(fwidth(vec2(vFacU, vCutWorld.y)), vec2(0.002));
-  float facKind = vFacK.x;
-  if (facKind > -0.5 && vFacM.x > 0.5) {
-    float facShop = vFacK.y, facSeed = vFacK.z, facUse = vFacK.w;
-    float facRegion = vFacR.x, facShut = vFacR.y, facFam = vFacR.z;
-    float facL = vFacM.x, facDoor = vFacM.y, dw = vFacM.z, dh = vFacM.w;
-    float facU = vFacU, facY = vCutWorld.y - vFloor;
-    float facRdc = vSty.x, facFl = vSty.y, facH = vSty.z, cor = vSty.w;
-    vec3 facCol = diffuseColor.rgb;
-    if (facKind > 3.5) {
-      // Store : rayures de 0,5 m dans le ton du store ; pignon : mur uni.
-      if (facKind < 4.5) facCol *= 1.0 - 0.14 * step(0.5, fract(facU));
-    } else if (facKind < 2.5) {
-      float apart = 1.0 - step(0.5, abs(facUse - 1.0));
-      // Soubassement, base de l'immeuble, corniche, mur mitoyen.
-      if (facY < 0.45) facCol *= 0.82;
-      if (facY < 0.0) facCol *= 0.8; // socle sous le plancher (relief) : soubassement uni et plus sombre
-      else if (apart > 0.5 && facShop < 0.5 && facKind < 1.5 && facY < facRdc) facCol *= 0.93;
-      if (facKind > 1.5) facCol *= 0.94;
-      if (facY > facH - cor && facY < facH) facCol *= 0.85;
-      // Ligne d'étage (région nord, immeubles et bâtiments publics).
-      if (facRegion > 0.5 && facRegion < 1.5 && facFl > 0.0 && (apart > 0.5 || (facUse > 2.5 && facUse < 3.5)) && facY > facRdc && facY < facH - cor) {
-        float lineY = facY - facRdc - facFl * floor((facY - facRdc) / facFl + 0.5);
-        facCol *= 1.0 - 0.1 * facBox(vec2(0.0, lineY), vec2(1e3, 0.06), facFw);
-      }
-      if (facKind < 1.5 && facY < facH - cor) {
-        float lvl = 0.0, ly = facY, lh = facRdc;
-        if (facFl > 0.0 && facY >= facRdc) {
-          float k = floor((facY - facRdc) / facFl);
-          lvl = 1.0 + k; ly = facY - facRdc - k * facFl; lh = facFl;
-        }
-        float hasDoor = step(0.0, facDoor) * step(0.6, dw);
-        // Fragment près de la porte (marge de deux pixels au moins) : seul cas où la porte est dessinée.
-        bool nearDoor = hasDoor > 0.5 && abs(facU - facDoor) < dw * 0.5 + 0.4 + 2.0 * facFw.x && facY < dh + 0.5 + 2.0 * facFw.y;
-        float shopTop = min(facRdc, 4.2);
-        if (facShop > 0.5 && facY < shopTop) {
-          // Vitrine sur toute l'arête sauf deux trumeaux, meneaux, bandeau d'enseigne de la famille du commerce.
-          float vw = facL - 1.2;
-          float panels = max(1.0, floor(vw / 3.0 + 0.5));
-          float pw = vw / panels;
-          float vit = facBox(vec2(facU - facL * 0.5, facY - (shopTop - 0.35) * 0.5), vec2(vw * 0.5, (shopTop - 1.05) * 0.5), facFw);
-          float mu = facU - 0.6 - pw * floor((facU - 0.6) / pw + 0.5);
-          float mull = facBox(vec2(mu, 0.0), vec2(0.06, 1e3), facFw);
-          float shopLit = step(0.65, facHash(vec3(facL * 3.17, facH, facSeed)));
-          vec3 vitCol = mix(${glsl('#3a4652')}, ${glsl('#1c2129')}, uNight * (1.0 - shopLit));
-          // Reflet du ciel, plus fort en haut de la vitrine : on lit du verre et non un trou, même à l'ombre.
-          facadeSky = max(facadeSky, vit * (1.0 - mull) * (0.3 + 0.7 * clamp((facY - 0.35) / max(0.5, shopTop - 1.05), 0.0, 1.0)));
-          facCol = mix(facCol, mix(vitCol, ${glsl('#2a2e33')}, mull), vit);
-          facadeGlow = max(facadeGlow, vit * (1.0 - mull) * shopLit * uNight * 0.7);
-          vec3 sign = ${glsl('#2f3438')};
-          if (facFam < 1.5) sign = ${glsl('#5a3a32')};
-          else if (facFam < 2.5) sign = ${glsl('#3d5a4c')};
-          else if (facFam < 3.5) sign = ${glsl('#34465a')};
-          float band = facBox(vec2(facU - facL * 0.5, facY - (shopTop - 0.425)), vec2(vw * 0.5, 0.275), facFw);
-          facCol = mix(facCol, sign, band);
-          if (nearDoor) {
-            float dOut = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5, dh * 0.5), facFw);
-            float dIn = facBox(vec2(facU - facDoor, facY - dh * 0.5 - 0.04), vec2(dw * 0.5 - 0.08, dh * 0.5 - 0.08), facFw);
-            facCol = mix(facCol, ${glsl('#cdc7ba')}, facBox(vec2(facU - facDoor, facY - 0.06), vec2(dw * 0.5 + 0.35, 0.06), facFw));
-            facCol = mix(facCol, mix(${glsl('#2a2e33')}, vitCol, dIn), dOut);
-          }
-        } else {
-          float ww = vFacP.y;
-          vec3 shutCol = ${glsl('#6f8a7a')};
-          if (facUse > 7.5 && facUse < 9.5) {
-            // Hangar : bandeau vitré continu sous la corniche, meneaux tous les 2 m.
-            float bandY = facY - (facH - cor - 0.5);
-            if (abs(bandY) < 0.5 + 2.0 * facFw.y) {
-              float b0 = facBox(vec2(facU - facL * 0.5, bandY), vec2(facL * 0.5 - 0.3, 0.5), facFw);
-              float mu = facU - 2.0 * floor(facU / 2.0 + 0.5);
-              float win = b0 * (1.0 - facBox(vec2(mu, 0.0), vec2(0.06, 1e3), facFw));
-              facCol = mix(facCol, ${glsl('#e9e4da')}, b0);
-              facCol = mix(facCol, mix(${glsl('#2f3843')}, ${glsl('#1c2129')}, uNight), win);
-              facadeSky = max(facadeSky, win * 0.4);
-            }
-          } else if (ww > 0.0 && facL >= 1.6) {
-            float bay = vFacP.x;
-            float n = facL < bay ? 1.0 : floor(facL / bay);
-            float bw = facL / n;
-            float bi = clamp(floor(facU / bw), 0.0, n - 1.0);
-            float cx = (bi + 0.5) * bw;
-            float s = vFacP.w, h = vFacP.z;
-            float tower = step(10.5, facUse);
-            if (lvl < 0.5 && apart > 0.5) { s = 1.2; h = 1.5; }
-            if (lvl < 0.5 && tower > 0.5) { s = 0.15; h = lh - 0.55; ww = bw - 0.3; }
-            h = min(h, lh - s - 0.25);
-            // Pas de fenêtre dans la travée de la porte, au rez-de-chaussée.
-            bool blocked = lvl < 0.5 && hasDoor > 0.5 && abs(cx - facDoor) < (dw + ww) * 0.5 + 0.3;
-            vec2 wp = vec2(facU - cx, ly - s - h * 0.5);
-            // Fenêtre, encadrement et volets tiennent dans ww / 2 + 0,53 m de part et d'autre de l'axe.
-            if (h > 0.4 && !blocked && abs(wp.x) < ww * 0.5 + 0.6 + 2.0 * facFw.x && abs(wp.y) < h * 0.5 + 0.1 + 2.0 * facFw.y) {
-              float win = facBox(wp, vec2(ww * 0.5, h * 0.5), facFw);
-              float frame = facBox(wp, vec2(ww * 0.5 + 0.08, h * 0.5 + 0.08), facFw);
-              facadeSky = max(facadeSky, win * (0.2 + 0.4 * clamp(wp.y / h + 0.5, 0.0, 1.0)));
-              // Tours : étages allumés par bandes de cinq travées.
-              float lit = step(1.0 - vFacR.w, facHash(vec3(mix(bi, floor(bi / 5.0), tower) + 0.37 * facSeed, lvl, facL * 1.7)));
-              // Volets du sud : maisons 70 %, immeubles 50 %, bande de 0,45 m de chaque côté.
-              float shut = 0.0;
-              float shutP = facUse < 0.5 ? 0.7 : 0.5;
-              if (facRegion < 0.5 && facUse < 1.5 && bw >= ww + 1.1 && facHash(vec3(bi, lvl + 7.0, facSeed + facL)) < shutP) {
-                shut = facBox(vec2(abs(facU - cx) - ww * 0.5 - 0.305, wp.y), vec2(0.225, h * 0.5 + 0.04), facFw);
-              }
-              if (facShut > 0.5 && facShut < 1.5) shutCol = ${glsl('#8a6f5a')};
-              else if (facShut > 1.5 && facShut < 2.5) shutCol = ${glsl('#7f8fa0')};
-              else if (facShut > 2.5 && facShut < 3.5) shutCol = ${glsl('#a39a84')};
-              else if (facShut > 3.5) shutCol = ${glsl('#5f6f63')};
-              facCol = mix(facCol, ${glsl('#e9e4da')}, frame);
-              facCol = mix(facCol, mix(${glsl('#2f3843')}, ${glsl('#1c2129')}, uNight), win);
-              facCol = mix(facCol, shutCol, shut);
-              facadeGlow = max(facadeGlow, win * lit * uNight);
-            }
-          }
-          if (nearDoor) {
-            // Porte : taille et couleur selon le type ; porte sectionnelle des hangars (lignes tous les 0,5 m).
-            vec3 d = ${glsl('#3e3a36')};
-            if (facUse < 0.5) d = facShut > 2.5 ? (facShut > 3.5 ? ${glsl('#5f6f63')} : ${glsl('#a39a84')}) : ${glsl('#6b4f3a')};
-            else if (facUse > 1.5 && facUse < 7.5) d = ${glsl('#4a3f36')};
-            else if (facUse > 7.5 && facUse < 9.5) d = ${glsl('#7b8084')} * (1.0 - 0.18 * facBox(vec2(0.0, facY - 0.5 * floor(facY / 0.5 + 0.5)), vec2(1e3, 0.03), facFw));
-            else if (facUse > 9.5) d = ${glsl('#5e4b3b')};
-            float dOut = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5 + 0.08, dh * 0.5 + 0.04), facFw);
-            float dIn = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5, dh * 0.5), facFw);${DOOR_SILL}
-            facCol = mix(facCol, ${glsl('#2a2e33')}, dOut);
-            facCol = mix(facCol, d, dIn);${DOOR_LAMP}
-          }
-        }
-      }
-    }
-    diffuseColor.rgb = facCol;
-  }
-  if (facadeN.y > 0.5) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.94, 0.97), uSnow * 0.85);
-  diffuseColor.rgb *= mix(vec3(1.0), vec3(0.78, 0.82, 0.88), uWet);`;
-
-// Variante allégée pour les téléphones (lowPower) : soubassement, corniche, mur mitoyen, une fenêtre par travée et
-// par niveau (vitrine simple au rez-de-chaussée des commerces) et la porte (cadre, vantail, seuil, lampe), sans volets,
-// encadrements, meneaux, enseigne, stores rayés ni hangar. Même entrée et mêmes sorties que FACADES.
-const FACADES_LITE = `
-  vec3 facadeN = normalize(cross(dFdx(vCutWorld), dFdy(vCutWorld)));
-  vec2 facFw = max(fwidth(vec2(vFacU, vCutWorld.y - vFloor)), vec2(0.002));
-  float facKind = vFacK.x;
-  if (facKind > -0.5 && facKind < 2.5 && vFacM.x > 0.5) {
-    float facU = vFacU, facY = vCutWorld.y - vFloor, facH = vSty.z, cor = vSty.w;
-    float facDoor = vFacM.y, dw = vFacM.z, dh = vFacM.w;
-    float shade = (facY < 0.45 ? 0.82 : 1.0) * (facKind > 1.5 ? 0.94 : 1.0) * (facY > facH - cor ? 0.85 : 1.0);
-    vec3 facCol = diffuseColor.rgb * shade;
-    float bw = vFacB;
-    float hasDoor = step(0.0, facDoor) * step(0.6, dw);
-    if (facKind < 1.5 && bw > 0.0 && facY < facH - cor) {
-      float rdc = vSty.x, fl = vSty.y;
-      float up = fl > 0.0 && facY >= rdc ? 1.0 : 0.0;
-      float k = up > 0.5 ? floor((facY - rdc) / fl) : -1.0;
-      float ly = up > 0.5 ? facY - rdc - k * fl : facY;
-      float lh = up > 0.5 ? fl : rdc;
-      float wide = (1.0 - up) * max(vFacK.y, step(10.5, vFacK.w));
-      float s = mix(vFacP.w, 0.35, wide), h = mix(vFacP.z, lh - 0.7, wide);
-      if (up < 0.5 && wide < 0.5 && abs(vFacK.w - 1.0) < 0.5) { s = 1.2; h = 1.5; }
-      h = min(h, lh - s - 0.25);
-      float bi = floor(vFacU / bw);
-      float ww = mix(vFacP.y, bw - 0.3, wide);
-      vec2 wp = vec2(vFacU - (bi + 0.5) * bw, ly - s - h * 0.5);
-      // Pas de fenêtre dans la travée de la porte, au rez-de-chaussée (sauf vitrine continue).
-      float keep = 1.0 - (1.0 - up) * (1.0 - wide) * hasDoor * step(abs((bi + 0.5) * bw - facDoor), (dw + ww) * 0.5 + 0.3);
-      float win = facBox(wp, vec2(ww * 0.5, h * 0.5), facFw) * step(0.4, h) * keep;
-      float lit = step(1.0 - vFacR.w, facHash(vec3(bi + 0.37 * vFacK.z, k, vFacM.x * 1.7)));
-      facCol = mix(facCol, mix(${glsl('#2f3843')}, ${glsl('#1c2129')}, uNight), win);
-      facadeGlow = win * lit * uNight;
-      facadeSky = win * 0.35;
-    }
-    // Porte : cadre sombre, vantail dans le ton du type (vitré pour un commerce), seuil clair, lampe la nuit ; dessinée près d'elle seulement.
-    if (facKind < 1.5 && hasDoor > 0.5 && facY < facH - cor && abs(facU - facDoor) < dw * 0.5 + 0.4 + 2.0 * facFw.x && facY < dh + 0.5 + 2.0 * facFw.y) {
-      vec3 d = vFacK.w < 0.5 ? (vFacR.y > 2.5 ? (vFacR.y > 3.5 ? ${glsl('#5f6f63')} : ${glsl('#a39a84')}) : ${glsl('#6b4f3a')}) : ${glsl('#4a3f36')};
-      d = mix(d, ${glsl('#3a4652')}, vFacK.y);
-      float dOut = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5 + 0.08, dh * 0.5 + 0.04), facFw);
-      float dIn = facBox(vec2(facU - facDoor, facY - dh * 0.5), vec2(dw * 0.5, dh * 0.5), facFw);${DOOR_SILL}
-      facCol = mix(facCol, ${glsl('#2a2e33')}, dOut);
-      facCol = mix(facCol, d, dIn);${DOOR_LAMP}
-    }
-    diffuseColor.rgb = facCol;
-  }
-  if (facadeN.y > 0.5) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.94, 0.97), uSnow * 0.85);
-  diffuseColor.rgb *= mix(vec3(1.0), vec3(0.78, 0.82, 0.88), uWet);`;
-
-function addCutaway(material, { facades = false, lite = false } = {}) {
+function addCutaway(material, { facades = false, lite = false, mats = true } = {}) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uCutPlayer = cutaway.player;
     shader.uniforms.uCutCamera = cutaway.camera;
@@ -433,7 +140,7 @@ function addCutaway(material, { facades = false, lite = false } = {}) {
         .replace('#include <common>', `#include <common>\nattribute vec4 aFacade;\nattribute vec4 aStyle;\nattribute float aFloor;${FACADE_VARYINGS}`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>${FACADE_VERTEX}`);
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', `#include <common>${FACADE_LIB}\n#define CUT_EXTRA (abs(vFacK.x - ${AWNING.toFixed(1)}) < 0.5 ? ${AWNING_CUT.toFixed(2)} : 0.0)`)
+        .replace('#include <common>', `#include <common>${facadeLib(lite, mats)}\n#define CUT_EXTRA (abs(vFacK.x - ${AWNING.toFixed(1)}) < 0.5 ? ${AWNING_CUT.toFixed(2)} : 0.0)`)
         .replace('#include <color_fragment>', `#include <color_fragment>\n  float facadeGlow = 0.0;\n  float facadeSky = 0.0;${lite ? FACADES_LITE : FACADES}
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.04, 0.05, 0.06), cutEdge * 0.6);`)
         .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += vec3(1.0, 0.78, 0.45) * facadeGlow * 0.9 + vec3(0.05, 0.06, 0.075) * facadeSky * (1.0 - uNight);');
@@ -486,13 +193,14 @@ function addCutaway(material, { facades = false, lite = false } = {}) {
 // façades allégées (FACADES_LITE), avec leur propre clé de programme.
 const sharedBuildingMaterials = new Map();
 export function buildingMaterial({ lowPower = false } = {}) {
-  const lite = !!lowPower;
-  let m = sharedBuildingMaterials.get(lite);
+  const lite = !!lowPower, mats = BATI.mats;
+  const key = `${lite}-${mats}`;
+  let m = sharedBuildingMaterials.get(key);
   if (!m) {
     m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-    addCutaway(m, { facades: true, lite });
-    m.customProgramCacheKey = () => (lite ? 'earthlife-facades-lite' : 'earthlife-facades');
-    sharedBuildingMaterials.set(lite, m);
+    addCutaway(m, { facades: true, lite, mats });
+    m.customProgramCacheKey = () => `earthlife-facades${lite ? '-lite' : ''}${mats ? '' : '-nomat'}`;
+    sharedBuildingMaterials.set(key, m);
   }
   return m;
 }
@@ -543,63 +251,6 @@ function orientedRect(ring) {
   return best;
 }
 
-// Tableaux de sommets réutilisés d'un appel à l'autre (pas de ramasse-miettes pendant la marche).
-const geo = { n: 0, cap: 0, pos: null, col: null, nor: null, fac: null, sty: null, flo: null };
-function reserve(extra) {
-  if (geo.n + extra <= geo.cap) return;
-  const cap = Math.max(4096, (geo.n + extra) * 2);
-  const grow = (a, k) => { const b = new Float32Array(cap * k); if (a) b.set(a.subarray(0, geo.n * k)); return b; };
-  geo.pos = grow(geo.pos, 3); geo.col = grow(geo.col, 3); geo.nor = grow(geo.nor, 3);
-  geo.fac = grow(geo.fac, 4); geo.sty = grow(geo.sty, 4); geo.flo = grow(geo.flo, 1);
-  geo.cap = cap;
-}
-
-// Un triangle : trois sommets (x, y, z, u), couleur, normale de la face, genre, longueur d'arête, porte, style.
-const tri = { col: [1, 1, 1], L: 0, g: -1, door: -1, sty: [0, 0, 0, 0] };
-function pushTri(ax, ay, az, au, bx, by, bz, bu, cx, cy, cz, cu) {
-  reserve(3);
-  const ux = bx - ax, uy = by - ay, uz = bz - az, vx = cx - ax, vy = cy - ay, vz = cz - az;
-  let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-  const l = Math.hypot(nx, ny, nz) || 1;
-  nx /= l; ny /= l; nz /= l;
-  const i = geo.n, P = geo.pos, j = i * 3;
-  P[j] = ax; P[j + 1] = ay; P[j + 2] = az; P[j + 3] = bx; P[j + 4] = by; P[j + 5] = bz; P[j + 6] = cx; P[j + 7] = cy; P[j + 8] = cz;
-  const c = tri.col, s = tri.sty;
-  for (let k = 0; k < 3; k++) {
-    geo.col[(i + k) * 3] = c[0]; geo.col[(i + k) * 3 + 1] = c[1]; geo.col[(i + k) * 3 + 2] = c[2];
-    geo.nor[(i + k) * 3] = nx; geo.nor[(i + k) * 3 + 1] = ny; geo.nor[(i + k) * 3 + 2] = nz;
-    geo.fac[(i + k) * 4 + 1] = tri.L; geo.fac[(i + k) * 4 + 2] = tri.g; geo.fac[(i + k) * 4 + 3] = tri.door;
-    geo.sty[(i + k) * 4] = s[0]; geo.sty[(i + k) * 4 + 1] = s[1]; geo.sty[(i + k) * 4 + 2] = s[2]; geo.sty[(i + k) * 4 + 3] = s[3];
-  }
-  geo.fac[i * 4] = au; geo.fac[(i + 1) * 4] = bu; geo.fac[(i + 2) * 4] = cu;
-  geo.n += 3;
-}
-
-// Triangle de toit, toujours tourné vers le haut.
-function roofTri(ax, ay, az, bx, by, bz, cx, cy, cz) {
-  if ((bz - az) * (cx - ax) - (bx - ax) * (cz - az) > 0) pushTri(ax, ay, az, 0, bx, by, bz, 0, cx, cy, cz, 0);
-  else pushTri(ax, ay, az, 0, cx, cy, cz, 0, bx, by, bz, 0);
-}
-
-// Mur de p à q entre y0 et y1, tourné vers l'extérieur (sens des anneaux préparé par l'appelant) ; u de 0 à L.
-function wallQuad(p, q, y0, y1, L) {
-  pushTri(p.x, y0, p.z, 0, q.x, y0, q.z, L, q.x, y1, q.z, L);
-  pushTri(p.x, y0, p.z, 0, q.x, y1, q.z, L, p.x, y1, p.z, 0);
-}
-
-// Boîte sans fond (cheminée, édicule) : quatre murs et un dessus, axes (ux, uz) et (−uz, ux), demi-tailles a et c.
-function roofBox(cx, cz, ux, uz, a, c, y0, y1, side, topCol) {
-  const vx = -uz, vz = ux;
-  const P = (s, t) => ({ x: cx + ux * s + vx * t, z: cz + uz * s + vz * t });
-  const k = [P(-a, -c), P(a, -c), P(a, c), P(-a, c)];
-  // Ce contour a toujours une aire positive (repère direct) : murs parcourus à l'envers, tournés vers l'extérieur.
-  tri.col = side;
-  for (let i = 0; i < 4; i++) wallQuad(k[(i + 1) % 4], k[i], y0, y1, 0);
-  tri.col = topCol;
-  roofTri(k[0].x, y1, k[0].z, k[1].x, y1, k[1].z, k[2].x, y1, k[2].z);
-  roofTri(k[0].x, y1, k[0].z, k[2].x, y1, k[2].z, k[3].x, y1, k[3].z);
-}
-
 function insideRings(x, z, rings) {
   let inside = false;
   for (const r of rings) {
@@ -625,21 +276,28 @@ const pick = (list, h) => list[h % list.length];
 
 // Décalage de l'édicule depuis le centre du toit : mur le plus proche à 2 m du mât du drapeau (bout du drapeau à 1,2 m).
 const EDICULE_SHIFT = 3.5;
-const ridgeOf = (H, hs) => H + Math.min(3.5, Math.max(1.2, 0.6 * hs));
+// Faîtage au-dessus de H : pente propre à la région et au type (chalets et granges plus bas, maisons du nord plus raides).
+const RIDGE_K = { sud: 0.6, nord: 0.65, monde: 0.6, alpes: 0.42, brique: 0.6, est: 0.55, asie: 0.5, adobe: 0.5 };
+const ridgeOf = (H, hs, k = 0.6) => H + Math.min(3.5, Math.max(1.2, k * hs));
+const ridgeK = (b, use) => (use === 'greenhouse' ? 0.3 : use === 'barn' ? 0.45 : RIDGE_K[b.region] ?? 0.6);
 
 // Toit à pans : maisons, abris et églises bas, d'un seul tenant. Emprise à 4 sommets (une fois les sommets presque
 // alignés retirés) : pans calés sur l'emprise elle-même. Sinon rectangle orienté, gardé seulement si tout son débord
 // reste à 0,6 m au plus de l'emprise (pas de coin de toit au-dessus de la rue ou de la cour). null : toit plat.
-const EAVE = 0.35, EAVE_FIT = 0.6;
-export function pitchedRoof(b, use = b.use, outerArea = signedArea(b.rings[0])) {
-  if ((use !== 'house' && use !== 'shed' && use !== 'church') || b.height > 10 || b.rings.length !== 1 || (b.minHeight ?? 0) !== 0) return null;
+// Débord de toit : 0,35 m, plus large pour les chalets et les granges (Alpes 0,7 m, granges 0,5 m).
+const EAVE = 0.35, EAVE_SLACK = 0.25;
+const PITCHED_USES = new Set(['house', 'shed', 'church', 'barn', 'greenhouse']);
+const eaveOf = (b, use) => (use === 'barn' ? (b.region === 'alpes' ? 0.7 : 0.5) : use === 'house' && b.region === 'alpes' ? 0.7 : EAVE);
+export function pitchedRoof(b, use = b.look ?? b.use, outerArea = signedArea(b.rings[0])) {
+  if (!PITCHED_USES.has(use) || b.height > 10 || b.rings.length !== 1 || (b.minHeight ?? 0) !== 0) return null;
+  const span = use === 'barn' || use === 'greenhouse' ? 26 : 14, eave = eaveOf(b, use);
   const ring = b.rings[0];
-  const quad = quadRoof(ring);
-  if (quad) return quad;
+  const quad = quadRoof(ring, span);
+  if (quad) return { ...quad, eave };
   const r = orientedRect(ring);
   const fill = r ? Math.abs(outerArea) / (4 * r.hl * r.hs) : 0;
-  if (!r || fill < 0.8 || r.hs * 2 > 14 || r.hs <= 0.5 || !eavesFit(r, ring)) return null;
-  return { ...r, kind: 'rect', gable: fill >= 0.95 };
+  if (!r || fill < 0.8 || r.hs * 2 > span || r.hs <= 0.5 || !eavesFit(r, ring, eave)) return null;
+  return { ...r, kind: 'rect', gable: fill >= 0.95, eave };
 }
 
 function segDistXZ(px, pz, a, b) {
@@ -650,8 +308,8 @@ function segDistXZ(px, pz, a, b) {
 }
 
 // Bord du rectangle agrandi du débord, tous les mètres et aux coins : à moins de EAVE_FIT de l'emprise.
-function eavesFit(r, ring) {
-  const HL = r.hl + EAVE, HS = r.hs + EAVE, vx = -r.uz, vz = r.ux;
+function eavesFit(r, ring, eave = EAVE) {
+  const HL = r.hl + eave, HS = r.hs + eave, vx = -r.uz, vz = r.ux;
   const corners = [[-HL, -HS], [HL, -HS], [HL, HS], [-HL, HS]];
   for (let k = 0; k < 4; k++) {
     const [a0, c0] = corners[k], [a1, c1] = corners[(k + 1) % 4];
@@ -662,7 +320,7 @@ function eavesFit(r, ring) {
       if (insideRings(x, z, [ring])) continue;
       let d = Infinity;
       for (let j = 0, m = ring.length - 1; j < ring.length; m = j++) d = Math.min(d, segDistXZ(x, z, ring[m], ring[j]));
-      if (d > EAVE_FIT) return false;
+      if (d > eave + EAVE_SLACK) return false;
     }
   }
   return true;
@@ -670,7 +328,7 @@ function eavesFit(r, ring) {
 
 // Emprise convexe à 4 sommets (sommets à moins de 0,3 m de la droite de leurs voisins retirés) : pignons sur les deux
 // arêtes opposées les plus courtes, faîtage de l'un à l'autre. Sommets q (pignons q0-q1 et q2-q3), demi-largeur hs.
-function quadRoof(ring) {
+function quadRoof(ring, span = 14) {
   let pts = ring;
   for (let changed = true; changed && pts.length > 4;) {
     changed = false;
@@ -694,7 +352,7 @@ function quadRoof(ring) {
   const g0 = len(o), g1 = len((o + 2) % 4);
   const hs = (g0 + g1) / 4;
   const m0 = { x: (q[0].x + q[1].x) / 2, z: (q[0].z + q[1].z) / 2 }, m1 = { x: (q[2].x + q[3].x) / 2, z: (q[2].z + q[3].z) / 2 };
-  if (Math.min(g0, g1) < 0.6 * Math.max(g0, g1) || hs * 2 > 14 || hs <= 0.5 || Math.hypot(m1.x - m0.x, m1.z - m0.z) < 1) return null;
+  if (Math.min(g0, g1) < 0.6 * Math.max(g0, g1) || hs * 2 > span || hs <= 0.5 || Math.hypot(m1.x - m0.x, m1.z - m0.z) < 1) return null;
   return { kind: 'quad', q, hs };
 }
 
@@ -760,18 +418,22 @@ export function buildingsGeometry(buildings, floorOf = null) {
     const H = b.height, y0 = b.minHeight ?? 0;
     // Ville de secours (sans type) : type déduit de la forme, comme dans tiles.js.
     const use = USE_INDEX[b.use] !== undefined ? b.use : shapeUse(area, H, !!b.poi);
+    // Type visuel (silo, grange, serre, garage, parking, tour d'habitation) : seul le dessin change, pas le type de jeu.
+    let look = b.look && USE_INDEX[b.look] !== undefined ? b.look : use;
+    // Une grange ou une serre sans toit à pans (contour trop irrégulier ou trop large) garde son dessin d'avant.
+    let rect = pitchedRoof(b, look, outerArea);
+    if (!rect && (look === 'barn' || look === 'greenhouse')) { look = use; rect = pitchedRoof(b, look, outerArea); }
     const region = REGION_INDEX[b.region] !== undefined ? b.region : 'monde';
     const shop = b.shop !== undefined ? (FAMILY_INDEX.has(b.shop) ? b.shop : null) : POI_FAMILY[b.poi?.kind] ?? null;
-    const home = use === 'apartments' || use === 'hotel' || use === 'house';
-    const wallHex = pick(home ? WALLS[region][use === 'house' ? 'house' : 'home'] : WALLS[use], seed);
-    const wall = colorOf(wallHex, b.colour);
-    const lv = facadeLevels(use, region, shop, H, y0);
-    const code = USE_INDEX[use] + NUSE * (REGION_INDEX[region] + 3 * (seed % 5) + 15 * FAMILY_INDEX.get(shop));
+    const [wallBase, mat] = wallPick(look, region, seed);
+    const wall = colorOf(b.colour ? wallBase : shade(wallBase, seed), b.colour);
+    const lv = facadeLevels(look, region, shop, H, y0);
+    const feat = BATI.mats ? featuresOf({ look, region, seed, height: H }) : look === 'house' || look === 'apartments' || look === 'hotel' ? featuresOf({ look, region, seed, height: H }) & FEAT.VOLETS : 0;
+    const code = USE_INDEX[look] + NUSE * (REGION_INDEX[region] + NREG * ((seed % 5) + 5 * (FAMILY_INDEX.get(shop) + 5 * ((BATI.mats ? mat : 0) + NMAT * feat))));
     const bseed = (seed >>> 12) % 1000;
     const style = [lv.rdc, lv.floor, H, code];
 
-    const rect = pitchedRoof(b, use, outerArea);
-    const parapet = !rect && y0 === 0 ? (H >= 8 ? 0.5 : 0.3) : 0;
+    const parapet = !rect && y0 === 0 && look !== 'silo' ? (H >= 8 ? 0.5 : 0.3) : 0;
     const top = H + parapet;
 
     // Murs tournés vers l'extérieur : anneau extérieur dans un sens, cours intérieures dans l'autre.
@@ -810,7 +472,7 @@ export function buildingsGeometry(buildings, floorOf = null) {
         const L = Math.hypot(q.x - p.x, q.z - p.z);
         if (L < 1e-3) continue;
         const kind = k > 0 ? BACK : b.edges ? (b.edges[map(i)] ?? BACK) : STREET;
-        const front = kind === STREET && shop && y0 === 0 && L >= 2.4 && use !== 'church' && use !== 'shed';
+        const front = kind === STREET && shop && y0 === 0 && L >= 2.4 && use !== 'church' && use !== 'shed' && look !== 'parking';
         tri.col = wall;
         tri.L = L;
         tri.g = kind + (front ? SHOPFRONT : 0) + 16 * bseed;
@@ -840,15 +502,16 @@ export function buildingsGeometry(buildings, floorOf = null) {
     tri.g = -1;
     tri.L = 0;
     tri.door = -1;
+    // Détails de toit (lucarne, solaire, réservoir, machines, antennes) : batiment-toit.js ; `?bati=base` les coupe.
+    const rf = roofFeatures({ look, region, seed: seed >>> 4, area, pitched: !!rect, detail: BATI.detail, height: H });
     if (rect?.kind === 'quad') {
-      // Toit à pans calé sur l'emprise à 4 sommets : débord de 0,35 m, rive à H − 0,12, faîtage du milieu d'un pignon
-      // au milieu de l'autre ; deux pans (deux triangles chacun) et deux pignons de mur.
-      const roofHex = pick(ROOFS.pitched[region], seed >>> 8);
-      const roofCol = colorOf(roofHex);
+      // Toit à pans calé sur l'emprise à 4 sommets : débord (0,35 m, plus aux chalets et granges), rive à H − 0,12, faîtage du
+      // milieu d'un pignon au milieu de l'autre ; deux pans (deux triangles chacun) et deux pignons de mur.
+      const roofCol = colorOf(roofPick('pitched', look, region, seed >>> 8));
       tri.col = roofCol;
-      const { q, hs } = rect;
-      const e = grownRing(q, EAVE);
-      const ye = H - 0.12, yr = ridgeOf(H, hs);
+      const { q, hs, eave } = rect;
+      const e = grownRing(q, eave);
+      const ye = H - 0.12, yr = ridgeOf(H, hs, ridgeK(b, look));
       const mid = (a, c) => ({ x: (a.x + c.x) / 2, z: (a.z + c.z) / 2 });
       const r0 = mid(e[0], e[1]), r1 = mid(e[2], e[3]);
       roofTri(e[1].x, ye, e[1].z, e[2].x, ye, e[2].z, r1.x, yr, r1.z);
@@ -856,17 +519,27 @@ export function buildingsGeometry(buildings, floorOf = null) {
       roofTri(e[3].x, ye, e[3].z, e[0].x, ye, e[0].z, r0.x, yr, r0.z);
       roofTri(e[3].x, ye, e[3].z, r0.x, yr, r0.z, r1.x, yr, r1.z);
       const m0 = mid(q[0], q[1]), m1 = mid(q[2], q[3]);
-      if (use === 'house' && area >= 40) {
-        // Cheminée (0,6 × 0,6 m, 1,2 m au-dessus du pan) au tiers du faîtage, un peu en retrait vers le pan q1-q2.
+      if (look === 'house' && area >= 40) {
+        // Cheminée (0,6 × 0,6 m, 1,2 m au-dessus du pan) au tiers du faîtage, un peu en retrait vers le pan q1-q2 ; une
+        // deuxième aux deux tiers, de l'autre côté, sur les grandes maisons.
         const rx = m1.x - m0.x, rz = m1.z - m0.z, rlen = Math.hypot(rx, rz);
         const ux = rx / rlen, uz = rz / rlen;
         const side = mid(q[1], q[2]), sx = side.x - (m0.x + m1.x) / 2, sz = side.z - (m0.z + m1.z) / 2, sl = Math.hypot(sx, sz) || 1;
-        const HS = hs + EAVE, t = 0.4 * HS;
+        const HS = hs + eave, t = 0.4 * HS;
         const yAt = (v) => yr - ((yr - ye) * Math.abs(v)) / HS;
-        const mx = m0.x + rx / 3 + (sx / sl) * t, mz = m0.z + rz / 3 + (sz / sl) * t;
-        roofBox(mx, mz, ux, uz, 0.3, 0.3, yAt(t + 0.3) - 0.05, yAt(t) + 1.2, [wall[0] * 0.8, wall[1] * 0.8, wall[2] * 0.8], [0.12, 0.12, 0.12]);
+        const sideCol = [wall[0] * 0.8, wall[1] * 0.8, wall[2] * 0.8];
+        roofBox(m0.x + rx / 3 + (sx / sl) * t, m0.z + rz / 3 + (sz / sl) * t, ux, uz, 0.3, 0.3, yAt(t + 0.3) - 0.05, yAt(t) + 1.2, sideCol, [0.12, 0.12, 0.12]);
+        if (rf.chimney2) roofBox(m0.x + (rx * 2) / 3 - (sx / sl) * t, m0.z + (rz * 2) / 3 - (sz / sl) * t, ux, uz, 0.3, 0.3, yAt(t + 0.3) - 0.05, yAt(t) + 1.2, sideCol, [0.12, 0.12, 0.12]);
         tri.col = roofCol;
       }
+      const P3 = (p, y) => ({ x: p.x, y, z: p.z });
+      pitchedRoofDetails({
+        pans: [
+          { a: P3(e[1], ye), b: P3(e[2], ye), c: P3(r1, yr), d: P3(r0, yr) },
+          { a: P3(e[3], ye), b: P3(e[0], ye), c: P3(r0, yr), d: P3(r1, yr) },
+        ],
+        wall, roofCol, col: colorOf, seed: seed >>> 4, rf,
+      });
       tri.col = wall;
       tri.g = GABLE + 16 * bseed;
       const cxq = (q[0].x + q[1].x + q[2].x + q[3].x) / 4, czq = (q[0].z + q[1].z + q[2].z + q[3].z) / 4;
@@ -877,12 +550,12 @@ export function buildingsGeometry(buildings, floorOf = null) {
       tri.g = -1;
       tri.L = 0;
     } else if (rect) {
-      // Toit à pans sur le rectangle orienté : débord de 0,35 m, rive à H − 0,12, faîtage à H + 0,3 × petit côté.
-      const roofHex = pick(ROOFS.pitched[region], seed >>> 8);
-      tri.col = colorOf(roofHex);
-      const { cx, cz, ux, uz, hl, hs } = rect;
+      // Toit à pans sur le rectangle orienté : débord, rive à H − 0,12, faîtage à H + k × petit côté.
+      const roofCol = colorOf(roofPick('pitched', look, region, seed >>> 8));
+      tri.col = roofCol;
+      const { cx, cz, ux, uz, hl, hs, eave } = rect;
       const vx = -uz, vz = ux;
-      const HL = hl + 0.35, HS = hs + 0.35, ye = H - 0.12, yr = ridgeOf(H, hs);
+      const HL = hl + eave, HS = hs + eave, ye = H - 0.12, yr = ridgeOf(H, hs, ridgeK(b, look));
       const P = (a, c) => ({ x: cx + ux * a + vx * c, z: cz + uz * a + vz * c });
       const rl = rect.gable ? HL : Math.max(0, HL - HS);
       const r0 = P(-rl, 0), r1 = P(rl, 0);
@@ -895,14 +568,25 @@ export function buildingsGeometry(buildings, floorOf = null) {
           roofTri(h0.x, ye, h0.z, h1.x, ye, h1.z, r.x, yr, r.z);
         }
       }
-      if (use === 'house' && area >= 40) {
-        // Cheminée (0,6 × 0,6 m, 1,2 m au-dessus du pan) au tiers du faîtage, un peu en retrait du faîtage.
+      if (look === 'house' && area >= 40) {
+        // Cheminée (0,6 × 0,6 m, 1,2 m au-dessus du pan) au tiers du faîtage, un peu en retrait du faîtage ; une deuxième de
+        // l'autre côté sur les grandes maisons.
         const t = 0.4 * HS, a0 = -rl / 3;
         const yAt = (v) => yr - ((yr - ye) * Math.abs(v)) / HS;
+        const sideCol = [wall[0] * 0.8, wall[1] * 0.8, wall[2] * 0.8];
         const m = P(a0, t);
-        roofBox(m.x, m.z, ux, uz, 0.3, 0.3, yAt(t + 0.3) - 0.05, yAt(t) + 1.2, [wall[0] * 0.8, wall[1] * 0.8, wall[2] * 0.8], [0.12, 0.12, 0.12]);
-        tri.col = colorOf(roofHex);
+        roofBox(m.x, m.z, ux, uz, 0.3, 0.3, yAt(t + 0.3) - 0.05, yAt(t) + 1.2, sideCol, [0.12, 0.12, 0.12]);
+        if (rf.chimney2) {
+          const m2 = P(-a0, -t);
+          roofBox(m2.x, m2.z, ux, uz, 0.3, 0.3, yAt(t + 0.3) - 0.05, yAt(t) + 1.2, sideCol, [0.12, 0.12, 0.12]);
+        }
+        tri.col = roofCol;
       }
+      const pans = [1, -1].map((sgn) => {
+        const e0 = P(-HL, sgn * HS), e1 = P(HL, sgn * HS);
+        return { a: { x: e0.x, y: ye, z: e0.z }, b: { x: e1.x, y: ye, z: e1.z }, c: { x: r1.x, y: yr, z: r1.z }, d: { x: r0.x, y: yr, z: r0.z } };
+      });
+      pitchedRoofDetails({ pans, wall, roofCol, col: colorOf, seed: seed >>> 4, rf });
       if (rect.gable) {
         // Pignons : triangles de mur sous le faîtage, tournés vers l'extérieur.
         tri.col = wall;
@@ -915,9 +599,14 @@ export function buildingsGeometry(buildings, floorOf = null) {
         tri.g = -1;
         tri.L = 0;
       }
+    } else if (look === 'silo') {
+      // Silo : emprise ronde, toit en cône.
+      tri.col = colorOf(roofPick('flat', look, region, seed >>> 8));
+      let sx = 0, sz = 0;
+      for (const p of rings[0]) { sx += p.x; sz += p.z; }
+      roofCone(rings[0], H, sx / rings[0].length, H + Math.max(0.9, Math.sqrt(area / Math.PI) * 0.6), sz / rings[0].length);
     } else {
-      const flatList = home || use === 'shed' ? ROOFS.flat[region] : ROOFS[use];
-      tri.col = colorOf(pick(flatList, seed >>> 8));
+      tri.col = colorOf(roofPick('flat', look, region, seed >>> 8));
       const contour = rings[0].map((p) => new THREE.Vector2(p.x, p.z));
       const holes = rings.slice(1).map((r) => r.map((p) => new THREE.Vector2(p.x, p.z)));
       const flat = contour.concat(...holes);
@@ -927,21 +616,26 @@ export function buildingsGeometry(buildings, floorOf = null) {
         const a = flat[i0], bb = flat[i1], cc = flat[i2];
         roofTri(a.x, H, a.y, bb.x, H, bb.y, cc.x, H, cc.y);
       }
-      if (area >= 400 && parapet) {
-        // Édicule (cage d'escalier, machinerie : 3 × 3 × 2,5 m) à 3,5 m du centre sur le grand axe, s'il y tient en
-        // entier : le centre du toit reste libre pour le drapeau du refuge (base-view.js, mât au centre du bâtiment).
+      const edicule = area >= 400 && parapet;
+      const details = parapet && (rf.tank || rf.machines || rf.mast || rf.solar || rf.dish);
+      if (edicule || details) {
         const r = orientedRect(rings[0]);
         const cx = b.cx ?? r?.cx, cz = b.cz ?? r?.cz;
         if (r && Number.isFinite(cx) && Number.isFinite(cz)) {
           const vx = -r.uz, vz = r.ux;
-          for (const off of [EDICULE_SHIFT, -EDICULE_SHIFT]) {
-            const ex = cx + r.ux * off, ez = cz + r.uz * off;
-            let fits = true;
-            for (const [sa, sc] of [[-2, -2], [2, -2], [2, 2], [-2, 2], [0, 0]]) {
-              if (!insideRings(ex + r.ux * sa + vx * sc, ez + r.uz * sa + vz * sc, rings)) { fits = false; break; }
+          if (edicule) {
+            // Édicule (cage d'escalier, machinerie : 3 × 3 × 2,5 m) à 3,5 m du centre sur le grand axe, s'il y tient en
+            // entier : le centre du toit reste libre pour le drapeau du refuge (base-view.js, mât au centre du bâtiment).
+            for (const off of [EDICULE_SHIFT, -EDICULE_SHIFT]) {
+              const ex = cx + r.ux * off, ez = cz + r.uz * off;
+              let fits = true;
+              for (const [sa, sc] of [[-2, -2], [2, -2], [2, 2], [-2, 2], [0, 0]]) {
+                if (!insideRings(ex + r.ux * sa + vx * sc, ez + r.uz * sa + vz * sc, rings)) { fits = false; break; }
+              }
+              if (fits) { roofBox(ex, ez, r.ux, r.uz, 1.5, 1.5, H, H + 2.5, wall, tri.col); break; }
             }
-            if (fits) { roofBox(ex, ez, r.ux, r.uz, 1.5, 1.5, H, H + 2.5, wall, tri.col); break; }
           }
+          if (details) flatRoofDetails({ rect: r, cx, cz, inside: (x, z) => insideRings(x, z, rings), H, seed: seed >>> 4, region, col: colorOf, rf });
         }
       }
     }

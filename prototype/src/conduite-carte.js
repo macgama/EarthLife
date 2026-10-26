@@ -13,7 +13,7 @@ export function createDriveMap({ root, cities = [], onGo }) {
   const $ = (sel) => root.querySelector(sel);
   const mapEl = $('#drive-map'), rangeEl = $('#drive-range'), destEl = $('#drive-dest'), costEl = $('#drive-cost');
   const goBtn = $('#drive-go'), closeBtn = $('#drive-close'), listEl = $('#drive-list');
-  let map = null, gl = null, destMarker = null, carMarker = null, state = null, opened = false, nameCtrl = null, token = 0;
+  let map = null, gl = null, destMarker = null, carMarker = null, cityMarkers = [], state = null, opened = false, nameCtrl = null, token = 0;
 
   function setDest(text, tone = '') {
     destEl.textContent = text;
@@ -62,6 +62,25 @@ export function createDriveMap({ root, cities = [], onGo }) {
     } else destMarker.setLngLat([pt.lon, pt.lat]);
   }
 
+  // Villes ouvertes de ta saison (state.cities, en saison seulement) : un repère par ville, plein si le sauvetage y a commencé (un joueur établi),
+  // pâle sinon ; toucher le repère choisit la ville comme destination.
+  function placeCities(here) {
+    for (const c of here.cities ?? []) {
+      if (!Number.isFinite(c?.lat) || !Number.isFinite(c?.lon) || !c.name) continue;
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = 'drive-pin-city';
+      el.dataset.started = String(!!c.started && !c.lost);
+      el.dataset.city = c.name;
+      el.setAttribute('aria-label', c.note ? `${c.name} · ${c.note}` : c.name);
+      const tag = document.createElement('span');
+      tag.textContent = c.name;
+      el.append(tag);
+      el.addEventListener('click', (e) => { e.stopPropagation(); choose({ lat: c.lat, lon: c.lon }, { name: c.name }); });
+      cityMarkers.push(new gl.Marker({ element: el }).setLngLat([c.lon, c.lat]).addTo(map));
+    }
+  }
+
   function listCities() {
     listEl.textContent = '';
     const seen = new Set();
@@ -76,7 +95,7 @@ export function createDriveMap({ root, cities = [], onGo }) {
       b.type = 'button';
       b.className = 'secondary';
       b.dataset.city = c.name;
-      b.textContent = `${c.name} · ${distanceText(d)} à vol d’oiseau`;
+      b.textContent = `${c.name} · ${distanceText(d)} à vol d’oiseau${c.note ? ` · ${c.note}` : ''}`;
       b.addEventListener('click', () => choose({ lat: c.lat, lon: c.lon }, { name: c.name }));
       li.append(b);
       listEl.append(li);
@@ -110,6 +129,7 @@ export function createDriveMap({ root, cities = [], onGo }) {
         const el = document.createElement('div');
         el.className = 'drive-pin drive-pin-car';
         carMarker = new gl.Marker({ element: el }).setLngLat([here.from.lon, here.from.lat]).addTo(map);
+        placeCities(here);
         root.dataset.map = 'ready';
       });
       map.on('click', (e) => choose({ lat: e.lngLat.lat, lon: e.lngLat.lng }));
@@ -137,7 +157,9 @@ export function createDriveMap({ root, cities = [], onGo }) {
   function releaseMap() {
     destMarker?.remove();
     carMarker?.remove();
+    for (const m of cityMarkers) m.remove();
     destMarker = carMarker = null;
+    cityMarkers = [];
     try { map?.remove(); } catch { /* déjà défaite */ }
     map = null;
   }

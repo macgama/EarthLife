@@ -44,3 +44,37 @@ export function especeArbre(lat, dense, r) {
   }
   return 'feuillu';
 }
+
+// ---------- Style des bâtiments selon la position réelle ----------
+// Façades, toits et détails (scene.js, batiment-style.js) suivent la région du lieu : huit styles. Les rectangles
+// sont lus dans l'ordre, le premier qui contient le point gagne ; rien à charger. « monde » est le style de repli.
+export const STYLES = ['sud', 'nord', 'monde', 'alpes', 'brique', 'est', 'asie', 'adobe'];
+// [latMin, latMax, lonMin, lonMax, style]
+const ZONES_STYLE = [
+  // Alpes et Suisse : chalets, bois sur crépi, grands avant-toits.
+  [45.6, 47.9, 5.9, 13.9, 'alpes'],
+  // Brique du Nord-Ouest : Îles britanniques, Benelux, Allemagne du Nord, Danemark, Pologne côtière à l'ouest de l'Oder.
+  [49.8, 61, -11, 2, 'brique'],
+  [50.6, 56, 2, 10.5, 'brique'],
+  // Nord-Est des États-Unis et Canada voisin : brique des maisons mitoyennes et des immeubles.
+  [38.5, 46, -80.5, -66.5, 'brique'],
+  // Europe de l'Est : barres de béton, crépis pastel.
+  [41.5, 66, 17.5, 65, 'est'],
+  // Asie orientale et du Sud-Est : béton clair, balcons grillagés, réservoirs sur les toits.
+  [-11, 53, 97, 146, 'asie'],
+  // Ceinture aride : Maghreb, Moyen-Orient, Iran, Asie centrale du Sud ; Mexique et Sud-Ouest des États-Unis.
+  [12, 36, -17.5, 72, 'adobe'],
+  [14, 36.5, -118.5, -96, 'adobe'],
+  // Europe du Sud : crépis chauds, tuiles, volets.
+  [35, 46.5, -10, 30, 'sud'],
+  // Europe du Nord et du Centre : crépis clairs, ardoise, brique par endroits.
+  [46.5, 61, -11, 40, 'nord'],
+];
+
+// Région (style de bâtiments) du point (lat, lon).
+export function regionOf(lat, lon) {
+  for (const [a, b, c, d, style] of ZONES_STYLE) {
+    if (lat >= a && lat < b && lon >= c && lon <= d) return style;
+  }
+  return 'monde';
+}
