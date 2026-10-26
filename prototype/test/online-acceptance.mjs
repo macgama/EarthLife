@@ -3309,7 +3309,7 @@ await scenario('O37', 'amis : donner et retirer depuis le sac', async () => {
     let lose = true;
     await A.ctx.route('**/v1/friends/give', async (route) => {
       stored.push(await A.page.evaluate(() => window.__earthlife.saveStore.storedText).catch(() => ''));
-      if (lose) { lose = false; await route.fetch(); await route.abort('failed'); } else await route.continue();
+      if (lose) { await route.fetch(); await route.abort('failed'); } else await route.continue();      // la requête arrive, la réponse se perd : tant que `lose` tient
     });
     const netDone = expectNet(A);
     await click(A, '#finds .tv-slot[data-side="bag"][data-key="conserve"]');
@@ -3327,17 +3327,22 @@ await scenario('O37', 'amis : donner et retirer depuis le sac', async () => {
     check((await bagOf(A)).conserve === 4, `A : 2 conserves ont quitté le sac (${(await bagOf(A)).conserve})`);
     // La requête n'est vue (et la partie lue) qu'après un temps d'image de la page : on attend la réponse perdue avant de lire ce qui a été relevé.
     check(!!(await until(A, () => /gardés/.test(document.querySelector('#finds .tv-msg')?.textContent ?? '') || null, null, 30000)), 'A : la fenêtre dit que le serveur ne répond pas et que les objets sont gardés');
-    check(stored.length === 1 && /"gifts":\{"out":\[\{"gid":"[0-9a-f]{32}"/.test(stored[0]), `A : la partie écrite contenait déjà le don quand la requête est partie (${stored.length} requête(s) vue(s))`);
+    // Le jeu renvoie aussi de lui-même (compte reconnecté, état de la copie en ligne) : une ou plusieurs requêtes, la première porte la partie déjà écrite.
+    check(stored.length >= 1 && /"gifts":\{"out":\[\{"gid":"[0-9a-f]{32}"/.test(stored[0]), `A : la partie écrite contenait déjà le don quand la requête est partie (${stored.length} requête(s) vue(s))`);
     const box1 = (await ask('a', 'box')).body;
     check(box1.outgoing?.length === 1 && box1.outgoing[0].items.conserve === 2, `serveur : un seul dépôt de A (${box1.outgoing?.length})`);
     const row1 = await rowsOf(A);
     check(row1.some((r) => /En route vers/.test(r.text) && r.btn === null), `A : la ligne « En route vers… » sans bouton (${row1.map((r) => r.text).join(' | ')})`);
-    netDone();
-    // ---- A referme et rouvre le sac : le don repart avec la même clé, le serveur ne dépose rien de plus ----
+    // Un renvoi de plus, réponse encore perdue : même clé, le serveur ne dépose rien de plus et le don reste en route.
+    await ev(A, () => window.__earthlife.depot.replay());
+    check((await ask('a', 'box')).body.outgoing?.length === 1 && (await ev(A, () => window.__earthlife.save.gifts.out.length)) === 1, 'A : un renvoi de plus (réponse perdue) ne dépose rien de plus et le don reste inscrit');
+    // ---- A referme et rouvre le sac, la réponse n'est plus perdue : le don repart avec la même clé, le serveur ne dépose rien de plus ----
+    lose = false;
     await click(A, '#finds [data-tv="close"].tv-x');
     check(!(await ev(A, () => window.__earthlife.finds.isOpen())), 'A : le sac se ferme');
     await click(A, '#bag-open');
     check(!!(await until(A, () => window.__earthlife.save.gifts?.out?.length === 0 || null, null, 30000)), 'A : à la réouverture, le don est confirmé (plus rien en route)');
+    netDone();
     const box2 = (await ask('a', 'box')).body;
     check(box2.outgoing?.length === 1, `serveur : toujours un seul dépôt après le renvoi (${box2.outgoing?.length})`);
     check(!!(await until(A, () => [...document.querySelectorAll('#finds .tv-dep li')].some((li) => /Pour .*2 conserves/.test(li.innerText)) || null, null, 20000)), 'A : la ligne « Pour … : 2 conserves » avec « Reprendre »');

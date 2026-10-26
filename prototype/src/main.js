@@ -271,9 +271,12 @@ if (onlineOn) {
   });
   online.on('session', () => account.sessionRefused());
   // Connexion ou déconnexion : le bloc « Saison 1 » du menu relit l'inscription.
+  let wasIn = false;                                                            // les dons non confirmés repartent à l'arrivée du compte, pas à chaque changement d'état de la copie en ligne
   account.on('state', () => {
-    if (account.state !== 'in') { resetFriendsLive(); depot.reset(); }
-    else setTimeout(() => depot.replay(), 0);                                   // dons partis sans réponse : ils repartent dès que le compte est là
+    const isIn = account.state === 'in';
+    if (!isIn) { resetFriendsLive(); depot.reset(); }
+    else if (!wasIn) setTimeout(() => depot.replay(), 0);
+    wasIn = isIn;
     city.seasonChanged();
     // Connexion faite pour accepter une invitation d'ami : la carte revient quand le formulaire du compte s'est refermé.
     if (friendWait.get()) setTimeout(() => { renderFriendsMenu(); offerPendingFriend(); }, 800);
