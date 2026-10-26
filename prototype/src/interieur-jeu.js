@@ -1,9 +1,9 @@
 // Intérieur des bâtiments dans la partie : ouverture à la porte, sortie, fouille pièce par pièce, poursuite des zombies par les
 // portes. Règles du plan dans interieur.js, dessin dans interieur-view.js ; ici, l'état de la session (`s.interior`), la grille
-// d'occupation (`grid.interior`) et la sauvegarde des pièces fouillées. main.js garde le butin, l'embuscade et les textes.
+// d'occupation (`grid.interior`) et la sauvegarde des pièces fouillées. main.js garde le butin, les zombies qui logent et les textes.
 import {
   planFor, doorPoint, INTERIEUR, LAB, labAt, roomAt, nearSearch, searchSpot, overlayOf, outsideBuilding, steerZombie, roomSearchTime,
-  shaderRing, planBounds,
+  shaderRing, planBounds, roamStep,
 } from './interieur.js';
 import { markRoom, searchRooms, searchedWhole } from './save.js';
 import { buildingFloor } from './terrain.js';
@@ -13,9 +13,9 @@ import { groundAt, lineFree, isFree, canLeave, nearestFit } from './collision.js
 const IDLE_CLOSE = 5;
 const FAR_CLOSE = 8;
 
-// host : { view (interieur-view.js), enabled, save, maxAge (ms), searchTime (s), onClose(s, it), onExit(s, it) (le joueur est ressorti
-// à pied), radius (m, rayon du joueur) }
-export function createInteriorGame({ view, enabled, save, maxAge, searchTime, onClose = null, onExit = null, radius = 0.4 }) {
+// host : { view (interieur-view.js), enabled, save, maxAge (ms), searchTime (s), onEnter(s, it) (le joueur vient de passer le seuil),
+// onClose(s, it), onExit(s, it) (le joueur est ressorti à pied), radius (m, rayon du joueur) }
+export function createInteriorGame({ view, enabled, save, maxAge, searchTime, onEnter = null, onClose = null, onExit = null, radius = 0.4 }) {
   const now = () => Date.now();
 
   // L'ouverture et la fermeture changent les règles de collision sous les pieds du joueur : la grille d'origine (cases de 1 m, rayon
@@ -104,13 +104,15 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
     const it = {
       b, index, plan, floorY, entered: false, idle: 0, buildMs: performance.now() - t0, openedAt: now(),
       steer: (zb, player) => steerZombie(plan, zb, player, (x0, z0, x1, z1) => lineFree(s.grid, x0, z0, x1, z1, 0.5)),
+      roam: (zb, dt) => roamStep(plan, zb, dt, Math.random, (x0, z0, x1, z1) => lineFree(s.grid, x0, z0, x1, z1, 0.5)),
     };
     s.interior = it;
     unstick(s, plan);
     return true;
   }
 
-  // Zombies restés dans le contour quand l'intérieur se défait : ils sortent par la porte (jamais emmurés).
+  // Zombies restés dans le contour quand l'intérieur se défait : ceux qui logent et ne chassent pas disparaissent avec le plan (ils
+  // sont de nouveau là à la prochaine entrée) ; les autres sortent par la porte (jamais emmurés).
   function evict(s, it) {
     const { plan } = it;
     const e = plan.entry;
@@ -118,6 +120,7 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
     for (let i = zombies.length - 1; i >= 0; i--) {
       const z = zombies[i];
       if (z.dead || labAt(plan, z.x, z.z) === LAB.OUT) continue;
+      if (z.tags?.lodger && z.state !== 'chase') { s.director.removeWhere((o) => o === z); continue; }
       let placed = false;
       for (const d of [0, 0.8, 1.6, 2.4, 3.2]) {
         for (const side of [0, 0.8, -0.8]) {
@@ -148,7 +151,7 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
     if (it && s.player) {
       const p = s.player;
       if (!it.entered) {
-        if (labAt(it.plan, p.x, p.z) !== LAB.OUT) it.entered = true;
+        if (labAt(it.plan, p.x, p.z) !== LAB.OUT) { it.entered = true; onEnter?.(s, it); }
         else {
           it.idle += dt;
           const door = doorPoint(it.b);
@@ -202,6 +205,8 @@ export function createInteriorGame({ view, enabled, save, maxAge, searchTime, on
     planOf, roomDone, status, mark, roomsOf, open, close, update, doorAction, roomAction, isOpen,
     // Pour le directeur de zombies : point de passage de la poursuite, ou null.
     steerOf: (s) => s.interior?.steer ?? null,
+    // Pour le directeur de zombies : où va un zombie qui loge dans l'intérieur ouvert, ou null s'il n'y en a pas.
+    roamOf: (s) => s.interior?.roam ?? null,
     // Autres survivants : un survivant dans un bâtiment n'est vu qu'à la porte (silhouette), jamais dedans.
     doorOf: (b) => doorPoint(b),
     whole: (entry) => searchedWhole(entry, now(), maxAge),

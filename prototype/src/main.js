@@ -46,7 +46,7 @@ import { kindLabel, countsLabel, countOf, chestCap, moveItems, depositAll, prepa
 import { frontVector, nextNightChange, nightKey, utcOffsetFor, clockTargets, HORDE } from './horde.js';
 import { craft, canCraft, craftTime, craftNoise, fieldReady, RECIPES, recipeRows, rollPlan, PLAN_FOUND_TEXT } from './crafting.js';
 import { ambushCount, ambushSpots, ambushText } from './embuscade.js';
-import { rollRoomLoot, roomAmbushCount, ambushSpotsIn, roomTitle, clearPlanCache } from './interieur.js';
+import { rollRoomLoot, roomTitle, clearPlanCache, lodgerCount, lodgerSpots, LODGE } from './interieur.js';
 import { buildingResume, savedLine } from './reprise-batiment.js';
 import { createInteriorView } from './interieur-view.js';
 import { CAMERA as INTERIOR_CAMERA, alignedYaw, approachAngle, indoorView, centerWeight } from './interieur-lumiere.js';
@@ -582,7 +582,9 @@ const interiorView = createInteriorView(scene, { dark: INTERIOR_DARK });
 const interior = createInteriorGame({
   view: interiorView, enabled: INTERIOR_ON, save, maxAge: LIMITS.searchedMs, searchTime: SEARCH_TIME,
   // Sortie : le conseil du refuge qui attendait la fin de la fouille (« Déménager ici ») se dit dehors, devant la porte.
+  onEnter: lodge,
   onClose: (s, it) => {
+    unlodge(s, it);
     if (s.claimAfter === it.b.id && !s.refuge.inside && session === s) {
       s.claimAfter = null;
       claimHint(s, it.b, it.index);
@@ -1746,7 +1748,7 @@ function step(s, inp, dt) {
   const desired = Math.max(0, Math.min(targetZombieCount(s.mods, density), 60 - r.hordeAlive()));
   p.guard = gearStats(s.survivor).guard; // part des dégâts de morsure évitée par l'habillement (game.js)
   const events = s.director.update(dt, p, s.mods, {
-    isNight: s.isNight, desired, field: s.field, openings: r.directorOpenings(), centre: r.anchor(), steer: interior.steerOf(s),
+    isNight: s.isNight, desired, field: s.field, openings: r.directorOpenings(), centre: r.anchor(), steer: interior.steerOf(s), roam: interior.roamOf(s), muffle: LODGE.hearing,
   });
   if (events.some((e) => e.type === 'spotted') && !s.spottedRecently) {
     toast('Repéré !', 1, 'danger');
@@ -2271,7 +2273,6 @@ function finishRoom(s, a) {
   // Ville à sauver : une des pièces du bâtiment cachait peut-être un habitant (la chance de la pièce est celle du bâtiment divisée par ses pièces).
   const hab = city.rescueFrom(s, b, { parts: plan.rooms.length });
   const windowed = openFinds(s, { title: roomTitle(plan, a.arg), found, sub: other ? 'Un autre survivant est déjà passé : il restait peu de choses' : '', notes: hab ? [HABITANT_TEXT.found(hab.refuge)] : [] });
-  ambushRoom(s, plan, a.arg);
   if (tiles && after.whole && rollPlan(b.loot, save.profile)) toast(PLAN_FOUND_TEXT, 4, 'success');
   if (!windowed) pickLoot(s, roomTitle(plan, a.arg), found, other ? ' · il restait peu de choses' : '');
   if (hab && !windowed) toast(HABITANT_TEXT.found(hab.refuge), 3.5, 'success');
@@ -2284,17 +2285,31 @@ function finishRoom(s, a) {
   saveStore.markDirty();
 }
 
-// Embuscade d'une pièce : 1 ou 2 zombies sortent de la pièce voisine, par la porte (au fond de la pièce sans voisine) et chassent
-// aussitôt le joueur ; mêmes réglages que celle de la façade (rate, force des essais).
-function ambushRoom(s, plan, room) {
+// Zombies qui logent dans le bâtiment (interieur.js, LODGE) : le tirage de l'embuscade (embuscade.js) est fait une fois par bâtiment
+// et par partie, à l'entrée ; ils sont là dans d'autres pièces quand le joueur passe le seuil et se baladent de pièce en pièce (rien
+// ne sort d'un meuble). Ils disparaissent avec le plan quand le joueur ressort ; ceux qui le chassent (dehors) et ceux qu'il a abattus
+// ne reviennent plus. Dans une ville à sauver ils viennent du stock d'un pâté voisin (rien ne loge s'il n'en reste pas) et comptent à
+// leur mort. Les essais (?debug=1) les éteignent, sauf debug.ambush.
+function lodge(s, it) {
   if (s.refuge.inside) return;
-  const n = roomAmbushCount(plan, room, { hearing: s.mods.hearing, night: s.isNight, rate: ambushRate, force: ambushForce }, Math.random);
-  let out = 0;
-  for (const spot of ambushSpotsIn(plan, room, s.player, n)) {
-    const zb = s.director.spawnAt(spot.x, spot.z, 'errant', { ambush: true });
-    if (zb) { zb.state = 'chase'; out++; }
+  const { b, plan } = it;
+  const roster = (s.lodgings ??= new Map());
+  let house = roster.get(b.id);
+  if (!house) {
+    house = { n: lodgerCount(plan, { hearing: s.mods.hearing, night: s.isNight, rate: ambushRate, force: ambushForce }, Math.random), gone: 0 };
+    roster.set(b.id, house);
   }
-  if (out) toast(ambushText(out), 2, 'danger');
+  it.lodgers = [];
+  for (const spot of lodgerSpots(plan, s.player, house.n - house.gone)) {
+    const zb = s.director.spawnAt(spot.x, spot.z, 'errant', { lodger: true });
+    if (zb) it.lodgers.push(zb);
+    else house.gone++;
+  }
+}
+
+function unlodge(s, it) {
+  const house = s.lodgings?.get(it.b.id);
+  if (house) for (const zb of it.lodgers ?? []) if (zb.dead || zb.state === 'chase') house.gone++;
 }
 
 // Embuscade (src/embuscade.js) : la fouille terminée peut faire sortir un ou deux zombies par la façade, qui chassent
@@ -4261,7 +4276,7 @@ const debug = DEBUG ? {
     p.hurt = 0.35;
     return p.health;
   },
-  // Embuscades : `rate` multiplie leur probabilité (0 : aucune, par défaut en essai), `force` impose le nombre de zombies (0 à 2).
+  // Embuscades (façade) et zombies qui logent dans un bâtiment : `rate` multiplie leur probabilité (0 : aucun, par défaut en essai), `force` impose le nombre de zombies (0 à 2).
   ambush({ rate = ambushRate, force = null } = {}) {
     ambushRate = rate;
     ambushForce = force;

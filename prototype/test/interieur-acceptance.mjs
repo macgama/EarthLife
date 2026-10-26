@@ -2,8 +2,8 @@
 // (test/fixtures/offline-routes.mjs), crochets ?debug=1 avec ?interieur=1 (les essais gardent sinon la fouille de façade).
 //   node test/interieur-acceptance.mjs [dossier-des-captures]        (browser-shots/interieur par défaut)
 // Variables : ROUTES, PLAYWRIGHT_MODULE, PORT, ONLY (desktop, mobile ou reprise).
-// Déroulé : « Entrer » à la porte, l'intérieur s'ouvre ; fouille de deux pièces, chacune avec son butin et sa durée ; une embuscade
-// sort par la porte de la pièce voisine ; ressortir défait l'intérieur ; après un rechargement, les deux pièces restent
+// Déroulé : « Entrer » à la porte, l'intérieur s'ouvre ; un zombie loge dans une autre pièce et se balade (rien ne sort d'un
+// meuble) ; fouille de deux pièces, chacune avec son butin et sa durée, sans embuscade ; ressortir défait l'intérieur ; après un rechargement, les deux pièces restent
 // fouillées ; mesure du temps de construction d'un plan. Sans carte graphique (swiftshader) le jeu va jusqu'à trois fois
 // moins vite que la montre : on attend l'état du jeu, pas la montre.
 import http from 'node:http';
@@ -197,9 +197,45 @@ async function scenario(device) {
   check(await ev(page, () => window.__earthlife.session.grid.interior !== undefined), `${tag} : les murs entrent dans la grille d'occupation`);
   note(`${tag} : plan et vue construits en ${round(info0?.buildMs ?? -1)} ms`);
   // Le joueur franchit le seuil (1,2 m à l'intérieur) comme le fait la course : les collisions sont éprouvées par les essais unitaires.
-  await ev(page, (e) => { const p = window.__earthlife.session.player; Object.assign(p, { x: e.ix, z: e.iz, vx: 0, vz: 0 }); }, info0.entry);
+  // Un zombie loge dans le bâtiment (debug.ambush) ; le bouclier du joueur le laisse se balader sans le repérer.
+  await debug(page, 'ambush', { rate: 1, force: 1 });
+  await ev(page, (e) => { const p = window.__earthlife.session.player; Object.assign(p, { x: e.ix, z: e.iz, vx: 0, vz: 0, shield: 1e9 }); }, info0.entry);
   const entered = await until(page, () => window.__earthlife.debug.interior()?.entered || null, null, 10000);
   check(!!entered, `${tag} : le joueur est entré`);
+  await debug(page, 'ambush', { rate: 0 });
+  const lodgers = await until(page, () => window.__earthlife.session.director.zombies.filter((z) => z.tags?.lodger && !z.dead).length || null, null, 10000);
+  check(lodgers === 1, `${tag} : un zombie loge dans le bâtiment (${lodgers})`);
+  const lodge0 = await ev(page, async () => {
+    const int = await import('/src/interieur.js');
+    const s = window.__earthlife.session, { plan } = s.interior;
+    const z = s.director.zombies.find((q) => q.tags?.lodger);
+    return z && { inside: int.labAt(plan, z.x, z.z) !== int.LAB.OUT, room: int.roomAt(plan, z.x, z.z), mine: int.roomAt(plan, s.player.x, s.player.z), state: z.state, ambush: !!z.tags.ambush, x: z.x, z: z.z };
+  });
+  check(!!lodge0 && lodge0.inside && lodge0.room !== lodge0.mine && lodge0.state === 'wander' && !lodge0.ambush, `${tag} : il est dans une autre pièce que le joueur, à se balader (${JSON.stringify(lodge0)})`);
+  // (Les importations de modules ne passent pas dans un `waitForFunction` : on interroge la page à intervalles.)
+  let roamed = null;
+  for (const t0 = Date.now(); !roamed && Date.now() - t0 < 120000; await wait(400)) {
+    roamed = await ev(page, async (from) => {
+      const int = await import('/src/interieur.js');
+      const col = await import('/src/collision.js');
+      const s = window.__earthlife.session;
+      const z = s.director.zombies.find((q) => q.tags?.lodger);
+      if (!z || !s.interior) return null;
+      if (int.labAt(s.interior.plan, z.x, z.z) === int.LAB.OUT || !col.isFree(s.grid, z.x, z.z)) return { out: true };
+      return Math.hypot(z.x - from.x, z.z - from.z) > 2.5 && z.state === 'wander' ? { out: false, goal: !!z.roam?.goal } : null;
+    }, lodge0);
+  }
+  check(!!roamed && !roamed.out, `${tag} : il se balade dans le bâtiment, sans traverser de mur (${JSON.stringify(roamed)})`);
+  if (!roamed) note(`${tag} : logeur ${JSON.stringify(await ev(page, () => { const z = window.__earthlife.session.director.zombies.find((q) => q.tags?.lodger); return z && { x: z.x, z: z.z, state: z.state, roam: z.roam, hit: z.hit, shield: window.__earthlife.session.player.shield }; }))}`);
+  // Sans bouclier, un logeur tout près du joueur, en vue directe, le chasse.
+  await ev(page, () => {
+    const s = window.__earthlife.session, z = s.director.zombies.find((q) => q.tags?.lodger), p = s.player;
+    p.shield = 0;
+    Object.assign(z, { x: p.x + 1.2 * Math.sin(p.yaw), z: p.z + 1.2 * Math.cos(p.yaw), state: 'wander' });
+  });
+  check(!!(await until(page, () => window.__earthlife.session.director.zombies.some((z) => z.tags?.lodger && z.state === 'chase') || null, null, 20000)), `${tag} : un logeur qui voit le joueur de près le chasse`);
+  await clearZombies(page);
+  await ev(page, () => { window.__earthlife.session.player.health = 100; });
   // Vue de dessus : la caméra se redresse et se met d'aplomb sur le plan, le noir s'ouvre ; la lampe éclaire le joueur, pas ce qui est loin
   // derrière lui. (La caméra et le noir s'ouvrent en 0,45 s de temps de jeu, bien plus sous swiftshader.)
   const top = await until(page, () => { const t = window.__earthlife.debug.interior()?.top; return t && t.k >= 0.99 && t.dark ? t : null; }, null, 90000);
@@ -250,31 +286,19 @@ async function scenario(device) {
   check(left.done === 1 && !left.whole, `${tag} : « 1 pièce sur ${spot.total} fouillée » (${JSON.stringify(left)})`);
   check(!(await ev(page, () => window.__earthlife.session.interior === null)), `${tag} : l'intérieur reste ouvert pendant la fouille`);
 
-  await debug(page, 'ambush', { rate: 1, force: 1 });
+  // Fouiller ne fait plus rien sortir d'un meuble : même avec l'embuscade forcée, aucun zombie ne paraît, aucune notification.
+  await debug(page, 'ambush', { rate: 1, force: 2 });
   const stand2 = await standNear(page, r2.i);
   check(!!stand2, `${tag} : à portée du meuble de « ${r2.name} »`);
   await wait(300);
   const f2 = await searchRoom(page, device, r2.slot, `${tag} : ${r2.name}`, { keepZombies: true });
   check(f2.done, `${tag} : « ${r2.name} » fouillée (${round(f2.time ?? 0)} s de temps de jeu)`);
-  const amb = await ev(page, async () => {
-    const int = await import('/src/interieur.js');
-    const col = await import('/src/collision.js');
-    const s = window.__earthlife.session;
-    const { plan } = s.interior;
-    const zs = s.director.zombies.filter((z) => z.tags?.ambush && !z.dead);
-    return {
-      n: zs.length,
-      rooms: zs.map((z) => int.roomAt(plan, z.x, z.z)),
-      mine: int.roomAt(plan, s.player.x, s.player.z),
-      chase: zs.every((z) => z.state === 'chase'),
-      near: Math.max(0, ...zs.map((z) => Math.hypot(z.x - s.player.x, z.z - s.player.z))),
-      blocked: zs.map((z) => !col.lineFree(s.grid, z.x, z.z, s.player.x, s.player.z)),
-    };
-  });
-  check(amb.n >= 1 && amb.chase && amb.near < 10, `${tag} : ${amb.n} zombie(s) d'embuscade à la chasse, à ${round(amb.near)} m au plus`);
-  check(amb.rooms.every((r) => r >= 0 && r !== amb.mine), `${tag} : ils sortent d'une autre pièce (pièces ${JSON.stringify(amb.rooms)}, joueur dans ${amb.mine})`);
-  check(!!(await toastSeen(page, 'Embuscade', TOAST_WAIT)), `${tag} : notification d'embuscade`);
-  await shot(page, `${device}-04-embuscade`);
+  const quiet = await ev(page, () => ({
+    zombies: window.__earthlife.session.director.zombies.filter((z) => !z.dead && (z.tags?.ambush || z.tags?.lodger)).length,
+    toast: window.__seen.toasts.some((t) => t.startsWith('Embuscade')),
+  }));
+  check(quiet.zombies === 0 && !quiet.toast, `${tag} : la fouille ne fait sortir aucun zombie (${JSON.stringify(quiet)})`);
+  await shot(page, `${device}-04-fouille`);
   await debug(page, 'ambush', { rate: 0 });
   await clearZombies(page);
   const s2 = await ev(page, (id) => JSON.parse(JSON.stringify(window.__earthlife.save.searched[id] ?? null)), spot.id);
