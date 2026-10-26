@@ -9,6 +9,7 @@ import { buildingFloor } from './terrain.js';
 import { createWorldStore, createTileLoader, useProceduralWorld, tileTemplate, addFeatures } from './world.js';
 import { DEM_ATTRIBUTION } from './dem.js';
 import { createChunkManager, VIEW_RADIUS, GROUND_DETAILS, setRuesDetail } from './chunks.js';
+import { bakeStats } from './ombres-sol.js';
 import {
   createSurvivor, updateSurvivor, rollLoot, addLoot, useBest, ITEMS, WEAPONS, weaponDamage, CONSUMABLE_KEYS, wakeAfterDeath,
   offlineRecovery, fatigueEffects, wearWeapon, deathPenalty, discardText, discardedBy, equipFrom, bagUsed, bagCapacity, wornKey,
@@ -1404,7 +1405,14 @@ function playerLatLon(s) {
   return s.player ? s.store.proj.toLatLon(s.player.x, s.player.z) : s.place;
 }
 
+// ?soleil=altitude,azimut (degrés) impose le soleil pour une visite : aube, soir, soleil bas (captures, essais).
+const FORCED_SUN = (() => {
+  const [altitude, azimuth] = (params.get('soleil') ?? '').split(',').map(Number);
+  return Number.isFinite(altitude) && Number.isFinite(azimuth) ? { altitude: Math.max(-90, Math.min(90, altitude)), azimuth: ((azimuth % 360) + 360) % 360 } : null;
+})();
+
 function currentSun() {
+  if (FORCED_SUN) return { ...FORCED_SUN };
   const t = $('time-mode').value;
   if (t === 'day') return { altitude: 50, azimuth: 180 };
   if (t === 'night') return { altitude: -30, azimuth: 0 };
@@ -1423,7 +1431,8 @@ function applyConditions() {
   // Prochain coucher ou lever du soleil réel (« nuit dans 1 h 34 »), relu une fois par minute.
   const at = playerLatLon(session);
   session.dayChange = $('time-mode').value === 'live' ? nextNightChange(Date.now(), at.lat, at.lon) : undefined;
-  atmosphere.setConditions({ weather, sunAltitude: sun.altitude, sunAzimuth: sun.azimuth });
+  // Vraie lune et vraies étoiles au lieu du joueur quand l'heure est la vraie ; heure imposée : lune de remplacement.
+  atmosphere.setConditions({ weather, sunAltitude: sun.altitude, sunAzimuth: sun.azimuth, at: $('time-mode').value === 'live' && !FORCED_SUN ? at : null });
   session.chunks.setWeather(weather.kind);
   cutaway.night.value = session.isNight ? 1 : sun.altitude < 2 ? 0.5 : 0;
   renderConditions();
@@ -3253,6 +3262,7 @@ function syncScene(s, dt) {
   fogView.low = pose.k; fogView.danger = danger;
   if (basse) { fogView.lowDist = basse.dist; fogView.lowPitch = basse.pitch; fogView.lowFov = basse.fov; }
   atmosphere.setView(fogView);
+  atmosphere.seeSky(camera);
 
   // Joueur et zombies : marche, coups, éclairs, ombres de contact ; puis petite secousse de caméra
   // quand un coup porte ou qu'un zombie mord (aucune en mouvement réduit). Au refuge, le joueur est caché.
@@ -4411,7 +4421,7 @@ const debug = DEBUG ? {
 // Accès pour les tests automatisés.
 window.__earthlife = {
   get session() { return session; }, get save() { return save; }, get refuge() { return session?.refuge ?? null; },
-  saveStore, picker, renderer, finds, dressing, ...(debug ? { debug, online, input, tirView, effectsView, characters, cars, driveMap, propsView, floreView, groundDetail, son, depot } : {}),
+  saveStore, picker, renderer, finds, dressing, ...(debug ? { debug, atmosphere, shadowBake: bakeStats, online, input, tirView, effectsView, characters, cars, driveMap, propsView, floreView, groundDetail, son, depot } : {}),
   // Compte (essais, ?debug=1) : état sans session ni adresse, synchronisation immédiate.
   ...(debug ? { account: { debug: () => account.debug(), syncNow: () => account.syncNow(), get state() { return account.state; } } } : {}),
   // Sauver sa ville : le jeu de la ville (écran), la ville de la partie, le territoire et les fiches de communes.

@@ -1,11 +1,18 @@
 // Ciel, lumière du soleil réel (de la lune la nuit), brouillard, pluie, neige, éclairs et lampe torche.
 import * as THREE from 'three';
 import { daylight } from './sun.js';
-import { setWorldWeather } from './scene.js';
+import { setWorldWeather, weatherLook } from './scene.js';
 import { ZOOM, fogRange } from './view.js';
 import { fogRangeBasse } from './camera-basse.js';
+import { createSky, setSkyLook } from './sky.js';
+import { CLOUD, cloudsInit, setClouds, advanceClouds, setCloudsEnabled } from './nuages.js';
+import { moonPosition, stagedMoon } from './moon.js';
+import { LUMIERE } from './lumiere.js';
+import { setShadowLook } from './ombres-sol.js';
 
 const DEG = Math.PI / 180;
+const SKY_MARGIN = 10; // degrés sous l'horizon du haut de l'image au-delà desquels le ciel n'est plus dessiné
+const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 // La ville n'est construite qu'autour du joueur : le brouillard en cache le bord, à toute distance de la caméra (setView).
 export function createAtmosphere(scene, { lowPower }) {
@@ -44,6 +51,10 @@ export function createAtmosphere(scene, { lowPower }) {
 
   scene.fog = new THREE.Fog(0xa9cde8, 150, 700);
   scene.background = new THREE.Color(0xa9cde8);
+  // Ciel (dôme dessiné seulement là où rien ne le cache) et nuages (ciel et ombres au sol) : sky.js, nuages.js.
+  cloudsInit();
+  setCloudsEnabled(LUMIERE.sky);
+  const dome = LUMIERE.sky ? createSky(scene) : null;
   // Vue de la caméra (zoom, src/view.js) ; avec la visibilité selon le temps (state.visibility), elle donne le
   // brouillard (applyFog).
   // Vue basse (camera-basse.js) : part de la vue basse (0 à 1), distance, tangage et champ vus, alerte ou vague en cours.
@@ -82,6 +93,9 @@ export function createAtmosphere(scene, { lowPower }) {
   seedParticles(rainDrops, 3);
 
   const state = { weather: null, daylight: 1, flash: 0, nextFlash: 4, onLightning: null, isNight: false, sunDir: new THREE.Vector3(0, 1, 0), visibility: 650 };
+  // Sol et toits : neige (couverture 0 à 1, selon l'épaisseur réelle) et humidité (pluie en cours ou récente). Ils s'installent
+  // et se retirent peu à peu ; à la première lecture, l'état voulu est pris tout de suite (pas de neige qui tombe au chargement).
+  const look = { snow: 0, wet: 0, rain: 0, snowTarget: 0, wetTarget: 0, rainTarget: 0 };
   // Palette du guide de style (§ 9.1) : un peu moins saturée et plus froide, pour que l'orange ressorte.
   const colors = {
     day: new THREE.Color(0x9cc3dc), overcast: new THREE.Color(0x9aa4ad), night: new THREE.Color(0x0e1626),
@@ -91,7 +105,10 @@ export function createAtmosphere(scene, { lowPower }) {
   };
   const tmp = new THREE.Color(), tmp2 = new THREE.Color();
 
-  function setConditions({ weather, sunAltitude, sunAzimuth }) {
+  // `at` ({ lat, lon }) et `date` donnent la vraie lune et les vraies étoiles ; sans lieu (heure imposée pour un essai), une lune de
+  // remplacement à l'opposé du soleil.
+  function setConditions({ weather, sunAltitude, sunAzimuth, at = null, date = new Date() }) {
+    const first = !state.weather;
     state.weather = weather;
     state.daylight = daylight(sunAltitude);
     state.isNight = sunAltitude < -4;
@@ -138,16 +155,29 @@ export function createAtmosphere(scene, { lowPower }) {
     lantern.intensity = state.daylight < 0.4 ? 22 * (1 - state.daylight) : 0;
     // Pluie un peu moins blanche la nuit, pour ne pas griser toute la vue.
     rain.material.opacity = state.isNight ? 0.4 : 0.55;
-    setWorldWeather(w.kind);
 
-    // Sol blanc quand il neige, plus sombre quand il pleut.
-    if (groundMaterials) {
-      for (const [mat, base] of groundMaterials) {
-        mat.color.setHex(base);
-        if (w.kind === 'snow') mat.color.lerp(new THREE.Color(0xf4f7fb), 0.75);
-        if (w.kind === 'rain' || w.kind === 'storm') mat.color.multiplyScalar(0.78);
-      }
+    // Sol et toits : neige installée (épaisseur réelle, ou chute en cours) et sol mouillé (pluie en cours ou des heures passées).
+    const depthCover = smooth(0, 0.05, w.snowDepth ?? 0);
+    look.snowTarget = Math.max(depthCover, w.kind === 'snow' ? 0.6 + 0.4 * (w.intensity ?? 0.5) : 0);
+    look.rainTarget = wet ? Math.max(0.3, w.intensity ?? 0.5) : 0;
+    look.wetTarget = wet ? 1 : Math.min(0.75, smooth(0, 1.5, w.recentRain ?? 0) * 0.75);
+    if (w.kind === 'snow') look.wetTarget = Math.min(look.wetTarget, 0.3);
+    // Sans la lumière nouvelle (?lumiere=0) : tout ou rien, comme avant.
+    if (!LUMIERE.all) { look.snowTarget = w.kind === 'snow' ? 1 : 0; look.wetTarget = wet ? 1 : 0; look.rainTarget = 0; }
+    if (first || !LUMIERE.all) { look.snow = look.snowTarget; look.wet = look.wetTarget; look.rain = look.rainTarget; }
+    pushLook(sky);
+
+    // Nuages réels (couverture, vent) : ombres sur le sol et les toits, et le champ que le ciel dessine.
+    const cover = Math.min(1, Math.max(0, (w.cloudCover ?? 0) / 100));
+    // Ombre de nuage : moins nette soleil bas, nulle sous un ciel couvert (lumière diffuse) et sans nuage (plus de lecture du tout).
+    const shade = cover > 0.02 ? CLOUD.shadowMax * state.daylight * (0.4 + 0.6 * smooth(5, 35, sunAltitude)) * (1 - smooth(0.6, 0.97, cover)) : 0;
+    setClouds({ cover, windDirection: w.windDirection, windKmh: w.windKmh, sunDir: state.sunDir, shade, soft: 0.08 + 0.1 * cover });
+    if (dome) {
+      const moonNow = at ? moonPosition(date, at.lat, at.lon) : stagedMoon(sunAltitude, sunAzimuth);
+      setSkyLook(dome, { horizon: sky, daylight: state.daylight, sunAltitude, sunAzimuth, overcast, duskAmount, kind: w.kind, sunCol: sun.color, moon: moonNow, date, lat: at?.lat, lon: at?.lon });
     }
+    // Fausses ombres des téléphones (ombres-sol.js) : même soleil et mêmes proportions de lumière que le rendu.
+    setShadowLook({ sunDir: state.sunDir, direct: sun.intensity, ambient: hemi.intensity, overcast, daylight: state.daylight, enabled: LUMIERE.shadows && lowPower });
     rain.visible = w.kind === 'rain' || w.kind === 'storm';
     snow.visible = w.kind === 'snow';
     const visibleRain = Math.floor(rainCount * Math.max(0.3, w.intensity ?? 0.5));
@@ -191,15 +221,47 @@ export function createAtmosphere(scene, { lowPower }) {
     shadowFor(view.dist);
   }
 
+  // Le dôme n'est dessiné que si le haut de l'image peut montrer le ciel (vue basse) : en vue de dessus il resterait derrière le
+  // sol, mais le dessiner coûterait quand même un passage sur tout l'écran (mesuré : un huitième du temps d'image en rendu logiciel).
+  const _dir = new THREE.Vector3();
+  function seeSky(camera) {
+    if (!dome) return;
+    camera.getWorldDirection(_dir);
+    dome.mesh.visible = Math.asin(_dir.y) + (camera.fov * DEG) / 2 > -SKY_MARGIN * DEG;
+  }
+
   // Sous un toit (intérieur ouvert) : ni pluie, ni neige, ni cône de lampe ; la lumière du monde ne change pas.
   let indoor = false;
   function setIndoor(on) {
     indoor = !!on;
   }
 
+  // La neige s'installe en une minute et fond en dix ; le sol se mouille en quelques secondes et sèche en quelques minutes.
+  function easeLook(dt) {
+    let moved = false;
+    const step = (key, up, down) => {
+      const goal = look[`${key}Target`], d = goal - look[key];
+      if (Math.abs(d) < 1e-3) { if (d !== 0) { look[key] = goal; moved = true; } return; }
+      look[key] += d * (1 - Math.exp(-dt / (d > 0 ? up : down)));
+      moved = true;
+    };
+    step('snow', 60, 600);
+    step('wet', 20, 240);
+    step('rain', 4, 8);
+    if (moved) pushLook(null);
+  }
+  const pushLook = (horizon) => {
+    setWorldWeather(state.weather.kind, { snow: look.snow, wet: look.wet, rain: look.rain, sky: horizon, glow: 0.05 + 0.2 * state.daylight });
+  };
+
   function update(dt, focus, playerYaw) {
     const w = state.weather;
     if (!w) return;
+    easeLook(dt);
+    advanceClouds(dt);
+    weatherLook.time.value = (weatherLook.time.value + dt) % 3600;
+    dome?.follow(focus);
+    if (dome) dome.uniforms.uFlash.value = state.flash * 0.5;
     rain.visible = (w.kind === 'rain' || w.kind === 'storm') && !indoor;
     snow.visible = w.kind === 'snow' && !indoor;
     beam.visible = torch.intensity > 0 && !indoor;
@@ -279,7 +341,7 @@ export function createAtmosphere(scene, { lowPower }) {
     groundMaterials = mats.map((m) => [m, m.color.getHex()]);
   }
 
-  return { state, setConditions, setView, update, endFrame, setGroundMaterials, setRelief, setIndoor, setLamp };
+  return { state, look, dome, setConditions, setView, seeSky, update, endFrame, setGroundMaterials, setRelief, setIndoor, setLamp };
 }
 
 function flakeTexture() {
