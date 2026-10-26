@@ -56,6 +56,8 @@ import { createFinds, leftText as findsLeftText } from './trouvailles.js';
 import { createDressing } from './habillement.js';
 import { createPropsView } from './props-view.js';
 import { createFloreView } from './flore-view.js';
+import { tickVivant, VIVANT_ON } from './vivant.js';
+import { moisDe, balleVisible } from './champs.js';
 import { createBaseView } from './base-view.js';
 import { createHabitantsView } from './habitants-view.js';
 import { habitantCount, HABITANT_TEXT } from './habitants.js';
@@ -74,6 +76,7 @@ import { networkOf, lineTitle } from './transport.js';
 import { addStep, statsCard, MAX_STEP_M } from './stats.js';
 import { bucketFor, addXp, effectsOf, craftXp, levelUpText, GAIN } from './skills.js';
 import { createMinimap } from './minimap.js';
+import { makeMapMarks } from './carte-marques.js';
 import { createFlowField, reachableFrom } from './flowfield.js';
 import { makeProjection } from './geo.js';
 import { createTerritoryStore } from './territory-store.js';
@@ -271,9 +274,12 @@ if (onlineOn) {
   });
   online.on('session', () => account.sessionRefused());
   // Connexion ou déconnexion : le bloc « Saison 1 » du menu relit l'inscription.
+  let wasIn = false;                                                            // les dons non confirmés repartent à l'arrivée du compte, pas à chaque changement d'état de la copie en ligne
   account.on('state', () => {
-    if (account.state !== 'in') { resetFriendsLive(); depot.reset(); }
-    else setTimeout(() => depot.replay(), 0);                                   // dons partis sans réponse : ils repartent dès que le compte est là
+    const isIn = account.state === 'in';
+    if (!isIn) { resetFriendsLive(); depot.reset(); }
+    else if (!wasIn) setTimeout(() => depot.replay(), 0);
+    wasIn = isIn;
     city.seasonChanged();
     // Connexion faite pour accepter une invitation d'ami : la carte revient quand le formulaire du compte s'est refermé.
     if (friendWait.get()) setTimeout(() => { renderFriendsMenu(); offerPendingFriend(); }, 800);
@@ -1046,9 +1052,12 @@ async function launch(place, spawn, plan = { kind: 'free', place }, arrival = nu
   await nextFrame();
   // Saison du lieu (vrai mois de l'appareil, ou ?mois=) : baies, champignons et légumes pas mûrs ne sont pas dessinés (campagne.js).
   worldSeason = saisonDe(store.proj.toLatLon(0, 0).lat, dateDuMois(params.get('mois')) ?? new Date());
-  floreView.setHidden((kind, id) => (kind === 'baie' || kind === 'champi' || kind === 'legume') && (!plantMure(kind, id, worldSeason) || dismantledGone(id)));
+  // Même mois pour les cultures des champs, les vergers et les balles de paille (champs.js) ; ?vivant=0 : l'ancien décor, balles toute l'année.
+  const mois = moisDe(store.proj.toLatLon(0, 0).lat, dateDuMois(params.get('mois')) ?? new Date());
+  floreView.setMois(mois);
+  floreView.setHidden((kind, id) => (kind === 'baie' || kind === 'champi' || kind === 'legume') ? (!plantMure(kind, id, worldSeason) || dismantledGone(id)) : (VIVANT_ON && kind === 'balle' && !balleVisible(id, mois)));
   const chunks = createChunkManager({
-    scene, store, grid, lowPower, groundDetail, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
+    scene, store, grid, lowPower, groundDetail, mois, anisotropy: Math.min(8, renderer.capabilities.getMaxAnisotropy()), proj: store.proj,
     // Démontages : les siens (sauvegarde, 72 h), et ceux des autres survivants en ligne (72 h).
     propsView, floreView, isGone: (id) => localGone(id) || online.isGone(id),
   });
@@ -1480,6 +1489,7 @@ renderer.setAnimationLoop(() => {
   const at = s.viewAt ?? s.player;
   focus.set(at?.x ?? 0, s.groundY ?? 0, at?.z ?? 0);
   atmosphere.update(dt, focus, s.player?.yaw ?? 0);
+  tickVivant(dt, atmosphere.state, scene.background);
   renderer.render(scene, camera);
   atmosphere.endFrame();
   if (s.player && !hudFrozen) hud.render(s, dt, hudInfo(s));
@@ -3060,6 +3070,19 @@ function hudInfo(s) {
 
 // Ce que montre la carte des environs : centrée sur le point visé par la caméra (l'ancre du refuge quand on y est),
 // tournée avec elle ; refuge, mission (couleur de la balise), sac perdu, zombies proches et fronts de la horde.
+// Fond de la mini-carte (carte-marques.js) : bâti teinté selon son pâté, contour ambre s'il est fouillé (par toi, ou par un autre survivant).
+function mapMarksOf(s) {
+  const tiles = s.store.source === 'tiles';
+  s.mapMarks ??= makeMapMarks({
+    rt: s.city ?? null,
+    searched: (b) => isSearched(s, b),
+    searchedCount: () => (tiles ? Object.values(save.searched ?? {}).filter((e) => searchedWhole(e, Date.now(), LIMITS.searchedMs)).length : s.searchedLocal.size),
+    other: (b) => tiles && !!online.searchedByOther(b.id),
+    otherCount: () => online.searchedCount(),
+  });
+  return s.mapMarks;
+}
+
 function mapInfo(s) {
   const p = s.player, r = s.refuge, at = s.viewAt ?? p;
   const target = s.quest ? currentTarget(s.quest) : s.cityTarget ?? null;
@@ -3071,6 +3094,7 @@ function mapInfo(s) {
     bag: save.dropBag ? s.store.proj.toLocal(save.dropBag.lat, save.dropBag.lon) : null,
     zombies: s.director.zombies, fog: s.weather?.kind === 'fog',
     others: onlineOn ? s.othersNow.map((o) => s.store.proj.toLocal(o.lat, o.lon)) : [],
+    marks: mapMarksOf(s),
     fronts: centre ? r.hordeArrows().map((a) => { const v = frontVector(a); return { x: centre.x + v.x * 60, z: centre.z + v.z * 60 }; }) : [],
   };
 }

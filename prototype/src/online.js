@@ -135,7 +135,7 @@ export const NULL_ONLINE = Object.freeze({
   start: () => Promise.resolve(), ready: () => Promise.resolve(), needsChoice: () => false, choose: noop,
   enter: noop, pose: noop, hidden: noop, leave: noop, bye: noop, mark: () => false, refuge: noop, zonesChanged: noop,
   gesture: () => false, hide: () => false, report: () => false, rename: () => Promise.resolve(null),
-  showMe: () => Promise.resolve(null), eraseMe: () => Promise.resolve(false), searchedByOther: () => null,
+  showMe: () => Promise.resolve(null), eraseMe: () => Promise.resolve(false), searchedByOther: () => null, searchedCount: () => 0,
   isGone: () => false, foreignRefuge: () => false, refuges: () => [], others: () => [], far: () => [],
   around: () => 0, serverNow: () => Date.now(), retryIn: () => null, muted: () => false, setMuted: noop,
   on: () => noop, debug: () => null, live: false, season: () => false,
@@ -1341,6 +1341,8 @@ export function createOnline({
     },
 
     searchedByOther: (id) => (sharedOn() ? shared.searchedByOther(id) : null),
+    // Traces des autres survivants connues (fouilles, démontages) : la mini-carte relit son fond quand ce nombre change.
+    searchedCount: () => (sharedOn() ? shared.stats().marks : 0),
     isGone: (id) => sharedOn() && shared.isGone(id),
     foreignRefuge: (id) => sharedOn() && shared.isForeignRefuge(id),
     refuges: () => (sharedOn() ? shared.refugeIds() : []),

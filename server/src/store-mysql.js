@@ -799,6 +799,10 @@ export function createMysqlStore({
       const r = await one('SELECT level, COUNT(*) AS n FROM el_season_players WHERE season = ? GROUP BY level', [season], fast);
       return Object.fromEntries(r.map((x) => [x.level, Number(x.n)]));
     },
+    async seasonHomes(season) {
+      const r = await one('SELECT level, commune, COUNT(*) AS n FROM el_season_players WHERE season = ? AND commune IS NOT NULL AND home_key IS NOT NULL GROUP BY level, commune', [season], fast);
+      return Object.fromEntries(r.map((x) => [`${x.level}|${x.commune}`, Number(x.n)]));
+    },
     async seasonDocs(world, commune = null) {
       const r = commune === null ? await one('SELECT commune, part, rev, data FROM el_season_docs WHERE world = ?', [world])
         : await one('SELECT commune, part, rev, data FROM el_season_docs WHERE world = ? AND commune = ?', [world, commune]);

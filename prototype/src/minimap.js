@@ -32,7 +32,12 @@ export const MAP_COLORS = {
   bg: '#161c22', green: '#21463e', paved: '#2a333c', water: '#24526b',
   path: '#4a545f', road: '#626d79', major: '#7d8894',
   building: '#34404c', buildingLine: '#4a5866', home: '#1f4a6b', homeLine: '#5fb7ff', outline: '#0b0f13',
+  // Ville à sauver : bâti d'un pâté nettoyé (bleu acier, 2,4:1) ou libéré, donc sauvé (vert vif, 3,3:1), et contour ambre d'un bâtiment fouillé (7:1).
+  cleared: '#3d6b8a', clearedLine: '#6a9bbb', saved: '#3f8f5a', savedLine: '#7fd49a', searchedLine: '#e6b84d',
 };
+// Teinte du bâti selon son pâté (marks.look & TINT_MASK) ; le bit SEARCHED dit « fouillé ».
+export const TINT_MASK = 3, SEARCHED = 4;
+const TINTS = [['building', 'buildingLine'], ['cleared', 'clearedLine'], ['saved', 'savedLine']];
 // Couleurs des repères : jetons CSS de la page (lus une fois), avec leur valeur au cas où.
 const TOKENS = {
   accent: ['--c-accent', '#ff7f1f'], onAccent: ['--c-on-accent', '#170b00'], refuge: ['--c-refuge', '#5fb7ff'],
@@ -79,8 +84,9 @@ export function nearZombies(zombies, x, z, { range, max = MAP.zombieMax }) {
 
 // Repères à dessiner, du dessous au dessus : zombies, fronts, sac, mission, refuge, joueur, nord. Positions en px CSS
 // depuis le centre de la carte ; ceux qui sortent du cadre restent plaqués au bord (sauf les zombies, toujours dedans).
-// info : { x, z, yaw, player?, playerYaw, playerHidden, home, target: { x, z, kind }, bag, zombies, fog, fronts, others? }
-// (others : les autres survivants du jeu à plusieurs, { x, z } ; seuls ceux qui tiennent dans le cadre sont montrés).
+// info : { x, z, yaw, player?, playerYaw, playerHidden, home, target: { x, z, kind }, bag, zombies, fog, fronts, others?, marks? }
+// (others : les autres survivants du jeu à plusieurs, { x, z } ; seuls ceux qui tiennent dans le cadre sont montrés ; marks : { city, sig(),
+// look(b) } le bâti teinté de la ville à sauver, voir drawBucket : lu par le fond, pas par les repères).
 export function mapMarkers(info, { k, half, big = false }) {
   const out = [];
   const yaw = info.yaw;
@@ -154,7 +160,7 @@ function roadPass(r) {
 // Une passe d'un bucket (morceau de 64 m du monde), en mètres du monde. Voies, eau et aires sont rangées dans chaque
 // bucket qu'elles touchent (world.js) : `drawn` évite de les dessiner deux fois ; un bâtiment n'est dessiné que dans
 // son propre bucket (b.chunk). Les petites voies d'abord (ROAD_ORDER), traits groupés par largeur.
-export function drawBucket(ctx, f, key, pass, drawn, { homeId = null, low = false, ppm = 1 } = {}) {
+export function drawBucket(ctx, f, key, pass, drawn, { homeId = null, low = false, ppm = 1, marks = null } = {}) {
   const px = 1 / ppm; // un pixel du cache, en mètres
   if (pass === 'aires') {
     for (const a of f.areas) {
@@ -187,21 +193,44 @@ export function drawBucket(ctx, f, key, pass, drawn, { homeId = null, low = fals
       ctx.stroke();
     }
   } else if (pass === 'bati') {
-    // Un seul chemin pour tout le bâti du bucket (règle nonzero : les bâtiments qui se touchent restent pleins).
-    let home = null, any = false;
-    ctx.beginPath();
+    // Un seul chemin par teinte pour le bâti du bucket (règle nonzero : les bâtiments qui se touchent restent pleins). `marks` (ville à sauver,
+    // main.js) range chaque bâtiment : sa teinte (pâté nettoyé, libéré) et s'il est fouillé (contour ambre par-dessus).
+    let home = null;
+    const list = [];
     for (const b of f.buildings) {
       if (b.chunk !== key || b.hide3d) continue;
       if (homeId !== null && b.id === homeId) { home = b; continue; }
-      ringsPath(ctx, b.rings);
-      any = true;
+      list.push(b);
     }
-    if (any) {
-      ctx.fillStyle = MAP_COLORS.building;
+    const bits = marks ? list.map((b) => marks.look(b)) : null;
+    for (let tint = 0; tint < TINTS.length; tint++) {
+      let any = false;
+      ctx.beginPath();
+      for (let i = 0; i < list.length; i++) {
+        if (((bits?.[i] ?? 0) & TINT_MASK) !== tint) continue;
+        ringsPath(ctx, list[i].rings);
+        any = true;
+      }
+      if (!any) continue;
+      ctx.fillStyle = MAP_COLORS[TINTS[tint][0]];
       ctx.fill();
-      ctx.strokeStyle = MAP_COLORS.buildingLine;
+      ctx.strokeStyle = MAP_COLORS[TINTS[tint][1]];
       ctx.lineWidth = px;
       ctx.stroke();
+    }
+    if (bits) {
+      let any = false;
+      ctx.beginPath();
+      for (let i = 0; i < list.length; i++) {
+        if (!(bits[i] & SEARCHED)) continue;
+        ringsPath(ctx, list[i].rings);
+        any = true;
+      }
+      if (any) {
+        ctx.strokeStyle = MAP_COLORS.searchedLine;
+        ctx.lineWidth = 2 * px;
+        ctx.stroke();
+      }
     }
     if (home) {
       ctx.beginPath();
@@ -241,7 +270,7 @@ export function drawBucket(ctx, f, key, pass, drawn, { homeId = null, low = fals
 // Construction du cache autour de (cx, cz), demi-côté E (m) : un générateur qui rend la main après chaque bucket de
 // chaque passe ; le contexte est déjà en mètres du monde (setTransform posé par l'appelant). Buckets du plus proche
 // au plus loin, pour que le centre soit juste même si le cache est relu avant la fin (il ne l'est pas : double tampon).
-export function* cacheJob(ctx, store, { cx, cz, E, homeId = null, low = false, ppm = 1 }) {
+export function* cacheJob(ctx, store, { cx, cz, E, homeId = null, low = false, ppm = 1, marks = null }) {
   const cs = store.chunkSize, keys = [];
   for (let x = Math.floor((cx - E) / cs); x <= Math.floor((cx + E) / cs); x++) {
     for (let z = Math.floor((cz - E) / cs); z <= Math.floor((cz + E) / cs); z++) {
@@ -250,7 +279,7 @@ export function* cacheJob(ctx, store, { cx, cz, E, homeId = null, low = false, p
   }
   keys.sort((a, b) => a.d - b.d);
   const drawn = new Set();
-  const opts = { homeId, low, ppm };
+  const opts = { homeId, low, ppm, marks };
   for (const pass of PASSES) {
     for (const { x, z } of keys) {
       drawBucket(ctx, chunkFeatures(store, x, z), chunkKey(x, z), pass, drawn, opts);
@@ -396,6 +425,34 @@ function drawScale(ctx, k, S, colors) {
   ctx.restore();
 }
 
+// Légende de la carte agrandie (bas à droite, en retrait de la bande du bord) : pâté sauvé, pâté nettoyé (ville à sauver seulement), bâtiment fouillé.
+export function legendRows(marks) {
+  const rows = [];
+  if (marks?.city) rows.push({ label: 'Sauvé', fill: MAP_COLORS.saved, line: MAP_COLORS.savedLine }, { label: 'Nettoyé', fill: MAP_COLORS.cleared, line: MAP_COLORS.clearedLine });
+  if (marks) rows.push({ label: 'Fouillé', fill: MAP_COLORS.building, line: MAP_COLORS.searchedLine, thick: true });
+  return rows;
+}
+function drawLegend(ctx, S, colors, marks) {
+  const rows = legendRows(marks), gap = 14, x = S - 2 * MAP.edgeMargin - 6, bottom = S - 2 * MAP.edgeMargin - 6;
+  ctx.save();
+  ctx.font = `600 11px 'Barlow Semi Condensed', system-ui, sans-serif`;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  rows.forEach((r, i) => {
+    const y = bottom - (rows.length - 1 - i) * gap - 6;
+    const tx = x - 14;
+    ctx.lineWidth = 3; ctx.strokeStyle = MAP_COLORS.outline;
+    ctx.strokeText(r.label, tx, y);
+    ctx.fillStyle = colors.text;
+    ctx.fillText(r.label, tx, y);
+    ctx.fillStyle = r.fill;
+    ctx.fillRect(x - 10, y - 5, 10, 10);
+    ctx.lineWidth = r.thick ? 2 : 1; ctx.strokeStyle = r.line;
+    ctx.strokeRect(x - 10, y - 5, 10, 10);
+  });
+  ctx.restore();
+}
+
 // ---------- Carte du HUD ----------
 
 // Tampon hors écran du cache (2D, opaque).
@@ -431,7 +488,7 @@ export function createMinimap({ hud, box, button, canvas, zoomBtns, lowPower = f
   // Une vue par taille, chacune avec son cache : tampon de devant (prêt, affiché) et de derrière (en construction).
   const makeView = (radius) => ({ radius, S: 0, front: null, back: null, job: null, stale: false });
   const views = { compact: makeView(MAP.radius), big: makeView(MAP.radiusBig) };
-  let signature = '', sigAt = -Infinity, homeId = null;
+  let signature = '', sigAt = -Infinity, homeId = null, marks = null;
   let forced = true;
   const last = { x: NaN, z: NaN, yaw: NaN, t: -Infinity };
   let markers = [];
@@ -554,7 +611,7 @@ export function createMinimap({ hud, box, button, canvas, zoomBtns, lowPower = f
     Object.assign(back, { cx, cz, E, ppm, dpr: lay.dpr });
     vw.back = back;
     vw.stale = false;
-    vw.job = cacheJob(c, store, { cx, cz, E, homeId, low: lowPower, ppm });
+    vw.job = cacheJob(c, store, { cx, cz, E, homeId, low: lowPower, ppm, marks });
   }
 
   function advance(vw, budget) {
@@ -598,7 +655,7 @@ export function createMinimap({ hud, box, button, canvas, zoomBtns, lowPower = f
     ctx.translate(S / 2, S / 2);
     drawMarkers(ctx, markers, colors);
     ctx.restore();
-    if (open) drawScale(ctx, k, S, colors);
+    if (open) { drawScale(ctx, k, S, colors); if (marks) drawLegend(ctx, S, colors, marks); }
   }
 
   // Une image : garde-fou toutes les 500 ms (ou après un changement), reconstruction par tranches, puis dessin si la vue
@@ -618,7 +675,8 @@ export function createMinimap({ hud, box, button, canvas, zoomBtns, lowPower = f
     if (t0 - sigAt > 2000) {
       sigAt = t0;
       homeId = info.homeId ?? null;
-      const sig = `${store.buildings.length}|${store.buckets.size}|${homeId}`;
+      marks = info.marks ?? null;
+      const sig = `${store.buildings.length}|${store.buckets.size}|${homeId}|${marks?.sig() ?? ''}`;
       if (sig !== signature) { signature = sig; views.compact.stale = true; views.big.stale = true; }
     }
     // Ré-ancrage : le centre s'écarte de plus d'une demi-marge de celui du cache (ou du cache en construction).
