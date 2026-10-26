@@ -2403,7 +2403,7 @@ function watchToasts(page) {
 }
 // Mesure de la notification qui commence par `start`, ou null. Une notification attend que la précédente ait eu
 // 1,2 s de temps de jeu : sous swiftshader chargé (2 à 5 images par seconde), cela peut prendre une demi-minute.
-const toastBox = (page, start, timeout = 90000) => until(page, (t) => window.__toastBoxes?.find((b) => b.text.startsWith(t)) ?? null, start, timeout);
+const toastBox = (page, start, timeout = 300000) => until(page, (t) => window.__toastBoxes?.find((b) => b.text.startsWith(t)) ?? null, start, timeout);
 // Notifications vues depuis l'indice `from` de la liste (textes).
 const toastsSince = (page, from) => ev(page, (i) => (window.__toastBoxes ?? []).slice(i).map((b) => b.text), from);
 const toastCount = (page) => ev(page, () => window.__toastBoxes?.length ?? 0);
@@ -2420,8 +2420,10 @@ async function searchFor(page, device, spot, tag) {
   await press(page, device, 'KeyE', 'search');
   const search = await searchSafely(page, device, spot.id);
   if (!search.done) note(`${tag} : fouille inachevée, ${await state(page)}`);
-  // Le bouton secondaire peut ne pas exister (petit bâtiment) : on attend que le bouton principal ait quitté « Fouiller ».
+  // Le bouton secondaire peut ne pas exister (petit bâtiment) : on attend que le bouton principal ait quitté « Fouiller », puis
+  // que le secondaire paraisse (jusqu'à 20 s : il se redessine avec le menu, plus lentement que la montre sans carte graphique).
   await until(page, (id) => (window.__label(id)?.startsWith('Fouiller') ? null : true), 'search', 10000);
+  await until(page, () => (window.__label('action2') ? true : null), null, 20000);
   return ev(page, (id) => window.__label(id), 'action2');
 }
 
