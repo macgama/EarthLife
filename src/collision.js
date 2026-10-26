@@ -6,6 +6,9 @@
 import { reliefAt } from './terrain.js';
 
 export const FREE = 0, BUILDING = 1, WATER = 2, OUTSIDE = 3;
+// Décor plein (tronc, carrosserie, haie…) : posé par obstacles.js dans la couche `solid` du morceau, jamais dans `data`. Une case libre
+// du sol et fermée par du décor répond PROP : elle bloque comme un mur, mais n'est ni un bâtiment ni de l'eau.
+export const PROP = 4;
 
 export function createGrid(radius, cell = 1) {
   const size = Math.ceil((radius * 2) / cell);
@@ -60,6 +63,7 @@ export function getAt(grid, x, z) {
   const k = indexAt(g, x, z);
   if (k < 0) return OUTSIDE;
   const v = g.data[k];
+  if (v === FREE && g.solid !== undefined && g.solid[k] !== 0) return PROP;
   // Les cases du bâtiment ouvert qui dépassent son vrai contour (cases de 1 m) ne bloquent pas le seuil de la porte.
   return near && v === BUILDING && it.owner && g.owner?.[k] === it.owner ? FREE : v;
 }

@@ -1,8 +1,8 @@
 // Boîte de dépôt entre amis, côté jeu (cahier amis-et-echanges, étape 4) : le branchement du sac, de la sauvegarde et du compte.
 // Les règles (ce qui quitte le sac, ce qui entre, ce qui s'inscrit dans la partie) sont dans depot.js, pures et testées ; ici, les
 // requêtes (account.friends : give, box, take, recall, list), l'ordre qui rend le don sûr et les phrases dites au joueur.
-// L'ordre d'un don : 1. les objets quittent le sac et s'inscrivent dans la partie (`gifts.out`) ; 2. la partie est ÉCRITE ; 3. seulement
-// alors la requête part ; 4. la réponse règle l'inscription. Une réponse perdue se rejoue avec le même `gid` (le serveur ne dépose rien
+// L'ordre d'un don : 1. les objets quittent le sac et s'inscrivent dans la partie (`gifts.out`) ; 2. la partie est ÉCRITE (sinon le don est
+// annulé, les objets reviennent au sac) ; 3. seulement alors la requête part ; 4. la réponse règle l'inscription. Une réponse perdue se rejoue avec le même `gid` (le serveur ne dépose rien
 // de plus) : au prochain démarrage, au prochain sac ouvert ou à la prochaine relève. Un retrait vérifie la place d'abord, puis inscrit le
 // dépôt comme retiré au moment où les objets entrent dans le sac, dans la même écriture de la partie.
 import { countsLabel } from './survival.js';
@@ -33,7 +33,8 @@ export function createDepot({ account, save, survivor, markDirty, flush, canWrit
   };
 
   const gifts = () => giftsOf(save);
-  const commit = (why) => { markDirty(); flush(why); };
+  // Écrit la partie tout de suite ; faux quand l'écriture échoue (stockage plein ou refusé). Sans réponse (essais), on compte une réussite.
+  const commit = (why) => { markDirty(); return flush(why)?.ok !== false; };
   const available = () => account.state === 'in';
   const nameOfFid = (fid) => friendName(state.friends.find((f) => f.fid === fid)?.nm);
 
@@ -102,7 +103,11 @@ export function createDepot({ account, save, survivor, markDirty, flush, canWrit
       const s = survivor();
       const start = startGive(s, gifts(), { fid, items: { [key]: n }, gid: newGid(bytes(16)), now: now() });
       if (!start.ok) return { text: GIVE_WHY[start.why], tone: 'warn', snapshot: snapshot() };
-      commit('don-depart');
+      if (!commit('don-depart')) {
+        // La partie n'a pas pu s'écrire : la requête ne part pas (le don n'y serait pas inscrit) et les objets reviennent au sac.
+        settleGive(s, gifts(), start.entry.gid, 'refused', now());
+        return { text: DEPOT_TEXTS.unsaved, tone: 'warn', snapshot: snapshot() };
+      }
       const out = await send(start.entry);
       return { ...giveText(start.entry, out), snapshot: snapshot() };
     });

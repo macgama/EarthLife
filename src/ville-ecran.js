@@ -17,6 +17,7 @@ import { addHabitant, clearHabitants } from './habitants.js';
 import { SEASON_TEXT } from './net/season.js';
 import { insideTiles, resumeHome } from './saison-miroir.js';
 import { createMenuSheet } from './menu-sheet.js';
+import { liveCities, cityNote } from './villes-en-cours.js';
 import { createSalon, createTabs, frontModel, summaryOf, ctaModel, destinationOf, clockOf, pinsOf, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
 const LEVEL_KEY = 'earthlife.niveau';
@@ -42,7 +43,7 @@ export function createCityGame(host) {
   let pendingFirst = null;   // { name, zombies, hidden } de la ville qui commence
   // Menu : inscription, état des lieux (relu au plus toutes les 30 s), niveau voulu avant de se connecter, message passager, et ce que le joueur
   // a touché pour choisir sa ville (`sel` : un repère de ville ou un point de la carte, sinon rien : il reprend sa ville ou prend la proposition).
-  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, busy: false, after: null, note: '', noteAt: 0, pins: [], framed: false, sel: null };
+  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, liveAt: 0, busy: false, after: null, note: '', noteAt: 0, pins: [], framed: false, sel: null };
   const ls = (() => { try { return window.localStorage; } catch { return null; } })();
   let salon = null, tabs = null, sheet = null;
   const seasonRef = { rt: null };                                            // runtime de la saison en cours (messages du serveur)
@@ -101,7 +102,8 @@ export function createCityGame(host) {
       else picker.frameCities?.(framingOf(seasonUi.pins), { prefer: salon?.pick() ?? DEFAULT_FRONT });
     }) });
     // L'état des lieux se relit tant que le menu est ouvert (au plus toutes les 30 s), les jours restants se remettent à l'heure.
-    setInterval(() => { if ($('menu')?.classList.contains('hidden')) seasonUi.framed = false; else syncSeason(); }, 5000);
+    // Dans la partie (menu fermé), les villes en cours des cartes de jeu se relisent aussi, une fois par minute au plus.
+    setInterval(() => { if ($('menu')?.classList.contains('hidden')) { seasonUi.framed = false; refreshLive(); } else syncSeason(); }, 5000);
     syncMenu();
   }
 
@@ -275,6 +277,36 @@ export function createCityGame(host) {
       seasonUi.busy = false;
     }
     syncSeason();
+  }
+
+  // Villes en cours pour les cartes de la partie (mini-carte, carte de conduite) : l'état des lieux se relit au plus toutes les 60 s, seulement
+  // dans une partie de saison, onglet visible (le serveur garde la réponse 30 s). Un échec garde la dernière lecture.
+  const LIVE_MS = 60_000;
+  let liveBusy = false;
+  async function refreshLive() {
+    const n = net();
+    if (!n?.enabled || !seasonRef.rt || liveBusy || doc.hidden || Date.now() - seasonUi.liveAt < LIVE_MS) return;
+    liveBusy = true;
+    seasonUi.liveAt = Date.now();
+    try {
+      const p = await n.progress();
+      if (p.ok) seasonUi.progress = p;
+    } catch { /* la dernière lecture fait foi */ } finally {
+      liveBusy = false;
+    }
+  }
+  // Les autres villes de ton niveau où le travail de sauvetage a commencé (ou au moins ouvertes), avec leur point sur la Terre : [{ key, name, lat, lon,
+  // started, lost, online, saved, toSave, status }], les villes en cours d'abord. Vide hors saison.
+  // Gardée tant que la lecture, le niveau et ta ville ne changent pas (la mini-carte la demande à chaque dessin).
+  const NO_CITIES = [];
+  const live = { progress: null, level: null, own: null, list: NO_CITIES };
+  function otherCities() {
+    const level = seasonUi.enrolled?.level ?? null, own = ownOf()?.key ?? null;
+    if (!level) return NO_CITIES;
+    if (live.progress !== seasonUi.progress || live.level !== level || live.own !== own) {
+      Object.assign(live, { progress: seasonUi.progress, level, own, list: liveCities(seasonUi.progress?.levels?.[level], { exceptKey: own }) });
+    }
+    return live.list;
   }
 
   // « Jouer ici » et « Partir en expédition ici » deviennent « Sauver cette ville » quand un niveau est choisi (dans ta ville
@@ -626,12 +658,9 @@ export function createCityGame(host) {
     return connectSeason({ join: seasonUi.enrolled, level: trip.level, city: seeded.city, prep: seeded.prep, home: seeded.home, touched: trip.arrival });
   }
 
-  // Villes ouvertes de ton niveau où aller (pas la tienne), pour la liste de repli de la carte de conduite : { name, lat, lon }.
+  // Villes ouvertes de ton niveau où aller (pas la tienne), pour la carte de conduite : repères et liste de repli : { name, area, lat, lon, started, note }.
   function tripCities() {
-    const level = seasonUi.enrolled?.level, mine = ownOf()?.key;
-    return (seasonUi.progress?.levels?.[level]?.cities ?? [])
-      .filter((c) => c.key !== mine && Number.isFinite(c.lat) && Number.isFinite(c.lon) && typeof c.name === 'string' && c.name)
-      .map((c) => ({ name: c.name, area: '', lat: c.lat, lon: c.lon }));
+    return otherCities().filter((c) => c.name).map((c) => ({ name: c.name, area: '', lat: c.lat, lon: c.lon, started: c.started, lost: c.lost, note: cityNote(c) }));
   }
 
   // ---------- Dans la partie : brancher la ville au monde ----------
@@ -892,6 +921,7 @@ export function createCityGame(host) {
         { label: 'Habitants sauvés', value: `${groupDigits(st.saved)} / ${groupDigits(st.toSave)}` },
         { label: 'Zombies restants', value: groupDigits(st.zombies) },
         { label: 'Pâtés libérés', value: `${st.free} / ${st.known}` },
+        ...(st.lost ? [{ label: 'Ville', value: 'perdue' }] : st.turned > 0 ? [{ label: 'Devenus zombies', value: groupDigits(st.turned) }] : []),
       ],
     };
   }
@@ -949,8 +979,16 @@ export function createCityGame(host) {
     if (a.id === 'nail' || a.id === 'exit' || a.id === 'plate' || a.id === 'repair') { s.goal = null; host.renderConditions(); }
   }
 
+  // Le joueur est tombé : la contre-attaque en cours est perdue, et un habitant non infecté de la ville devient zombie là où il est
+  // tombé. Rend { from, key, lost, name } si quelqu'un est tombé, ou null (hors ville à sauver, ville sauvée ou déjà perdue).
   function onDeath(s) {
-    s.city?.onDeath(s.director);
+    const rt = s.city;
+    if (!rt) return null;
+    rt.onDeath(s.director);
+    if (rt.ended) return null;
+    const fall = rt.infectAt(s.player.x, s.player.z);
+    if (fall) { host.saveDirty(); refreshHud(s, true); }
+    return fall;
   }
 
   // ---------- Événements de la ville ----------
@@ -1143,7 +1181,7 @@ export function createCityGame(host) {
   }
 
   return {
-    initMenu, syncMenu, playLabel, placeChosen, selectCity, cityOf, prepareLaunch, planTrip, landTrip, tripCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws, rescueFrom,
+    initMenu, syncMenu, playLabel, placeChosen, selectCity, cityOf, prepareLaunch, planTrip, landTrip, tripCities, otherCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws, rescueFrom,
     questText, homeGoal, onRefugeAction, onDeath, summary, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },

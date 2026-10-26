@@ -9,7 +9,7 @@
 // (interieur-view.js) et les collisions (collision.js, `grid.interior`) lisent la même grille, ce qui garantit que ce qu'on
 // voit est ce qui bloque.
 import { LOOT, lootKind } from './survival.js';
-import { AMBUSH, ambushChance } from './embuscade.js';
+import { ambushCount } from './embuscade.js';
 
 export const INTERIEUR = Object.freeze({
   cell: 0.25,           // m : case de la grille
@@ -977,72 +977,6 @@ export function rollRoomLoot(plan, room, rand = Math.random, { factor = 1, maxPe
   return found;
 }
 
-// ---------- Embuscade par pièce ----------
-
-// Probabilité d'au moins un zombie en fouillant cette pièce : 1 − (1 − p)^(surface relative), de sorte que fouiller tout le
-// bâtiment donne la probabilité d'avant.
-export function roomAmbushChance(plan, room, ctx = {}) {
-  const p = ambushChance(plan.kind, ctx);
-  return 1 - (1 - p) ** (plan.rooms[room]?.share ?? 1);
-}
-
-// 0, 1 ou 2 zombies. `force` : nombre imposé (essais).
-export function roomAmbushCount(plan, room, ctx = {}, rand = Math.random) {
-  if (Number.isFinite(ctx.force)) return Math.max(0, Math.min(2, Math.floor(ctx.force)));
-  if (rand() >= roomAmbushChance(plan, room, ctx)) return 0;
-  return rand() < AMBUSH.second ? 2 : 1;
-}
-
-// Points d'apparition : dans une pièce voisine, derrière la porte (1,3 à 3,5 m de la porte, à 2,5 m du joueur au moins) ; sans
-// voisine, au fond de la pièce même. Rend n points du monde.
-export function ambushSpotsIn(plan, room, player, n, rand = Math.random) {
-  const out = [];
-  if (n < 1) return out;
-  const cellCenter = (k) => {
-    const i = k % plan.nu, j = Math.floor(k / plan.nu);
-    const u = plan.u0 + (i + 0.5) * plan.cell, v = plan.v0 + (j + 0.5) * plan.cell, f = plan.frame;
-    return { x: f.ox + u * f.ux + v * f.vx, z: f.oz + u * f.uz + v * f.vz };
-  };
-  const inner = plan.adj[room].filter((a) => plan.doors[a.door].a >= 0);
-  const picks = [];
-  if (inner.length) {
-    const start = Math.floor(rand() * inner.length);
-    for (let i = 0; i < n; i++) picks.push(inner[(start + i) % inner.length]);
-  }
-  for (let i = 0; i < n; i++) {
-    let pool, from;
-    if (picks.length) {
-      const a = picks[i];
-      pool = plan.cellsOf[a.to];
-      from = plan.doors[a.door];
-    } else {
-      pool = plan.cellsOf[room];
-      from = null;
-    }
-    const spots = [];
-    for (const k of pool) {
-      if (plan.lab[k] !== FLOOR) continue;
-      const c = cellCenter(k);
-      if (Math.hypot(c.x - player.x, c.z - player.z) < 2.5) continue;
-      const d = from ? Math.hypot(c.x - from.x, c.z - from.z) : Math.hypot(c.x - player.x, c.z - player.z);
-      if (from ? d >= 1.3 && d <= 3.5 : d >= 3) spots.push(c);
-    }
-    if (!spots.length) {
-      // Pièce voisine trop petite : toute case libre à 2,5 m du joueur, la plus éloignée.
-      let best = null, bd = -1;
-      for (const k of plan.cellsOf[room]) {
-        if (plan.lab[k] !== FLOOR) continue;
-        const c = cellCenter(k), d = Math.hypot(c.x - player.x, c.z - player.z);
-        if (d > bd) { bd = d; best = c; }
-      }
-      if (best) out.push(best);
-      continue;
-    }
-    out.push(spots[Math.floor(rand() * spots.length)]);
-  }
-  return out;
-}
-
 // ---------- Poursuite entre les pièces ----------
 
 // Point de passage d'un zombie de `from` vers `to` : le centre de la porte de la pièce suivante sur le chemin le plus court
@@ -1073,14 +1007,10 @@ function cellCentre(plan, k) {
   return { x: f.ox + u * f.ux + v * f.vx, z: f.oz + u * f.uz + v * f.vz };
 }
 
-// Champ de distances (en cases) vers la case `target`, sur les cases de sol et de porte : parcours en largeur, gardé tant que le
-// joueur reste dans la même case (calculé à la demande, quand un zombie en chasse n'a pas de vue directe sur lui).
-function flowTo(plan, target) {
-  const cache = plan.flow;
-  if (cache && cache.target === target) return cache.dist;
+// Champ de distances (en cases) vers la case `target`, sur les cases de sol et de porte : parcours en largeur (-1 : hors d'atteinte).
+// `dist` et `queue` : tampons de plan.size cases à réutiliser, sinon neufs.
+function distancesTo(plan, target, dist = new Int32Array(plan.size), queue = new Int32Array(plan.size)) {
   const { nu, size, lab } = plan;
-  const dist = cache?.dist ?? new Int32Array(size);
-  const queue = cache?.queue ?? new Int32Array(size);
   dist.fill(-1);
   dist[target] = 0;
   queue[0] = target;
@@ -1092,8 +1022,35 @@ function flowTo(plan, target) {
     if (k + nu < size) { const m = k + nu; if (dist[m] < 0 && (lab[m] === FLOOR || lab[m] === DOOR)) { dist[m] = d; queue[tail++] = m; } }
     if (k >= nu) { const m = k - nu; if (dist[m] < 0 && (lab[m] === FLOOR || lab[m] === DOOR)) { dist[m] = d; queue[tail++] = m; } }
   }
-  plan.flow = { target, dist, queue };
   return dist;
+}
+
+// Champ vers la case du joueur, gardé tant qu'il reste dans la même case (calculé à la demande, quand un zombie en chasse n'a pas
+// de vue directe sur lui).
+function flowTo(plan, target) {
+  const cache = plan.flow;
+  if (cache && cache.target === target) return cache.dist;
+  const dist = distancesTo(plan, target, cache?.dist, cache?.queue ?? (plan.queue ??= new Int32Array(plan.size)));
+  plan.flow = { target, dist, queue: plan.queue };
+  return dist;
+}
+
+// Descente du champ `dist` depuis la case `kz` sur au plus 8 cases (2 m) : on garde le point le plus loin encore en vue du zombie
+// en (x, z) (`clear(x0, z0, x1, z1)` : le segment est-il libre ?). null si la case est déjà au but ou hors d'atteinte.
+function descend(plan, dist, kz, x, z, clear) {
+  let k = kz, best = null;
+  for (let step = 0; step < 8 && dist[k] > 0; step++) {
+    let nk = -1, nd = dist[k];
+    for (const m of [k + 1, k - 1, k + plan.nu, k - plan.nu]) {
+      if (m >= 0 && m < plan.size && dist[m] >= 0 && dist[m] < nd) { nd = dist[m]; nk = m; }
+    }
+    if (nk < 0) break;
+    k = nk;
+    const c = cellCentre(plan, k);
+    if (best && !clear(x, z, c.x, c.z)) break;
+    best = c;
+  }
+  return best;
 }
 
 // Point de passage d'un zombie qui poursuit le joueur dans l'intérieur ouvert : de dehors, d'abord le pas de la porte puis le
@@ -1113,20 +1070,98 @@ export function steerZombie(plan, zb, player, clear = () => true) {
   if (clear(zb.x, zb.z, player.x, player.z)) return null;
   const dist = flowTo(plan, kp);
   if (dist[kz] < 0) return null;
-  // Descente du champ sur au plus 8 cases (2 m) : on garde le point le plus loin encore en vue du zombie.
-  let k = kz, best = null;
-  for (let step = 0; step < 8 && dist[k] > 0; step++) {
-    let nk = -1, nd = dist[k];
-    for (const m of [k + 1, k - 1, k + plan.nu, k - plan.nu]) {
-      if (m >= 0 && m < plan.size && dist[m] >= 0 && dist[m] < nd) { nd = dist[m]; nk = m; }
-    }
-    if (nk < 0) break;
-    k = nk;
-    const c = cellCentre(plan, k);
-    if (best && !clear(zb.x, zb.z, c.x, c.z)) break;
-    best = c;
+  return descend(plan, dist, kz, zb.x, zb.z, clear);
+}
+
+// ---------- Zombies qui logent dans le bâtiment ----------
+
+export const LODGE = Object.freeze({
+  minFromPlayer: 4,  // m : un zombie qui loge n'apparaît jamais plus près du joueur
+  arrive: 0.7,       // m : le but est atteint
+  rest: [1.5, 4],    // s : arrêt au but avant le suivant
+  patience: 14,      // s : un but qu'on n'atteint pas (meuble en travers) est abandonné
+  neighbour: 0.7,    // part des buts pris dans une pièce voisine (une porte plus loin)
+  hearing: 0.5,      // part de la portée d'ouïe de dehors : les cloisons étouffent le bruit
+});
+
+// Un bâtiment peut loger des zombies : ils y sont avant que le joueur n'entre (rien ne sort d'un meuble) et se baladent de pièce
+// en pièce tant qu'ils ne l'ont ni vu ni entendu. Le tirage est celui de l'ancienne embuscade (embuscade.js : probabilité selon le
+// lieu, la météo et la nuit, un ou deux zombies), fait une fois pour tout le bâtiment, au plus un par pièce.
+export function lodgerCount(plan, ctx = {}, rand = Math.random) {
+  return Math.min(plan.rooms.length, ambushCount(plan.kind, ctx, rand));
+}
+
+const floorCells = (plan, room) => (plan.cellsOf[room] ?? []).filter((k) => plan.lab[k] === FLOOR);
+
+function shuffled(list, rand) {
+  const out = [...list];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
   }
-  return best;
+  return out;
+}
+
+// Où ils logent : une case de sol par zombie, dans des pièces différentes tant qu'il y en a, hors de la pièce du joueur (sauf
+// bâtiment d'une seule pièce) et à LODGE.minFromPlayer de lui au moins, ou à défaut la case la plus éloignée de la pièce.
+// Rend au plus n points du monde.
+export function lodgerSpots(plan, player, n, rand = Math.random) {
+  const out = [];
+  if (n < 1 || !plan.rooms.length) return out;
+  const mine = new Set(roomsNear(plan, player.x, player.z));
+  const all = plan.rooms.map((r, i) => i);
+  const elsewhere = all.filter((i) => !mine.has(i));
+  const rooms = shuffled(elsewhere.length ? elsewhere : all, rand);
+  for (let i = 0, tried = 0; out.length < n && tried < n + rooms.length; i++, tried++) {
+    const cells = floorCells(plan, rooms[i % rooms.length]).map((k) => cellCentre(plan, k));
+    if (!cells.length) continue;
+    const away = (c) => Math.hypot(c.x - player.x, c.z - player.z);
+    const apart = cells.filter((c) => away(c) >= LODGE.minFromPlayer && out.every((o) => Math.hypot(c.x - o.x, c.z - o.z) >= 1));
+    out.push(apart.length ? apart[Math.floor(rand() * apart.length)] : cells.reduce((best, c) => (away(c) > away(best) ? c : best)));
+  }
+  return out;
+}
+
+// Le but suivant d'un zombie qui loge : une case de sol d'une autre pièce, le plus souvent une pièce voisine ; dans un bâtiment
+// d'une seule pièce, une case à 2 m ou plus d'où il est. null si le plan n'a pas de sol.
+export function roamGoal(plan, from, rand = Math.random) {
+  const here = roomsNear(plan, from.x, from.z);
+  const others = plan.rooms.map((r, i) => i).filter((i) => !here.includes(i));
+  let pool = others;
+  const near = [...new Set(here.flatMap((h) => plan.adj[h].map((a) => a.to)))].filter((i) => !here.includes(i));
+  if (near.length && rand() < LODGE.neighbour) pool = near;
+  if (!pool.length) pool = here;
+  if (!pool.length) return null;
+  const cells = floorCells(plan, pool[Math.floor(rand() * pool.length)]).map((k) => cellCentre(plan, k));
+  if (!cells.length) return null;
+  const apart = cells.filter((c) => Math.hypot(c.x - from.x, c.z - from.z) >= 2);
+  const pickFrom = apart.length ? apart : cells;
+  return pickFrom[Math.floor(rand() * pickFrom.length)];
+}
+
+// Où va un zombie qui loge à cet instant : le prochain point du chemin vers son but (champ de distances par les portes, meubles
+// contournés ; `clear(x0, z0, x1, z1)` : le segment est-il libre, collision.js lineFree), ou null s'il se repose. undefined hors du
+// bâtiment : il suit alors la marche ordinaire. Son état est dans `zb.roam`.
+export function roamStep(plan, zb, dt, rand = Math.random, clear = () => true) {
+  const kz = cellIndex(plan, zb.x, zb.z);
+  if (kz < 0 || plan.lab[kz] === OUT) return undefined;
+  const r = (zb.roam ??= { goal: null, dist: null, rest: 0, t: 0 });
+  if (r.rest > 0) { r.rest -= dt; return null; }
+  if (r.goal) {
+    r.t += dt;
+    if (Math.hypot(r.goal.x - zb.x, r.goal.z - zb.z) < LODGE.arrive) { r.goal = r.dist = null; r.rest = LODGE.rest[0] + rand() * (LODGE.rest[1] - LODGE.rest[0]); return null; }
+    if (r.t > LODGE.patience) r.goal = r.dist = null;
+  }
+  // Un but qu'on peut rejoindre à pied (quelques tirages : une poche entre des meubles ne mène nulle part).
+  for (let tries = 0; !r.goal && tries < 4; tries++) {
+    const goal = roamGoal(plan, zb, rand);
+    const kg = goal ? cellIndex(plan, goal.x, goal.z) : -1;
+    if (kg < 0) break;
+    const dist = distancesTo(plan, kg, undefined, plan.queue ??= new Int32Array(plan.size));
+    if (dist[kz] >= 0) Object.assign(r, { goal, dist, t: 0 });
+  }
+  if (!r.goal) { r.rest = LODGE.rest[1]; return null; }
+  return descend(plan, r.dist, kz, zb.x, zb.z, clear) ?? r.goal;
 }
 
 // ---------- Textes ----------
