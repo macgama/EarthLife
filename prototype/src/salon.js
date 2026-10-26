@@ -5,6 +5,7 @@
 import { LEVEL_TEXT } from './ville-jeu.js';
 import { groupDigits } from './commune.js';
 import { sceneCss } from './art.js';
+import { startedOf, lostOf, cityNote } from './villes-en-cours.js';
 
 export const FRONT_LEVELS = ['facile', 'moyen', 'difficile'];
 export const DEFAULT_FRONT = 'facile';        // le plus doux : proposé d'office à qui n'a pas encore de niveau
@@ -20,6 +21,7 @@ export const STATUS = {
   'en-cours': { label: 'En cours', tone: 'warn' },
   coeur: { label: 'Nuit du cœur', tone: 'danger' },
   nettoyee: { label: 'Désinfectée', tone: 'ok' },
+  perdue: { label: 'Perdue', tone: 'idle' },        // place prévue : le serveur ne l'envoie pas encore
 };
 
 // Pourquoi le jeu à plusieurs n'est pas joignable (statuts de online.js) : dit au menu, la partie libre reste possible.
@@ -101,9 +103,10 @@ export function frontModel(level, entry, ctx = {}) {
   // Toutes les villes du niveau, pour les repères de la carte (la ville annoncée non ouverte comprise).
   // Un serveur d'avant le choix libre ne compte les survivants en ligne que par niveau : avec une seule ville, ce sont les siens.
   const list = rows.map((r) => ({ key: r.key, name: typeof r.name === 'string' ? r.name : '', where: pointOf(r), status: STATUS[r.status] ? r.status : 'en-cours',
-    online: int(r.online ?? (rows.length === 1 ? entry?.online : 0)), own: r.key === own?.key, announced: false }));
-  if (ann && !annRow) list.push({ key: ann.key, name: ann.name, where: pointOf(ann), status: 'annoncee', online: 0, own: false, announced: true });
-  if (own && pending) list.push({ key: own.key, name: typeof own.name === 'string' ? own.name : '', where: pointOf(own), status: 'en-cours', online: 0, own: true, announced: false });
+    online: int(r.online ?? (rows.length === 1 ? entry?.online : 0)), own: r.key === own?.key, announced: false,
+    started: startedOf(r), saved: int(r.saved), toSave: int(r.toSave) }));
+  if (ann && !annRow) list.push({ key: ann.key, name: ann.name, where: pointOf(ann), status: 'annoncee', online: 0, own: false, announced: true, started: false, saved: 0, toSave: 0 });
+  if (own && pending) list.push({ key: own.key, name: typeof own.name === 'string' ? own.name : '', where: pointOf(own), status: 'en-cours', online: 0, own: true, announced: false, started: false, saved: 0, toSave: 0 });
   const totals = { cities: 0, cleaned: 0, zombies: 0, saved: 0 };
   for (const r of rows) {
     totals.cities++;
@@ -192,10 +195,13 @@ export function pinsOf(fronts) {
   for (const f of fronts) {
     for (const c of f.cities) {
       if (!c.where) continue;
-      const tone = c.status === 'annoncee' ? 'idle' : STATUS[c.status].tone;
+      // Pâle (gris) : annoncée, perdue, ou ouverte sans que le sauvetage ait commencé (sauf ta ville : tu y es). Les villes en cours gardent leur couleur.
+      const pale = c.status === 'annoncee' || lostOf(c) || (!c.started && !c.own && c.status === 'en-cours');
+      const tone = pale ? 'idle' : STATUS[c.status].tone;
+      const note = c.announced ? (c.online ? `${c.online} en ligne` : '') : cityNote({ ...c, status: c.status });
       out.push({
-        level: f.level, key: c.key, lat: c.where.lat, lon: c.where.lon, tone, own: c.own,
-        label: `${f.name} · ${c.name}`, tag: `${c.own ? 'Ta ville · ' : ''}${c.name}${c.online ? ` · ${c.online} en ligne` : ''}`,
+        level: f.level, key: c.key, lat: c.where.lat, lon: c.where.lon, tone, own: c.own, started: c.started,
+        label: `${f.name} · ${c.name}`, tag: `${c.own ? 'Ta ville · ' : ''}${c.name}${note ? ` · ${note}` : ''}`,
       });
     }
   }
