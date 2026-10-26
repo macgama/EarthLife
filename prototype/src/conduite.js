@@ -228,8 +228,9 @@ export function createCarGame(host) {
     if (why) { host.toast(why, 3, 'danger'); return false; }
     const at = local(s, car);
     if (Math.hypot(at.x - p.x, at.z - p.z) > CAR.reach + 0.5) { host.toast('Tu es trop loin de ta voiture', 2.5); return false; }
+    s.chunks.clearSolid(MY_CAR); // garée, elle bloque comme les autres ; au volant, c'est elle qui avance
     const spot = nearestFit(s.grid, at.x, at.z, DRIVE.radius, { maxD: 4, step: 0.25 });
-    if (!spot) { host.toast('Pas la place de démarrer ici : la voiture est coincée', 3.5, 'danger'); return false; }
+    if (!spot) { host.toast('Pas la place de démarrer ici : la voiture est coincée', 3.5, 'danger'); sync(s, 0, true); return false; }
     s.driving = { yaw: car.yaw, speed: 0, steer: 0, noiseT: 0, saveT: 0, warnedFuel: car.fuel < 1, warnedWear: car.wear <= 25 };
     Object.assign(p, { x: spot.x, z: spot.z, vx: 0, vz: 0, yaw: car.yaw, running: false });
     placeCar(s, s.driving);
@@ -334,10 +335,11 @@ export function createCarGame(host) {
     if (s.driving) return; // la voiture suit le joueur (placeCar)
     const car = save.car;
     const at = car && s.store.source === 'tiles' ? local(s, car) : null;
-    if (!at || Math.hypot(at.x - s.player.x, at.z - s.player.z) > NEAR_WORLD_M) { drop(); return; }
+    if (!at || Math.hypot(at.x - s.player.x, at.z - s.player.z) > NEAR_WORLD_M) { drop(s); return; }
     s.carClock = (s.carClock ?? 0) - dt;
     if (!force && shown && s.carClock > 0) return;
     s.carClock = 2;
+    s.chunks.setSolid({ id: MY_CAR, kind: 'car', x: at.x, z: at.z, yaw: car.yaw }); // garée : pleine, comme les voitures du décor
     const gy = s.store.terrain?.enabled ? groundAt(s.grid, at.x, at.z) : 0;
     const key = `${car.lat}|${car.lon}|${car.yaw}|${car.tint}|${s.store.origin.lat}|${s.store.origin.lon}`;
     if (shown?.key === key && Math.abs(shown.gy - gy) < 0.05) return;
@@ -345,7 +347,8 @@ export function createCarGame(host) {
     shown = { key, gy };
   }
 
-  function drop() {
+  function drop(s = null) {
+    s?.chunks.clearSolid(MY_CAR);
     if (!shown) return;
     host.propsView.dropChunk(MY_CAR);
     shown = null;

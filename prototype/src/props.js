@@ -10,10 +10,12 @@ import { chunkFeatures } from './world.js';
 import { carriageway, boxesClose } from './roadway.js';
 import { especeArbre } from './climat.js';
 
+// reach : distance au centre de l'objet. Tronc, carrosserie et banc bloquent le joueur (obstacles.js : cases de 1 m), qui ne peut donc
+// plus se tenir sur leur centre : la portée tient compte de l'emprise (voiture : jusqu'au bout du capot, 2,05 m + une case).
 export const PROP_KINDS = {
-  tree:  { verb: 'Abattre',  noun: "l'arbre",   time: 4,   timeAxe: 1.5, noise: 16, reach: 1.6 },
-  car:   { verb: 'Démonter', noun: 'la voiture', time: 3.5, noise: 30, reach: 2.2, alarm: 0.2, alarmRadius: 45, alarmTime: 8 },
-  bench: { verb: 'Démonter', noun: 'le banc',    time: 2.5, noise: 14, reach: 1.6 },
+  tree:  { verb: 'Abattre',  noun: "l'arbre",   time: 4,   timeAxe: 1.5, noise: 16, reach: 2.1 },
+  car:   { verb: 'Démonter', noun: 'la voiture', time: 3.5, noise: 30, reach: 3.2, alarm: 0.2, alarmRadius: 45, alarmTime: 8 },
+  bench: { verb: 'Démonter', noun: 'le banc',    time: 2.5, noise: 14, reach: 1.9 },
 };
 export const CAPS = { tree: 160, car: 12, bench: 6 };
 export const REGROW_MS = 72 * 3600 * 1000;

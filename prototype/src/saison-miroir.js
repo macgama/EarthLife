@@ -5,7 +5,7 @@
 //  - `applyRows`, `applyTile`, `applyCounts`, `resync` : le serveur écrit dans la copie (jamais `me`, `meOut`, ni les prêts).
 // Module sans DOM ni THREE, testé sous node (test/saison.test.js).
 import {
-  lend, giveBack, take, drawReserve, kill, openNest, plantFlag, dropFlag, liberate, rescueOne, setCoeur, recallAll, setLent, blockInfo, ROW_LENGTH,
+  lend, giveBack, take, drawReserve, kill, openNest, plantFlag, dropFlag, liberate, rescueOne, infectOne, setCoeur, recallAll, setLent, blockInfo, ROW_LENGTH,
 } from './quartier.js';
 
 const MAX_N = 60;
@@ -22,6 +22,7 @@ export function soloOps(ville) {
     dropFlag: (key) => dropFlag(ville, key),
     liberate: (key) => liberate(ville, key),
     rescue: (key) => rescueOne(ville, key),
+    infect: (key) => infectOne(ville, key),
     setCoeur: (ukey, key) => setCoeur(ville, ukey, key),
     recallAll: () => recallAll(ville),
     unlease: () => {},
@@ -93,6 +94,11 @@ export function seasonOps(ville, net) {
       const n = rescueOne(ville, key);
       if (n > 0) net.emit(['h', key]);
       return n;
+    },
+    // Mort du joueur : en saison la ville est commune, le serveur seul fait tomber un habitant (geste ajouté par la seconde PR) ;
+    // en attendant, rien ne change dans la copie.
+    infect() {
+      return null;
     },
     setCoeur(ukey, key) {
       const ok = setCoeur(ville, ukey, key);

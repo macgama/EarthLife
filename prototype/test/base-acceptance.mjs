@@ -3708,18 +3708,26 @@ async function conduiteScenario(device) {
 
   // 6. Contre un mur : un mur de face à 25 m ou plus est cherché autour (la même distance sur trois lignes parallèles, à 1 m de part et d'autre :
   // un mur large et droit, pas un coin ni un passage où la voiture glisserait), la voiture est posée à 8 m devant, vitesse nulle, poussée en avant ;
-  // elle s'arrête sans entrer dans le mur.
+  // elle s'arrête sans entrer dans le mur. Le mur est celui d'un bâtiment : une voiture garée, un arbre ou un banc (décor plein, obstacles.js)
+  // arrête aussi le disque de la voiture sur les trois lignes, mais elle glisse ensuite autour (moveWithCollisions avance axe par axe).
   const edge = await ev(page, async () => {
-    const { fits } = await import('/src/collision.js');
+    const { fits, getAt, BUILDING } = await import('/src/collision.js');
     const s = window.__earthlife.session, p = s.player, d = s.driving;
-    // Longueur libre à partir de (x, z) dans le sens a, avec le disque de la voiture (1,15 m : ce que moveWithCollisions fait passer ou non).
-    const free = (x, z, a) => { let n = 0; while (n < 160 && fits(s.grid, x + Math.sin(a) * n, z + Math.cos(a) * n, 1.15)) n++; return n; };
+    // Longueur libre à partir de (x, z) dans le sens a, avec le disque de la voiture (1,15 m : ce que moveWithCollisions fait passer ou non) ;
+    // -1 si ce qui l'arrête n'est pas un bâtiment (case pleine sous le disque, dans le sens de la marche, à moins de 1,15 m de son centre).
+    const free = (x, z, a) => {
+      let n = 0;
+      while (n < 160 && fits(s.grid, x + Math.sin(a) * n, z + Math.cos(a) * n, 1.15)) n++;
+      if (n >= 160) return n;
+      for (let t = 0; t <= 1.6; t += 0.2) if (getAt(s.grid, x + Math.sin(a) * (n + t), z + Math.cos(a) * (n + t)) === BUILDING) return n;
+      return -1;
+    };
     let best = null;
     for (let k = 0; k < 72; k++) {
       const a = (k / 72) * Math.PI * 2;
       const ns = [0, 1, -1].map((o) => free(p.x + Math.cos(a) * o, p.z - Math.sin(a) * o, a));
       const n = ns[0];
-      if (n >= 25 && Math.max(...ns) < 160 && Math.max(...ns) - Math.min(...ns) <= 1 && (!best || Math.abs(n - 60) < Math.abs(best.n - 60))) best = { a, n };
+      if (n >= 25 && Math.min(...ns) >= 0 && Math.max(...ns) < 160 && Math.max(...ns) - Math.min(...ns) <= 1 && (!best || Math.abs(n - 60) < Math.abs(best.n - 60))) best = { a, n };
     }
     if (!best) return null;
     Object.assign(p, { x: p.x + Math.sin(best.a) * (best.n - 8), z: p.z + Math.cos(best.a) * (best.n - 8), vx: 0, vz: 0 });
@@ -4581,12 +4589,20 @@ async function habitantsScenario(device) {
 
   // Mort : la carte « Tu es tombé » résume la ville (habitants sauvés, zombies restants, pâtés libérés).
   const want = await ev(page, () => { const st = window.__earthlife.session.city.stats(); return { saved: st.saved, toSave: st.toSave, zombies: st.zombies }; });
+  // Mort dans une ville à sauver : un habitant non infecté devient zombie, le nouveau personnage repart sans compétence.
+  await setFreeSkill(page, 'fouille', 30);
   await ev(page, () => window.__earthlife.debug.hurt(200));
   const death = await deathCard(page);
   check(!!death && /Habitants sauvés/.test(death) && /Zombies restants/.test(death) && /Pâtés libérés/.test(death), `${tag} : carte « Tu es tombé » avec le résumé de la ville : ${death ?? 'pas de carte'}`);
   const tiles = await ev(page, () => [...document.querySelectorAll('#card .rp-stat')].map((e) => `${e.querySelector('dt').textContent}=${e.querySelector('dd').textContent.replace(/\s/g, '')}`));
   check(tiles.includes(`Habitants sauvés=${want.saved}/${want.toSave}`),
     `${tag} : la carte donne ${want.saved} / ${want.toSave} habitants sauvés (${tiles.join(' · ')})`);
+  check(/Pérouges perd un habitant : il devient zombie/.test(death ?? ''), `${tag} : la carte dit qu'un habitant devient zombie : ${death ?? 'pas de carte'}`);
+  check(tiles.includes('Devenus zombies=1'), `${tag} : la carte compte 1 habitant devenu zombie (${tiles.join(' · ')})`);
+  const fell = await ev(page, () => { const st = window.__earthlife.session.city.stats(); return { turned: st.turned, line: st.line }; });
+  check(fell.turned === 1 && /Devenus zombies 1/.test(fell.line ?? ''), `${tag} : la ville compte 1 habitant devenu zombie (${JSON.stringify(fell)})`);
+  const skills = await freeSkills(page);
+  check(Object.values(skills).every((v) => v === 0) && /repart sans compétences/.test(death ?? ''), `${tag} : le nouveau personnage repart sans compétence (${JSON.stringify(skills)})`);
   const fit = await ev(page, () => {
     const c = document.querySelector('#card .rp-card'), r = c.getBoundingClientRect();
     const b = [...c.querySelectorAll('.rp-cbtn')].map((e) => e.getBoundingClientRect());

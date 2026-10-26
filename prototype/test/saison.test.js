@@ -327,6 +327,16 @@ test('gestes du miroir : mêmes gestes que seul, plus l\'envoi au serveur et le 
   sent.length = 0;
   assert.equal(sops.rescue('inconnu'), 0);
   assert.deepEqual(sent, [], 'rien à envoyer quand rien n\'est sauvé');
+  // Mort du joueur : seul, un habitant caché de la ville tombe ; en saison, c'est le serveur seul qui décide (geste à venir) : rien ici.
+  const dead = hidden();
+  const fall = soloOps(dead).infect(KEY);
+  assert.equal(fall.from, 'cache');
+  assert.equal(dead.turned, 1);
+  const wait = hidden();
+  sent.length = 0;
+  assert.equal(seasonOps(wait, { emit: (e) => sent.push(e) }).infect(KEY), null);
+  assert.equal(wait.turned ?? 0, 0);
+  assert.deepEqual(sent, []);
 });
 
 test('le serveur écrit dans la copie : rangées, tuiles, compteurs, prêts ; jamais `me`', () => {
