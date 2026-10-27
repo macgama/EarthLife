@@ -402,7 +402,10 @@ async function exitRefuge(t) {
     if (!st.inside) return true;
     if (i >= 2) note(`${t.tag} : toujours au refuge ${JSON.stringify(st)}`);
     await t.page.keyboard.press('Escape');
+    // La sortie se joue à l'image suivante : sur un exécuteur lent (moins d'une image par seconde), 1,2 s ne suffit pas toujours, et une
+    // seconde Échap partirait avant que la première ait agi.
     await wait(1200);
+    await until(t, () => (window.__earthlife.session.refuge?.inside ? null : 1), null, 8000);
   }
   return !(await state()).inside;
 }
@@ -3494,8 +3497,17 @@ await scenario('O38', 'grande ville de la saison, par quartiers', async () => {
     const refused = await oldNet.enter(KEY);
     check(refused.ok === false && refused.code === 'mode', `Y (ancien jeu) : entrer dans la grande ville est refusé (${JSON.stringify({ ok: refused.ok, code: refused.code })})`);
     check(/jeu|page|Actualise|à jour/i.test(SEASON_TEXT.mode) && SEASON_TEXT.mode.length > 30, `Y : le refus se lit : « ${SEASON_TEXT.mode} »`);
-    const progress = await (await fetch(`${SERVER}/v1/season/progress`)).json();
-    const row = progress.levels.facile.cities.find((c) => c.key === KEY);
+    // La progression publique est gardée 30 s par le serveur (progressMs) : relue jusqu'à ce que la ville y paraisse.
+    const progressRow = async (ok) => {
+      let r = null;
+      for (let i = 0; i < 80; i++) {
+        r = (await (await fetch(`${SERVER}/v1/season/progress`)).json()).levels.facile.cities.find((c) => c.key === KEY) ?? null;
+        if (ok(r)) break;
+        await wait(500);
+      }
+      return r;
+    };
+    const row = await progressRow((r) => r?.mode === 'quartiers');
     check(row?.mode === 'quartiers' && row.done === 0, `progression publique : mode « quartiers », 0 quartier repris (${JSON.stringify({ mode: row?.mode, done: row?.done })})`);
 
     // V, navigateur : compte, la grande ville choisie sur la carte du menu.
@@ -3547,6 +3559,10 @@ await scenario('O38', 'grande ville de la saison, par quartiers', async () => {
 
     // Entrer dans un quartier : le serveur le commence pour tous.
     const inUnit = () => ev(A, () => { const c = window.__earthlife.session.city, p = window.__earthlife.session.player; const h = c.blockAt(p.x, p.z); return { here: h, qkey: h ? c.pos.get(h)?.qkey ?? '' : null, units: Object.keys(c.ville.units) }; });
+    // Sur un exécuteur lent, la découpe des tuiles dépasse les 20 s d'attente du lancement : les pâtés de la copie arrivent après (sans eux,
+    // pas de maison tirée, « Aucune maison libre trouvée »). Le joueur attend qu'un pâté de quartier soit placé (images comptées à sa cadence).
+    const frame38 = Math.round(1000 / Math.max(0.5, await fpsOf(A)));
+    await until(A, () => { for (const q of window.__earthlife.session.city.pos.values()) if (q.qkey) return 1; return null; }, null, 30000 + 200 * frame38);
     let at = await inUnit();
     if (!at.here || !at.qkey) {
       const spot = await ev(A, () => {
@@ -3580,7 +3596,7 @@ await scenario('O38', 'grande ville de la saison, par quartiers', async () => {
     const ukey = Object.keys(cityNow().ville.units)[0];
     const seen = await until(A, (u) => Object.keys(window.__earthlife.session.city.ville.units).includes(u), ukey, 30000);
     check(!!seen, 'Q : le jeu voit le quartier commencé');
-    const toast = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => /^Quartier .*commencé/.test(x)) ?? null, null, 15000);
+    const toast = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => /^Quartier .*commencé/.test(x)) ?? null, null, 15000 + 100 * frame38);
     check(!!toast, `Q : message « ${toast} » (messages vus : ${JSON.stringify(await ev(A, () => window.__seen.toasts.map((x) => x.t).slice(-6)))})`);
     await shot(A, 'o38-ordi-quartier-commence');
 
@@ -3603,11 +3619,11 @@ await scenario('O38', 'grande ville de la saison, par quartiers', async () => {
     check(done && !sv.units[ukey], 'serveur : le quartier est repris');
     const gone = await until(A, (u) => !!window.__earthlife.session.city.ville.done[u] && !window.__earthlife.session.city.ville.units[u], ukey, 30000);
     check(!!gone, 'Q : le jeu voit le quartier repris');
-    const toastDone = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => /^Quartier .*repris/.test(x)) ?? null, null, 15000);
+    const toastDone = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => /^Quartier .*repris/.test(x)) ?? null, null, 15000 + 100 * frame38);
     check(!!toastDone, `Q : message « ${toastDone} »`);
     const hud1 = await until(A, () => /Quartiers repris 1/.test(document.body.textContent.replace(/\s+/g, ' ')) || null, null, 30000);
     check(!!hud1 && (await ev(A, () => window.__earthlife.session.city.stats().done)) === 1, 'Q : l\'écran de jeu compte 1 quartier repris');
-    const row2 = (await (await fetch(`${SERVER}/v1/season/progress`)).json()).levels.facile.cities.find((c) => c.key === KEY);
+    const row2 = await progressRow((r) => r?.done === 1);
     check(row2?.done === 1, `progression publique : 1 quartier repris (${row2?.done})`);
     await shot(A, 'o38-ordi-quartier-repris');
     check((A.errors ?? []).filter((e) => /exception/.test(e.text)).length === 0, `Q : aucune exception dans la page (${JSON.stringify((A.errors ?? []).slice(-2))})`);
