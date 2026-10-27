@@ -1113,8 +1113,10 @@ export function rescueOne(ville, key) {
 
 // Non infectés que la mort du joueur peut encore faire tomber : cachés et sauvés, toi non compté (ta place n'est jamais
 // prise tant que ton pâté n'est pas libéré).
+// Une ville de saison n'a personne à la place du joueur (hidden0 = population − zombies0) : tous ses non infectés comptent.
 export function humansLeft(ville) {
-  return Math.max(0, hiddenLeft(ville) + ville.saved - (ville.meOut ? 0 : 1));
+  const asMe = ville.meOut || ville.hidden0 >= ville.population - ville.zombies0 ? 0 : 1;
+  return Math.max(0, hiddenLeft(ville) + ville.saved - asMe);
 }
 
 // Mort du joueur : un habitant non infecté de la ville devient zombie, sans limite (la ville peut être perdue). Un caché
@@ -1124,8 +1126,9 @@ export function humansLeft(ville) {
 // tombé (à défaut, le pâté placé le plus proche) : un pâté nettoyé ou libéré redevient rouge, son fanion tombe. Quand plus
 // aucun non infecté ne reste, la ville est perdue (`lost`). Rend { from: 'cache' | 'sauve' | null, key, lost }, ou null
 // si rien n'a lieu (ville déjà perdue ou sauvée, ou aucun pâté placé). La conservation tient : un habitant de moins
-// (cachés ou sauvés), un zombie de plus, `turned` de plus (checkVille).
-export function infectOne(ville, key) {
+// (cachés ou sauvés), un zombie de plus, `turned` de plus (checkVille). `touched`, si fourni ({ rows: Set, tiles: Set }), reçoit
+// les clés des rangées et des tuiles changées : le serveur de saison les range et les diffuse.
+export function infectOne(ville, key, touched = null) {
   if (ville.lost || zombiesLeft(ville) === 0) return null;
   const rows = [];
   for (const t of Object.values(ville.tiles)) if (t.b) for (const [k, row] of Object.entries(t.b)) rows.push([k, row]);
@@ -1145,8 +1148,11 @@ export function infectOne(ville, key) {
   };
   const hides = (k, row) => row[E] !== ETAT.libere && row[H] - (k === ville.me && !ville.meOut ? 1 : 0) >= 1;
   const src = here && hides(key, here) ? key : nearest(hides);
-  const pool = src ? null : Object.keys(ville.tiles).sort(byKey).map((k) => ville.tiles[k])
-    .find((t) => !t.o && t.rest[0] - t.rest[1] >= 1 && t.p[0] - t.p[1] >= 1) ?? null;
+  const poolKey = src ? null : Object.keys(ville.tiles).sort(byKey).find((k) => {
+    const t = ville.tiles[k];
+    return !t.o && t.rest[0] - t.rest[1] >= 1 && t.p[0] - t.p[1] >= 1;
+  }) ?? null;
+  const pool = poolKey ? ville.tiles[poolKey] : null;
   if (!src && !pool && ville.saved < 1) {
     ville.lost = humansLeft(ville) === 0;
     return { from: null, key: null, lost: ville.lost };
@@ -1156,11 +1162,13 @@ export function infectOne(ville, key) {
   let from = 'cache';
   if (src) {
     rowOf(ville, src)[H]--;
+    touched?.rows.add(src);
   } else if (pool) {
-    const dest = ville.tiles[indexOf(ville).get(landing)];
+    const dk = indexOf(ville).get(landing), dest = ville.tiles[dk];
     pool.p[0]--; pool.rest[0]--;
     dest.p[0]++; dest.p[1]++; dest.k = 0;
     row[S0]++;
+    touched?.tiles.add(dk).add(poolKey);
   } else {
     ville.saved--;
     const u = Object.values(ville.units).find((x) => x.sv > 0);
@@ -1168,6 +1176,7 @@ export function infectOne(ville, key) {
     from = 'sauve';
   }
   row[S]++;
+  touched?.rows.add(landing);
   if (row[E] > ETAT.nid) { row[E] = ETAT.rouge; row[F] = 0; }
   ville.turned = nat(ville.turned) + 1;
   if (humansLeft(ville) === 0) ville.lost = true;

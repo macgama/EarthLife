@@ -43,8 +43,9 @@ export const SEASON_QKEY = /^(?:q-?\d{1,3}\.\d{1,6}_-?\d{1,3}\.\d{1,6}|k\d{1,9}_
 // Gestes d'un joueur : l prêt de la rue, t prise (horde, contre-attaque), d tirage de la réserve du cœur, r retour d'un
 // prêt, k zombie abattu (clé, nombre) ; n ouvrir le nid, f planter le fanion, L libérer, D fanion tombé, c cœur (clé), h habitant
 // trouvé en fouillant (clé du pâté ; un jeu ne l'envoie que si l'état de la saison porte `hab`, un ancien serveur le refuserait), U le joueur
-// entre dans un quartier d'une grande ville (clé du pâté où il est, nom du quartier : le serveur le commence si ses tuiles sont placées).
-const SEASON_EVENTS = { l: 3, t: 3, d: 3, r: 3, k: 3, n: 2, f: 2, L: 2, D: 2, c: 2, h: 2, U: 3 };
+// entre dans un quartier d'une grande ville (clé du pâté où il est, nom du quartier : le serveur le commence si ses tuiles sont placées),
+// x mort du joueur (clé du pâté où il est tombé : un habitant de la ville devient zombie ; un jeu ne l'envoie que si l'état porte `mort`).
+const SEASON_EVENTS = { l: 3, t: 3, d: 3, r: 3, k: 3, n: 2, f: 2, L: 2, D: 2, c: 2, h: 2, U: 3, x: 2 };
 
 export const GESTURES = ['Salut', 'Par ici', 'Attention !', 'Merci', 'Suis-moi', "Besoin d'aide"];
 export const REPORT_REASONS = { 1: 'Me suit partout', 2: 'Abuse des gestes', 3: 'Triche (vitesse, téléportation)' };
@@ -477,6 +478,9 @@ function seasonCounts(v) {
   const k = get(v, 'k');
   const out = { k: seasonTriple(k, 'c'), sv: int(v, 'sv', 0, 1e9), fl: int(v, 'fl', 0, 1e9), z: int(v, 'z', 0, 1e9), dn: int(v, 'dn', 0, 1e6),
     un: {} };
+  // tn : habitants devenus zombies (morts de joueurs), lo : ville perdue (1) ; un serveur d'avant la mort ne les donne pas.
+  if (get(v, 'tn') !== undefined) out.tn = int(v, 'tn', 0, 1e9);
+  if (get(v, 'lo') !== undefined) out.lo = inRange(get(v, 'lo'), 0, 1) ? get(v, 'lo') : bad('c');
   const un = get(v, 'un');
   if (!isObj(un) || Object.keys(un).length > SEASON.maxUnits) bad('c');
   for (const key of Object.keys(un)) {

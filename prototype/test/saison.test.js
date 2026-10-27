@@ -328,15 +328,19 @@ test('gestes du miroir : mêmes gestes que seul, plus l\'envoi au serveur et le 
   sent.length = 0;
   assert.equal(sops.rescue('inconnu'), 0);
   assert.deepEqual(sent, [], 'rien à envoyer quand rien n\'est sauvé');
-  // Mort du joueur : seul, un habitant caché de la ville tombe ; en saison, c'est le serveur seul qui décide (geste à venir) : rien ici.
+  // Mort du joueur : seul, un habitant caché de la ville tombe ; en saison, le geste part au serveur qui seul décide (la copie ne bouge pas).
   const dead = hidden();
   const fall = soloOps(dead).infect(KEY);
   assert.equal(fall.from, 'cache');
   assert.equal(dead.turned, 1);
   const wait = hidden();
   sent.length = 0;
-  assert.equal(seasonOps(wait, { emit: (e) => sent.push(e) }).infect(KEY), null);
-  assert.equal(wait.turned ?? 0, 0);
+  const said = seasonOps(wait, { emit: (e) => sent.push(e) }).infect(KEY);
+  assert.deepEqual(said, { from: 'cache', key: KEY, lost: false });
+  assert.equal(wait.turned ?? 0, 0, 'la copie attend les rangées et les compteurs du serveur');
+  assert.deepEqual(sent, [['x', KEY]]);
+  sent.length = 0;
+  assert.equal(seasonOps(wait, { emit: (e) => sent.push(e) }).infect(''), null, 'sans pâté, rien à dire');
   assert.deepEqual(sent, []);
 });
 
@@ -357,6 +361,13 @@ test('le serveur écrit dans la copie : rangées, tuiles, compteurs, prêts ; ja
   assert.equal(v.saved, 7);
   assert.equal(v.units.c1.r, 6);
   assert.deepEqual(v.units.c1.k, [1, 2, 3]);
+  assert.equal(v.lost ?? false, false);
+  applyCounts(v, { k: [4, 3, 2], sv: 7, fl: 2, z: 99, dn: 0, un: {}, tn: 5, lo: 1 });
+  assert.equal(v.turned, 5, 'habitants devenus zombies, selon le serveur');
+  assert.equal(v.lost, true);
+  applyCounts(v, { k: [4, 3, 2], sv: 7, fl: 2, z: 99, dn: 0, un: {} });
+  assert.equal(v.turned, 5, 'un ancien serveur n\'en dit rien : on garde');
+  assert.equal(v.lost, true);
   applyLent(v, { [KEY]: 2 });
   assert.equal(blockInfo(v, KEY).lent, 2);
   applyLent(v, { [KEY]: 0 });
@@ -427,7 +438,7 @@ async function prepare() {
   assert.ok(began.ok, began.reason);
   return { client, store, prep, ville: began.ville, proj: makeProjection(HOME.lat, HOME.lon) };
 }
-async function seasonGame({ hab = false } = {}) {
+async function seasonGame({ hab = false, mort = 0 } = {}) {
   const s = await prepare();
   const truth = s.ville;
   const solo = createCityRuntime({
@@ -456,7 +467,7 @@ async function seasonGame({ hab = false } = {}) {
   let clock = 1e6;
   const rt = createCityRuntime({
     ville: copy, store: a.store, client: a.client, template: TEMPLATE, graph: a.prep.graph, fn: a.prep.fn, member: a.prep.member, unit: a.prep.unit,
-    commune: a.prep.commune, proj: a.proj, maison: a.prep.ref, rand: rng(7), now: () => (clock += 1), season: { net, hab },
+    commune: a.prep.commune, proj: a.proj, maison: a.prep.ref, rand: rng(7), now: () => (clock += 1), season: { net, hab, mort },
   });
   return { rt, net, copy, truth, advance: (ms) => { clock += ms; } };
 }
@@ -501,6 +512,35 @@ test('ville de saison : un habitant trouvé en fouillant n\'est cherché que si 
   g.rt.resyncFrom({ ville: structuredClone(g.copy), lent: {} });
   assert.equal(g.rt.rescueIn(target.id), 0);
   assert.equal(sent().length, 1);
+});
+
+test('ville de saison : la chute du joueur n\'est annoncée que si le serveur connaît le geste (mort), une fois par délai', async () => {
+  const g = await seasonGame();
+  await g.rt.ensureAround(0, 0, { wait: true });
+  const p = g.rt.pos.values().next().value;
+  const sent = () => g.net.events.filter((e) => e[0] === 'x');
+  // Serveur sans le geste : rien n'est dit (un ancien serveur refuserait le message entier).
+  assert.equal(g.rt.infectAt(p.x, p.z), null);
+  assert.deepEqual(sent(), []);
+  g.rt.resyncFrom({ ville: structuredClone(g.copy), lent: {}, mort: 600 });
+  const out = g.rt.infectAt(p.x, p.z);
+  assert.equal(out.from, 'cache');
+  assert.equal(out.name, g.copy.name);
+  assert.equal(sent().length, 1);
+  assert.equal(typeof sent()[0][1], 'string');
+  assert.equal(g.copy.turned ?? 0, 0, 'la copie attend les compteurs du serveur');
+  // Le serveur ne compte qu'une chute par délai et par joueur : le jeu ne l'annonce pas avant, ni ne l'affiche.
+  g.advance(599000);
+  assert.equal(g.rt.infectAt(p.x, p.z), null);
+  assert.equal(sent().length, 1);
+  g.advance(2000);
+  assert.ok(g.rt.infectAt(p.x, p.z));
+  assert.equal(sent().length, 2);
+  // Et s'il change de version pendant une coupure, le jeu cesse d'en envoyer.
+  g.rt.resyncFrom({ ville: structuredClone(g.copy), lent: {} });
+  g.advance(1e7);
+  assert.equal(g.rt.infectAt(p.x, p.z), null);
+  assert.equal(sent().length, 2);
 });
 
 test('ville de saison avec hab : l\'habitant trouvé est sauvé dans la copie et envoyé une fois', async () => {

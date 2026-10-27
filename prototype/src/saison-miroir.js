@@ -97,10 +97,13 @@ export function seasonOps(ville, net) {
       if (n > 0) net.emit(['h', key]);
       return n;
     },
-    // Mort du joueur : en saison la ville est commune, le serveur seul fait tomber un habitant (geste ajouté par la seconde PR) ;
-    // en attendant, rien ne change dans la copie.
-    infect() {
-      return null;
+    // Mort du joueur : en saison la ville est commune, le serveur seul fait tomber un habitant (au plus un par joueur et par 10 minutes) ;
+    // la copie ne change que quand ses rangées et ses compteurs reviennent. Le jeu n'appelle ceci que si l'état de la saison dit que le
+    // serveur connaît le geste (`mort`) : un ancien serveur refuserait le message entier. Rend la chute annoncée à l'écran de mort.
+    infect(key) {
+      if (!key) return null;
+      net.emit(['x', key]);
+      return { from: 'cache', key, lost: false };
     },
     setCoeur(ukey, key) {
       const ok = setCoeur(ville, ukey, key);
@@ -204,12 +207,14 @@ export function applyLent(ville, lent) {
   for (const [key, n] of Object.entries(lent ?? {})) setLent(ville, key, n);
 }
 
-// Compteurs { k: [3], sv, fl, z, dn, un: { quartier: [r, k0, k1, k2, sv, cœur] } }.
+// Compteurs { k: [3], sv, fl, z, dn, tn, lo, un: { quartier: [r, k0, k1, k2, sv, cœur] } } (tn, lo : devenus zombies, ville perdue).
 export function applyCounts(ville, c) {
   if (!c) return;
   ville.killed = c.k.slice();
   ville.saved = c.sv;
   ville.flags = c.fl;
+  if (c.tn !== undefined) ville.turned = c.tn;
+  if (c.lo !== undefined) ville.lost = c.lo === 1;
   for (const [uk, u] of Object.entries(c.un ?? {})) {
     const m = ville.units[uk];
     if (!m) continue;

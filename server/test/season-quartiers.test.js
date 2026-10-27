@@ -351,6 +351,32 @@ test('quartiers : un quartier vidé est repris, la ville est sauvée quand tous 
   assert.deepEqual([oldState.status, oldState.body.code], [409, 'mode'], 'un ancien client n\'a toujours pas la ville');
 });
 
+test('quartiers : la mort d\'un joueur coûte un habitant à la ville, même dans un quartier déjà repris (le pâté le plus proche reçoit le zombie)', async () => {
+  const w = rig({ rules: { infectMs: 0 } });
+  const a = await opened(w, { both: true });
+  const city = cityOf(w), v = city.ville;
+  await a.ev(['U', key(0), 'Port']);
+  await a.ev(['U', key(0, 1), 'Hameau']);
+  await clearStreets(a, w, Q2);
+  w.tick(2500);
+  assert.ok(v.done[Q2], 'le hameau est repris, ses pâtés ont quitté la ville');
+  assert.equal(city.pateTile.has(key(1, 1)), false);
+  const humans = () => v.saved + Object.values(v.tiles).reduce((n, t) => n + (t.rest[0] - t.rest[1]) + Object.values(t.b ?? {}).reduce((m, r) => m + r[ROW.H], 0), 0);
+  const z0 = zombiesLeft(v), h0 = humans();
+  await a.ev(['x', key(1, 1)]);
+  assert.equal(v.turned, 1, 'la mort compte, ici comme ailleurs');
+  assert.equal(zombiesLeft(v), z0 + 1);
+  assert.equal(humans(), h0 - 1);
+  assert.ok(checkVille(v).ok, checkVille(v).errors.join());
+  await a.ev(['x', key(1)]);
+  assert.equal(v.turned, 2);
+  assert.equal(humans(), h0 - 2);
+  assert.ok(checkVille(v).ok, checkVille(v).errors.join());
+  w.tick(1000);
+  const c = a.sv('cnt').at(-1).c;
+  assert.deepEqual([c.tn, c.lo, c.z], [2, 0, zombiesLeft(v)]);
+});
+
 test('quartiers : un ancien serveur de ville entière reste inchangé (mode entier, pas de message `un` ni `ud`, pas de lieux dans `tile`)', async () => {
   const w = rig();
   const a = await w.player(1, { cl: 2 });
