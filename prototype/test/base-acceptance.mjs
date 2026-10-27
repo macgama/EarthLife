@@ -108,6 +108,9 @@ function recorder() {
 
 async function newContext(device) {
   const ctx = await browser.newContext(DEVICES[device]);
+  // Un clic attend que la page ait traité l'événement : sans carte graphique et à deux pages, un départ en voiture ou un rechargement
+  // occupe la page plus de 30 s (le délai par défaut). Les attentes explicites (`until`, `waitForEvent`) gardent leur délai.
+  ctx.setDefaultTimeout(180000);
   if (routes) await routes(ctx, root);
   await ctx.addInitScript(recorder);
   return ctx;
@@ -137,15 +140,18 @@ async function until(page, fn, arg, timeout = 60000) {
 const shot = (page, name) => page.screenshot({ path: path.join(out, `${name}.png`) }).catch(() => {});
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function started(page) {
-  const ok = await until(page, () => !!window.__earthlife?.session?.player && document.getElementById('loading').classList.contains('hidden'), null, 90000);
+async function started(page, timeout = 90000) {
+  const ok = await until(page, () => !!window.__earthlife?.session?.player && document.getElementById('loading').classList.contains('hidden'), null, timeout);
   return !!ok;
 }
 
 const seen = (page) => ev(page, () => window.__seen);
 // Libellé du bouton d'action (#search ou #action2), ou null s'il est caché.
 // Attend une notification (texte qui commence par `start`) ; renvoie son texte, ou null.
-const toastSeen = (page, start, timeout = 30000) => until(page, (t) => window.__seen.toasts.find((x) => x.startsWith(t)) ?? null, start, timeout);
+// Les notifications comptent en temps de jeu et font la queue : sur un exécuteur lent (0,08 s de jeu par seconde de montre), une seule
+// qui en précède une autre retarde celle-ci de plus de 30 s. `until` rend la main dès qu'elle est vue : la marge ne coûte rien quand tout va bien
+// (les délais plus courts demandés par les appels sont portés à 120 s, aucun appel n'attend une notification qui ne doit pas venir).
+const toastSeen = (page, start, timeout = 300000) => until(page, (t) => window.__seen.toasts.find((x) => x.startsWith(t)) ?? null, start, Math.max(timeout, 120000));
 const clearZombies = (page) => ev(page, () => { window.__earthlife.session.director.zombies.length = 0; });
 const debug = (page, name, ...args) => ev(page, ([n, a]) => window.__earthlife.debug[n](...a), [name, args]);
 // Bouton du panneau du refuge (data-act, data-arg).
@@ -1014,7 +1020,7 @@ async function desktop() {
   await until(page, () => !document.getElementById('menu').classList.contains('hidden'), null, 5000);
   const take = await visibleText('save-take');
   check(take === 'Reprendre ici', `${tag} 7 : bouton « ${take} » dans le menu`);
-  await Promise.all([page.waitForEvent('load', { timeout: 20000 }).catch(() => null), page.click('#save-take')]);
+  await Promise.all([page.waitForEvent('load', { timeout: 20000 }).catch(() => null), page.click('#save-take', { timeout: 180000 })]);
   // La 1re page recharge et relance sa partie (autostart=1) pendant que la 2e tourne : sous swiftshader en CI, les deux se
   // disputent le processeur et aucune ne dessine d'image (donc aucun sondage « raf ») pendant 20 s ou plus. Les deux
   // attentes courent ensemble, avec la marge du lancement d'une partie.
@@ -1026,7 +1032,7 @@ async function desktop() {
   // La 1re page relance sa partie toute seule (autostart=1) : elle doit tourner et avoir écrit avant que la 2e reprenne la main.
   // Sinon, sur un coureur lent, la dernière des deux à démarrer sa partie prend la main à l'autre (la page qui n'a encore rien
   // écrit relit la partie puis écrit) et la 2e, rechargée en dernier, se retrouve en lecture seule.
-  const running1 = await started(page);
+  const running1 = await started(page, 240000);
   const wrote1 = running1 && await ev(page, () => { const st = window.__earthlife.saveStore; st.markDirty(); return st.flush('essai').ok; });
   check(wrote1, `${tag} 7 : la 1re page, rechargée, relance sa partie et sauvegarde avant la reprise de la 2e`);
   // « Reprendre ici » sur la carte en partie : la page recharge et relance la partie aussitôt (pas de retour au menu).
@@ -1035,7 +1041,8 @@ async function desktop() {
   // L'adresse de test porte autostart=1 : on la retire (sans recharger) pour que seul le drapeau de reprise relance la partie.
   await ev(page2, () => history.replaceState(null, '', location.href.replace('&autostart=1', '')));
   await Promise.all([page2.waitForEvent('load', { timeout: 20000 }).catch(() => null), page2.click('#card [data-card-btn="take"]')]);
-  const back = await started(page2);
+  // Deux pages se disputent le processeur : le lancement de la partie rechargée prend plus de 90 s sur la CI.
+  const back = await started(page2, 240000);
   const back2 = await ev(page2, () => ({ menuHidden: document.getElementById('menu').classList.contains('hidden'), readOnly: window.__earthlife.saveStore.readOnly }));
   check(back && back2.menuHidden && !back2.readOnly, `${tag} 7 : après « Reprendre ici » en partie, la partie repart sans menu et sauvegarde (menu caché : ${back2.menuHidden}, lecture seule : ${back2.readOnly})`);
   // Partie de saison : le drapeau porte le niveau, la page rechargée relance la saison (l'essai n'a pas de compte : la carte « Un compte
@@ -3322,7 +3329,7 @@ async function voitureScenario(device) {
   check(menu.r === 'carfix' && menu.rOff && /^Réparer la voiture( \(R\))? · 20 s$/.test(menu.label2 ?? ''), `${tag} : bouton « ${menu.label2} » grisé sans batterie`);
   await shot(page, `${tag.replace(' ', '-')}-reparer-bouton`);
   await press(page, device, 'r', 'action2');
-  const missing = await toastSeen(page, 'Il te manque', 15000);
+  const missing = await toastSeen(page, 'Il te manque', 120000);
   check(!!missing && /atterie/.test(missing), `${tag} : sans batterie : « ${missing} »`);
   await debug(page, 'give', { batterie: 1, bidon: 3 }); // 1 + 3 = 4 bidons pour le plein
   await until(page, () => window.__earthlife.session.menu?.secondary?.off === false, null, 10000);
@@ -3340,7 +3347,7 @@ async function voitureScenario(device) {
   check(fixed.from === found.fix.id && fixed.fuel === 1 && fixed.wear === 100, `${tag} : « ta voiture » = ${fixed.from}, ${fixed.fuel} L, usure ${fixed.wear} %`);
   check((parts0.ferraille ?? 0) - (parts1.ferraille ?? 0) === 2 && (parts0.ruban ?? 0) - (parts1.ruban ?? 0) === 1 && (parts0.batterie ?? 0) - (parts1.batterie ?? 0) === 1,
     `${tag} : pièces prises : 2 ferrailles, 1 ruban, 1 batterie (ferraille ${parts0.ferraille ?? 0} → ${parts1.ferraille ?? 0})`);
-  check(!!(await toastSeen(page, 'Voiture réparée', 30000)), `${tag} : notification « Voiture réparée… »`);
+  check(!!(await toastSeen(page, 'Voiture réparée', 120000)), `${tag} : notification « Voiture réparée… »`);
   check(await ev(page, (id) => !!window.__earthlife.save.dismantled[id], found.fix.id), `${tag} : la voiture d'origine est notée démontée (pour les autres joueurs aussi)`);
   await wait(500);
   const scales = await carsAt(page, { x: found.fix.cx, z: found.fix.cz });
