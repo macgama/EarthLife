@@ -393,7 +393,8 @@ export function homeCandidates(runtime, buildings, { window = [CITY.homeMin, CIT
 
 // Contexte d'une partie de ville. deps : { ville, store, client, template, graph, fn, member, unit, commune, proj, rand?,
 // now?, onEvent?, log?, season? } ; `proj` : { toLocal(lat, lon) -> { x, z }, toLatLon(x, z) -> { lat, lon } } du monde chargé.
-// `season` : { net, hab } (net/season.js ; hab : le serveur connaît le geste « habitant trouvé ») pour la ville commune d'une saison : `ville` est alors la copie du serveur, les gestes
+// `season` : { net, hab, mort } (net/season.js ; hab : le serveur connaît le geste « habitant trouvé » ; mort : il connaît la mort du joueur et ne la compte
+// qu'une fois toutes les `mort` secondes par joueur) pour la ville commune d'une saison : `ville` est alors la copie du serveur, les gestes
 // sont envoyés (saison-miroir.js), les tuiles sont placées par le serveur, les nuits, la fin de ville et le territoire de
 // l'appareil ne servent pas.
 export function createCityRuntime(deps) {
@@ -420,6 +421,7 @@ export function createCityRuntime(deps) {
     counter: null, nightDone: null, lastDirty: 0, dirtyPending: false, ended: false, acc: 0, unitAcc: 0, heartAt: -Infinity, heartVal: null, capAt: -Infinity, capVal: 0,
     forceFind: false,   // essais (?debug=1) : un bâtiment qui cache quelqu'un le donne à coup sûr
     unitAsk: new Map(), // saison, grande ville : quartier -> instant de la dernière demande d'entrée
+    fellAt: -Infinity,  // saison : dernière chute annoncée au serveur (une par joueur et par `mort` secondes)
   };
   let disposed = false;
 
@@ -963,9 +965,12 @@ export function createCityRuntime(deps) {
 
   // Un habitant non infecté de la ville devient zombie là où le joueur est tombé (quartier.js, infectOne). Rend { from, key,
   // lost, name } (from : 'cache' ou 'sauve'), ou null si rien n'a lieu (ville déjà perdue ou sauvée).
+  // En saison, seulement si le serveur connaît le geste (S.mort) et pas avant la fin du délai qu'il compte entre deux chutes du même joueur.
   function infectAt(x, z) {
+    if (S && (!(S.mort > 0) || now() - state.fellAt < S.mort * 1000)) return null;
     const key = blockAt(x, z) ?? nearestBlock(x, z) ?? '';
     const out = ops.infect(key);
+    if (out && S) state.fellAt = now();
     return out ? { ...out, name: ville.name } : null;
   }
 
@@ -1285,6 +1290,7 @@ export function createCityRuntime(deps) {
   function resyncFrom(fresh) {
     resyncVille(ville, fresh.ville);
     if (S) S.hab = fresh.hab === 1;              // le serveur a pu changer de version pendant la coupure
+    if (S) S.mort = fresh.mort > 0 ? fresh.mort : 0;
     applyLent(ville, fresh.lent);
     state.srv = null;
     state.capAt = -Infinity;

@@ -7,7 +7,7 @@ import { createAccounts } from '../src/accounts.js';
 import { createMailer } from '../src/mail.js';
 import { createMemoryStore } from '../src/store-memory.js';
 import { createRoom } from '../src/room.js';
-import { checkVille, zombiesLeft, blockInfo, ROW, ETAT } from '../../prototype/src/quartier.js';
+import { checkVille, zombiesLeft, blockInfo, cityStatus, ROW, ETAT } from '../../prototype/src/quartier.js';
 import { parseServer, validateClient } from '../../prototype/src/net/protocol.js';
 
 // 6 octobre 2026, 12 h UTC : plein jour à Pérouges (45,9 N ; 5,2 E).
@@ -427,6 +427,9 @@ test('graine : population minimale, nombres vrais, clé de commune qui n\'est pa
   assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['h', key(1)]] }).ok, true);
   assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['h', key(1), 1]] }).ok, false);
   assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['h']] }).ok, false);
+  assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['x', key(1)]] }).ok, true);
+  assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['x', key(1), 1]] }).ok, false);
+  assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['x']] }).ok, false);
 });
 
 test('tuile : une clé tenue par une autre tuile n\'est pas reprise, découpes et voisinages réservés aux joueurs assis', async () => {
@@ -586,6 +589,130 @@ test('habitant trouvé (h) : refusé sans caché, au débit d\'une fouille ; la 
   await c.ev(['h', k2]);
   assert.equal(v2.saved, saved2, 'plus aucun caché : rien de plus sauvé');
   assert.ok(checkVille(v2).ok, checkVille(v2).errors.join(' ; '));
+});
+
+const humansOf = (v) => v.saved + Object.values(v.tiles).reduce((n, t) => n + (t.rest ? t.rest[0] - t.rest[1] : 0), 0)
+  + Object.values(v.tiles).reduce((n, t) => n + Object.values(t.b ?? {}).reduce((m, r) => m + r[ROW.H], 0), 0);
+
+test('mort (x) : un caché du pâté devient zombie pour tous les joueurs, au plus une fois par 10 minutes et par compte, l\'état dit que le geste existe', async () => {
+  const w = rig();
+  const a = await seeded(w), b = await w.player(2, { enter: SEED.key });
+  await a.send({ o: 'in', c: SEED.key });
+  await b.send({ o: 'in', c: SEED.key });
+  const city = cityOf(w), v = city.ville;
+  const [k, row] = hiddenBlock(w);
+  const h0 = row[ROW.H], s0 = row[ROW.S], z0 = zombiesLeft(v), hum0 = humansOf(v);
+  const t0 = city.playedAt;
+  w.clock.t += 5000;
+  await a.ev(['x', k]);
+  assert.equal(row[ROW.H], h0 - 1, 'un caché du pâté de la mort');
+  assert.equal(row[ROW.S], s0 + 1, 'devenu zombie sur place');
+  assert.equal(v.turned, 1);
+  assert.equal(zombiesLeft(v), z0 + 1);
+  assert.equal(humansOf(v), hum0 - 1);
+  assert.ok(city.playedAt > t0, 'une mort est du jeu');
+  assert.ok(checkVille(v).ok, checkVille(v).errors.join(' ; '));
+  w.tick(1000);
+  for (const p of [a, b]) {
+    const rows = p.sv('rows').at(-1);
+    assert.equal(Object.values(rows.r).find((x) => x[k])[k][ROW.S], s0 + 1, `rangée diffusée à ${p.n}`);
+    const c = p.sv('cnt').at(-1).c;
+    assert.equal(c.tn, 1);
+    assert.equal(c.lo, 0);
+    assert.equal(c.z, z0 + 1);
+  }
+  // Même compte : un seul coût par 10 minutes ; un autre compte, lui, paie la sienne.
+  await a.ev(['x', k]);
+  assert.equal(v.turned, 1, 'trop tôt : ignoré');
+  await b.ev(['x', k]);
+  assert.equal(v.turned, 2);
+  w.jump(w.clock.t + 598000);
+  await a.ev(['x', k]);
+  assert.equal(v.turned, 2, 'encore dans les dix minutes');
+  w.jump(w.clock.t + 2000);
+  await a.ev(['x', k]);
+  assert.equal(v.turned, 3);
+  // Jamais sur la réserve du cœur ; un pâté que la ville ne porte pas (quartier repris) compte, le plus proche reçoit le zombie.
+  w.jump(w.clock.t + 11 * 60000);
+  await a.ev(['x', '@c01283']);
+  assert.equal(v.turned, 3);
+  await a.ev(['x', key(99, 5)]);
+  assert.equal(v.turned, 4);
+  assert.ok(checkVille(v).ok, checkVille(v).errors.join(' ; '));
+  const st = await b.call('/v1/season/state', {});
+  assert.equal(st.body.mort, 600);
+  await w.seasons.flush();
+});
+
+test('mort (x) : sans caché dans le pâté, le plus proche ; une tuile pas encore posée donne le sien et le report est diffusé', async () => {
+  const w = rig();
+  const a = await seeded(w, { tiles: [TA] }), b = await w.player(2, { enter: SEED.key });
+  await a.send({ o: 'in', c: SEED.key });
+  await b.send({ o: 'in', c: SEED.key });
+  const city = cityOf(w), v = city.ville;
+  const placed = Object.entries(v.tiles).filter(([, t]) => t.b).map(([tk]) => tk);
+  assert.deepEqual(placed, [TA], 'une seule tuile posée : la seconde garde ses cachés en réserve');
+  const [k] = hiddenBlock(w);
+  // Tous les cachés des pâtés posés sont retrouvés : il ne reste que ceux de la tuile pas posée.
+  for (const t of Object.values(v.tiles)) for (const row of Object.values(t.b ?? {})) { v.saved += row[ROW.H]; row[ROW.H] = 0; }
+  const hum0 = humansOf(v), z0 = zombiesLeft(v), unplaced = Object.entries(v.tiles).filter(([, t]) => !t.b).map(([tk, t]) => [tk, t.rest[0] - t.rest[1]]);
+  assert.ok(unplaced.some(([, n]) => n > 0), 'des cachés restent dans la tuile pas posée');
+  a.inbox.length = 0;
+  b.inbox.length = 0;
+  w.clock.t += 5000;
+  await a.ev(['x', k]);
+  assert.equal(v.turned, 1);
+  assert.equal(humansOf(v), hum0 - 1);
+  assert.equal(zombiesLeft(v), z0 + 1);
+  assert.ok(checkVille(v).ok, checkVille(v).errors.join(' ; '));
+  w.tick(1000);
+  for (const p of [a, b]) {
+    const tile = p.sv('tile').at(-1);
+    assert.equal(tile.k, TA, `report de la tuile posée diffusé à ${p.n}`);
+    assert.equal(tile.v.p[1], v.tiles[TA].p[1]);
+  }
+  // Redémarrage : la tuile qui a perdu l'habitant et celle qui a gagné le zombie sont relues, la conservation tient.
+  await w.seasons.flush();
+  const again = createSeasons({ store: w.store, now: () => w.clock.t });
+  await again.init();
+  const st = JSON.parse((await again.handle('/v1/season/state', JSON.stringify({ ses: a.ses }))).raw);
+  assert.deepEqual(st.ville.tiles, JSON.parse(JSON.stringify(v.tiles)));
+  assert.equal(st.ville.turned, 1);
+  assert.ok(checkVille(st.ville).ok, checkVille(st.ville).errors.join(' ; '));
+});
+
+test('mort (x) : la ville est perdue quand il n\'y a plus aucun habitant à sauver, les compteurs le disent', async () => {
+  const w = rig({ rules: { infectMs: 0 } });
+  const a = await seeded(w), b = await w.player(2, { enter: SEED.key });
+  await a.send({ o: 'in', c: SEED.key });
+  await b.send({ o: 'in', c: SEED.key });
+  const city = cityOf(w), v = city.ville;
+  const [k] = hiddenBlock(w);
+  const hum0 = humansOf(v);
+  w.clock.t += 5000;
+  for (let left = hum0 + 5, i = 0; left > 0 && !v.lost && i < 100; left -= 40, i++) await a.ev(...Array(40).fill(['x', k]));
+  assert.equal(v.lost, true);
+  assert.equal(humansOf(v), 0);
+  assert.equal(v.turned, hum0);
+  assert.equal(cityStatus(v), 'perdue');
+  assert.ok(checkVille(v).ok, checkVille(v).errors.join(' ; '));
+  w.jump(w.clock.t + 2000);
+  for (const p of [a, b]) {
+    const c = p.sv('cnt').at(-1).c;
+    assert.equal(c.lo, 1);
+    assert.equal(c.tn, hum0);
+  }
+  await a.ev(['x', k]);
+  assert.equal(v.turned, hum0, 'une ville perdue n\'a plus rien à perdre');
+  // Le menu la lit « perdue ».
+  const row = (await w.seasons.progress()).body.levels.facile.cities.find((x) => x.key === SEED.key);
+  assert.equal(row.status, 'perdue');
+  // Rangée, compteurs et tuiles relus après un redémarrage.
+  await w.seasons.flush();
+  const again = createSeasons({ store: w.store, now: () => w.clock.t });
+  await again.init();
+  const row2 = (await again.progress()).body.levels.facile.cities.find((x) => x.key === SEED.key);
+  assert.equal(row2.status, 'perdue', 'relue de la base : toujours perdue');
 });
 
 test('nid, fanion, libération : mêmes règles que le jeu seul, validées par le serveur', async () => {
@@ -787,7 +914,7 @@ test('limites : seaux par compte et route, corps trop grand', async () => {
 
 test('protocole : gestes valides et invalides (validateClient)', () => {
   assert.equal(validateClient({ t: 'sv', o: 'ev', e: [['k', key(1), 3], ['f', key(1)]] }).ok, true);
-  for (const bad of [{ o: 'ev', e: [] }, { o: 'ev', e: [['x', key(1)]] }, { o: 'ev', e: [['k', key(1)]] }, { o: 'ev', e: [['k', key(1), 0]] },
+  for (const bad of [{ o: 'ev', e: [] }, { o: 'ev', e: [['z', key(1)]] }, { o: 'ev', e: [['k', key(1)]] }, { o: 'ev', e: [['k', key(1), 0]] },
     { o: 'ev', e: [['f', 'pas-un-pate']] }, { o: 'ev', e: Array(41).fill(['f', key(1)]) }, { o: 'in' }, { o: 'in', c: '../x' }, { o: 'zz' }]) {
     assert.equal(validateClient({ t: 'sv', ...bad }).ok, false, JSON.stringify(bad));
   }

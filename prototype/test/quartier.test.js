@@ -1168,6 +1168,35 @@ test('infectOne : la ville perd un habitant par mort, sans limite, jusqu\'à êt
   ok(v);
 });
 
+test('infectOne : `touched` reçoit les rangées et les tuiles changées (le serveur de saison les diffuse)', () => {
+  const v = perougesVille('facile');
+  const key = keysOf(v).find((k) => blockInfo(v, k).hidden >= 3 && blockInfo(v, k).state === 'rouge');
+  const touched = { rows: new Set(), tiles: new Set() };
+  assert.ok(infectOne(v, key, touched));
+  assert.deepEqual([...touched.rows], [key], 'un caché du pâté même : une seule rangée');
+  assert.equal(touched.tiles.size, 0);
+  // Plus aucun caché dans les pâtés placés : celui d'une tuile pas encore placée passe à la rangée, tuiles et rangée sont dites.
+  const w = perougesVille('facile', { order: [0] });
+  const home = keysOf(w)[0];
+  for (const k of keysOf(w)) { const row = rowOf(w, k); w.saved += row[ROW.H]; row[ROW.H] = 0; }
+  const t2 = { rows: new Set(), tiles: new Set() };
+  const rest0 = Object.values(w.tiles).reduce((n, t) => n + (t.b ? 0 : t.rest[0] - t.rest[1]), 0);
+  assert.ok(rest0 > 0, 'des cachés attendent dans les tuiles pas encore placées');
+  assert.ok(infectOne(w, home, t2));
+  assert.ok(t2.rows.has(home), 'le zombie atterrit dans la rangée');
+  assert.ok(t2.tiles.size >= 2, 'la tuile qui perd l\'habitant et celle qui gagne le zombie');
+  assert.ok([...t2.tiles].every((tk) => w.tiles[tk]));
+  ok(w);
+});
+
+test('humansLeft : une ville de saison (hidden0 = population − zombies0) compte tous ses non infectés, sans place pour le joueur', () => {
+  const v = perougesVille('facile');
+  const solo = humansLeft(v);
+  v.hidden0 = Math.max(0, v.population - v.zombies0);
+  assert.equal(humansLeft(v), solo + 1);
+  ok(v);
+});
+
 test('infectOne : sans caché dans le pâté, le plus proche qui en cache encore ; le zombie reste là où le joueur est tombé', () => {
   const v = perougesVille('facile');
   const key = keysOf(v).find((k) => blockInfo(v, k).hidden >= 2);

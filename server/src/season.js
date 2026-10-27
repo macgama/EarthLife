@@ -30,7 +30,7 @@ import { cleanText } from '../../prototype/src/limits.js';
 import { isNightAt, nightKey } from '../../prototype/src/horde.js';
 import {
   startVille, placeTile, kill, lend, giveBack, take, drawReserve, openNest, plantFlag, dropFlag, liberate, rescueOne, setCoeur,
-  volunteersNight, regrow, fallFlag, checkVille, zombiesLeft, cityStatus, blockInfo, nestSize, keyPoint, startUnit, finishUnit, unitKeyOf,
+  volunteersNight, regrow, fallFlag, infectOne, checkVille, zombiesLeft, cityStatus, blockInfo, nestSize, keyPoint, startUnit, finishUnit, unitKeyOf,
   unitTilesMissing, ETAT, ROW, QUARTIER,
 } from '../../prototype/src/quartier.js';
 import { SEASON, SEASON_KEY, SEASON_COMMUNE, SEASON_TILE, SEASON_QKEY, TOKEN_RE, readJson } from '../../prototype/src/net/protocol.js';
@@ -52,7 +52,7 @@ const distM = (a, b) => Math.hypot((a.lon - b.lon) * Math.cos((((a.lat + b.lat) 
 
 export const SEASON_RULES = {
   seats: SEASON.seats, days: SEASON.days, name: 'Saison 1',
-  flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, rescueBurst: 6, rescuePerSec: 1 / 6, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
+  flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, rescueBurst: 6, rescuePerSec: 1 / 6, infectMs: 600000, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
   initRetryMs: 5000, playedMs: DAY, enrolCacheMs: 60000,
   rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000, unitCheckMs: 2000, unitAsk: [10, 0.5],
   citiesMax: 30,                                         // villes ouvertes au plus par niveau (choix libre)
@@ -249,7 +249,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const city = {
       key, name: ville.name, place, ville, playedAt, adj: new Map(), pairs: 0, pateTile: new Map(), rv: 0,
       dirty: { meta: true, tiles: new Set(), adj: false }, rows: new Map(), lentDirty: new Set(), cnt: false, cntAt: 0, cntSent: new Map(), sig: new Map(), revs: new Map(),
-      nightDone: null, unitCheck: new Set(), unitCheckAt: 0, heart: new Map(),
+      nightDone: null, unitCheck: new Set(), unitCheckAt: 0, heart: new Map(), fell: new Map(),
     };
     reindex(city);
     if (ville.mode === 'quartiers') for (const k of Object.keys(ville.units)) city.unitCheck.add(k);   // arrêt brutal : un quartier fini est repris
@@ -425,7 +425,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       un[k] = row;
     }
     if (diff) for (const k of [...city.cntSent.keys()]) if (!v.units[k]) city.cntSent.delete(k);
-    return { k: [...v.killed], sv: v.saved, fl: v.flags, z: zombiesLeft(v), dn: Object.keys(v.done).length, un };
+    return { k: [...v.killed], sv: v.saved, fl: v.flags, z: zombiesLeft(v), dn: Object.keys(v.done).length, un, tn: v.turned ?? 0, lo: v.lost ? 1 : 0 };
   };
   function dirtyRow(city, key) {
     const tk = city.pateTile.get(key);
@@ -498,6 +498,12 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return out;
   }
 
+  // Le report de population d'une tuile (une mort la change) sans ses rangées ; une tuile pas encore posée n'a rien à montrer
+  // aux joueurs, le serveur la rend telle quelle quand elle est posée.
+  function pushTileMeta(w, tk) {
+    const city = w.city, t = city.ville.tiles[tk];
+    if (t?.b) broadcast(w, { t: 'sv', o: 'tile', rv: ++city.rv, k: tk, v: { ...t, b: undefined } });
+  }
   function pushTile(w, tk, except = null, places = {}) {
     const city = w.city, t = city.ville.tiles[tk];
     if (!t?.b) return;
@@ -633,11 +639,12 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   // Rend vrai si un geste a changé quelque chose (les gestes sans effet ne comptent pas comme du jeu).
   function applyEvents(sub, events) {
     const city = sub.w.city, v = city.ville;
-    const deny = new Map(), fix = new Set();
+    const deny = new Map(), fix = new Set(), tileMeta = new Set();
     let changed = false;
     for (const e of events) {
       const [k, key, n] = e;
-      if (key[0] === '@' ? !Object.hasOwn(v.units, key.slice(1)) : !city.pateTile.has(key)) continue;
+      // La mort d'un joueur compte même dans un pâté que la ville ne porte plus (quartier repris) : le plus proche reçoit le zombie.
+      if (key[0] === '@' ? !Object.hasOwn(v.units, key.slice(1)) : k !== 'x' && !city.pateTile.has(key)) continue;
       stats.events++;
       switch (k) {
         case 'l': case 't': case 'd': {
@@ -684,6 +691,21 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
           if (sub.rescueBucket.take(1) && rescueOne(v, key) > 0) { dirtyRow(city, key); changed = true; } else fix.add(key);
           break;
         }
+        case 'x': {
+          // Mort d'un joueur (key est le pâté où il tombe, jamais la réserve du cœur) : un non-infecté de la ville devient zombie.
+          // Au plus une fois par `infectMs` et par compte, pour qu'un client trafiqué ne vide pas la ville ; sans effet : rien n'est dû.
+          if (key[0] === '@') break;
+          const t = now(), last = city.fell.get(sub.accountId);
+          if (last !== undefined && t - last < R.infectMs) break;
+          const touched = { rows: new Set(), tiles: new Set() };
+          if (!infectOne(v, key, touched)) break;
+          city.fell.set(sub.accountId, t);
+          for (const rk of touched.rows) dirtyRow(city, rk);
+          for (const tk of touched.tiles) { city.dirty.tiles.add(tk); tileMeta.add(tk); }
+          dirtyCounts(city);
+          changed = true;
+          break;
+        }
         case 'c': {
           const uk = v.mode === 'entiere' ? v.key : unitKeyOf(v, key);
           const u = uk ? v.units[uk] : null;
@@ -704,6 +726,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       sendDeny(sub, deny);
     }
     if (fix.size) sendFix(sub, fix);
+    for (const tk of tileMeta) pushTileMeta(sub.w, tk);
     return changed;
   }
 
@@ -947,7 +970,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const city = w.city;
     if (city.ville.mode === 'quartiers' && !modern(body.cl)) return refuse(409, 'mode');
     // hab : ce serveur connaît le geste `h` (habitant trouvé) ; un jeu ne l'envoie que si l'état le dit.
-    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville: city.ville, lent: lentSnapshot(city), hab: 1 }) };
+    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville: city.ville, lent: lentSnapshot(city), hab: 1, mort: R.infectMs / 1000 }) };
   }
 
   // Pâtés d'une tuile découpée : [clé, appartenance (1 dedans, 0 dehors, -1 inconnu), plancher, logements, bâtiments,
