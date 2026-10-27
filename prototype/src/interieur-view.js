@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { LAB, INTERIEUR, ROOM_TYPES } from './interieur.js';
 import { setOpenBuilding, openBuilding } from './scene.js';
 import { createShadow, fieldTexture } from './interieur-ombre.js';
+import { approachK } from './camera-basse.js';
 
 const { WALL, FLOOR, DOOR, FURN, SHELL } = LAB;
 
@@ -385,6 +386,8 @@ export function createInteriorView(scene, { dark = true } = {}) {
     get active() { return !!cur; },
     get plan() { return cur?.plan ?? null; },
     get shadow() { return shadow; },
+    // Ouverture du noir (0 à 1), pour les essais.
+    get opening() { return cur?.k ?? 0; },
 
     // Ouvre l'intérieur de `plan` (`ring` : contour du bâtiment pour effacer son toit ; `done(room)` : pièces déjà fouillées).
     open(plan, { floorY = 0, ring = null, done = () => false, instant = false } = {}) {
@@ -453,8 +456,8 @@ export function createInteriorView(scene, { dark = true } = {}) {
         }
       }
       if (!cur) return;
-      const want = entered && !cur.leaving ? 1 : 0, step = reduceMotion ? 1 : dt / FADE_TIME;
-      cur.k = want > cur.k ? Math.min(1, cur.k + step) : Math.max(0, cur.k - step);
+      // Posé sur sa cible, le noir y reste : une image sur deux il repartait de dt / FADE_TIME et le plein écran vacillait.
+      cur.k = approachK(cur.k, entered && !cur.leaving ? 1 : 0, dt, { reduce: reduceMotion, dur: FADE_TIME });
       shadow.update(dt, { k: cur.k, player, daylight, reduceMotion, lamp });
       cur.glow.material.opacity = reduceMotion ? 0.4 : 0.28 + 0.2 * (0.5 + 0.5 * Math.sin(time * 4));
       cur.lamps.material.opacity = reduceMotion ? 0.5 : 0.5 + 0.06 * Math.sin(time * 1.7);

@@ -255,6 +255,19 @@ async function scenario(device) {
   });
   check(hud.indoor && hud.vitals && !hud.conditions && !hud.quest && !hud.minimap && !hud.online, `${tag} : écran dégagé dans le bâtiment ${JSON.stringify(hud)}`);
   check(!!top && top.need > 4 && top.need < 91 && (top.whole ? top.centered > 0.99 && top.dist >= top.need - 0.01 : top.centered < 0.01), `${tag} : ${top?.whole ? `bâtiment cadré en entier (distance ${round(top.dist, 1)} m pour ${round(top.need, 1)} m)` : `grand bâtiment : la caméra suit le joueur (${round(top?.dist ?? 0, 1)} m, il en faudrait ${round(top?.need ?? 0, 1)})`}`);
+  // Pas de tremblement : posées, l'ouverture de la caméra et celle du noir restent à 1 image après image (elles repartaient d'un pas
+  // une image sur deux, et l'écran vacillait : distance, tangage et noir changeaient à chaque image).
+  const posed = await until(page, () => { const t = window.__earthlife.debug.interior()?.top; return t && t.k === 1 && t.open === 1 ? true : null; }, null, 90000);
+  const calm = await ev(page, () => new Promise((resolve) => {
+    const seen = [];
+    const tick = () => {
+      const t = window.__earthlife.debug.interior()?.top;
+      seen.push(t ? [t.k, t.open] : null);
+      if (seen.length < 12) requestAnimationFrame(tick); else resolve(seen);
+    };
+    requestAnimationFrame(tick);
+  }));
+  check(!!posed && calm.every((v) => v && v[0] === 1 && v[1] === 1), `${tag} : la vue de dessus ne tremble pas (caméra et noir fixes sur ${calm.length} images)`);
   // Zoom dans le bâtiment : + rapproche, − éloigne, sans toucher à la distance gardée dehors ; limité à la vue du bâtiment.
   const d0 = top.dist;
   await page.keyboard.press('+'); await page.keyboard.press('+');

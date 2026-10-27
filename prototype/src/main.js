@@ -3189,7 +3189,7 @@ function syncScene(s, dt) {
   // Intérieur : la caméra se redresse (de dessus) et se rapproche un peu, en douceur ; elle ne touche ni au zoom voulu ni au tangage gardé.
   const topWant = INTERIOR_DARK && !!s.interior?.entered && !home ? 1 : 0, reduce = characters.reduceMotion.matches;
   const ik = s.interiorK ?? 0;
-  s.interiorK = reduce ? topWant : topWant > ik ? Math.min(1, ik + dt / INTERIOR_CAMERA.ease) : Math.max(0, ik - dt / INTERIOR_CAMERA.ease);
+  s.interiorK = approachK(ik, topWant, dt, { reduce, dur: INTERIOR_CAMERA.ease });
   const ie = s.interiorK * s.interiorK * (3 - 2 * s.interiorK);
   // Bâtiment ouvert : l'écran se dégage (body.indoor), le zoom ne règle plus que la vue du bâtiment, remise à 1 à chaque entrée.
   const indoor = topWant === 1;
@@ -4306,8 +4306,8 @@ const debug = DEBUG ? {
     return {
       id: b.id, index: it.index, entered: it.entered, buildMs: it.buildMs, total: plan.total, room: interior.roomAtPlayer(s), rooms,
       entry: { x: plan.entry.ox, z: plan.entry.oz, ix: plan.entry.ix, iz: plan.entry.iz, nx: plan.entry.nx, nz: plan.entry.nz }, status: interior.status(s, b, plan),
-      // Vue de dessus et noir : ouverture de la caméra (0 à 1), tangage et distance vus, noir ouvert, éclairement au joueur et à 6 m derrière lui.
-      top: { k: s.interiorK ?? 0, pitch: s.camView?.pitch ?? null, dist: s.camView?.dist ?? null, yaw: s.cameraYaw, dark: interiorView.shadow.active,
+      // Vue de dessus et noir : ouverture de la caméra (0 à 1) et du noir (open), tangage et distance vus, noir ouvert, éclairement au joueur et à 6 m derrière lui.
+      top: { k: s.interiorK ?? 0, open: interiorView.opening, pitch: s.camView?.pitch ?? null, dist: s.camView?.dist ?? null, yaw: s.cameraYaw, dark: interiorView.shadow.active,
         need: s.camView?.need ?? null, whole: s.camView?.whole ?? null, centered: s.camView?.centered ?? 0, zoom: s.camView?.zoom ?? 1, want: s.zoomWant,
         lit: interiorView.shadow.lightAtWorld(s.player.x, s.player.z), behind: interiorView.shadow.lightAtWorld(s.player.x - Math.sin(s.player.yaw) * 6, s.player.z - Math.cos(s.player.yaw) * 6) },
     };
