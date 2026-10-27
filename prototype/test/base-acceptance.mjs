@@ -108,6 +108,9 @@ function recorder() {
 
 async function newContext(device) {
   const ctx = await browser.newContext(DEVICES[device]);
+  // Un clic attend que la page ait traité l'événement : sans carte graphique et à deux pages, un départ en voiture ou un rechargement
+  // occupe la page plus de 30 s (le délai par défaut). Les attentes explicites (`until`, `waitForEvent`) gardent leur délai.
+  ctx.setDefaultTimeout(180000);
   if (routes) await routes(ctx, root);
   await ctx.addInitScript(recorder);
   return ctx;
