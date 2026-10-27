@@ -3,7 +3,7 @@
 // serveur met le joueur dans la file (`wait`, puis `go` quand une place est gardée) ; `handlers.queue` le dit au jeu, `claim` et `leave` répondent.
 // Module sans DOM : online.js (`on`, `live`, `season`), fetch et les minuteurs lui sont prêtés (essais : test/saison.test.js).
 // La partie « ville miroir » (rangées, compteurs) est dans saison-miroir.js ; ici seulement le transport.
-import { SEASON } from './protocol.js';
+import { SEASON, CLIENT_LEVEL } from './protocol.js';
 
 export const SEASON_NET = {
   requestMs: 15000,      // délai d'une requête HTTP
@@ -28,7 +28,7 @@ export const SEASON_TEXT = {
   trop: 'Trop de demandes : réessaie dans un instant.',
   inconnue: 'Cette ville n\'est pas encore ouverte dans ton niveau : touche la carte pour la commencer.',
   'villes-max': 'Ce niveau a déjà toutes ses villes ouvertes : rejoins l\'une d\'elles.',
-  mode: 'Cette ville est trop grande pour la saison 1 : choisis une commune plus petite.',
+  mode: 'Le serveur de la saison ne sait pas encore jouer les grandes villes : choisis une commune plus petite, ou réessaie après sa prochaine mise à jour.',
   delai: 'Le serveur de la saison ne répond pas : réessaie dans un instant.',
   monde: 'Ce monde n\'est pas joignable pour l\'instant.',
   commune: 'La ville de la saison a changé : relance la partie.',
@@ -89,13 +89,14 @@ export function createSeasonNet({
     const ok = j.ok === true && res.status === 200;
     return { ...j, ok, status: res.status, ...(ok ? {} : { code: typeof j.code === 'string' ? j.code : statusCode(res.status) }) };
   }
-  // POST simple (text/plain, aucune requête préalable CORS) : la session du compte est en tête du corps.
+  // POST simple (text/plain, aucune requête préalable CORS) : la session du compte est en tête du corps ; `cl` dit au serveur ce que ce jeu sait
+  // jouer (une grande ville, par quartiers, n'est ouverte qu'au niveau 4 : un ancien jeu reçoit le refus `mode`).
   async function call(route, body = {}) {
     if (!origin) return { ok: false, code: 'base' };
     const ses = session();
     if (!ses) return { ok: false, code: 'session' };
     return parse(await raw(url(route), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-      body: JSON.stringify({ ses, ...body }), cache: 'no-store', credentials: 'omit' }));
+      body: JSON.stringify({ ses, cl: CLIENT_LEVEL, ...body }), cache: 'no-store', credentials: 'omit' }));
   }
 
   // ---------- Gestes et voisinages groupés ----------
@@ -189,7 +190,7 @@ export function createSeasonNet({
   function send(w) {
     if (w.h !== null) clearT(w.h);
     w.h = setT(() => { if (sub?.wait === w) { sub.wait = null; w.resolve({ ok: false, why: 'delai' }); } }, R.subscribeMs);
-    if (!online?.season?.({ o: 'in', c: sub.commune, q: true })) {
+    if (!online?.season?.({ o: 'in', c: sub.commune, q: true, cl: CLIENT_LEVEL })) {
       sub.wait = null;
       clearT(w.h);
       w.resolve({ ok: false, why: 'reseau' });

@@ -3,7 +3,7 @@
 // Module pur, partagé tel quel par le jeu et par le serveur : il n'importe rien.
 
 export const PROTOCOL = 1;
-export const CLIENT_LEVEL = 3;                    // comparé à minClient (section 4.8) ; 2 : saisons (message `sv`) ; 3 : file d'attente de la saison
+export const CLIENT_LEVEL = 4;                    // comparé à minClient (section 4.8) ; 2 : saisons (message `sv`) ; 3 : file d'attente de la saison ; 4 : grandes villes de la saison, par quartiers
 // crown : posé par le serveur seulement, dans les lignes de `near` d'un survivant en couronne anonyme (spec 3.1 et
 // 6.6 : jamais de flèche vers lui) ; un client ne l'envoie pas (allure de 0 à 15).
 export const FLAGS = { run: 1, inside: 2, carrying: 4, down: 8, crown: 16 };
@@ -24,9 +24,12 @@ export const RULES = {
 // Saisons (conception validée, lot 1) : un seul type de message, `sv`, dans les deux sens ; `o` dit l'opération.
 // Client : in (je joue dans cette commune ; q : je sais attendre dans la file), ev (gestes de la ville, 40 au plus), out, cancel (quitter la
 // file). Serveur : in, no, full, wait (rang et taille de la file), go (une place est gardée ms), rows, tile, cnt, ls (prêts de tous les
-// joueurs), deny, end. Un client sans `q` reçoit `full` quand le niveau est complet, comme avant la file. Une rangée de pâté a 9 nombres (quartier.js, ROW) ; un message du serveur tient en 16 Ko.
+// joueurs), un (un quartier commence), ud (un quartier est repris), deny, end. Un client sans `q` reçoit `full` quand le niveau est complet, comme avant la file.
+// Une rangée de pâté a 9 nombres (quartier.js, ROW) ; un message du serveur tient en 16 Ko. `cl` (niveau du client, `in` et corps HTTP) :
+// une ville en quartiers (mode « quartiers ») n'est ouverte qu'aux clients de niveau 4 au moins ; un ancien client reçoit le refus `mode`.
+// Dans une ville en quartiers, `tile` porte `qi` et `qk` : les lieux (clés de quartier) ajoutés à `ville.qk` depuis l'indice `qi`.
 export const SEASON = {
-  maxEvents: 40, maxRows: 400, maxUnits: 160, rowLength: 9, seats: 100, days: 60,
+  maxEvents: 40, maxRows: 400, maxUnits: 160, maxPlaces: 400, rowLength: 9, seats: 100, days: 60, quartiersLevel: 4,
   levels: ['facile', 'moyen', 'difficile'],
   noWhy: ['compte', 'inscription', 'commune', 'monde', 'fin', 'avenir', 'base', 'attente'],
 };
@@ -35,10 +38,13 @@ const SEASON_NAME = '(?!(?:constructor|prototype|toString|valueOf|hasOwnProperty
 export const SEASON_KEY = new RegExp(`^(@${SEASON_NAME}|b-?\\d{1,2}\\.\\d{1,8}_-?\\d{1,3}\\.\\d{1,8}(~\\d{1,3})?)$`);
 export const SEASON_COMMUNE = new RegExp(`^${SEASON_NAME}$`);
 export const SEASON_TILE = /^\d{1,2}\/\d{1,7}\/\d{1,7}$/;
+// Clé de quartier (lieu-dit nommé, ou carré de tuile de zoom 16 : blocks.js) ; vide : le lieu sans nom. Le serveur n'en accepte pas d'autre.
+export const SEASON_QKEY = /^(?:q-?\d{1,3}\.\d{1,6}_-?\d{1,3}\.\d{1,6}|k\d{1,9}_\d{1,9})?$/;
 // Gestes d'un joueur : l prêt de la rue, t prise (horde, contre-attaque), d tirage de la réserve du cœur, r retour d'un
 // prêt, k zombie abattu (clé, nombre) ; n ouvrir le nid, f planter le fanion, L libérer, D fanion tombé, c cœur (clé), h habitant
-// trouvé en fouillant (clé du pâté ; un jeu ne l'envoie que si l'état de la saison porte `hab`, un ancien serveur le refuserait).
-const SEASON_EVENTS = { l: 3, t: 3, d: 3, r: 3, k: 3, n: 2, f: 2, L: 2, D: 2, c: 2, h: 2 };
+// trouvé en fouillant (clé du pâté ; un jeu ne l'envoie que si l'état de la saison porte `hab`, un ancien serveur le refuserait), U le joueur
+// entre dans un quartier d'une grande ville (clé du pâté où il est, nom du quartier : le serveur le commence si ses tuiles sont placées).
+const SEASON_EVENTS = { l: 3, t: 3, d: 3, r: 3, k: 3, n: 2, f: 2, L: 2, D: 2, c: 2, h: 2, U: 3 };
 
 export const GESTURES = ['Salut', 'Par ici', 'Attention !', 'Merci', 'Suis-moi', "Besoin d'aide"];
 export const REPORT_REASONS = { 1: 'Me suit partout', 2: 'Abuse des gestes', 3: 'Triche (vitesse, téléportation)' };
@@ -330,13 +336,16 @@ const CLIENT = {
       const c = get(o, 'c');
       out.c = typeof c === 'string' && SEASON_COMMUNE.test(c) ? c : bad('c');
       if (get(o, 'q') === true) out.q = true;
+      if (get(o, 'cl') !== undefined) out.cl = int(o, 'cl', 1, 1000);
     } else if (out.o === 'ev') {
       const e = get(o, 'e');
       if (!Array.isArray(e) || e.length < 1 || e.length > SEASON.maxEvents) bad('e');
       out.e = e.map((ev) => {
         const len = Array.isArray(ev) && typeof ev[0] === 'string' && Object.hasOwn(SEASON_EVENTS, ev[0]) ? SEASON_EVENTS[ev[0]] : undefined;
         if (!len || ev.length !== len || typeof ev[1] !== 'string' || !SEASON_KEY.test(ev[1])) bad('e');
-        if (len === 3 && !inRange(ev[2], 1, 60)) bad('e');
+        if (ev[0] === 'U') {
+          if (typeof ev[2] !== 'string' || ev[2].length > 80 || utf8Length(ev[2]) > 160) bad('e');
+        } else if (len === 3 && !inRange(ev[2], 1, 60)) bad('e');
         return len === 3 ? [ev[0], ev[1], ev[2]] : [ev[0], ev[1]];
       });
     }
@@ -427,6 +436,31 @@ function seasonTile(v) {
   if (q !== undefined) out.q = Array.isArray(q) && q.length <= 400 && q.every((x) => inRange(x, 0, 1e6)) ? q.slice() : bad('v');
   return out;
 }
+// Lieux ajoutés à ville.qk (grande ville) : indice du premier, puis les clés (chaque rangée porte l'indice de son lieu).
+function seasonPlaces(o, out) {
+  const qk = get(o, 'qk');
+  if (qk === undefined) return;
+  out.qi = int(o, 'qi', 0, SEASON.maxPlaces);
+  out.qk = Array.isArray(qk) && qk.length <= SEASON.maxPlaces && qk.every((k) => typeof k === 'string' && SEASON_QKEY.test(k)) ? qk.slice() : bad('qk');
+}
+// Quartier qui commence : { n: nom, r: réserve du cœur, r0: réserve au départ, z0: zombies du quartier, st: début (ms), c: pâté du cœur ou null }.
+function seasonUnit(v) {
+  if (!isObj(v)) bad('u');
+  const c = get(v, 'c');
+  if (typeof get(v, 'n') !== 'string' || get(v, 'n').length > 80 || !(c === null || (typeof c === 'string' && SEASON_KEY.test(c)))) bad('u');
+  const out = { n: get(v, 'n'), c };
+  for (const f of ['r', 'r0', 'z0']) out[f] = inRange(get(v, f), 0, 1e9) ? get(v, f) : bad('u');
+  out.st = SAFE(get(v, 'st')) ? get(v, 'st') : bad('u');
+  return out;
+}
+// Ligne d'un quartier repris (quartier.js, LINE) : nom, population, source, niveau, début, fin, zombies au départ, abattus par toi, par les
+// volontaires, par les autres, habitants sauvés, quartiers repris (0), clé de la commune.
+function seasonLine(v) {
+  const ok = Array.isArray(v) && v.length === 13 && typeof v[0] === 'string' && v[0].length <= 80 && inRange(v[1], 0, 1e9)
+    && (v[2] === null || (typeof v[2] === 'string' && v[2].length <= 20)) && SEASON.levels.includes(v[3]) && SAFE(v[4]) && SAFE(v[5])
+    && [6, 7, 8, 9, 10, 11].every((i) => inRange(v[i], 0, 1e9)) && typeof v[12] === 'string' && SEASON_COMMUNE.test(v[12]);
+  return ok ? v.slice() : bad('l');
+}
 // Zombies prêtés en tout, par pâté : { clé: nombre } (0 : plus aucun).
 export function seasonLent(v) {
   if (!isObj(v)) bad('l');
@@ -511,14 +545,19 @@ const SERVER = {
   },
   count(o, out) { out.n = int(o, 'n', 0, 1e7); },
   sv(o, out) {
-    out.o = oneOf(o, 'o', ['in', 'no', 'full', 'wait', 'go', 'rows', 'tile', 'cnt', 'ls', 'deny', 'end']);
-    if (['in', 'rows', 'tile', 'cnt', 'ls'].includes(out.o)) out.rv = int(o, 'rv', 0, 2 ** 40);
+    out.o = oneOf(o, 'o', ['in', 'no', 'full', 'wait', 'go', 'rows', 'tile', 'cnt', 'ls', 'un', 'ud', 'deny', 'end']);
+    if (['in', 'rows', 'tile', 'cnt', 'ls', 'un', 'ud'].includes(out.o)) out.rv = int(o, 'rv', 0, 2 ** 40);
     if (out.o === 'no') out.why = oneOf(o, 'why', SEASON.noWhy);
     else if (out.o === 'full') { out.used = int(o, 'used', 0, 1e6); out.max = int(o, 'max', 0, 1e6); }
     else if (out.o === 'wait') { out.rank = int(o, 'rank', 1, 1e6); out.size = int(o, 'size', 1, 1e6); }
     else if (out.o === 'go') out.ms = int(o, 'ms', 0, 3600000);
     else if (out.o === 'rows') out.r = seasonRows(get(o, 'r'));
-    else if (out.o === 'tile') { out.k = seasonTileKey(get(o, 'k')); out.v = seasonTile(get(o, 'v')); }
+    else if (out.o === 'tile') { out.k = seasonTileKey(get(o, 'k')); out.v = seasonTile(get(o, 'v')); seasonPlaces(o, out); }
+    else if (out.o === 'un' || out.o === 'ud') {
+      const uk = get(o, 'k');
+      out.k = typeof uk === 'string' && SEASON_COMMUNE.test(uk) ? uk : bad('k');
+      if (out.o === 'un') out.u = seasonUnit(get(o, 'u')); else out.l = seasonLine(get(o, 'l'));
+    }
     else if (out.o === 'cnt') out.c = seasonCounts(get(o, 'c'));
     else if (out.o === 'ls') out.l = seasonLent(get(o, 'l'));
     else if (out.o === 'deny') {

@@ -3407,6 +3407,218 @@ await scenario('O37', 'amis : donner et retirer depuis le sac', async () => {
 });
 
 // =====================================================================================================
+// O38 : grande ville de la saison, par quartiers (étape 1 de « Ouvrir toutes les villes du monde ») : un joueur de Node ouvre une commune
+// de plus de 2 000 habitants (mode « quartiers », les tuiles de Pérouges), un joueur du navigateur crée son compte, la choisit sur la carte du
+// menu et la joue : sa copie est en quartiers, il entre dans un quartier, le serveur le commence ; le quartier est repris (côté serveur,
+// la Nuit du cœur et les rues vidées sont jouées par server/test/season-quartiers.test.js) et le navigateur le voit partir ; un ancien jeu
+// (sans `cl`) reçoit un refus lisible, la ville ne change pas.
+// =====================================================================================================
+await scenario('O38', 'grande ville de la saison, par quartiers', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { createOnline } = await load('prototype/src/online.js');
+  const { createSeasonNet, SEASON_TEXT } = await load('prototype/src/net/season.js');
+  const { prepareCity, createResilientBlocks, inlineBlocksWorker } = await load('prototype/src/ville-jeu.js');
+  const { findCommune, findNeighbours, createCommuneCache } = await load('prototype/src/commune.js');
+  const { kill, lend, drawReserve, ROW } = await load('prototype/src/quartier.js');
+  const { communeResponse } = await load('prototype/test/fixtures/communes/routes.mjs');
+  const SERVER = `http://127.0.0.1:${srv.port}`;
+  const HOME = { lat: 45.9034, lon: 5.1795, name: 'Pérouges' };
+  const KEY = 'c99998';
+  const V = { email: 'q.essai@exemple.test', pw: 'essai-quartier-pont-7' };
+  const W = { email: 'x.essai@exemple.test', pw: 'essai-quartier-quai-6' };
+  const O = { email: 'y.essai@exemple.test', pw: 'essai-quartier-gare-5' };
+  const mem = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => { m.set(k, String(v)); }, removeItem: (k) => { m.delete(k); } }; };
+  const post = async (route, body) => {
+    const r = await fetch(`${SERVER}${route}`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
+    return { status: r.status, body: await r.json() };
+  };
+  const fixtureBytes = (x, y) => { try { return new Uint8Array(readFileSync(path.join(root, 'test/fixtures/blocs', `14-${x}-${y}.mvt`))); } catch { return null; } };
+  const fetchJson = async (u) => {
+    const r = communeResponse(u);
+    if (!r || r.status !== 200) throw new Error(`HTTP ${r?.status ?? 'refusé'}`);
+    return structuredClone(r.body);
+  };
+  const blocks = () => {
+    const cache = new Map();
+    const jobs = {
+      fetchBytes: async (u) => { const m = u.match(/\/14\/(\d+)\/(\d+)\.pbf/); return { bytes: fixtureBytes(+m[1], +m[2]) ?? new Uint8Array(0), cached: true }; },
+      cache: { get: async (k) => cache.get(k) ?? null, put: async (k, v) => { cache.set(k, v); } }, pause: async () => {}, retryDelay: () => 0,
+      communes: {
+        findCommune: (place, o) => findCommune(place, { ...o, fetchJson, nominatim: async () => { throw new Error('pas de Nominatim'); } }),
+        findNeighbours: (c, o) => findNeighbours(c, { ...o, fetchJson }),
+      },
+    };
+    return createResilientBlocks({ makeWorker: () => inlineBlocksWorker(jobs), makeInline: () => inlineBlocksWorker(jobs) });
+  };
+  class OriginWs extends WebSocket { constructor(u) { super(u, { headers: { Origin: ORIGIN } }); } }
+  const node = async (who) => {
+    await post('/v1/account/code', { v: 1, email: who.email, why: 'signup' });
+    const ver = await post('/v1/account/verify', { v: 1, email: who.email, code: srv.mailbox.lastCode(who.email), password: who.pw, tok: null, age: true });
+    const online = createOnline({ server: SERVER, storage: mem(), WebSocketImpl: OriginWs, session: () => ver.body.ses });
+    online.start();
+    online.choose(true);
+    for (let i = 0; i < 100 && !online.live; i++) await wait(50);
+    return { ok: ver.status === 200 && online.live, ses: ver.body.ses, online, net: createSeasonNet({ server: SERVER, session: () => ver.body.ses, online }) };
+  };
+  const cityNow = () => srv.seasons.debug().levelCities('facile').find((w) => w.commune === KEY)?.city ?? null;
+  // Les scénarios d'avant ont déjà demandé des codes depuis 127.0.0.1 (le compte à l'heure de l'adresse n'est pas remis à zéro) : un
+  // simple « + 10 » ne suffit plus ici, les plafonds par adresse sont relevés largement le temps de celui-ci (429 sinon).
+  const { ACCOUNT_LIMITS: LIM } = await load('server/src/accounts.js');
+  const was = { codesPerIpHour: LIM.codesPerIpHour, coldCodesPerIpHour: LIM.coldCodesPerIpHour, ipPerMin: LIM.ipPerMin };
+  LIM.codesPerIpHour = 1000;
+  LIM.coldCodesPerIpHour = 1000;
+  LIM.ipPerMin = 1000;
+  // Le serveur ne crée que 20 identités par heure et par adresse (createPerIpHour) : les scénarios d'avant ont déjà comblé ce compte, et les
+  // trois comptes de celui-ci (W, Y, Q) resteraient hors ligne. Le compte de 127.0.0.1 est mis à zéro le temps du scénario, puis rendu.
+  const ipEntries = [...srv.room.debug().perIp.values()];
+  const createsWas = ipEntries.map((e) => e.creates);
+  for (const e of ipEntries) e.creates = { add: () => 0, count: () => 0 };
+  const restoreLimits = () => { Object.assign(LIM, was); ipEntries.forEach((e, i) => { e.creates = createsWas[i]; }); };
+  let w, old;
+  try { w = await node(W); old = await node(O); } catch (e) { restoreLimits(); throw e; }
+  try {
+    check(w.ok, 'W : compte créé et en ligne');
+    check((await w.net.join('facile')).ok, 'W : inscrit en « Facile »');
+    const prep = await prepareCity({ client: blocks(), communes: createCommuneCache(mem()), template: 'https://tiles.example/planet/20260927/{z}/{x}/{y}.pbf' }, HOME);
+    check(prep.ok, `W : recensement de Pérouges (${prep.ok ? prep.unit.name : prep.reason})`);
+    const weights = Object.fromEntries(Object.entries(prep.weights).map(([k, v]) => [k, Math.max(0, Math.round(v))]));
+    const seeded = await w.net.seed({ key: KEY, name: 'Grande', place: { lat: HOME.lat, lon: HOME.lon, name: 'Grande' }, pop: 2600,
+      src: 'insee', approx: false, zl: prep.unit.level, tiles: weights, failed: prep.census.failed, mode: 'quartiers' });
+    check(seeded.ok, `W : la commune de 2 600 habitants est ouverte en quartiers (${seeded.ok ? 'oui' : JSON.stringify(seeded)})`);
+    check(cityNow()?.ville.mode === 'quartiers' && Object.keys(cityNow().ville.units).length === 0, 'serveur : ville en quartiers, aucun quartier commencé');
+
+    // Un ancien jeu (sans `cl`) : refus lisible, la ville reste telle quelle.
+    const oldNet = createSeasonNet({ server: SERVER, session: () => old.ses, online: old.online,
+      fetchImpl: (u, o) => fetch(u, { ...o, body: JSON.stringify({ ...JSON.parse(o.body), cl: undefined }) }) });
+    check((await oldNet.join('facile')).ok, 'Y (ancien jeu) : inscrit en « Facile »');
+    const refused = await oldNet.enter(KEY);
+    check(refused.ok === false && refused.code === 'mode', `Y (ancien jeu) : entrer dans la grande ville est refusé (${JSON.stringify({ ok: refused.ok, code: refused.code })})`);
+    check(/jeu|page|Actualise|à jour/i.test(SEASON_TEXT.mode) && SEASON_TEXT.mode.length > 30, `Y : le refus se lit : « ${SEASON_TEXT.mode} »`);
+    const progress = await (await fetch(`${SERVER}/v1/season/progress`)).json();
+    const row = progress.levels.facile.cities.find((c) => c.key === KEY);
+    check(row?.mode === 'quartiers' && row.done === 0, `progression publique : mode « quartiers », 0 quartier repris (${JSON.stringify({ mode: row?.mode, done: row?.done })})`);
+
+    // V, navigateur : compte, la grande ville choisie sur la carte du menu.
+    const url = `${ORIGIN}/index.html?lat=${HOME.lat}&lon=${HOME.lon}&time=day&debug=1&menu=libre&server=${SERVER}`;
+    const A = await open('Q (ordinateur, grande ville)', desktop, url, { waitGame: false, before: async (ctx) => {
+      await ctx.addInitScript(acctProbe);
+      await ctx.route(/tiles\.openfreemap\.org\/.*\/\d+\/\d+\/\d+\.pbf$/, (route) => {
+        const m = new URL(route.request().url()).pathname.match(/\/(\d+)\/(\d+)\/(\d+)\.pbf$/);
+        if (existsSync(path.join(root, 'test/fixtures/tiles', `${m[1]}-${m[2]}-${m[3]}.mvt`))) return route.fallback();
+        return route.fulfill({ status: 200, body: Buffer.alloc(0), contentType: 'application/vnd.mapbox-vector-tile', headers: { 'access-control-allow-origin': '*' } });
+      });
+    } });
+    check((await accWait(A, (v) => v.menu && v.block, 60000)).ok, 'Q : menu affiché, bloc Compte présent');
+    await click(A, '#account-signup');
+    check((await accWait(A, (v) => v.panel && v.title === 'Créer un compte')).ok, 'Q : panneau « Créer un compte »');
+    await A.page.fill('#account-email', V.email);
+    await A.page.check('#account-age');
+    await click(A, '#account-form-email .account-submit');
+    check((await accWait(A, (v) => v.panel && v.title === 'Saisis le code' && v.state === 'code')).ok, 'Q : étape du code');
+    let code = null;
+    for (let i = 0; i < 75 && !code; i++) { code = srv.mailbox.lastCode(V.email); if (!code) await wait(200); }
+    await A.page.fill('#account-code', code ?? '');
+    await A.page.fill('#account-new-password', V.pw);
+    await click(A, '#account-code-submit');
+    check((await accWait(A, (v) => !v.panel && v.state === 'in')).ok, 'Q : connecté');
+    await A.page.goto(url.replace('menu=libre', 'menu=saison'));
+    check((await accWait(A, (v) => v.menu && v.state === 'in', 60000)).ok, 'Q : menu rechargé sur « À plusieurs », toujours connecté');
+    check(!!(await until(A, () => !!document.querySelector('.maplibregl-marker.map-pin-hit[title*="Grande"]'), null, 40000)), 'Q : le repère « Grande » est sur la carte du menu');
+    await ev(A, () => document.querySelector('.maplibregl-marker.map-pin-hit[title*="Grande"]').click());
+    const cta = await until(A, () => { const l = document.getElementById('salon-cta-label')?.textContent ?? ''; const sub = document.getElementById('salon-cta')?.textContent ?? ''; return /Rejoindre · Facile/.test(l) && /Grande/.test(sub) ? sub.replace(/\s+/g, ' ').trim() : null; }, null, 20000);
+    check(!!cta, `Q : bouton « ${cta} »`);
+    await shot(A, 'o38-ordi-menu');
+    await click(A, '#salon-cta');
+    let cardSeen = null;
+    for (let i = 0; i < 120 && !(await ev(A, () => !!window.__earthlife?.session?.player)); i++) {
+      const c = await ev(A, () => ({ title: document.querySelector('#card:not(.hidden) .rp-card-title')?.textContent ?? null, btn: document.querySelector('#card:not(.hidden) [data-card-btn][class*="primary"]')?.dataset.cardBtn ?? null }));
+      if (c.title && c.title !== cardSeen) { cardSeen = c.title; note(`Q : carte « ${c.title} »`); }
+      if (c.btn) await A.page.click(`#card [data-card-btn="${c.btn}"]`).catch(() => {});
+      await wait(1000);
+    }
+    check(!!(await started(A)), 'Q : partie de saison lancée dans la grande ville');
+    const first = await ev(A, () => { const s = window.__earthlife.session; return { season: !!s.city?.season, mode: s.city?.ville?.mode ?? null, name: s.city?.ville?.name ?? null, places: s.city?.ville?.qk?.length ?? 0 }; });
+    check(first.season && first.mode === 'quartiers', `Q : ville de saison « ${first.name} » en quartiers (${first.places} lieux connus)`);
+    const hud = await ev(A, () => document.body.textContent.replace(/\s+/g, ' '));
+    check(/Quartiers repris 0/.test(hud), 'Q : l\'écran de jeu compte les quartiers repris (0)');
+    check(!(await ev(A, () => /Ville trop grande/.test(document.body.textContent))), 'Q : aucune carte « Ville trop grande »');
+    await calm(A);
+    check(await exitRefuge(A), 'Q : sorti du refuge');
+
+    // Entrer dans un quartier : le serveur le commence pour tous.
+    const inUnit = () => ev(A, () => { const c = window.__earthlife.session.city, p = window.__earthlife.session.player; const h = c.blockAt(p.x, p.z); return { here: h, qkey: h ? c.pos.get(h)?.qkey ?? '' : null, units: Object.keys(c.ville.units) }; });
+    let at = await inUnit();
+    if (!at.here || !at.qkey) {
+      const spot = await ev(A, () => {
+        const c = window.__earthlife.session.city, p = window.__earthlife.session.player;
+        let best = null;
+        for (const [k, q] of c.pos) if (q.qkey && (!best || Math.hypot(q.x - p.x, q.z - p.z) < best.d)) best = { k, x: q.x, z: q.z, d: Math.hypot(q.x - p.x, q.z - p.z) };
+        return best;
+      });
+      check(!!spot, 'Q : un pâté de quartier à rejoindre');
+      if (spot) { await teleport(A, spot.x, spot.z); at = await inUnit(); }
+    }
+    note(`Q : dans le pâté ${at.here} du quartier « ${at.qkey} »`);
+    let started38 = false;
+    for (let i = 0; i < 240 && !started38; i++) {
+      started38 = Object.keys(cityNow()?.ville.units ?? {}).length === 1;
+      if (!started38) await wait(500);
+      if (!started38 && i % 20 === 19) {
+        note(`Q : ${JSON.stringify(await ev(A, async () => {
+          const { unitTilesMissing, unitKeyOf } = await import('/src/quartier.js');
+          const c = window.__earthlife.session.city, p = window.__earthlife.session.player, h = c.blockAt(p.x, p.z);
+          const uk = h ? unitKeyOf(c.ville, h) : null;
+          return { here: h, uk, missing: uk ? unitTilesMissing(c.ville, uk) : null, units: Object.keys(c.ville.units), inFlight: c.inFlight, waiting: c.waiting, tiles: c.placedTiles, online: window.__earthlife.online?.live,
+            acc: c.state.unitAcc, ask: [...c.state.unitAsk], paused: window.__earthlife.session.paused, fc: window.__fc };
+        }).catch((e) => e.message))}`);
+        const { unitTilesMissing: srvMissing, unitKeyOf: srvKey, blockInfo: srvInfo } = await load('prototype/src/quartier.js');
+        const sv0 = cityNow().ville, here0 = await ev(A, () => { const c = window.__earthlife.session.city, p = window.__earthlife.session.player; return c.blockAt(p.x, p.z); });
+        note(`serveur : ${JSON.stringify({ uk: srvKey(sv0, here0), missing: srvMissing(sv0, srvKey(sv0, here0)), lent: Object.values(sv0.tiles).flatMap((t) => Object.keys(t.b ?? {})).map((k) => srvInfo(sv0, k)).filter((b) => b.unit === srvKey(sv0, here0)).reduce((a, b) => a + b.lent, 0), units: Object.keys(sv0.units), subs: cityNow() && srv.seasons.debug().levelCities('facile').find((x) => x.commune === KEY)?.subs.size })}`);
+      }
+    }
+    check(started38, `serveur : le quartier est commencé (${JSON.stringify(Object.keys(cityNow()?.ville.units ?? {}))})`);
+    const ukey = Object.keys(cityNow().ville.units)[0];
+    const seen = await until(A, (u) => Object.keys(window.__earthlife.session.city.ville.units).includes(u), ukey, 30000);
+    check(!!seen, 'Q : le jeu voit le quartier commencé');
+    const toast = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => /^Quartier .*commencé/.test(x)) ?? null, null, 15000);
+    check(!!toast, `Q : message « ${toast} » (messages vus : ${JSON.stringify(await ev(A, () => window.__seen.toasts.map((x) => x.t).slice(-6)))})`);
+    await shot(A, 'o38-ordi-quartier-commence');
+
+    // Quartier repris (côté serveur) : le jeu le voit partir de sa copie, le dit, et le compte. Le joueur ne tire plus de zombies des pâtés et rend
+    // ceux qu'il poursuit (les zombies prêtés dans ses rues empêchent de le reprendre).
+    await ev(A, () => { const s = window.__earthlife.session; s.director.setSupply(null); s.city.recall(s.director); });
+    const city = cityNow(), sv = city.ville;
+    const { blockInfo: srvInfo } = await load('prototype/src/quartier.js');
+    const lentIn = () => Object.values(sv.tiles).flatMap((t) => Object.entries(t.b ?? {})).filter(([, r]) => sv.qk[r[ROW.Q]] === ukey).reduce((a, [k]) => a + (srvInfo(sv, k)?.lent ?? 0), 0);
+    let free = false;
+    for (let i = 0; i < 120 && !free; i++) { free = lentIn() === 0; if (!free) await wait(500); }
+    check(free, `serveur : plus aucun zombie prêté dans le quartier (${lentIn()})`);
+    const mine = Object.values(sv.tiles).flatMap((t) => Object.entries(t.b ?? {})).filter(([, r]) => sv.qk[r[ROW.Q]] === ukey).map(([k]) => k);
+    check(mine.length > 0, `serveur : ${mine.length} pâtés dans ce quartier`);
+    for (const k of mine) kill(sv, k, lend(sv, k, 100000, { nest: true }));
+    kill(sv, `@${ukey}`, drawReserve(sv, ukey, sv.units[ukey].r).n);
+    city.unitCheck.add(ukey);
+    let done = false;
+    for (let i = 0; i < 40 && !done; i++) { done = !!sv.done[ukey]; if (!done) await wait(250); }
+    check(done && !sv.units[ukey], 'serveur : le quartier est repris');
+    const gone = await until(A, (u) => !!window.__earthlife.session.city.ville.done[u] && !window.__earthlife.session.city.ville.units[u], ukey, 30000);
+    check(!!gone, 'Q : le jeu voit le quartier repris');
+    const toastDone = await until(A, () => window.__seen.toasts.map((x) => x.t).find((x) => /^Quartier .*repris/.test(x)) ?? null, null, 15000);
+    check(!!toastDone, `Q : message « ${toastDone} »`);
+    const hud1 = await until(A, () => /Quartiers repris 1/.test(document.body.textContent.replace(/\s+/g, ' ')) || null, null, 30000);
+    check(!!hud1 && (await ev(A, () => window.__earthlife.session.city.stats().done)) === 1, 'Q : l\'écran de jeu compte 1 quartier repris');
+    const row2 = (await (await fetch(`${SERVER}/v1/season/progress`)).json()).levels.facile.cities.find((c) => c.key === KEY);
+    check(row2?.done === 1, `progression publique : 1 quartier repris (${row2?.done})`);
+    await shot(A, 'o38-ordi-quartier-repris');
+    check((A.errors ?? []).filter((e) => /exception/.test(e.text)).length === 0, `Q : aucune exception dans la page (${JSON.stringify((A.errors ?? []).slice(-2))})`);
+    await closeCtx(A);
+  } finally {
+    restoreLimits();
+    for (const p of [w, old]) { try { p.net.close(); p.online.bye(); } catch { /* déjà fermé */ } }
+  }
+});
+
+// =====================================================================================================
 // O19 : toute la séance : aucune erreur de console, aucune exception, aucune violation de la politique de
 // sécurité (hors fenêtre de O12), aucune requête vers earthlife.needhelpapp.com (sauf F, voulue) ; K, L et M compris
 // (refus voulus des scénarios du compte tolérés dans leur fenêtre : netExpected)

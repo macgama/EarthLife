@@ -5,7 +5,8 @@
 //  - `applyRows`, `applyTile`, `applyCounts`, `resync` : le serveur écrit dans la copie (jamais `me`, `meOut`, ni les prêts).
 // Module sans DOM ni THREE, testé sous node (test/saison.test.js).
 import {
-  lend, giveBack, take, drawReserve, kill, openNest, plantFlag, dropFlag, liberate, rescueOne, infectOne, setCoeur, recallAll, setLent, blockInfo, ROW_LENGTH,
+  lend, giveBack, take, drawReserve, kill, openNest, plantFlag, dropFlag, liberate, rescueOne, infectOne, setCoeur, recallAll, setLent, blockInfo, ROW_LENGTH, ROW,
+  noteRow, resetIndex,
 } from './quartier.js';
 
 const MAX_N = 60;
@@ -24,6 +25,7 @@ export function soloOps(ville) {
     rescue: (key) => rescueOne(ville, key),
     infect: (key) => infectOne(ville, key),
     setCoeur: (ukey, key) => setCoeur(ville, ukey, key),
+    startUnit: () => {},
     recallAll: () => recallAll(ville),
     unlease: () => {},
     leases: () => [],
@@ -105,6 +107,11 @@ export function seasonOps(ville, net) {
       if (ok) net.emit(['c', key]);
       return ok;
     },
+    // Grande ville : le joueur est entré dans un quartier (key : le pâté où il est). Le serveur le commence quand ses tuiles sont placées et
+    // le dit à tous (`un`) : la copie ne change qu'à ce message.
+    startUnit(key, name) {
+      net.emit(['U', key, String(name ?? '')]);
+    },
     // Seuls les prêts de ce joueur sont rendus : ceux des autres, connus par le serveur, restent comptés dans la copie.
     recallAll() {
       for (const [key, n] of leased) { send('r', key, n); giveBack(ville, key, n); }
@@ -130,7 +137,7 @@ export function applyRows(ville, rows) {
       if (!Array.isArray(row) || row.length !== ROW_LENGTH) continue;
       const cur = t.b[key];
       if (cur) for (let i = 0; i < ROW_LENGTH; i++) cur[i] = row[i];
-      else t.b[key] = row.slice();
+      else { t.b[key] = row.slice(); noteRow(ville, tk, key); }
       keys.push(key);
     }
   }
@@ -142,6 +149,7 @@ export function applyTile(ville, tk, meta) {
   if (!meta) return;
   const old = ville.tiles[tk];
   ville.tiles[tk] = { ...meta, b: old?.b ?? {} };
+  resetIndex(ville);
 }
 
 // Tuiles rendues en entier par une réponse HTTP : seulement celles que la copie n'a pas encore (les messages du serveur, plus
@@ -153,7 +161,42 @@ export function adoptTiles(ville, tiles) {
     ville.tiles[tk] = t;
     out.push(tk);
   }
+  if (out.length) resetIndex(ville);
   return out;
+}
+
+// Grande ville (mode `quartiers`) : les lieux ville.qk ajoutés par le serveur depuis l'indice `qi` (messages `tile`, réponses HTTP de `tile`). Les rangées
+// désignent leur lieu par son indice : sans eux, un quartier ne se reconnaît pas. Rend vrai si la liste a changé.
+export function applyPlaces(ville, msg) {
+  if (!Array.isArray(msg?.qk) || !Number.isInteger(msg.qi) || msg.qi < 0 || msg.qi > (ville.qk?.length ?? 0)) return false;
+  ville.qk ??= [];
+  let changed = false;
+  msg.qk.forEach((k, j) => { if (ville.qk[msg.qi + j] !== k) { ville.qk[msg.qi + j] = k; changed = true; } });
+  return changed;
+}
+
+// Un quartier commence (message `un` : nom, réserve du cœur, zombies de départ, début, pâté du cœur). Les rangées de ses pâtés (réserve prise)
+// arrivent par `rows`. Rend vrai s'il est nouveau pour cette copie.
+export function applyUnit(ville, ukey, u) {
+  if (!u || ville.units[ukey] || Object.hasOwn(ville.done, ukey)) return false;
+  ville.units[ukey] = { name: u.n, r: u.r, r0: u.r0, coeur: u.c ?? null, start: u.st, end: null, z0: u.z0, k: [0, 0, 0], sv: 0 };
+  ville.reserve0 = (ville.reserve0 ?? 0) + u.r0;
+  return true;
+}
+
+// Un quartier est repris (message `ud` : sa ligne) : ses pâtés quittent la copie, comme dans finishUnit. Les habitants sauvés arrivent par les compteurs.
+export function applyUnitDone(ville, ukey, line) {
+  if (!Array.isArray(line)) return false;
+  const qi = ville.qk.indexOf(ukey);
+  if (qi >= 0) {
+    for (const [tk, t] of Object.entries(ville.tiles)) {
+      if (!t.b) continue;
+      for (const [k, row] of Object.entries(t.b)) if (row[ROW.Q] === qi) { delete t.b[k]; noteRow(ville, tk, k, false); }
+    }
+  }
+  ville.done[ukey] = line;
+  delete ville.units[ukey];
+  return true;
 }
 
 // Zombies prêtés en tout, par pâté (tous les joueurs) : { clé: nombre }.
@@ -183,6 +226,7 @@ export function resync(ville, fresh) {
   const me = ville.me, meOut = ville.meOut;
   for (const k of Object.keys(ville)) if (!(k in fresh)) delete ville[k];
   Object.assign(ville, fresh);
+  resetIndex(ville);
   ville.me = me ?? null;
   ville.meOut = !!meOut;
 }

@@ -5,10 +5,12 @@
 // `sv` groupés toutes les 250 ms) et positions à 4 Hz. Le premier de chaque ville découpe ses tuiles, comme le premier joueur.
 //   node tools/season-load.mjs <scénario> [--option valeur …]
 // Scénarios : rampe (100 sur un niveau, une ville), rafale (100 inscrits et connectés en 10 s), complet (au-delà des places),
-// niveaux (3 niveaux à la fois), villes (100 répartis sur 10 villes), grande (une grande ville), redemarrage (le serveur
-// redémarre, tous les joueurs reviennent), inscriptions (budget d'e-mails du vrai serveur), tenue (longue durée).
+// niveaux (3 niveaux à la fois), villes (100 répartis sur 10 villes), grande (une grande ville), quartiers (une grande ville
+// jouée par quartiers : les joueurs demandent le quartier où ils combattent, `U`), redemarrage (le serveur redémarre, tous les joueurs
+// reviennent), inscriptions (budget d'e-mails du vrai serveur), tenue (longue durée).
 // Options : --n 100 --ramp 60 --hold 120 --level facile --cities 1 --seats 100 --max-conn 100 --pop 600000 --tiles-side 3
 //           --pates-step 100 --kill-rate 1.4 --pool 3 --mail-per-hour 100000 --out chemin.json --no-reset --quiet --crash (redémarrage)
+//           --memory (sans MariaDB : magasin en mémoire ; ni connexions ni documents de base dans le rapport, pas de contrôle des comptes)
 // Le serveur tourne sur UN cœur (taskset) avec un tas de 192 Mo, comme chez Infomaniak (1 cœur, --max-old-space-size=192).
 import http from 'node:http';
 import fs from 'node:fs';
@@ -38,6 +40,7 @@ const PRESETS = {
   niveaux: { n: 300, ramp: 90, hold: 120, levels: 3 },
   villes: { n: 100, ramp: 60, hold: 120, cities: 10 },
   grande: { n: 100, ramp: 60, hold: 120, tilesSide: 5, pop: 1500000 },
+  quartiers: { n: 100, ramp: 60, hold: 120, tilesSide: 5, pop: 400000, quartiers: true },
   redemarrage: { n: 100, ramp: 40, hold: 40, restart: true },
   inscriptions: { n: 80, ramp: 600, hold: 10, presignup: false, mailPerHour: 60, mailPerDay: 300, maxConn: 300 },
   tenue: { n: 100, ramp: 60, hold: 900 },
@@ -75,13 +78,14 @@ function rng(seed) {
 }
 
 // Une ville : une grille de pâtés de `step` mètres sur `side` km de côté, rangés par tuile z14 (comme le découpage du jeu).
-function makeCity(idx, { side = 3, step = 100, pop = 600000 } = {}) {
+function makeCity(idx, { side = 3, step = 100, pop = 600000, quartiers = false } = {}) {
   const lat0 = 45.7578 + (idx % 5) * 0.2, lon0 = 4.832 + Math.floor(idx / 5) * 0.3;
   const r = rng(1000 + idx);
   const dLat = step / M_PER_DEG, dLon = step / (M_PER_DEG * Math.cos((lat0 * Math.PI) / 180));
   const n = Math.round((side * 1000) / step);
   const tiles = new Map();
   const grid = new Map();
+  const qOf = new Map();                                    // clé du pâté → quartier (carrés de 5 × 5 pâtés, clés `k` de blocks.js), grande ville seulement
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
       const lat = lat0 + (i - n / 2) * dLat, lon = lon0 + (j - n / 2) * dLon;
@@ -90,7 +94,9 @@ function makeCity(idx, { side = 3, step = 100, pop = 600000 } = {}) {
       const t = tiles.get(tk);
       const floor = 400 + Math.floor(r() * 3000);
       t.idx.set(`${i},${j}`, t.pates.length);
-      t.pates.push([keyOf(lat, lon), 1, floor, 4 + Math.floor(r() * 20), 5 + Math.floor(r() * 25), '', lat, lon]);
+      const qkey = quartiers ? `k${100 + Math.floor(i / 5)}_${100 + Math.floor(j / 5)}` : '';
+      if (quartiers) qOf.set(keyOf(lat, lon), qkey);
+      t.pates.push([keyOf(lat, lon), 1, floor, 4 + Math.floor(r() * 20), 5 + Math.floor(r() * 25), qkey, lat, lon]);
       t.weight += floor;
       grid.set(`${i},${j}`, { tk, key: keyOf(lat, lon) });
     }
@@ -110,8 +116,8 @@ function makeCity(idx, { side = 3, step = 100, pop = 600000 } = {}) {
   return {
     key, name: `Ville ${idx}`, place: { lat: lat0, lon: lon0, name: `Ville ${idx}` }, lat: lat0, lon: lon0, halfM: (side * 1000) / 2,
     seed: { key, name: `Ville ${idx}`, place: { lat: lat0, lon: lon0, name: `Ville ${idx}` }, pop, src: 'insee', zl: 8,
-      tiles: Object.fromEntries([...tiles].map(([tk, t]) => [tk, t.weight])) },
-    tiles, cross, pates: [...tiles.values()].reduce((s, t) => s + t.pates.length, 0),
+      tiles: Object.fromEntries([...tiles].map(([tk, t]) => [tk, t.weight])), ...(quartiers ? { mode: 'quartiers' } : {}) },
+    quartiers, qOf, tiles, cross, pates: [...tiles.values()].reduce((s, t) => s + t.pates.length, 0),
   };
 }
 
@@ -189,10 +195,12 @@ class Bot {
     this.probe = null;
     this.targets = [];
     this.targetsAt = 0;
+    this.units = new Set();        // quartiers commencés ou repris que ce joueur connaît (grande ville)
+    this.unitAskAt = new Map();    // quartier → dernière demande (le jeu redemande toutes les 6 s)
   }
 
   get M() { return this.ctx.M; }
-  api(path, body) { return post(this.ctx.url, path, { ses: this.ses, ...body }, this.ip); }
+  api(path, body) { return post(this.ctx.url, path, { ses: this.ses, cl: CLIENT_LEVEL, ...body }, this.ip); }
 
   // ----- Compte -----
   async signup() {
@@ -295,6 +303,12 @@ class Bot {
       for (const [tk, rows] of Object.entries(msg.r)) for (const [k, row] of Object.entries(rows)) this.setRow(k, row);
     } else if (msg.o === 'tile') {
       // La tuile sans ses rangées ; les rangées suivent dans `rows`.
+    } else if (msg.o === 'un') {
+      this.units.add(msg.k);
+    } else if (msg.o === 'ud') {
+      // Quartier repris : ses pâtés quittent la ville.
+      this.units.add(msg.k);
+      for (const [k, q] of this.city.qOf) if (q === msg.k) { this.rows.delete(k); this.lent.delete(k); this.held.delete(k); }
     } else if (msg.o === 'ls') {
       for (const [k, n] of Object.entries(msg.l)) { if (n > 0) this.lent.set(k, n); else this.lent.delete(k); }
       if (this.probe) this.probe.onLent(msg);
@@ -342,7 +356,7 @@ class Bot {
       const t0 = performance.now();
       const timer = setTimeout(() => { if (this.waitIn) { this.waitIn = null; resolve({ o: 'delai' }); } }, 8000);
       this.waitIn = (msg) => { clearTimeout(timer); this.M.add('sv:in-delai', performance.now() - t0); resolve(msg); };
-      if (!this.send({ t: 'sv', o: 'in', c: this.city.key })) { clearTimeout(timer); this.waitIn = null; resolve({ o: 'reseau' }); }
+      if (!this.send({ t: 'sv', o: 'in', c: this.city.key, cl: CLIENT_LEVEL })) { clearTimeout(timer); this.waitIn = null; resolve({ o: 'reseau' }); }
     });
   }
   async loadState() {
@@ -351,6 +365,7 @@ class Bot {
     this.M.add('state:octets', r.bytes);
     if (r.status !== 200) { this.M.inc(`state:${r.status}`); return false; }
     for (const t of Object.values(r.json.ville.tiles)) if (t.b) for (const [k, row] of Object.entries(t.b)) this.rows.set(k, row);
+    for (const k of [...Object.keys(r.json.ville.units ?? {}), ...Object.keys(r.json.ville.done ?? {})]) this.units.add(k);
     for (const [k, n] of Object.entries(r.json.lent ?? {})) this.lent.set(k, n);
     return true;
   }
@@ -442,6 +457,7 @@ class Bot {
       if (r < 0.2) {                                        // 0,8 s en moyenne avant de reprendre un combat
         this.pickTargets();
         const key = this.targets[Math.floor(this.ctx.rand() * this.targets.length)];
+        if (key && this.city.quartiers) this.askUnit(key);
         if (key) {
           const free = (this.rows.get(key)?.[ROW.S] ?? 0) - (this.lent.get(key) ?? 0);
           const n = Math.min(10, free);
@@ -458,6 +474,16 @@ class Bot {
       else if (r > 0.995) { this.queue.push(['r', f.key, f.left]); this.held.delete(f.key); this.fight = null; }
     }
     this.flush();
+  }
+  // Grande ville : le joueur entre dans le quartier d'un pâté, le jeu demande de le commencer (une fois, puis toutes les 6 s tant que le serveur ne l'a pas dit).
+  askUnit(key) {
+    const q = this.city.qOf.get(key);
+    if (!q || this.units.has(q)) return;
+    const now = performance.now();
+    if (now - (this.unitAskAt.get(q) ?? -Infinity) < 6000) return;
+    this.unitAskAt.set(q, now);
+    this.queue.push(['U', key, '']);
+    this.M.inc('jeu:demandes-quartier');
   }
   flush() {
     if (!this.queue.length) return;
@@ -517,7 +543,7 @@ function dbDocs() {
 async function startServer(o) {
   const args = ['--dev', '--origin', DEV_ORIGINS[1], '--max-conn', String(o.maxConn), '--seats', String(o.seats),
     '--mail-per-hour', String(o.mailPerHour), '--mail-per-day', String(o.mailPerDay), '--pool', String(o.pool),
-    '--mysql', `mysql://${DB.user}:${DB.pass}@${DB.host}:${DB.port}/${DB.name}`];
+    ...(o.memory ? [] : ['--mysql', `mysql://${DB.user}:${DB.pass}@${DB.host}:${DB.port}/${DB.name}`])];
   if (o.createPerHour) args.push('--create-per-hour', String(o.createPerHour));
   if (o.logFile) args.push('--log-file', o.logFile);
   const s = await forkDevServer(args, { env: { NODE_OPTIONS: '--max-old-space-size=192' } });
@@ -535,7 +561,7 @@ async function run(name, opts) {
     ...PRESETS[name], ...opts };
   const say = (s) => { if (!o.quiet) console.log(`[${new Date().toISOString().slice(11, 19)}] ${s}`); };
   say(`Scénario « ${name} » : ${JSON.stringify({ ...o, _: undefined })}`);
-  if (!o.noReset) resetDb();
+  if (!o.noReset && !o.memory) resetDb();
   let server = await startServer(o);
   // Les faux joueurs tournent sur les autres cœurs que le serveur, et leur propre retard de boucle est mesuré : un essai dont les
   // joueurs sont à la peine ne dit rien du serveur.
@@ -544,7 +570,7 @@ async function run(name, opts) {
   botLoop.enable();
   const A = makeMetrics();                                // phase d'arrivée ; M : phase de jeu en régime
   let M = A;
-  const cities = Array.from({ length: o.cities }, (_, i) => makeCity(i, { side: o.tilesSide, step: o.patesStep, pop: o.pop }));
+  const cities = Array.from({ length: o.cities }, (_, i) => makeCity(i, { side: o.tilesSide, step: o.patesStep, pop: o.pop, quartiers: !!o.quartiers }));
   say(`Ville(s) : ${o.cities} × ${cities[0].pates} pâtés sur ${cities[0].tiles.size} tuiles, ${o.pop} habitants`);
   const lv = LEVELS.slice(o.levels === 3 ? 0 : LEVELS.indexOf(o.level), o.levels === 3 ? 3 : LEVELS.indexOf(o.level) + 1);
   const founded = new Map(), placed = new Map();
@@ -708,7 +734,7 @@ async function run(name, opts) {
   const playing = seatedNow.length || 1;
   const holdSec = (Date.now() - holdStart) / 1000;
   const bytesIn = (k) => M.count(`octets:${k}`);
-  const svKinds = ['in', 'no', 'full', 'rows', 'tile', 'cnt', 'ls', 'deny', 'end'];
+  const svKinds = ['in', 'no', 'full', 'rows', 'tile', 'cnt', 'ls', 'un', 'ud', 'deny', 'end'];
   const perBotKBs = (n) => +(n / playing / holdSec / 1024).toFixed(2);
   const downKBs = {
     near: perBotKBs(bytesIn('near')),
@@ -726,14 +752,16 @@ async function run(name, opts) {
     compte: { code: A.stat('http:account/code'), verify: A.stat('http:account/verify') },
     etatOctets: A.stat('state:octets'),
     latences: { near: M.stat('near'), sondePret: M.stat('sonde:pret'), sondeAbattu: M.stat('sonde:abattu'), sondePerdues: M.count('sonde:perdue'), abonnement: M.stat('sv:in-delai') },
-    jeu: { evenements: M.count('jeu:evenements'), abattus: M.count('jeu:abattus'), parSeconde: +(M.count('jeu:evenements') / holdSec).toFixed(1) },
+    jeu: { evenements: M.count('jeu:evenements'), abattus: M.count('jeu:abattus'), parSeconde: +(M.count('jeu:evenements') / holdSec).toFixed(1),
+      ...(cities[0].quartiers ? { demandesQuartier: A.count('jeu:demandes-quartier') + M.count('jeu:demandes-quartier') } : {}) },
     descenteKoParJoueurEtSeconde: downKBs,
     serveur: {
       rssMaxMo: peak((s) => s.rssMo), tasMaxMo: peak((s) => s.heapMo),
       cpuPourcent: +((cpu1 - (cpu0.user + cpu0.system) / 1000) / wallMs * 100).toFixed(1),
       boucle: { p99MaxMs: +peak((s) => s.el.p99).toFixed(1), maxMs: +peak((s) => s.el.max).toFixed(1) },
       ticP95MaxMs: +peak((s) => s.tick.p95).toFixed(1), ticCalculP95MaxMs: +peak((s) => s.tick.cpuCalcP95).toFixed(1),
-      saison: { evenements: ev('events'), refuses: ev('denied'), tuiles: ev('tiles'), graines: ev('seeds'), inscriptions: ev('joins'), erreurs: ev('errors'), integrite: ev('integrity') },
+      saison: { evenements: ev('events'), refuses: ev('denied'), tuiles: ev('tiles'), graines: ev('seeds'), inscriptions: ev('joins'), erreurs: ev('errors'), integrite: ev('integrity'),
+        ...(cities[0].quartiers ? { quartiersCommences: ev('unitsStarted'), quartiersRepris: ev('unitsDone') } : {}) },
       connexionsBaseMax: peak((s) => s.db.Threads_connected), connexionsBaseMaxUtilisees: peak((s) => s.db.Max_used_connections),
     },
     base: dbDocsInfo,

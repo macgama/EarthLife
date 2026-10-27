@@ -18,35 +18,43 @@
 //  - File d'attente : les 100 places d'un niveau sont comptées sièges + places gardées. Au-delà, le client qui sait attendre (`q`) entre
 //    dans la file du niveau (en mémoire, un rang par compte) ; quand une place se libère, elle est gardée `holdMs` pour le premier
 //    (`go`). Le siège d'un joueur dont la connexion tombe est gardé `seatGraceMs`.
-// Limites connues de la première version (écrites dans la conception) : mode « ville entière » seulement, pas de
-// partition par monde de la présence, des traces et des refuges.
+//  - Grandes villes (étape 1, « quartiers en saison », 26 octobre) : une commune de plus de 2 000 habitants ou de 150 pâtés s'ouvre en
+//    mode `quartiers` (client de niveau 4 au moins : un ancien client reçoit le refus `mode`). Le serveur applique les mêmes règles
+//    que la partie libre : le joueur qui entre dans un quartier le commence (geste `U` : startUnit, réserve du cœur prise dans ses pâtés,
+//    message `un`) ; un quartier sans zombie ni réserve est repris par le serveur (finishUnit, message `ud` : ses pâtés quittent la
+//    ville) ; la ville est sauvée quand elle n'a plus aucun zombie, donc quand tous ses quartiers sont repris.
+// Limites connues de la première version (écrites dans la conception) : pas de partition par monde de la présence, des traces et des
+// refuges ; la ville entière est envoyée à chaque abonnement (étape 2 : seulement le tour du joueur).
 import { createHash } from 'node:crypto';
 import { cleanText } from '../../prototype/src/limits.js';
 import { isNightAt, nightKey } from '../../prototype/src/horde.js';
 import {
   startVille, placeTile, kill, lend, giveBack, take, drawReserve, openNest, plantFlag, dropFlag, liberate, rescueOne, setCoeur,
-  volunteersNight, regrow, fallFlag, checkVille, zombiesLeft, cityStatus, blockInfo, nestSize, keyPoint, ETAT, ROW, QUARTIER,
+  volunteersNight, regrow, fallFlag, checkVille, zombiesLeft, cityStatus, blockInfo, nestSize, keyPoint, startUnit, finishUnit, unitKeyOf,
+  unitTilesMissing, ETAT, ROW, QUARTIER,
 } from '../../prototype/src/quartier.js';
-import { SEASON, SEASON_KEY, SEASON_COMMUNE, SEASON_TILE, TOKEN_RE, readJson } from '../../prototype/src/net/protocol.js';
+import { SEASON, SEASON_KEY, SEASON_COMMUNE, SEASON_TILE, SEASON_QKEY, TOKEN_RE, readJson } from '../../prototype/src/net/protocol.js';
 import { createBucket } from './rules.js';
 import { ANNOUNCED_CITIES } from './season-cities.js';
 
 const DAY = 86400000;
 const BLOCK = (k) => typeof k === 'string' && k[0] !== '@' && SEASON_KEY.test(k);
-const QKEY = /^[A-Za-z0-9_.:-]{0,40}$/;
+const QKEY = SEASON_QKEY;
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isInt = Number.isInteger;
 const inRange = (v, lo, hi) => isInt(v) && v >= lo && v <= hi;
 const finite = (v, max) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= max;
 const M_PER_DEG = 111195;
+// Client assez récent pour une ville en quartiers (CLIENT_LEVEL 4 au moins, dit par `cl` dans les corps HTTP et le message `in`).
+const modern = (cl) => isInt(cl) && cl >= SEASON.quartiersLevel;
 const distM = (a, b) => Math.hypot((a.lon - b.lon) * Math.cos((((a.lat + b.lat) / 2) * Math.PI) / 180) * M_PER_DEG, (a.lat - b.lat) * M_PER_DEG);
 
 export const SEASON_RULES = {
   seats: SEASON.seats, days: SEASON.days, name: 'Saison 1',
   flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, rescueBurst: 6, rescuePerSec: 1 / 6, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
   initRetryMs: 5000, playedMs: DAY, enrolCacheMs: 60000,
-  rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000,
+  rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000, unitCheckMs: 2000, unitAsk: [10, 0.5],
   citiesMax: 30,                                         // villes ouvertes au plus par niveau (choix libre)
   queueMax: 500, holdMs: 120000, seatGraceMs: 60000, queueGraceMs: 60000, waitEveryMs: 2000,   // file d'attente par niveau
   body: { join: 1024, state: 1024, home: 1024, enter: 1024, seed: 24576, tile: 131072, adj: 32768 },
@@ -83,7 +91,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   const limits = new Map();            // compte → { route: seau }
   const ipLimits = new Map();          // adresse → seau
   const enrol = new Map();             // compte → { player, at }
-  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, moves: 0, errors: 0, integrity: 0, idleReleased: 0, queued: 0, promoted: 0, expired: 0 };
+  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, moves: 0, errors: 0, integrity: 0, idleReleased: 0, queued: 0, promoted: 0, expired: 0, unitsStarted: 0, unitsDone: 0 };
   let lastFlush = now(), lastNight = now(), lastCheck = now(), lastWaits = now(), lastProgress = { at: -Infinity, body: null }, flushing = null;
 
   // ---------- Saison ----------
@@ -240,10 +248,11 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   function makeCity({ key, place, ville, playedAt = 0 }) {
     const city = {
       key, name: ville.name, place, ville, playedAt, adj: new Map(), pairs: 0, pateTile: new Map(), rv: 0,
-      dirty: { meta: true, tiles: new Set(), adj: false }, rows: new Map(), lentDirty: new Set(), cnt: false, cntAt: 0, sig: new Map(), revs: new Map(),
-      nightDone: null,
+      dirty: { meta: true, tiles: new Set(), adj: false }, rows: new Map(), lentDirty: new Set(), cnt: false, cntAt: 0, cntSent: new Map(), sig: new Map(), revs: new Map(),
+      nightDone: null, unitCheck: new Set(), unitCheckAt: 0, heart: new Map(),
     };
     reindex(city);
+    if (ville.mode === 'quartiers') for (const k of Object.keys(ville.units)) city.unitCheck.add(k);   // arrêt brutal : un quartier fini est repris
     return city;
   }
   function reindex(city) {
@@ -400,10 +409,22 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   function broadcast(w, msg, except = null) {
     for (const sub of w.subs) if (sub.s !== except) send(sub.s, msg);
   }
+  // Grande ville : des centaines de quartiers en cours, `un` ne porte que ceux dont les compteurs ont changé depuis le dernier envoi (la copie du jeu
+  // fusionne, applyCounts ; un jeu qui arrive lit l'état entier). Ville entière : un seul quartier, toujours envoyé.
   const countsOf = (city) => {
     const v = city.ville;
     const un = {};
-    for (const [k, u] of Object.entries(v.units)) un[k] = [u.r, u.k[0], u.k[1], u.k[2], u.sv, u.coeur ?? null];
+    const diff = v.mode === 'quartiers';
+    for (const [k, u] of Object.entries(v.units)) {
+      const row = [u.r, u.k[0], u.k[1], u.k[2], u.sv, u.coeur ?? null];
+      if (diff) {
+        const sig = row.join();
+        if (city.cntSent.get(k) === sig) continue;
+        city.cntSent.set(k, sig);
+      }
+      un[k] = row;
+    }
+    if (diff) for (const k of [...city.cntSent.keys()]) if (!v.units[k]) city.cntSent.delete(k);
     return { k: [...v.killed], sv: v.saved, fl: v.flags, z: zombiesLeft(v), dn: Object.keys(v.done).length, un };
   };
   function dirtyRow(city, key) {
@@ -477,12 +498,103 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return out;
   }
 
-  function pushTile(w, tk, except = null) {
+  function pushTile(w, tk, except = null, places = {}) {
     const city = w.city, t = city.ville.tiles[tk];
     if (!t?.b) return;
-    broadcast(w, { t: 'sv', o: 'tile', rv: ++city.rv, k: tk, v: { ...t, b: undefined } }, except);
+    broadcast(w, { t: 'sv', o: 'tile', rv: ++city.rv, k: tk, v: { ...t, b: undefined }, ...places }, except);
     emitRows(w, new Map([[tk, Object.keys(t.b)]]), except);
   }
+
+  // ---------- Quartiers (grandes villes, mode `quartiers`) ----------
+
+  // Ce que dit un quartier : zombies dans ses rues (réserve du cœur exclue), zombies prêtés, et ses rangées par tuile. Toutes les tuiles sont lues :
+  // une rangée errante peut être dans une tuile qui ne liste pas son quartier (t.q), et un zombie oublié empêcherait de reprendre le quartier.
+  function unitScan(v, ukey) {
+    const qi = v.qk.indexOf(ukey), out = { s: 0, lent: 0, rows: new Map() };
+    if (qi < 0) return out;
+    for (const [tk, t] of Object.entries(v.tiles)) {
+      if (!t.b) continue;
+      for (const [k, row] of Object.entries(t.b)) {
+        if (row[ROW.Q] !== qi) continue;
+        out.s += row[ROW.S];
+        out.lent += blockInfo(v, k)?.lent ?? 0;
+        let keys = out.rows.get(tk);
+        if (!keys) out.rows.set(tk, (keys = []));
+        keys.push(k);
+      }
+    }
+    return out;
+  }
+  // Quartier d'une clé de pâté (ou de la réserve '@quartier') : à revoir quand un geste le touche (abattus, retours).
+  function watchUnit(city, key) {
+    const v = city.ville;
+    if (v.mode !== 'quartiers') return;
+    const uk = key[0] === '@' ? key.slice(1) : unitKeyOf(v, key);
+    if (uk && v.units[uk]) city.unitCheck.add(uk);
+  }
+  // Tous les quartiers en cours à revoir (tuile placée, nuit passée).
+  function watchUnits(city) {
+    if (city.ville.mode === 'quartiers') for (const k of Object.keys(city.ville.units)) city.unitCheck.add(k);
+  }
+  // La réserve du cœur ne se tire que la Nuit du cœur : la ville entière (mode entier) ou le quartier sans zombie dans ses rues. Gardé 0,4 s.
+  function heartOpen(city, ukey) {
+    const v = city.ville;
+    if (v.mode === 'entiere') return cityStatus(v) === 'coeur';
+    const t = now(), c = city.heart.get(ukey);
+    if (c && t - c.at < 400) return c.open;
+    const open = !!v.units[ukey] && unitScan(v, ukey).s === 0;
+    city.heart.set(ukey, { at: t, open });
+    return open;
+  }
+  // Le joueur entre dans un quartier (geste `U`, clé du pâté où il est) : le serveur le commence quand ses tuiles sont placées (startUnit) et que
+  // personne n'a de zombie prêté dans ses pâtés ; sinon rien ne change et le jeu redemande. Chacun voit le quartier commencer (`un`) et ses
+  // rangées changer (la réserve du cœur est prise dans le stock de ses pâtés).
+  function startUnitAt(w, key, name) {
+    const city = w.city, v = city.ville;
+    const uk = unitKeyOf(v, key);
+    if (!uk || v.units[uk] || Object.hasOwn(v.done, uk)) return false;
+    const scan = unitScan(v, uk);
+    if (unitTilesMissing(v, uk).length) return false;       // des zombies prêtés dans ses rues n'empêchent pas de le commencer : la réserve n'est prise que sur ce qui reste dans les pâtés
+    const u = startUnit(v, uk, { name: typeof name === 'string' ? cleanText(name, 80) : '', coeur: key, at: now() });
+    if (!u) return false;
+    for (const tk of scan.rows.keys()) city.dirty.tiles.add(tk);
+    city.dirty.meta = true;
+    city.cnt = true;
+    city.unitCheck.add(uk);                                // un quartier sans zombie ni réserve est repris tout de suite
+    stats.unitsStarted++;
+    broadcast(w, { t: 'sv', o: 'un', rv: ++city.rv, k: uk, u: { n: u.name, r: u.r, r0: u.r0, z0: u.z0, st: u.start, c: u.coeur } });
+    emitRows(w, scan.rows);
+    return true;
+  }
+  // Quartiers repris : plus un zombie dans ses rues ni dans sa réserve, rien de prêté, toutes les tuiles qui peuvent porter ses pâtés placées
+  // (finishUnit). Ses pâtés quittent la ville (une ligne reste dans `done`) ; chacun l'apprend par `ud`. Un quartier pas encore finissable
+  // n'est revu qu'au prochain geste qui le touche : abattu, retour d'un prêt, tuile placée, nuit passée.
+  function checkUnits(w, t) {
+    const city = w.city, v = city.ville;
+    if (v.mode !== 'quartiers' || !city.unitCheck.size || t - city.unitCheckAt < R.unitCheckMs) return;
+    city.unitCheckAt = t;
+    const list = [...city.unitCheck];
+    city.unitCheck.clear();
+    for (const uk of list) {
+      const u = v.units[uk];
+      if (!u || u.r > 0) continue;
+      const scan = unitScan(v, uk);
+      if (scan.s > 0 || scan.lent > 0) continue;
+      const line = finishUnit(v, uk, t);
+      if (!line) continue;                                 // des tuiles du quartier ne sont pas encore placées
+      reindex(city);
+      for (const tk of scan.rows.keys()) city.dirty.tiles.add(tk);
+      city.dirty.meta = true;
+      city.cnt = true;
+      city.heart.delete(uk);
+      stats.unitsDone++;
+      log('saison', { quartier: `${w.id}/${city.key}/${uk}`, sauves: line[10], abattus: line[7] + line[8] + line[9] });
+      broadcast(w, { t: 'sv', o: 'ud', rv: ++city.rv, k: uk, l: line });
+    }
+  }
+  // Lieux (ville.qk) ajoutés depuis l'indice `from` : les rangées portent l'indice de leur lieu, le jeu doit les connaître pour savoir de quel quartier
+  // elles sont. Seulement en mode quartiers (en mode entier, ils ne servent qu'aux noms).
+  const placesSince = (v, from) => (v.mode === 'quartiers' && isInt(from) && from >= 0 && from < v.qk.length ? { qi: from, qk: v.qk.slice(from) } : {});
 
   // ---------- Gestes ----------
 
@@ -493,7 +605,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const v = city.ville;
     n = Math.min(n, Math.max(0, R.leaseMax - heldBy(sub)));
     if (n <= 0) return 0;
-    if (key[0] === '@' && cityStatus(v) !== 'coeur') return 0;          // la réserve du cœur ne se tire que la Nuit du cœur
+    if (key[0] === '@' && !heartOpen(city, key.slice(1))) return 0;     // la réserve du cœur ne se tire que la Nuit du cœur
     let got;
     if (key[0] === '@') got = drawReserve(v, key.slice(1), n).n;
     else if (kind === 'l') got = lend(v, key, n);
@@ -509,6 +621,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const have = sub.leases.get(key) ?? 0, k = Math.min(n, have);
     if (k <= 0) return 0;
     giveBack(city.ville, key, k);
+    watchUnit(city, key);
     if (key[0] !== '@') city.lentDirty.add(key);
     if (have - k > 0) sub.leases.set(key, have - k); else sub.leases.delete(key);
     return k;
@@ -550,6 +663,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
             sub.kills += got;
             sub.dirtyKills = true;
             sub.holdAt = now();
+            watchUnit(city, key);
             if (key[0] === '@') dirtyCounts(city); else dirtyRow(city, key);
           }
           break;
@@ -571,8 +685,15 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
           break;
         }
         case 'c': {
-          const u = v.units[v.key];
-          if (u && !u.coeur && setCoeur(v, v.key, key)) { dirtyCounts(city); changed = true; }
+          const uk = v.mode === 'entiere' ? v.key : unitKeyOf(v, key);
+          const u = uk ? v.units[uk] : null;
+          if (u && !u.coeur && setCoeur(v, uk, key)) { dirtyCounts(city); changed = true; }
+          break;
+        }
+        case 'U': {
+          // Grande ville seulement ; un joueur ne demande pas plus d'un quartier par moment (le jeu redemande toutes les 6 s).
+          if (v.mode !== 'quartiers' || key[0] === '@' || !sub.unitBucket.take()) break;
+          if (startUnitAt(sub.w, key, n)) changed = true;
           break;
         }
         default:
@@ -629,6 +750,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     }
     for (const [k, row] of allRows(city)) if (before.get(k) !== row.join()) dirtyRow(city, k);
     dirtyCounts(city);
+    watchUnits(city);                                     // les volontaires ont pu vider un quartier
     log('saison', { nuit: key, monde: city.key });
   }
   function nights(t) {
@@ -684,7 +806,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
 
   const refuse = (status, code, more = {}) => ({ status, body: { ok: false, code, ...more } });
   const cityView = (city) => (city ? { key: city.key, name: city.name, place: city.place, population: city.ville.population,
-    level: city.ville.level } : null);
+    level: city.ville.level, mode: city.ville.mode } : null);
 
   async function route(path, text, acc) {
     const name = path.slice('/v1/season/'.length);
@@ -704,7 +826,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const w = worldOf(p.level, p.commune);
     await load(w);
     if (!w.city) return refuse(409, 'vide');
-    if (name === 'state') return state(w);
+    if (name === 'state') return state(w, body);
     if (phase !== 'en-cours') return refuse(409, phase === 'terminee' ? 'fin' : 'avenir');
     // Découpes et voisinages : seulement de la part d'un joueur assis dans le monde (un siège par compte, bannis exclus).
     if ((name === 'tile' || name === 'adj') && ![...w.subs].some((x) => x.accountId === acc)) return refuse(409, 'abonnement');
@@ -733,7 +855,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     // Sa ville : celle qu'il a choisie (et qui existe encore), sinon rien, il choisit.
     const w = p.commune ? worldOf(p.level, p.commune) : null;
     if (w) await load(w);
-    const city = w?.city ?? null;
+    // Un ancien client ne sait pas jouer une grande ville : pour lui, le joueur n'en a pas encore, il en choisit une autre.
+    const city = w?.city && (w.city.ville.mode !== 'quartiers' || modern(body.cl)) ? w.city : null;
     return { status: 200, body: { ok: true, now: now(), season: seasonView(), level: p.level, world: `${season.id}.${p.level}`, city: cityView(city),
       ...(city ? {} : announcedOf(p.level)),
       home: homeView(p), seats: { used: levelUsed(p.level), max: R.seats } } };
@@ -769,6 +892,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const w = worldOf(p.level, b.key);
     await load(w);
     if (!w.city) return refuse(409, 'inconnue');
+    if (w.city.ville.mode === 'quartiers' && !modern(b.cl)) return refuse(409, 'mode');
     return moveTo(acc, p, w);
   }
 
@@ -781,11 +905,15 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       return refuse(400, 'requete');
     }
     const w = worldOf(p.level, b.key);
+    // Grande ville (commune de plus de 2 000 habitants ou 150 pâtés, vue par le jeu à l'ouverture) : seulement pour un client qui sait la jouer.
+    const mode = b.mode === undefined ? 'entiere' : b.mode;
+    if (mode !== 'entiere' && mode !== 'quartiers') return refuse(400, 'requete');
     await load(w);
-    if (w.city) return moveTo(acc, p, w);
-    if (b.mode !== undefined && b.mode !== 'entiere') return refuse(409, 'mode');
+    const open = () => (w.city.ville.mode === 'quartiers' && !modern(b.cl) ? refuse(409, 'mode') : moveTo(acc, p, w));
+    if (w.city) return open();
+    if (mode === 'quartiers' && !modern(b.cl)) return refuse(409, 'mode');
     await loadLevel(p.level);
-    if (w.city) return moveTo(acc, p, w);
+    if (w.city) return open();
     if (levelCities(p.level).length >= R.citiesMax) return refuse(409, 'villes-max', { max: R.citiesMax });
     // La ville annoncée du niveau garde son nom et son point (le même pour tous), quel que soit le lieu touché au menu.
     const ann = announced[p.level]?.key === b.key ? announced[p.level] : null;
@@ -801,7 +929,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const name = ann ? ann.name : cleanText(b.name, 80);
     const ville = startVille({
       key: b.key, name, population: b.pop, source: typeof b.src === 'string' && /^[a-z-]{1,20}$/.test(b.src) ? b.src : null, approx: b.approx === true,
-      level: p.level, mode: 'entiere', tiles, failed, zoneLevel: b.zl ?? 8, at: now(),
+      level: p.level, mode, tiles, failed, zoneLevel: b.zl ?? 8, at: now(),
     });
     if (!ville) return refuse(409, 'ville');
     // Pas d'habitant « moi » dans une ville commune : tous les habitants non zombies sont à sauver.
@@ -815,8 +943,9 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return { status: r.status, body: { ...r.body, created: true } };
   }
 
-  function state(w) {
+  function state(w, body = {}) {
     const city = w.city;
+    if (city.ville.mode === 'quartiers' && !modern(body.cl)) return refuse(409, 'mode');
     // hab : ce serveur connaît le geste `h` (habitant trouvé) ; un jeu ne l'envoie que si l'état le dit.
     return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville: city.ville, lent: lentSnapshot(city), hab: 1 }) };
   }
@@ -844,8 +973,9 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!all) return refuse(400, 'requete');
     const nb0 = Array.isArray(b.nb) && b.nb.length <= R.nbPairs ? b.nb : [];
     for (const e of nb0) if (!Array.isArray(e) || e.length !== 2 || !inRange(e[0], 0, all.length - 1) || !inRange(e[1], 0, all.length - 1)) return refuse(400, 'requete');
-    // Le premier découpage fait foi : une tuile déjà placée (ou rendue orpheline) n'est plus jamais redécoupée.
-    if (v.tiles[tk].b || v.tiles[tk].o) return { status: 200, body: { ok: true, same: true, rv: city.rv, tiles: { [tk]: v.tiles[tk] } } };
+    // Le premier découpage fait foi : une tuile déjà placée (ou rendue orpheline) n'est plus jamais redécoupée. `qn` : combien de lieux le jeu connaît
+    // déjà (ville.qk) ; la réponse rend les suivants, que les rangées de la tuile désignent par leur indice.
+    if (v.tiles[tk].b || v.tiles[tk].o) return { status: 200, body: { ok: true, same: true, rv: city.rv, tiles: { [tk]: v.tiles[tk] }, ...placesSince(v, b.qn) } };
     // Une clé déjà tenue par une autre tuile n'est pas reprise (sinon sa rangée resterait sans accès).
     const pates = [], remap = new Map();
     all.forEach((p, i) => { const owner = city.pateTile.get(p.key); if (!owner || owner === tk) { remap.set(i, pates.length); pates.push(p); } });
@@ -853,10 +983,11 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const force = b.f === true;
     const sig = sha256(JSON.stringify([pates, force, b.l]));
     const cur = { [tk]: v.tiles[tk] };
-    if (city.sig.get(tk) === sig) return { status: 200, body: { ok: true, same: true, rv: city.rv, tiles: cur } };
+    if (city.sig.get(tk) === sig) return { status: 200, body: { ok: true, same: true, rv: city.rv, tiles: cur, ...placesSince(v, b.qn) } };
     const member = (p) => (p.m === 1 ? true : p.m === 0 ? false : null);
     if (typeof b.l === 'boolean') member.leak = b.l;
     const before = new Map(Object.entries(v.tiles).map(([k, t]) => [k, JSON.stringify(t)]));
+    const qk0 = v.qk.length;
     const r = placeTile(v, { tile: tk, pates }, { member, force });
     if (!r.ok) return { status: 200, body: { ok: true, waiting: true, rv: city.rv, tiles: {} } };
     city.sig.set(tk, sig);
@@ -871,8 +1002,10 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     city.dirty.meta = true;
     city.cnt = true;
     for (const [i, j] of nb) addEdge(city, pates[i].key, pates[j].key);
-    for (const k of Object.keys(changed)) pushTile(w, k);
-    return { status: 200, body: { ok: true, rv: city.rv, tiles: changed } };
+    const places = placesSince(v, qk0);
+    for (const k of Object.keys(changed)) pushTile(w, k, null, places);
+    watchUnits(city);                                     // une tuile de plus peut permettre de reprendre un quartier
+    return { status: 200, body: { ok: true, rv: city.rv, tiles: changed, ...(isInt(b.qn) ? placesSince(v, b.qn) : places) } };
   }
 
   function adjRoute(w, b) {
@@ -932,7 +1065,9 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const city = w.city, v = city.ville;
     return { key: city.key, name: city.name, ...coords(city.place), population: v.population, zombies: zombiesLeft(v), zombies0: v.zombies0, saved: v.saved,
       toSave: v.hidden0, flags: v.flags, killed: v.killed[0] + v.killed[1] + v.killed[2], status: cityStatus(v), startMs: v.start, online: w.subs.size,
-      homes: homes[`${w.level}|${city.key}`] ?? 0 };
+      homes: homes[`${w.level}|${city.key}`] ?? 0,
+      // Grande ville : quartiers commencés et repris (le nombre total ne se connaît qu'une fois toute la ville explorée).
+      ...(v.mode === 'quartiers' ? { mode: v.mode, units: Object.keys(v.units).length, done: Object.keys(v.done).length } : {}) };
   }
 
   // Évolution de la saison (écran du menu) : publique, gardée 30 s. Par niveau : `cities` (toutes les villes ouvertes, la ville annoncée
@@ -1009,6 +1144,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     await load(w);
     if (s.state === 'closed') return undefined;
     if (!w.city || w.city.key !== msg.c) return no(s, 'commune');
+    if (w.city.ville.mode === 'quartiers' && !modern(msg.cl)) return no(s, 'monde');       // ancien client : refus lisible (jamais une ville qu'il ne sait pas lire)
     const old = subs.get(s);
     if (old && old.w === w) return send(s, { t: 'sv', o: 'in', rv: w.city.rv });
     detach(s, { ghost: true });
@@ -1020,7 +1156,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const entry = waiting.get(s) ?? queues.get(w.level)?.find((e) => e.accountId === s.accountId);
     if (entry) dropEntry(entry);
     const sub = { s, w, accountId: s.accountId, leases: new Map(), holdAt: 0, kills: 0, kills0: p.kills ?? 0, dirtyKills: false, bucket: createBucket(20, 6, now),
-      killBucket: createBucket(R.killBurst, R.killPerSec, now), rescueBucket: createBucket(R.rescueBurst, R.rescuePerSec, now) };
+      killBucket: createBucket(R.killBurst, R.killPerSec, now), rescueBucket: createBucket(R.rescueBurst, R.rescuePerSec, now),
+      unitBucket: createBucket(R.unitAsk[0], R.unitAsk[1], now) };
     subs.set(s, sub);
     w.subs.add(sub);
     w.city.playedAt = now();
@@ -1041,6 +1178,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const city = w.city;
     if (!city) return;
     if (over && !w.ended) { w.ended = true; broadcast(w, { t: 'sv', o: 'end', why: 'fin' }); }
+    if (!over) checkUnits(w, t);
     if (w.subs.size) {
       pushRows(w);
       pushLent(w);
