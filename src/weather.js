@@ -16,6 +16,10 @@ export function weatherUrl(lat, lon) {
     current: CURRENT_VARS.join(','),
     timezone: 'auto',
     wind_speed_unit: 'kmh',
+    // Épaisseur de neige au sol (m) et pluie des trois heures passées : le sol reste enneigé ou mouillé après la chute.
+    hourly: 'snow_depth,precipitation',
+    past_hours: '3',
+    forecast_hours: '1',
   });
   return `https://api.open-meteo.com/v1/forecast?${params}`;
 }
@@ -42,9 +46,27 @@ export function codeLabel(code) {
   return hit ? hit[1] : 'temps variable';
 }
 
+// Rang de l'heure en cours dans les valeurs horaires (l'heure la plus récente qui n'est pas après `current.time`, tous deux en
+// heure locale ISO) ; la dernière valeur si l'heure manque.
+function hourIndex(times, now) {
+  if (!Array.isArray(times) || !times.length) return -1;
+  let at = times.length - 1;
+  if (typeof now === 'string') {
+    at = 0;
+    for (let i = 0; i < times.length; i++) if (times[i] <= now) at = i;
+  }
+  return at;
+}
+
 // Transforme la réponse Open-Meteo en un état météo de jeu.
 export function parseWeather(json) {
   const c = json.current ?? {};
+  const h = json.hourly ?? {};
+  const at = hourIndex(h.time, c.time);
+  // Neige au sol (m) à l'heure en cours ; pluie (mm) des heures d'avant (hors l'heure en cours, que `precipitation` dit déjà).
+  const snowDepth = at >= 0 ? Math.max(0, Number(h.snow_depth?.[at]) || 0) : 0;
+  let recentRain = 0;
+  if (at > 0 && Array.isArray(h.precipitation)) for (let i = 0; i < at; i++) recentRain += Math.max(0, Number(h.precipitation[i]) || 0);
   const code = c.weather_code ?? 0;
   const precip = Math.max(c.precipitation ?? 0, (c.rain ?? 0) + (c.showers ?? 0));
   const snowfall = c.snowfall ?? 0;
@@ -72,6 +94,8 @@ export function parseWeather(json) {
     feelsLike: c.apparent_temperature ?? c.temperature_2m ?? 15,
     precipitation: precip,
     cloudCover: c.cloud_cover ?? 0,
+    snowDepth,
+    recentRain,
     windKmh: c.wind_speed_10m ?? 0,
     gustKmh: c.wind_gusts_10m ?? c.wind_speed_10m ?? 0,
     windDirection: c.wind_direction_10m ?? 0,
@@ -86,6 +110,7 @@ export function parseWeather(json) {
 // Météos imposées pour tester (menu « Forcer la météo »).
 export const FORCED_WEATHERS = {
   clear: { kind: 'clear', intensity: 0, label: 'ciel dégagé (forcé)', temperature: 22, windKmh: 8, cloudCover: 5, visibility: 30000 },
+  cloudy: { kind: 'cloudy', intensity: 0, label: 'nuageux (forcé)', temperature: 17, windKmh: 18, cloudCover: 62, visibility: 25000 },
   rain: { kind: 'rain', intensity: 0.7, label: 'pluie (forcée)', temperature: 11, windKmh: 20, cloudCover: 100, visibility: 8000 },
   storm: { kind: 'storm', intensity: 1, label: 'orage (forcé)', temperature: 18, windKmh: 55, gustKmh: 80, cloudCover: 100, visibility: 5000 },
   snow: { kind: 'snow', intensity: 0.8, label: 'neige (forcée)', temperature: -3, windKmh: 12, cloudCover: 100, visibility: 3000 },
@@ -100,6 +125,9 @@ export function forcedWeather(kind, base) {
     gustKmh: f.gustKmh ?? f.windKmh,
     feelsLike: f.temperature,
     precipitation: f.kind === 'rain' || f.kind === 'storm' ? 3 : 0,
+    // Temps imposé pour un essai : la neige au sol et la pluie d'avant sont celles du temps imposé, pas du vrai temps.
+    snowDepth: f.kind === 'snow' ? 0.06 : 0,
+    recentRain: 0,
     source: 'forced',
   };
 }
