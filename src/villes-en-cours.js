@@ -11,6 +11,7 @@ export const startedOf = (row) => int(row?.homes) > 0 || int(row?.saved) > 0 || 
 export const lostOf = (row) => row?.status === 'perdue';
 
 // Ce que dit une ville en quelques mots : « pas encore commencée », « 10/640 sauvés », « perdue », plus les survivants en ligne.
+// Grande ville découpée en quartiers : « 2 quartiers repris · 120 sauvés » (le total à sauver ne se connaît qu'une fois tout exploré).
 // row : une ville du serveur, ou une ligne déjà lue (`started` fait alors foi).
 export function cityNote(row) {
   const online = int(row?.online);
@@ -18,13 +19,17 @@ export function cityNote(row) {
   const parts = [];
   if (lostOf(row)) parts.push('perdue');
   else if (!started) parts.push('pas encore commencée');
-  else parts.push(`${int(row.saved)}/${int(row.toSave)} sauvés`);
+  else if (row?.mode === 'quartiers') {
+    const done = int(row.done);
+    parts.push(`${done} quartier${done > 1 ? 's' : ''} repris`);
+    if (int(row.saved)) parts.push(`${int(row.saved)} sauvés`);
+  } else parts.push(`${int(row.saved)}/${int(row.toSave)} sauvés`);
   if (online && !lostOf(row)) parts.push(`${online} en ligne`);
   return parts.join(' · ');
 }
 
 // Les villes ouvertes d'un niveau (entrée de progress.levels), avec leur point sur la Terre : seulement celles dont le serveur donne la position.
-// exceptKey : une ville à laisser de côté (la tienne). → [{ key, name, lat, lon, started, lost, online, homes, saved, toSave, status }], les villes en cours d'abord.
+// exceptKey : une ville à laisser de côté (la tienne). → [{ key, name, lat, lon, started, lost, online, homes, saved, toSave, status, mode, units, done }], les villes en cours d'abord.
 export function liveCities(entry, { exceptKey = null } = {}) {
   const list = Array.isArray(entry?.cities) ? entry.cities : entry?.city ? [entry.city] : [];
   const out = [];
@@ -35,6 +40,7 @@ export function liveCities(entry, { exceptKey = null } = {}) {
     out.push({
       key: c.key, name: typeof c.name === 'string' ? c.name : '', lat, lon, started: startedOf(c), lost: lostOf(c),
       online: int(c.online), homes: int(c.homes), saved: int(c.saved), toSave: int(c.toSave), status: typeof c.status === 'string' ? c.status : 'en-cours',
+      mode: c.mode === 'quartiers' ? 'quartiers' : 'entiere', units: int(c.units), done: int(c.done),
     });
   }
   return out.sort((a, b) => (b.started - a.started) || (a.lost - b.lost));
