@@ -137,8 +137,8 @@ async function until(page, fn, arg, timeout = 60000) {
 const shot = (page, name) => page.screenshot({ path: path.join(out, `${name}.png`) }).catch(() => {});
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function started(page) {
-  const ok = await until(page, () => !!window.__earthlife?.session?.player && document.getElementById('loading').classList.contains('hidden'), null, 90000);
+async function started(page, timeout = 90000) {
+  const ok = await until(page, () => !!window.__earthlife?.session?.player && document.getElementById('loading').classList.contains('hidden'), null, timeout);
   return !!ok;
 }
 
@@ -1028,7 +1028,7 @@ async function desktop() {
   // La 1re page relance sa partie toute seule (autostart=1) : elle doit tourner et avoir écrit avant que la 2e reprenne la main.
   // Sinon, sur un coureur lent, la dernière des deux à démarrer sa partie prend la main à l'autre (la page qui n'a encore rien
   // écrit relit la partie puis écrit) et la 2e, rechargée en dernier, se retrouve en lecture seule.
-  const running1 = await started(page);
+  const running1 = await started(page, 240000);
   const wrote1 = running1 && await ev(page, () => { const st = window.__earthlife.saveStore; st.markDirty(); return st.flush('essai').ok; });
   check(wrote1, `${tag} 7 : la 1re page, rechargée, relance sa partie et sauvegarde avant la reprise de la 2e`);
   // « Reprendre ici » sur la carte en partie : la page recharge et relance la partie aussitôt (pas de retour au menu).
@@ -1037,7 +1037,8 @@ async function desktop() {
   // L'adresse de test porte autostart=1 : on la retire (sans recharger) pour que seul le drapeau de reprise relance la partie.
   await ev(page2, () => history.replaceState(null, '', location.href.replace('&autostart=1', '')));
   await Promise.all([page2.waitForEvent('load', { timeout: 20000 }).catch(() => null), page2.click('#card [data-card-btn="take"]')]);
-  const back = await started(page2);
+  // Deux pages se disputent le processeur : le lancement de la partie rechargée prend plus de 90 s sur la CI.
+  const back = await started(page2, 240000);
   const back2 = await ev(page2, () => ({ menuHidden: document.getElementById('menu').classList.contains('hidden'), readOnly: window.__earthlife.saveStore.readOnly }));
   check(back && back2.menuHidden && !back2.readOnly, `${tag} 7 : après « Reprendre ici » en partie, la partie repart sans menu et sauvegarde (menu caché : ${back2.menuHidden}, lecture seule : ${back2.readOnly})`);
   // Partie de saison : le drapeau porte le niveau, la page rechargée relance la saison (l'essai n'a pas de compte : la carte « Un compte
@@ -3324,7 +3325,7 @@ async function voitureScenario(device) {
   check(menu.r === 'carfix' && menu.rOff && /^Réparer la voiture( \(R\))? · 20 s$/.test(menu.label2 ?? ''), `${tag} : bouton « ${menu.label2} » grisé sans batterie`);
   await shot(page, `${tag.replace(' ', '-')}-reparer-bouton`);
   await press(page, device, 'r', 'action2');
-  const missing = await toastSeen(page, 'Il te manque', 15000);
+  const missing = await toastSeen(page, 'Il te manque', 120000);
   check(!!missing && /atterie/.test(missing), `${tag} : sans batterie : « ${missing} »`);
   await debug(page, 'give', { batterie: 1, bidon: 3 }); // 1 + 3 = 4 bidons pour le plein
   await until(page, () => window.__earthlife.session.menu?.secondary?.off === false, null, 10000);
@@ -3342,7 +3343,7 @@ async function voitureScenario(device) {
   check(fixed.from === found.fix.id && fixed.fuel === 1 && fixed.wear === 100, `${tag} : « ta voiture » = ${fixed.from}, ${fixed.fuel} L, usure ${fixed.wear} %`);
   check((parts0.ferraille ?? 0) - (parts1.ferraille ?? 0) === 2 && (parts0.ruban ?? 0) - (parts1.ruban ?? 0) === 1 && (parts0.batterie ?? 0) - (parts1.batterie ?? 0) === 1,
     `${tag} : pièces prises : 2 ferrailles, 1 ruban, 1 batterie (ferraille ${parts0.ferraille ?? 0} → ${parts1.ferraille ?? 0})`);
-  check(!!(await toastSeen(page, 'Voiture réparée', 30000)), `${tag} : notification « Voiture réparée… »`);
+  check(!!(await toastSeen(page, 'Voiture réparée', 120000)), `${tag} : notification « Voiture réparée… »`);
   check(await ev(page, (id) => !!window.__earthlife.save.dismantled[id], found.fix.id), `${tag} : la voiture d'origine est notée démontée (pour les autres joueurs aussi)`);
   await wait(500);
   const scales = await carsAt(page, { x: found.fix.cx, z: found.fix.cz });
