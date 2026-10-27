@@ -149,8 +149,9 @@ const seen = (page) => ev(page, () => window.__seen);
 // Libellé du bouton d'action (#search ou #action2), ou null s'il est caché.
 // Attend une notification (texte qui commence par `start`) ; renvoie son texte, ou null.
 // Les notifications comptent en temps de jeu et font la queue : sur un exécuteur lent (0,08 s de jeu par seconde de montre), une seule
-// qui en précède une autre retarde celle-ci de plus de 30 s. `until` rend la main dès qu'elle est vue : la marge ne coûte rien quand tout va bien.
-const toastSeen = (page, start, timeout = 300000) => until(page, (t) => window.__seen.toasts.find((x) => x.startsWith(t)) ?? null, start, timeout);
+// qui en précède une autre retarde celle-ci de plus de 30 s. `until` rend la main dès qu'elle est vue : la marge ne coûte rien quand tout va bien
+// (les délais plus courts demandés par les appels sont portés à 120 s, aucun appel n'attend une notification qui ne doit pas venir).
+const toastSeen = (page, start, timeout = 300000) => until(page, (t) => window.__seen.toasts.find((x) => x.startsWith(t)) ?? null, start, Math.max(timeout, 120000));
 const clearZombies = (page) => ev(page, () => { window.__earthlife.session.director.zombies.length = 0; });
 const debug = (page, name, ...args) => ev(page, ([n, a]) => window.__earthlife.debug[n](...a), [name, args]);
 // Bouton du panneau du refuge (data-act, data-arg).
