@@ -145,7 +145,9 @@ async function started(page) {
 const seen = (page) => ev(page, () => window.__seen);
 // Libellé du bouton d'action (#search ou #action2), ou null s'il est caché.
 // Attend une notification (texte qui commence par `start`) ; renvoie son texte, ou null.
-const toastSeen = (page, start, timeout = 30000) => until(page, (t) => window.__seen.toasts.find((x) => x.startsWith(t)) ?? null, start, timeout);
+// Les notifications comptent en temps de jeu et font la queue : sur un exécuteur lent (0,08 s de jeu par seconde de montre), une seule
+// qui en précède une autre retarde celle-ci de plus de 30 s. `until` rend la main dès qu'elle est vue : la marge ne coûte rien quand tout va bien.
+const toastSeen = (page, start, timeout = 300000) => until(page, (t) => window.__seen.toasts.find((x) => x.startsWith(t)) ?? null, start, timeout);
 const clearZombies = (page) => ev(page, () => { window.__earthlife.session.director.zombies.length = 0; });
 const debug = (page, name, ...args) => ev(page, ([n, a]) => window.__earthlife.debug[n](...a), [name, args]);
 // Bouton du panneau du refuge (data-act, data-arg).
@@ -1014,7 +1016,7 @@ async function desktop() {
   await until(page, () => !document.getElementById('menu').classList.contains('hidden'), null, 5000);
   const take = await visibleText('save-take');
   check(take === 'Reprendre ici', `${tag} 7 : bouton « ${take} » dans le menu`);
-  await Promise.all([page.waitForEvent('load', { timeout: 20000 }).catch(() => null), page.click('#save-take')]);
+  await Promise.all([page.waitForEvent('load', { timeout: 20000 }).catch(() => null), page.click('#save-take', { timeout: 180000 })]);
   // La 1re page recharge et relance sa partie (autostart=1) pendant que la 2e tourne : sous swiftshader en CI, les deux se
   // disputent le processeur et aucune ne dessine d'image (donc aucun sondage « raf ») pendant 20 s ou plus. Les deux
   // attentes courent ensemble, avec la marge du lancement d'une partie.
