@@ -411,3 +411,109 @@ test('quartiers : un joueur ne peut pas inonder le serveur de demandes de quarti
   await a.ev(['U', key(0), 'Port']);
   assert.ok(v.units[Q1]);
 });
+
+// Étape 2 : fenêtre de tuiles. Un jeu de grande ville ne lit que les rangées des tuiles autour de lui (état, diffusions) et demande les autres en
+// avançant (`win`) ; un jeu sans fenêtre (ancien) et une petite ville reçoivent toujours tout.
+async function second(w) {
+  const b = await w.player(2);
+  assert.equal((await b.call('/v1/season/enter', { key: SEED.key })).status, 200);
+  await b.send({ o: 'in', c: SEED.key });
+  return b;
+}
+const hit = async (p, k) => { await p.ev(['l', k, 1]); await p.ev(['k', k, 1]); };
+
+test('quartiers, fenêtre : l\'état ne porte que les rangées de la fenêtre, les diffusions aussi, `win` en ajoute', async () => {
+  const w = rig();
+  const a = await opened(w, { both: true });
+  const b = await second(w);
+  const v = cityOf(w).ville;
+  // Sans fenêtre (ancien jeu) : toute la ville, sans `win`.
+  const full = await b.call('/v1/season/state', {});
+  assert.equal(full.body.win, undefined);
+  assert.equal(Object.keys(full.body.ville.tiles[TB].b).length, 3);
+  // Fenêtre [TA] : TA avec ses rangées, TB sans (f) ; la ville du serveur n'est pas touchée.
+  const st = await b.call('/v1/season/state', { win: [TA] });
+  assert.equal(st.body.win, 1);
+  assert.equal(Object.keys(st.body.ville.tiles[TA].b).length, 10);
+  assert.deepEqual([st.body.ville.tiles[TB].b, st.body.ville.tiles[TB].f, st.body.ville.tiles[TB].p], [undefined, 1, v.tiles[TB].p]);
+  assert.deepEqual(st.body.ville.qk, v.qk, 'les lieux de toute la ville');
+  assert.ok(v.tiles[TB].b && v.tiles[TB].f === undefined);
+  // a joue dans TB : b n'en reçoit ni rangée ni prêt ; a (sans fenêtre) reçoit tout.
+  b.inbox.length = 0;
+  await hit(a, key(0, 1));
+  w.tick();
+  assert.equal(b.sv('rows').filter((m) => m.r[TB]).length, 0, 'rien de TB pour b');
+  assert.equal(b.sv('ls').filter((m) => Object.keys(m.l).some((k) => k === key(0, 1))).length, 0);
+  assert.ok(a.sv('rows').some((m) => m.r[TB]?.[key(0, 1)]), 'a reçoit tout');
+  // Dans TA : b reçoit la rangée.
+  await hit(a, key(0, 0));
+  w.tick();
+  assert.ok(b.sv('rows').some((m) => m.r[TA]?.[key(0, 0)]), 'TA est dans la fenêtre de b');
+  // b s'approche de TB : `win` lui rend le rapport de la tuile puis ses rangées, à lui seul ; les diffusions suivantes la portent.
+  b.inbox.length = 0;
+  const aSeen = a.inbox.length;
+  await b.send({ o: 'win', k: [TB] });
+  const tm = b.sv('tile').find((m) => m.k === TB);
+  assert.ok(tm, 'rapport de la tuile');
+  assert.equal(tm.v.f, undefined);
+  const got = Object.assign({}, ...b.sv('rows').map((m) => m.r[TB] ?? {}));
+  assert.deepEqual(got, v.tiles[TB].b);
+  const at = (f) => b.inbox.findIndex(f);
+  assert.ok(at((m) => m.o === 'tile' && m.k === TB) > b.inbox.findLastIndex((m) => m.o === 'rows' && m.r[TB]), 'le rapport après les rangées');
+  assert.equal(a.inbox.length, aSeen, 'rien pour les autres');
+  await hit(a, key(1, 1));
+  w.tick();
+  assert.ok(b.sv('rows').some((m) => m.r[TB]?.[key(1, 1)]), 'TB est maintenant dans la fenêtre de b');
+  // Les compteurs disent les pâtés de toute la ville (le jeu à fenêtre ne peut pas les compter).
+  w.tick(1000);
+  const c = b.sv('cnt').at(-1)?.c;
+  assert.deepEqual([c?.pk, c?.pf], [13, 0]);
+  assert.equal(checkVille(v).ok, true);
+  // Relire l'état sans fenêtre (tout) : les diffusions redeviennent entières.
+  await b.call('/v1/season/state', {});
+  b.inbox.length = 0;
+  await hit(a, key(3, 0));
+  await hit(a, key(2, 1));
+  w.tick();
+  assert.ok(b.sv('rows').some((m) => m.r[TA]?.[key(3, 0)]) && b.sv('rows').some((m) => m.r[TB]?.[key(2, 1)]));
+});
+
+test('quartiers, fenêtre : une tuile placée hors de la fenêtre arrive sans rangées (f), la découper la fait entrer', async () => {
+  const w = rig();
+  const a = await opened(w);
+  const b = await second(w);
+  assert.equal((await b.call('/v1/season/state', { win: [TA] })).body.win, 1);
+  // a découpe TB, hors de la fenêtre de b : b lit son rapport marqué f, sans rangées.
+  b.inbox.length = 0;
+  assert.equal((await tileB(a)).body.ok, true);
+  const tm = b.sv('tile').find((m) => m.k === TB);
+  assert.deepEqual([tm?.v.f, tm?.qk], [1, [Q2]], 'rapport sans rangées, avec le lieu ajouté');
+  assert.equal(b.sv('rows').filter((m) => m.r[TB]).length, 0);
+  assert.equal(a.sv('tile').find((m) => m.k === TB)?.v.f, undefined, 'a (sans fenêtre) reçoit la tuile entière');
+  // b la découpe à son tour (il est autour) : la réponse la lui rend et elle entre dans sa fenêtre.
+  const r = await tileB(b);
+  assert.equal(r.body.same, true);
+  assert.equal(Object.keys(r.body.tiles[TB].b).length, 3);
+  b.inbox.length = 0;
+  await hit(a, key(2, 1));
+  w.tick();
+  assert.ok(b.sv('rows').some((m) => m.r[TB]?.[key(2, 1)]));
+});
+
+test('quartiers, fenêtre : une petite ville se joue en entier, une fenêtre mal formée est refusée, `win` sans fenêtre est ignoré', async () => {
+  const w = rig();
+  const a = await w.player(1);
+  assert.equal((await a.call('/v1/season/seed', { ...SEED, mode: 'entiere' })).status, 200);
+  await a.send({ o: 'in', c: SEED.key });
+  assert.equal((await tileA(a)).body.ok, true);
+  const st = await a.call('/v1/season/state', { win: [] });
+  assert.equal(st.body.win, undefined, 'ville entière : pas de fenêtre');
+  assert.equal(Object.keys(st.body.ville.tiles[TA].b).length, 10);
+  a.inbox.length = 0;
+  await a.send({ o: 'win', k: [TB] });
+  assert.equal(a.inbox.length, 0, 'ignoré');
+  await hit(a, key(0, 0));
+  w.tick();
+  assert.ok(a.sv('rows').some((m) => m.r[TA]?.[key(0, 0)]));
+  for (const win of [['zz'], [3], Array(401).fill(TA)]) assert.equal((await a.call('/v1/season/state', { win })).status, 400, JSON.stringify(win).slice(0, 20));
+});

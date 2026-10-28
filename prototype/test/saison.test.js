@@ -353,7 +353,7 @@ test('le serveur écrit dans la copie : rangées, tuiles, compteurs, prêts ; ja
   // Rangées d'une tuile qui n'avait pas de pâtés : créées.
   applyRows(v, { '14/1/2': { [KEY2]: [1, 2, 2, 0, 0, 0, 0, 0, 0] } });
   assert.equal(v.tiles['14/1/2'].b[KEY2][1], 2);
-  applyTile(v, '14/1/1', { p: [2, 2, 2], rest: [1, 1, 1], f: 1 });
+  applyTile(v, '14/1/1', { p: [2, 2, 2], rest: [1, 1, 1], k: 1 });
   assert.deepEqual(v.tiles['14/1/1'].p, [2, 2, 2]);
   assert.ok(v.tiles['14/1/1'].b[KEY], 'les rangées déjà là restent');
   applyCounts(v, { k: [4, 3, 2], sv: 7, fl: 2, z: 99, dn: 0, un: { c1: [6, 1, 2, 3, 8, null], inconnu: [0, 0, 0, 0, 0, null] } });
@@ -377,6 +377,22 @@ test('le serveur écrit dans la copie : rangées, tuiles, compteurs, prêts ; ja
   assert.deepEqual(adopted, []);
   v.tiles['14/1/2'].b = null;
   assert.deepEqual(adoptTiles(v, { '14/1/2': { p: [3, 3, 3], rest: [0, 0, 0], b: {} } }), ['14/1/2']);
+  // Grande ville à fenêtre : une tuile placée hors de la fenêtre (f) n'a pas de rangées ici, une réponse HTTP marquée f n'est pas adoptée.
+  // Les rangées d'une tuile demandée arrivent avant son rapport : gardées à part, elles la remplissent quand le rapport sans f arrive.
+  const K3 = 'b45.90400_5.17900', K4 = 'b45.90410_5.17900';
+  v.tiles['14/2/2'] = { p: [1, 1, 0], rest: [1, 1, 0], b: null };
+  applyTile(v, '14/2/2', { p: [1, 1, 0], rest: [0, 0, 0], f: 1 });
+  assert.deepEqual([v.tiles['14/2/2'].b, v.tiles['14/2/2'].f], [null, 1]);
+  assert.deepEqual(adoptTiles(v, { '14/2/2': { p: [1, 1, 0], rest: [0, 0, 0], b: { [K3]: [1, 1, 1, 0, 0, 0, 0, 0, 0] }, f: 1 } }), []);
+  assert.deepEqual(applyRows(v, { '14/2/2': { [K3]: [1, 1, 1, 0, 0, 0, 0, 0, 0], [K4]: [9] } }), []);
+  applyRows(v, { '14/2/2': { [K3]: [1, 2, 2, 0, 0, 0, 0, 0, 0] } });
+  assert.equal(v.tiles['14/2/2'].b, null, 'toujours pas jouable');
+  applyTile(v, '14/2/2', { p: [1, 1, 0], rest: [0, 0, 0], f: 1 });
+  assert.ok(v.tiles['14/2/2'].pend[K3], 'un rapport encore marqué f garde les rangées reçues');
+  applyTile(v, '14/2/2', { p: [1, 1, 0], rest: [0, 0, 0] });
+  assert.deepEqual([v.tiles['14/2/2'].f, v.tiles['14/2/2'].pend, Object.keys(v.tiles['14/2/2'].b), v.tiles['14/2/2'].b[K3][1]], [undefined, undefined, [K3], 2]);
+  assert.equal(blockInfo(v, K3)?.zombies, 2, 'la copie connaît ses pâtés');
+  assert.deepEqual(applyRows(v, { '14/2/2': { [K3]: [1, 1, 1, 0, 0, 0, 0, 0, 0] } }), [K3]);
   // État complet après une coupure : copie remplacée, `me` gardé.
   resync(v, { key: 'c1', mode: 'entiere', tiles: {}, units: {}, killed: [1, 1, 1], saved: 0, flags: 0, me: 'autre', extra: 1 });
   assert.equal(v.me, KEY);

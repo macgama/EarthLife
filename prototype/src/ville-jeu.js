@@ -33,6 +33,7 @@ export const CITY = {
   maxFlight: 2,          // découpes en vol en même temps
   cutRetries: 2,         // essais d'une découpe avant de la laisser pour plus tard
   retryMs: 20_000,       // délai avant de redemander une tuile en échec
+  wantMs: 8_000,         // saison, grande ville : rangées d'une tuile demandées au serveur (fenêtre), redemandées après 8 s sans réponse
   reach: 95,             // les zombies de la rue sortent à 95 m du joueur au plus (le directeur retire à 120 m)
   spawnMin: 38,          // et à 38 m au moins
   nestTime: 3, flagTime: 3, // secondes d'« Ouvrir le nid » et de « Planter le fanion »
@@ -403,6 +404,7 @@ export function createCityRuntime(deps) {
   const ops = S ? seasonOps(ville, S.net) : soloOps(ville);
   const rand = deps.rand ?? Math.random;
   const now = deps.now ?? Date.now;
+  const later = deps.later ?? ((fn, ms) => { const h = setTimeout(fn, ms); h?.unref?.(); return h; });
   const onEvent = deps.onEvent ?? (() => {});
   const log = deps.log ?? (() => {});
   let { fn, member } = deps;
@@ -498,11 +500,37 @@ export function createCityRuntime(deps) {
     waiting.delete(key);
     placed.add(key);
     index(res);
+    const w = wanted.get(key);
+    if (w) { wanted.delete(key); w.done({ ok: true }); }
   }
   // Tuiles dont les rangées sont arrivées d'ailleurs depuis le dernier passage.
   function adoptKnown() {
     for (const [key, res] of cuts) if (!placed.has(key) && !uploads.has(key) && ville.tiles[key]?.b) readyTile(key, res);
     for (const [key, res] of waiting) if (ville.tiles[key]?.b) readyTile(key, res);
+    for (const [key, w] of wanted) if (ville.tiles[key]?.b) readyTile(key, w.res);
+  }
+
+  // Grande ville à fenêtre (le serveur ne rend que les tuiles où le joueur est allé) : tuile déjà placée (f) dont la copie n'a pas les rangées.
+  // Rien à envoyer : le jeu les demande (`win`) et elles arrivent par la connexion avec le rapport de la tuile, puis readyTile. La découpe
+  // attend 8 s au plus ; une tuile sans réponse est redemandée au passage suivant.
+  const wanted = new Map();    // 'z/x/y' -> { res, at, done, p }
+  function wantTile(key, res) {
+    waiting.delete(key);
+    let w = wanted.get(key);
+    if (!w) {
+      let done;
+      const p = new Promise((r) => { done = r; });
+      w = { res, at: -Infinity, done, p };
+      wanted.set(key, w);
+      later(() => w.done({ ok: false, waiting: 1 }), CITY.wantMs);
+    }
+    w.res = res;
+    if (now() - w.at >= CITY.wantMs && S.net.want?.([key])) w.at = now();
+    return w.p;
+  }
+  // Tuiles dont cette copie a les rangées : la fenêtre redemandée au serveur après une coupure (l'état ne rend que celles-là).
+  function windowTiles() {
+    return Object.keys(ville.tiles).filter((k) => ville.tiles[k].b && !ville.tiles[k].f);
   }
 
   function placeSeason(res, { force = false } = {}) {
@@ -512,6 +540,7 @@ export function createCityRuntime(deps) {
     const t = ville.tiles[key];
     if (!t) { cuts.delete(key); placed.add(key); return { ok: true, outside: true }; }
     if (t.b) { readyTile(key, res); return { ok: true, known: true }; }
+    if (t.f) return wantTile(key, res);
     if (uploads.has(key)) return uploads.get(key);
     if (now() - (upFailed.get(key) ?? -Infinity) < 8000) { waiting.set(key, res); return { ok: false, waiting: 0 }; }
     // Pâtés : [clé, appartenance (1 dedans, 0 dehors, -1 inconnu), plancher, logements, bâtiments, quartier, lat, lon].
@@ -614,7 +643,7 @@ export function createCityRuntime(deps) {
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         const key = tileKeyOf(t.x + dx, t.y + dy);
-        if (!ville.tiles[key] || placed.has(key) || waiting.has(key)) continue;
+        if (!ville.tiles[key] || placed.has(key) || waiting.has(key) || now() - (wanted.get(key)?.at ?? -Infinity) < CITY.wantMs) continue;
         const f = failed.get(key);
         if (flight.has(key) || (f && f.tries >= CITY.cutRetries && now() - f.at < CITY.retryMs)) continue;
         todo.push({ x: t.x + dx, y: t.y + dy, d: Math.abs(dx) + Math.abs(dy) });
@@ -1123,7 +1152,10 @@ export function createCityRuntime(deps) {
     const c = counters(ville);
     if (S && state.srv) c.zombies = state.srv.z;        // le décompte du serveur, le même pour tous les joueurs
     let known = 0, free = 0;
-    if (S) {
+    if (S && S.net.windowed && Number.isInteger(state.srv?.pk)) {
+      // Grande ville à fenêtre : la copie n'a que les rangées autour du joueur, le serveur compte celles de toute la ville.
+      known = state.srv.pk; free = state.srv.pf ?? 0;
+    } else if (S) {
       // Saison : les pâtés sont ceux de la ville commune (mêmes rangées chez tous les joueurs), pas ceux que cet appareil a découpés.
       for (const t of Object.values(ville.tiles)) for (const row of Object.values(t.b ?? {})) { known++; if (row[ROW.E] === ETAT.libere) free++; }
     } else for (const key of pos.keys()) { known++; if (blockInfo(ville, key)?.state === 'libere') free++; }
@@ -1275,7 +1307,7 @@ export function createCityRuntime(deps) {
           onEvent({ type: 'unit-done', unit: msg.k, line: msg.l, season: true });
         }
         break;
-      case 'cnt': applyCounts(ville, msg.c); state.srv = { z: msg.c.z }; break;
+      case 'cnt': applyCounts(ville, msg.c); state.srv = { z: msg.c.z, pk: msg.c.pk, pf: msg.c.pf }; break;
       case 'ls': applyLent(ville, msg.l); break;
       case 'deny': applyDeny(msg.d); break;
       case 'end': state.seasonOver = true; onEvent({ type: 'season-end' }); break;
@@ -1295,11 +1327,14 @@ export function createCityRuntime(deps) {
     state.srv = null;
     state.capAt = -Infinity;
     state.heartAt = -Infinity;
+    for (const w of wanted.values()) w.at = -Infinity;     // demandes perdues avec la connexion : refaites au prochain passage
     adoptKnown();
   }
 
   function dispose(director = null) {
     disposed = true;
+    for (const w of wanted.values()) w.done({ ok: false });
+    wanted.clear();
     recall(director);
     markDirty(true);
   }
@@ -1314,7 +1349,7 @@ export function createCityRuntime(deps) {
     get placedTiles() { return placed.size; },
     setMaison(m) { maison = m; },
     get season() { return !!S; },
-    applyServer, resyncFrom, leases: () => ops.leases(),
+    applyServer, resyncFrom, windowTiles, leases: () => ops.leases(),
     setMembership(next) { fn = next.fn ?? fn; member = next.member ?? member; },
     ensureAround, place, blockAt, nearestBlock, reconcile, recall, tick, actions, openNestAt, plantFlagAt, endCounter, onDeath, infectAt,
     settleEmpty, nightly, refugeCtx, objective, stats, blockLine, finish, networkBack, chooseHeart, frontier, markDirty, dispose,

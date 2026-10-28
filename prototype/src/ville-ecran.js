@@ -613,6 +613,7 @@ export function createCityGame(host) {
       msg: (m) => seasonRef.rt?.applyServer(m),
       resync: (st) => seasonRef.rt?.resyncFrom(st),
       leases: () => seasonRef.rt?.leases() ?? [],
+      window: () => seasonRef.rt?.windowTiles() ?? [],   // grande ville : tuiles dont la copie a les rangées (redemandées après une coupure)
       lost: () => { const s = host.getSession(); if (s?.city?.season) host.toast('Connexion perdue : la ville de la saison se met en pause', 4, 'danger'); },
       back: (r) => { const s = host.getSession(); if (s?.city?.season && r.ok) host.toast('Reconnecté à la ville de la saison', 3, 'success'); },
       queue: (q) => showQueue(city, q),

@@ -15,7 +15,8 @@ import { WebSocket } from 'ws';
 import { startServer, makeHmac, sweepSockets, BACKPRESSURE, CONTROL } from '../src/main.js';
 import { buildConfig, loadConfig, parseEnvText, parsePort, roomConfig } from '../src/config.js';
 import { createLog, cleanFields } from '../src/log.js';
-import { clientIp, ipScope, normIp } from '../src/http.js';
+import { clientIp, ipScope, normIp, acceptsGzip, createHttpHandler } from '../src/http.js';
+import zlib from 'node:zlib';
 import { createMemoryStore } from '../src/store-memory.js';
 import { startDevServer } from '../dev.mjs';
 import { freePort, headingByte } from '../tools/bots.mjs';
@@ -404,7 +405,8 @@ test('routes de la saison : progression publique mise en cache 30 s, POST seulem
       assert.equal((await r.json()).ok, false);
     }
     assert.equal((await post('state', JSON.stringify({}), { Origin: 'https://autre.example' })).status, 403);
-    assert.equal((await post('state', JSON.stringify({ pad: 'x'.repeat(2000) }))).status, 413);
+    assert.equal((await post('state', JSON.stringify({ pad: 'x'.repeat(9000) }))).status, 413);    // 8 Kio : la fenêtre d'une grande ville (400 tuiles)
+    assert.equal((await post('join', JSON.stringify({ pad: 'x'.repeat(2000) }))).status, 413);
     assert.equal((await fetch(`${srv.url}/v1/season/state`)).status, 405);
     assert.equal((await fetch(`${srv.url}/v1/season/progress`, { method: 'POST', body: 'x' })).status, 405);
     assert.equal((await fetch(`${srv.url}/v1/season/inconnue`)).status, 404);
@@ -1440,4 +1442,44 @@ test('admin.mjs : erase-account (adresse jamais affichée, identité effacée su
   } finally {
     await smtp.stop();
   }
+});
+
+test('grosse réponse JSON (état d\'une grande ville) compressée en gzip quand le client l\'accepte, petite réponse telle quelle', async () => {
+  const big = JSON.stringify({ ok: true, ville: { tiles: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`14/${i}/1`, { p: [i, i, 0], b: { [`b${i}`]: [0, 1, 2, 3, 4, 5, 6, 7, 8] } }])) } });
+  assert.ok(big.length > 8192);
+  const seasons = { admit: () => null, handle: async (p) => ({ status: 200, raw: p === '/v1/season/state' ? big : '{"ok":true}' }), progress: async () => ({ status: 200, body: { ok: true } }) };
+  const h = createHttpHandler({ room: { health: () => ({ ok: true }) }, config: { origins: [GAME] }, seasons, accounts: {} });
+  const server = http.createServer((req, res) => h.handle(req, res));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const ask = (route, headers = {}) => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: server.address().port, path: `/v1/season/${route}`, method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8', Origin: GAME, ...headers } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.end('{}');
+  });
+  try {
+    const gz = await ask('state', { 'Accept-Encoding': 'gzip, deflate, br' });
+    assert.equal(gz.status, 200);
+    assert.equal(gz.headers['content-encoding'], 'gzip');
+    assert.equal(Number(gz.headers['content-length']), gz.body.length);
+    assert.ok(gz.body.length < big.length / 3, `${gz.body.length} octets pour ${big.length}`);
+    assert.equal(zlib.gunzipSync(gz.body).toString(), big);
+    assert.equal(gz.headers.vary, 'Origin, Accept-Encoding');
+    assert.equal(gz.headers['access-control-allow-origin'], GAME);
+    const plain = await ask('state');
+    assert.equal(plain.headers['content-encoding'], undefined);
+    assert.equal(plain.body.toString(), big);
+    assert.equal((await ask('state', { 'Accept-Encoding': 'gzip;q=0' })).headers['content-encoding'], undefined);
+    const small = await ask('join', { 'Accept-Encoding': 'gzip' });
+    assert.deepEqual([small.headers['content-encoding'], small.body.toString()], [undefined, '{"ok":true}']);
+    // Le jeu (fetch du navigateur, et de Node) décompresse seul.
+    const r = await fetch(`http://127.0.0.1:${server.address().port}/v1/season/state`, { method: 'POST', body: '{}' });
+    assert.equal((await r.json()).ville.tiles['14/7/1'].p[0], 7);
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+  assert.deepEqual(['gzip', 'GZIP;q=0.5', 'br, gzip', 'gzip;q=0', 'deflate', '', undefined].map(acceptsGzip), [true, true, true, false, false, false, false]);
 });
