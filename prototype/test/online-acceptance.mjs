@@ -52,7 +52,7 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright')
 const routes = (await load('prototype/test/fixtures/offline-routes.mjs')).default;
 const { startDevServer } = await load('server/dev.mjs');
 const { createBot } = await load('server/tools/bots.mjs');
-const { PROTOCOL, CLIENT_LEVEL, FLAGS, toE6, metersBetween, sectorOf } = await load('prototype/src/net/protocol.js');
+const { PROTOCOL, CLIENT_LEVEL, FLAGS, RULES, toE6, metersBetween, sectorOf } = await load('prototype/src/net/protocol.js');
 const { WebSocket } = createRequire(path.join(repo, 'server', 'package.json'))('ws');
 
 // Délai global : un essai bloqué ne doit pas tenir la CI.
@@ -862,12 +862,13 @@ await scenario('O20', 'A retourne au menu, puis reprend au même endroit', async
   async function menuAndBack(pauseMs) {
     await ev(A, () => { window.__earthlife.session.__o20 = true; });
     const before = await where(A);
-    // Position fraîche de A avant le menu : immobile, il n'en envoie qu'une toutes les 5 s (beatMs), et le serveur
-    // ne le reprend sans saut que depuis une position de moins de 15 s (positionTtlMs). Sous swiftshader, l'attente
-    // du dernier battement, le menu, la pause et la reprise (jusqu'à 6,5 s) passaient ces 15 s : saut, A invisible
-    // 3 s (jumpHideMs), et B ne le revoyait qu'après 3,2 s.
+    // Le serveur ne reprend A sans saut que depuis une position de moins de 15 s (positionTtlMs) ; au-delà, saut par
+    // la règle : A invisible 3 s (jumpHideMs). Sous swiftshader, l'attente du dernier battement (A immobile n'envoie
+    // une position que toutes les 5 s, beatMs), le menu, la pause et la reprise (5,5 à 6,5 s sur GitHub) passaient
+    // ces 15 s. Position fraîche avant le menu, pause courte, et l'écart réel est relevé pour le seuil.
     check(await nextPositionSent(A), 'A : position envoyée juste avant le menu');
     await traceStart(B, sidA);
+    const tQuit = Date.now();
     const menuAt = whenTrue(A, () => (!document.getElementById('menu').classList.contains('hidden') ? Date.now() : null), null, 10000);
     await A.page.click('#quit');
     const tMenu = await menuAt;
@@ -889,6 +890,8 @@ await scenario('O20', 'A retourne au menu, puis reprend au même endroit', async
     const pUp = A.frames.find((x) => x.dir === 'up' && x.m?.t === 'p' && x.at >= tClick);
     const nearB = B.frames.find((x) => x.dir === 'down' && x.m?.t === 'near' && x.at >= tClick && x.m.p?.some((e) => e[0] === sidA));
     const since = (at) => (at ? s1(at - tPlay) : '—');
+    const lastUp = A.frames.reduce((m, x) => (x.dir === 'up' && x.m?.t === 'p' && x.at <= tQuit ? Math.max(m, x.at) : m), 0);
+    const gap = pUp && lastUp ? pUp.at - lastUp : null;
     // Relevés de B toutes les 25 ms (traceStart) : A rendu par online.others (alpha > 0), puis plus longue attente
     // d'une image de B entre la reprise et le dessin. A et B partagent le processus graphique du navigateur : juste
     // après le menu, une image longue de A (swiftshader) retient aussi celles de B, 1 s et plus sur une machine chargée.
@@ -900,15 +903,18 @@ await scenario('O20', 'A retourne au menu, puis reprend au même endroit', async
       stall = Math.max(stall, back[i][0] - at);
       at = back[i][0];
     }
-    note(`retour, depuis la reprise (${s1(tPlay - tClick)} après le clic sur « Jouer ») : première position de A ${since(pUp?.at)}${pUp?.m?.j ? ' (j: 1)' : ''}, premier instantané de B qui le contient ${since(nearB?.at)}, A dans online.others de B ${since(inOthers)}, dessiné ${since(seenAt)} ; plus longue attente d'une image de B ${s1(stall)} (A ${fps[0].toFixed(1)}, B ${fps[1].toFixed(1)} images/s)`);
-    return { tMenu, tPlay, during, seenAt, tr, same, moved: metersBetween(before, after) };
+    note(`retour, depuis la reprise (${s1(tPlay - tClick)} après le clic sur « Jouer ») : première position de A ${since(pUp?.at)}${pUp?.m?.j ? ' (j: 1)' : ''}, ${s1(gap)} après sa dernière avant le menu, premier instantané de B qui le contient ${since(nearB?.at)}, A dans online.others de B ${since(inOthers)}, dessiné ${since(seenAt)} ; plus longue attente d'une image de B ${s1(stall)} (A ${fps[0].toFixed(1)}, B ${fps[1].toFixed(1)} images/s)`);
+    return { tMenu, tPlay, during, seenAt, tr, same, gap, moved: metersBetween(before, after) };
   }
-  const r = await menuAndBack(4000);
+  const r = await menuAndBack(2500);
   const f = fadeOf(r.tr.filter((x) => x[0] < r.tPlay), r.tMenu);
   check(r.same, 'A : reprise par le chemin rapide (même session, sans rechargement)');
   check(f.start !== null && f.start < 1000 && f.gone !== null && f.gone < 2000 && !r.during, `B : pendant le menu, ${fadeText(f)}`);
   const slack20 = await slackOf(A, B);
-  check(!!r.seenAt && r.seenAt - r.tPlay < 2000 + slack20, `B : revoit A ${s1(r.seenAt && r.seenAt - r.tPlay)} après la reprise (seuil 2 s + images de A et B, ${slack20} ms) ; A replacé à ${r.moved.toFixed(1)} m de là où il était`);
+  // Reprise plus de 15 s après la dernière position (machine trop lente) : saut par la règle, 3 s de plus au seuil.
+  const jumped = r.gap === null || r.gap > RULES.positionTtlMs;
+  const lim20 = 2000 + slack20 + (jumped ? RULES.jumpHideMs : 0);
+  check(!!r.seenAt && r.seenAt - r.tPlay < lim20, `B : revoit A ${s1(r.seenAt && r.seenAt - r.tPlay)} après la reprise (seuil 2 s${jumped ? ` + 3 s de saut, reprise ${s1(r.gap)} après sa dernière position` : ''} + images de A et B, ${slack20} ms) ; A replacé à ${r.moved.toFixed(1)} m de là où il était`);
   await shot(B, 'o20-tel-a-revenu');
   // Variante : A s'éloigne de 90 m du départ de sa session avant le menu. Le chemin rapide le replace au départ
   // (« à la porte du refuge, sinon au départ de la session »), pas là où il a quitté : noté comme écart. Le serveur
@@ -920,7 +926,7 @@ await scenario('O20', 'A retourne au menu, puis reprend au même endroit', async
     await walk(A, far.x, far.z, 7.5);
     await wait(1500);
     await jumpGuard(A);
-    const r2 = await menuAndBack(4000);
+    const r2 = await menuAndBack(2500);
     const late = r2.seenAt ? r2.seenAt - r2.tPlay : null;
     const msg = `après 90 m de marche, A repris à ${r2.moved.toFixed(1)} m de là où il avait quitté ; B le revoit après ${s1(late)}`;
     if (late !== null && late < 2000 && r2.moved < 20) note(msg);
