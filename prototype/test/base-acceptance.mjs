@@ -3201,10 +3201,23 @@ async function trajet(device) {
   });
   check(!!back, `${tag} : à l'arrivée, le bouton « ${back} » permet de repartir${why}`);
   await shot(page, `${tag.replace(' ', '-')}-trajet-arrivee`);
-  // Loin de toute station : pas de bouton.
-  await debug(page, 'teleport', before.x + 150, before.z + 150);
-  await wait(800);
-  check((await ev(page, () => window.__label('search')))?.startsWith('Prendre') !== true, `${tag} : loin des stations, pas de bouton de trajet`);
+  // Loin de toute station : pas de bouton. Point à plus de 60 m de tout point d'accès (Bellecour a 14 bouches sur 200 m :
+  // à 150 m en diagonale de la bouche choisie, une autre pouvait n'être qu'à 30 m), et bouton relu jusqu'à 5 s (une
+  // image peut durer plus de 0,8 s sous swiftshader).
+  const far = await ev(page, (b) => {
+    const stops = window.__earthlife.session.store.stops;
+    for (let r = 150; r <= 600; r += 50) {
+      for (let a = 0; a < 8; a++) {
+        const x = b.x + r * Math.cos((a * Math.PI) / 4), z = b.z + r * Math.sin((a * Math.PI) / 4);
+        if (stops.every((e) => Math.hypot(e.x - x, e.z - z) > 60)) return { x, z };
+      }
+    }
+    return null;
+  }, before);
+  if (far) await debug(page, 'teleport', far.x, far.z);
+  const farLabel = (await until(page, () => { const l = window.__label('search'); return l?.startsWith('Prendre') ? null : { l }; }, null, 5000))?.l
+    ?? await ev(page, () => window.__label('search'));
+  check(!!far && farLabel?.startsWith('Prendre') !== true, `${tag} : loin des stations, pas de bouton de trajet${farLabel ? ` (bouton « ${farLabel} »)` : ''}`);
   await ctx.close();
 }
 
