@@ -865,7 +865,8 @@ await scenario('O20', 'A retourne au menu, puis reprend au même endroit', async
     // Le serveur ne reprend A sans saut que depuis une position de moins de 15 s (positionTtlMs) ; au-delà, saut par
     // la règle : A invisible 3 s (jumpHideMs). Sous swiftshader, l'attente du dernier battement (A immobile n'envoie
     // une position que toutes les 5 s, beatMs), le menu, la pause et la reprise (5,5 à 6,5 s sur GitHub) passaient
-    // ces 15 s. Position fraîche avant le menu, pause courte, et l'écart réel est relevé pour le seuil.
+    // ces 15 s. Position fraîche avant le menu, et l'écart réel est relevé pour le seuil. La pause reste de 4 s : à
+    // 2,5 s, la dernière image de B pouvait encore montrer A (images de B retenues par celle, longue, du menu de A).
     check(await nextPositionSent(A), 'A : position envoyée juste avant le menu');
     await traceStart(B, sidA);
     const tQuit = Date.now();
@@ -906,7 +907,7 @@ await scenario('O20', 'A retourne au menu, puis reprend au même endroit', async
     note(`retour, depuis la reprise (${s1(tPlay - tClick)} après le clic sur « Jouer ») : première position de A ${since(pUp?.at)}${pUp?.m?.j ? ' (j: 1)' : ''}, ${s1(gap)} après sa dernière avant le menu, premier instantané de B qui le contient ${since(nearB?.at)}, A dans online.others de B ${since(inOthers)}, dessiné ${since(seenAt)} ; plus longue attente d'une image de B ${s1(stall)} (A ${fps[0].toFixed(1)}, B ${fps[1].toFixed(1)} images/s)`);
     return { tMenu, tPlay, during, seenAt, tr, same, gap, moved: metersBetween(before, after) };
   }
-  const r = await menuAndBack(2500);
+  const r = await menuAndBack(4000);
   const f = fadeOf(r.tr.filter((x) => x[0] < r.tPlay), r.tMenu);
   check(r.same, 'A : reprise par le chemin rapide (même session, sans rechargement)');
   check(f.start !== null && f.start < 1000 && f.gone !== null && f.gone < 2000 && !r.during, `B : pendant le menu, ${fadeText(f)}`);
@@ -926,7 +927,7 @@ await scenario('O20', 'A retourne au menu, puis reprend au même endroit', async
     await walk(A, far.x, far.z, 7.5);
     await wait(1500);
     await jumpGuard(A);
-    const r2 = await menuAndBack(2500);
+    const r2 = await menuAndBack(4000);
     const late = r2.seenAt ? r2.seenAt - r2.tPlay : null;
     const msg = `après 90 m de marche, A repris à ${r2.moved.toFixed(1)} m de là où il avait quitté ; B le revoit après ${s1(late)}`;
     if (late !== null && late < 2000 && r2.moved < 20) note(msg);
