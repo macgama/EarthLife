@@ -297,6 +297,15 @@ async function jumpGuard(t) {
   const w = t.lastJump + 21000 - Date.now();
   if (w > 0) { note(`${t.tag} : attente de ${Math.ceil(w / 1000)} s (budget de sauts du serveur)`); await wait(w); }
 }
+// Prochaine position envoyée par t (p) d'après les trames, en 8 s au plus (un battement toutes les 5 s à l'arrêt).
+async function nextPositionSent(t, timeout = 8000) {
+  const from = Date.now();
+  while (Date.now() - from < timeout) {
+    if (t.frames.some((e) => e.dir === 'up' && e.m?.t === 'p' && e.at >= from)) return true;
+    await wait(25);
+  }
+  return false;
+}
 // Dernier saut envoyé (p avec j: 1) d'après les trames : après une reconnexion, il est plus tardif que l'instant
 // noté par waitLive.
 const lastJumpSent = (t) => t.frames.reduce((m, e) => (e.dir === 'up' && e.m?.t === 'p' && e.m.j === 1 ? Math.max(m, e.at) : m), 0);
@@ -853,6 +862,11 @@ await scenario('O20', 'A retourne au menu, puis reprend au même endroit', async
   async function menuAndBack(pauseMs) {
     await ev(A, () => { window.__earthlife.session.__o20 = true; });
     const before = await where(A);
+    // Position fraîche de A avant le menu : immobile, il n'en envoie qu'une toutes les 5 s (beatMs), et le serveur
+    // ne le reprend sans saut que depuis une position de moins de 15 s (positionTtlMs). Sous swiftshader, l'attente
+    // du dernier battement, le menu, la pause et la reprise (jusqu'à 6,5 s) passaient ces 15 s : saut, A invisible
+    // 3 s (jumpHideMs), et B ne le revoyait qu'après 3,2 s.
+    check(await nextPositionSent(A), 'A : position envoyée juste avant le menu');
     await traceStart(B, sidA);
     const menuAt = whenTrue(A, () => (!document.getElementById('menu').classList.contains('hidden') ? Date.now() : null), null, 10000);
     await A.page.click('#quit');
