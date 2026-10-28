@@ -129,12 +129,18 @@ export function seasonOps(ville, net) {
 // ---------- Le serveur écrit dans la copie ----------
 
 // Rangées { 'z/x/y': { clé: [9 nombres] } } : en place (les autres modules lisent la rangée au moment du besoin). Rend les
-// clés touchées.
+// clés touchées. Une tuile hors de la fenêtre (f, grande ville : placée, rangées pas encore lues) les garde à part (`pend`) : le serveur
+// envoie les rangées d'une tuile demandée avant son rapport, qui la rend jouable d'un coup avec toutes ses rangées (applyTile).
 export function applyRows(ville, rows) {
   const keys = [];
   for (const [tk, list] of Object.entries(rows ?? {})) {
     const t = ville.tiles[tk];
     if (!t) continue;
+    if (t.f) {
+      t.pend ??= {};
+      for (const [key, row] of Object.entries(list)) if (Array.isArray(row) && row.length === ROW_LENGTH) t.pend[key] = row.slice();
+      continue;
+    }
     t.b ??= {};
     for (const [key, row] of Object.entries(list)) {
       if (!Array.isArray(row) || row.length !== ROW_LENGTH) continue;
@@ -147,11 +153,14 @@ export function applyRows(ville, rows) {
   return keys;
 }
 
-// Tuile (parts, reste, drapeaux) sans ses rangées : les rangées déjà là restent, celles du serveur suivent dans `rows`.
+// Tuile (parts, reste, drapeaux) sans ses rangées : les rangées déjà là restent, celles du serveur suivent dans `rows`. Marquée f
+// (hors de la fenêtre de ce jeu, grande ville) : placée, mais sans rangées ici tant que le jeu ne les a pas demandées ; son rapport
+// sans f (tuile demandée) lui donne les rangées arrivées avant lui.
 export function applyTile(ville, tk, meta) {
   if (!meta) return;
   const old = ville.tiles[tk];
-  ville.tiles[tk] = { ...meta, b: old?.b ?? {} };
+  if (meta.f) ville.tiles[tk] = { ...meta, b: null, ...(old?.pend ? { pend: old.pend } : {}) };
+  else ville.tiles[tk] = { ...meta, b: old?.f ? old.pend ?? {} : old?.b ?? {} };
   resetIndex(ville);
 }
 
@@ -160,7 +169,7 @@ export function applyTile(ville, tk, meta) {
 export function adoptTiles(ville, tiles) {
   const out = [];
   for (const [tk, t] of Object.entries(tiles ?? {})) {
-    if (!ville.tiles[tk] || ville.tiles[tk].b || !t?.b) continue;
+    if (!ville.tiles[tk] || ville.tiles[tk].b || !t?.b || t.f) continue;
     ville.tiles[tk] = t;
     out.push(tk);
   }

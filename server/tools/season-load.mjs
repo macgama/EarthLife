@@ -11,8 +11,11 @@
 // Options : --n 100 --ramp 60 --hold 120 --level facile --cities 1 --seats 100 --max-conn 100 --pop 600000 --tiles-side 3
 //           --pates-step 100 --kill-rate 1.4 --pool 3 --mail-per-hour 100000 --out chemin.json --no-reset --quiet --crash (redémarrage)
 //           --memory (sans MariaDB : magasin en mémoire ; ni connexions ni documents de base dans le rapport, pas de contrôle des comptes)
+//           --sans-fenetre (grande ville : chaque joueur lit toute la ville, comme un jeu d'avant la fenêtre de tuiles ; sinon il ne lit que
+//           les 3 × 3 tuiles autour de lui et demande les suivantes en marchant, `win`)
 // Le serveur tourne sur UN cœur (taskset) avec un tas de 192 Mo, comme chez Infomaniak (1 cœur, --max-old-space-size=192).
 import http from 'node:http';
+import zlib from 'node:zlib';
 import fs from 'node:fs';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -66,6 +69,7 @@ function tileOf(lat, lon, z = 14) {
   const y = Math.floor(((1 - Math.log(Math.tan((lat * Math.PI) / 180) + 1 / Math.cos((lat * Math.PI) / 180)) / Math.PI) / 2) * n);
   return `${z}/${x}/${y}`;
 }
+const TILES_PER_BOT = 25;                                  // tuiles découpées par joueur à son arrivée (le serveur en admet 30 d'affilée)
 const keyOf = (lat, lon) => `b${lat.toFixed(5)}_${lon.toFixed(5)}`;
 function rng(seed) {
   let s = seed >>> 0;
@@ -130,14 +134,16 @@ function post(base, path, body, ip) {
   const t0 = performance.now();
   return new Promise((resolve) => {
     const req = http.request({ agent, host: u.hostname, port: u.port, path: u.pathname, method: 'POST', timeout: 20000,
-      headers: { 'Content-Type': 'text/plain;charset=UTF-8', 'Content-Length': Buffer.byteLength(text), Origin: ORIGIN, 'X-Forwarded-For': ip } }, (res) => {
+      // gzip accepté, comme un navigateur : `bytes` compte ce qui passe sur le réseau, `plain` le JSON décompressé.
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8', 'Content-Length': Buffer.byteLength(text), Origin: ORIGIN, 'X-Forwarded-For': ip, 'Accept-Encoding': 'gzip' } }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => {
-        const raw = Buffer.concat(chunks);
-        let json = null;
+        const wire = Buffer.concat(chunks);
+        let raw = wire, json = null;
+        try { if (res.headers['content-encoding'] === 'gzip') raw = zlib.gunzipSync(wire); } catch { /* corps illisible */ }
         try { json = JSON.parse(raw.toString('utf8')); } catch { /* corps illisible */ }
-        resolve({ status: res.statusCode, json, ms: performance.now() - t0, bytes: raw.length });
+        resolve({ status: res.statusCode, json, ms: performance.now() - t0, bytes: wire.length, plain: raw.length });
       });
     });
     req.on('timeout', () => { req.destroy(); resolve({ status: 0, json: null, ms: performance.now() - t0, bytes: 0, timeout: true }); });
@@ -196,6 +202,9 @@ class Bot {
     this.targets = [];
     this.targetsAt = 0;
     this.units = new Set();        // quartiers commencés ou repris que ce joueur connaît (grande ville)
+    this.win = new Set();          // fenêtre (grande ville) : tuiles dont ce joueur reçoit les rangées
+    this.windowed = false;
+    this.winTick = 0;
     this.unitAskAt = new Map();    // quartier → dernière demande (le jeu redemande toutes les 6 s)
   }
 
@@ -257,6 +266,20 @@ class Bot {
   }
 
   point() { return { a: toE6(this.city.lat + this.pos.y / M_PER_DEG), o: toE6(this.city.lon + this.pos.x / this.kx) }; }
+  // Fenêtre (grande ville, étape 2) : les 3 × 3 tuiles autour du joueur, comme le jeu ; l'état ne rend qu'elles, il demande les suivantes en marchant.
+  around() {
+    const p = this.point(), [, x, y] = tileOf(p.a / 1e6, p.o / 1e6).split('/').map(Number);
+    const out = [];
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const k = `14/${x + dx}/${y + dy}`; if (this.city.tiles.has(k)) out.push(k); }
+    return out;
+  }
+  want(keys) {
+    const fresh = keys.filter((k) => !this.win.has(k));
+    if (!this.windowed || !fresh.length) return;
+    for (const k of fresh) this.win.add(k);
+    for (let i = 0; i < fresh.length; i += 32) this.send({ t: 'sv', o: 'win', k: fresh.slice(i, i + 32) });
+    this.M.inc('fenetre:demandes');
+  }
   position() {
     const dt = 0.25, c = this.ctx.rand;
     if (c() < 0.05) this.heading += (c() - 0.5) * 1.5;
@@ -268,6 +291,7 @@ class Bot {
     if (Math.abs(this.pos.y) > h) { this.pos.y = Math.sign(this.pos.y) * h; this.heading = Math.PI - this.heading; }
     const p = this.point();
     this.send({ t: 'p', s: ++this.seq, ct: Math.round(performance.now() - this.helloAt), a: p.a, o: p.o, h: headingByte(this.heading), m: this.speed > 3 ? 1 : 0 });
+    if (this.windowed && ++this.winTick % 8 === 0) this.want(this.around());
   }
 
   // ----- Messages du serveur -----
@@ -360,28 +384,46 @@ class Bot {
     });
   }
   async loadState() {
-    const r = await this.api('/v1/season/state', {});
+    const win = this.ctx.window ? this.around() : null;
+    const r = await this.api('/v1/season/state', win ? { win } : {});
     this.M.add('http:season/state', r.ms);
     this.M.add('state:octets', r.bytes);
+    this.M.add('state:octets-json', r.plain ?? 0);
     if (r.status !== 200) { this.M.inc(`state:${r.status}`); return false; }
+    this.windowed = r.json.win === 1;
+    this.win = new Set(this.windowed ? win : []);
     for (const t of Object.values(r.json.ville.tiles)) if (t.b) for (const [k, row] of Object.entries(t.b)) this.rows.set(k, row);
     for (const k of [...Object.keys(r.json.ville.units ?? {}), ...Object.keys(r.json.ville.done ?? {})]) this.units.add(k);
     for (const [k, n] of Object.entries(r.json.lent ?? {})) this.lent.set(k, n);
     return true;
   }
-  // Le fondateur découpe les tuiles (le serveur les place), puis envoie les voisinages entre tuiles.
-  async foundTiles() {
-    const c = this.city;
-    for (const [tk, t] of c.tiles) {
+  // Découpe des tuiles (le serveur les place) : comme dans le jeu, chaque joueur en découpe quelques-unes (le serveur en admet 30 d'affilée
+  // par compte, puis une toutes les 2 s). Le fondateur prend les premières de la file de sa ville, chaque joueur qui arrive les suivantes ;
+  // celui qui vide la file envoie les voisinages entre tuiles.
+  async foundTiles(max = TILES_PER_BOT) {
+    const fk = `${this.level}/${this.cityIdx}`, q = this.ctx.tileQueue.get(fk);
+    for (let n = 0; n < max && q.left.length; n++) {
+      const [tk, t] = q.left.shift();
       const r = await this.api('/v1/season/tile', { t: tk, pates: t.pates, nb: t.nb, l: false });
       this.M.add('http:season/tile', r.ms);
       if (r.status !== 200) this.M.inc(`tile:${r.status}`);
     }
+    if (!q.left.length && !q.adj) {
+      q.adj = true;
+      // Une grande ville a des dizaines d'envois de voisinages : après ses 25 découpes, ce joueur dépasserait les 40 requêtes d'affilée que
+      // le serveur admet par adresse ; ils partent 6 s plus tard (le seau s'est rempli), sans retarder son entrée.
+      const many = this.city.cross.length > 600 * 4;
+      if (many) setTimeout(() => { this.sendAdj().catch(() => {}); }, 6000); else await this.sendAdj();
+    }
+    if (this.founder) this.ctx.placed.get(fk).resolve(true);
+  }
+  async sendAdj() {
+    const c = this.city;
     for (let i = 0; i < c.cross.length; i += 600) {
       const r = await this.api('/v1/season/adj', { e: c.cross.slice(i, i + 600) });
       this.M.add('http:season/adj', r.ms);
+      if (r.status !== 200) this.M.inc(`adj:${r.status}`);
     }
-    this.ctx.placed.get(`${this.level}/${this.cityIdx}`).resolve(true);
   }
 
   // Un joueur qui entre : compte déjà fait (ou fait ici), connexion, inscription, ville, abonnement, état.
@@ -405,6 +447,7 @@ class Bot {
     if (sub.o !== 'in') { this.M.inc(`sv:abonnement-${sub.o}${sub.why ? '-' + sub.why : ''}`); this.status = 'refuse'; return false; }
     if (this.founder) await this.foundTiles();
     else if (!(await this.ctx.placed.get(`${this.level}/${this.cityIdx}`).promise)) { this.status = 'refuse'; return false; }
+    else await this.foundTiles();
     if (!(await this.loadState())) { this.status = 'refuse'; return false; }
     this.status = 'assis';
     this.M.add('onboard', performance.now() - t0);
@@ -506,6 +549,8 @@ class Probe {
   onRow(key, row, before) { if (this.t.k && key === this.key && before && row[ROW.S] < before[ROW.S]) { this.bot.M.add('sonde:abattu', performance.now() - this.t.k); this.t.k = 0; } }
   start() {
     const b = this.bot;
+    const tk = [...b.city.tiles].find(([, t]) => t.pates.some((p) => p[0] === this.key))?.[0];
+    if (tk) b.want([tk]);                                   // la sonde joue un pâté réservé : sa tuile dans la fenêtre
     const step = () => {
       if (b.stopped || b.status !== 'assis') return;
       if (this.t.l || this.t.k) { b.M.inc('sonde:perdue'); this.t.l = this.t.k = 0; }
@@ -578,7 +623,16 @@ async function run(name, opts) {
   for (const l of lv) for (let c = 0; c < o.cities; c++) { founded.set(`${l}/${c}`, defer()); placed.set(`${l}/${c}`, defer()); }
   const reserved = new Set();
   for (const c of cities) { const t = [...c.tiles.values()][0]; for (const p of t.pates.slice(-6)) reserved.add(p[0]); }
-  const ctx = { url: server.url, server, M: A, cities, founded, placed, reserved, rand: rng(42), killPerTick: o.killRate / 4 };
+  // Tuiles à découper, par niveau et par ville : du centre vers le bord (les premiers joueurs arrivent au centre).
+  const tileQueue = new Map();
+  for (const l of lv) {
+    cities.forEach((c, i) => {
+      const [, cx, cy] = tileOf(c.lat, c.lon).split('/').map(Number);
+      const d = (tk) => { const [, x, y] = tk.split('/').map(Number); return Math.max(Math.abs(x - cx), Math.abs(y - cy)); };
+      tileQueue.set(`${l}/${i}`, { left: [...c.tiles].sort(([a], [b]) => d(a) - d(b)), adj: false });
+    });
+  }
+  const ctx = { url: server.url, server, M: A, cities, founded, placed, reserved, tileQueue, rand: rng(42), killPerTick: o.killRate / 4, window: !o.sansFenetre };
 
   // Joueurs : répartis sur les niveaux et les villes ; le premier de chaque ville la fonde.
   const bots = [];
@@ -705,6 +759,7 @@ async function run(name, opts) {
   // Cohérence : les abattus comptés par la ville du serveur sont ceux que les comptes ont rangés (somme des kills en base) ;
   // la conservation des zombies est contrôlée par le serveur lui-même chaque minute (stats.integrity).
   let coherence = null;
+  const finalState = [];                                  // état entier de chaque ville à la fin (tuiles placées entre-temps comprises)
   const firsts = [];
   for (let c = 0; c < o.cities; c++) { const b = bots.find((x) => x.ses && x.level === lv[0] && x.cityIdx === c); if (b) firsts.push(b); }
   for (const b of bots) b.stop();
@@ -716,6 +771,7 @@ async function run(name, opts) {
         const st = await b.api('/v1/season/state', {});
         const v = st.json?.ville;
         if (!v) continue;
+        finalState.push({ octets: st.bytes, json: st.plain, tuiles: Object.values(v.tiles).filter((t) => t.b).length, pates: Object.values(v.tiles).reduce((n, t) => n + Object.keys(t.b ?? {}).length, 0) });
         killed += v.killed[0]; start += v.zombies0; saved += v.saved;
         left += Object.values(v.tiles).reduce((n, t) => n + Object.values(t.b ?? {}).reduce((m, r) => m + r[ROW.S], 0), 0);
       }
@@ -750,7 +806,9 @@ async function run(name, opts) {
     http: Object.fromEntries(['join', 'seed', 'enter', 'state', 'tile', 'adj', 'home'].map((r) => [r, A.stat(`http:season/${r}`)]).filter(([, v]) => v)),
     httpEnRegime: Object.fromEntries(['home'].map((r) => [r, M.stat(`http:season/${r}`)]).filter(([, v]) => v)),
     compte: { code: A.stat('http:account/code'), verify: A.stat('http:account/verify') },
-    etatOctets: A.stat('state:octets'),
+    etatOctets: A.stat('state:octets'),                    // sur le réseau (gzip)
+    etatOctetsJson: A.stat('state:octets-json'),           // décompressé
+    etatFin: finalState,
     latences: { near: M.stat('near'), sondePret: M.stat('sonde:pret'), sondeAbattu: M.stat('sonde:abattu'), sondePerdues: M.count('sonde:perdue'), abonnement: M.stat('sv:in-delai') },
     jeu: { evenements: M.count('jeu:evenements'), abattus: M.count('jeu:abattus'), parSeconde: +(M.count('jeu:evenements') / holdSec).toFixed(1),
       ...(cities[0].quartiers ? { demandesQuartier: A.count('jeu:demandes-quartier') + M.count('jeu:demandes-quartier') } : {}) },

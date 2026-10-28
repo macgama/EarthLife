@@ -54,10 +54,10 @@ export const SEASON_RULES = {
   seats: SEASON.seats, days: SEASON.days, name: 'Saison 1',
   flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, rescueBurst: 6, rescuePerSec: 1 / 6, infectMs: 600000, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
   initRetryMs: 5000, playedMs: DAY, enrolCacheMs: 60000,
-  rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000, unitCheckMs: 2000, unitAsk: [10, 0.5],
+  rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000, unitCheckMs: 2000, unitAsk: [10, 0.5], winAsk: [20, 2],
   citiesMax: 30,                                         // villes ouvertes au plus par niveau (choix libre)
   queueMax: 500, holdMs: 120000, seatGraceMs: 60000, queueGraceMs: 60000, waitEveryMs: 2000,   // file d'attente par niveau
-  body: { join: 1024, state: 1024, home: 1024, enter: 1024, seed: 24576, tile: 131072, adj: 32768 },
+  body: { join: 1024, state: 8192, home: 1024, enter: 1024, seed: 24576, tile: 131072, adj: 32768 },    // state : la fenêtre du jeu (400 tuiles au plus)
   // [capacité, jetons par seconde] par compte et par route.
   rate: { join: [12, 0.2], state: [6, 0.05], seed: [3, 0.02], enter: [6, 0.05], tile: [30, 0.5], adj: [30, 0.5], home: [6, 0.05] },
   // Par adresse, avant toute lecture du corps : [capacité, jetons par seconde] ; l'adresse illisible partage un seau dix fois plus large.
@@ -257,7 +257,24 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   }
   function reindex(city) {
     city.pateTile.clear();
-    for (const [tk, t] of Object.entries(city.ville.tiles)) if (t.b) for (const k of Object.keys(t.b)) city.pateTile.set(k, tk);
+    city.tileKeys = new Map();
+    for (const [tk, t] of Object.entries(city.ville.tiles)) {
+      if (!t.b) continue;
+      const keys = Object.keys(t.b);
+      city.tileKeys.set(tk, keys);
+      for (const k of keys) city.pateTile.set(k, tk);
+    }
+  }
+  // Après une découpe : seulement les tuiles qu'elle a changées (placeTile les dit ; une rangée ne quitte jamais que la tuile découpée), pas
+  // toute la ville, qui compte des dizaines de milliers de pâtés dans une grande commune.
+  function reindexTiles(city, tks) {
+    if (!city.tileKeys) return reindex(city);
+    for (const tk of tks) {
+      for (const k of city.tileKeys.get(tk) ?? []) if (city.pateTile.get(k) === tk) city.pateTile.delete(k);
+      const t = city.ville.tiles[tk], keys = t?.b ? Object.keys(t.b) : [];
+      city.tileKeys.set(tk, keys);
+      for (const k of keys) city.pateTile.set(k, tk);
+    }
   }
 
   async function load(w) {
@@ -409,6 +426,52 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   function broadcast(w, msg, except = null) {
     for (const sub of w.subs) if (sub.s !== except) send(sub.s, msg);
   }
+  // Fenêtre d'un joueur (grande ville) : les tuiles dont son jeu a les rangées, celles qu'il a demandées (`win`, état, découpe) en avançant ; null : un
+  // jeu sans fenêtre (ancien ou petite ville), qui reçoit tout. Un message de rangées ou de prêts ne lui porte que ce qui est dans sa fenêtre (rien s'il
+  // n'y a rien) : `field` est l'objet du message, `tileOf` donne la tuile de chacune de ses clés.
+  function broadcastPart(w, msg, field, tileOf, except = null) {
+    const all = msg[field];
+    for (const sub of w.subs) {
+      if (sub.s === except) continue;
+      if (!sub.win) { send(sub.s, msg); continue; }
+      let part = null;
+      for (const k of Object.keys(all)) if (sub.win.has(tileOf(k))) (part ??= {})[k] = all[k];
+      if (part) send(sub.s, { ...msg, [field]: part });
+    }
+  }
+  // Rapport d'une tuile (parts, reste, lieux) : à tous ; un jeu dont la fenêtre n'a pas la tuile la lit sans rangées (f).
+  function broadcastTile(w, msg, except = null) {
+    let far = null;
+    for (const sub of w.subs) {
+      if (sub.s === except) continue;
+      if (!sub.win || sub.win.has(msg.k)) send(sub.s, msg);
+      else send(sub.s, (far ??= { ...msg, v: { ...msg.v, f: 1 } }));
+    }
+  }
+  // Tuiles ajoutées à la fenêtre d'un joueur : leurs rangées, leurs prêts, puis leur rapport, à lui seul (les suivants viennent avec les
+  // diffusions). Le rapport en dernier : le jeu garde à part les rangées d'une tuile qu'il n'a pas encore, et la rend jouable d'un coup.
+  function openWindow(sub, keys) {
+    const city = sub.w.city, v = city.ville;
+    const added = [];
+    for (const tk of keys) {
+      if (sub.win.has(tk) || sub.win.size >= SEASON.winMax || !v.tiles[tk]) continue;
+      sub.win.add(tk);
+      if (v.tiles[tk].b) added.push(tk);
+    }
+    for (const tk of added) {
+      const t = v.tiles[tk];
+      const keys = Object.keys(t.b);
+      for (let i = 0; i < keys.length; i += R.rowsPerMsg) {
+        const r = { [tk]: {} };
+        for (const k of keys.slice(i, i + R.rowsPerMsg)) r[tk][k] = t.b[k];
+        send(sub.s, { t: 'sv', o: 'rows', rv: ++city.rv, r });
+      }
+      const lent = Object.entries(lentOf(city, keys)).filter(([, n]) => n > 0);
+      for (let i = 0; i < lent.length; i += R.rowsPerMsg) send(sub.s, { t: 'sv', o: 'ls', rv: ++city.rv, l: Object.fromEntries(lent.slice(i, i + R.rowsPerMsg)) });
+      send(sub.s, { t: 'sv', o: 'tile', rv: ++city.rv, k: tk, v: { ...t, b: undefined } });
+    }
+  }
+  const subOf = (w, acc) => [...w.subs].find((x) => x.accountId === acc) ?? null;
   // Grande ville : des centaines de quartiers en cours, `un` ne porte que ceux dont les compteurs ont changé depuis le dernier envoi (la copie du jeu
   // fusionne, applyCounts ; un jeu qui arrive lit l'état entier). Ville entière : un seul quartier, toujours envoyé.
   const countsOf = (city) => {
@@ -425,7 +488,10 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       un[k] = row;
     }
     if (diff) for (const k of [...city.cntSent.keys()]) if (!v.units[k]) city.cntSent.delete(k);
-    return { k: [...v.killed], sv: v.saved, fl: v.flags, z: zombiesLeft(v), dn: Object.keys(v.done).length, un, tn: v.turned ?? 0, lo: v.lost ? 1 : 0 };
+    // Pâtés placés et libérés de toute la ville : un jeu à fenêtre n'a pas toutes les rangées pour les compter.
+    let pk = 0, pf = 0;
+    for (const t of Object.values(v.tiles)) if (t.b) for (const row of Object.values(t.b)) { pk++; if (row[ROW.E] === ETAT.libere) pf++; }
+    return { k: [...v.killed], sv: v.saved, fl: v.flags, z: zombiesLeft(v), dn: Object.keys(v.done).length, un, tn: v.turned ?? 0, lo: v.lost ? 1 : 0, pk, pf };
   };
   function dirtyRow(city, key) {
     const tk = city.pateTile.get(key);
@@ -458,7 +524,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   function emitRows(w, rowsByTile, except = null) {
     const city = w.city;
     let r = {}, n = 0;
-    const out = () => { if (n) { broadcast(w, { t: 'sv', o: 'rows', rv: ++city.rv, r }, except); r = {}; n = 0; } };
+    const out = () => { if (n) { broadcastPart(w, { t: 'sv', o: 'rows', rv: ++city.rv, r }, 'r', (tk) => tk, except); r = {}; n = 0; } };
     for (const [tk, keys] of rowsByTile) {
       for (const key of keys) {
         const row = city.ville.tiles[tk]?.b?.[key];
@@ -487,13 +553,17 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!city.lentDirty.size) return;
     const keys = [...city.lentDirty];
     city.lentDirty = new Set();
-    for (let i = 0; i < keys.length; i += R.rowsPerMsg) broadcast(w, { t: 'sv', o: 'ls', rv: ++city.rv, l: lentOf(city, keys.slice(i, i + R.rowsPerMsg)) });
+    const tileOf = (k) => city.pateTile.get(k);
+    for (let i = 0; i < keys.length; i += R.rowsPerMsg) broadcastPart(w, { t: 'sv', o: 'ls', rv: ++city.rv, l: lentOf(city, keys.slice(i, i + R.rowsPerMsg)) }, 'l', tileOf);
   }
-  function lentSnapshot(city) {
+  function lentSnapshot(city, win = null) {
     const out = {};
-    for (const [k] of allRows(city)) {
-      const n = blockInfo(city.ville, k)?.lent ?? 0;
-      if (n > 0) out[k] = n;
+    for (const [tk, t] of Object.entries(city.ville.tiles)) {
+      if (!t.b || (win && !win.has(tk))) continue;
+      for (const k of Object.keys(t.b)) {
+        const n = blockInfo(city.ville, k)?.lent ?? 0;
+        if (n > 0) out[k] = n;
+      }
     }
     return out;
   }
@@ -502,12 +572,12 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   // aux joueurs, le serveur la rend telle quelle quand elle est posée.
   function pushTileMeta(w, tk) {
     const city = w.city, t = city.ville.tiles[tk];
-    if (t?.b) broadcast(w, { t: 'sv', o: 'tile', rv: ++city.rv, k: tk, v: { ...t, b: undefined } });
+    if (t?.b) broadcastTile(w, { t: 'sv', o: 'tile', rv: ++city.rv, k: tk, v: { ...t, b: undefined } });
   }
   function pushTile(w, tk, except = null, places = {}) {
     const city = w.city, t = city.ville.tiles[tk];
     if (!t?.b) return;
-    broadcast(w, { t: 'sv', o: 'tile', rv: ++city.rv, k: tk, v: { ...t, b: undefined }, ...places }, except);
+    broadcastTile(w, { t: 'sv', o: 'tile', rv: ++city.rv, k: tk, v: { ...t, b: undefined }, ...places }, except);
     emitRows(w, new Map([[tk, Object.keys(t.b)]]), except);
   }
 
@@ -849,11 +919,11 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const w = worldOf(p.level, p.commune);
     await load(w);
     if (!w.city) return refuse(409, 'vide');
-    if (name === 'state') return state(w, body);
+    if (name === 'state') return state(w, body, acc);
     if (phase !== 'en-cours') return refuse(409, phase === 'terminee' ? 'fin' : 'avenir');
     // Découpes et voisinages : seulement de la part d'un joueur assis dans le monde (un siège par compte, bannis exclus).
     if ((name === 'tile' || name === 'adj') && ![...w.subs].some((x) => x.accountId === acc)) return refuse(409, 'abonnement');
-    if (name === 'tile') return tile(w, body);
+    if (name === 'tile') return tile(w, body, subOf(w, acc));
     if (name === 'adj') return adjRoute(w, body);
     if (name === 'home') return home(acc, p, w, body);
     return refuse(404, 'route');
@@ -966,11 +1036,26 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return { status: r.status, body: { ...r.body, created: true } };
   }
 
-  function state(w, body = {}) {
+  function state(w, body = {}, acc = null) {
     const city = w.city;
     if (city.ville.mode === 'quartiers' && !modern(body.cl)) return refuse(409, 'mode');
-    // hab : ce serveur connaît le geste `h` (habitant trouvé) ; un jeu ne l'envoie que si l'état le dit.
-    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville: city.ville, lent: lentSnapshot(city), hab: 1, mort: R.infectMs / 1000 }) };
+    // Grande ville : win, les tuiles dont le jeu veut les rangées (sa fenêtre, vide à l'entrée) ; les autres tuiles placées viennent sans rangées (f),
+    // il les demande en avançant (message `win`), et les diffusions ne lui portent que sa fenêtre. Sans `win` (ancien jeu) ou dans une petite ville
+    // (jouée en entier) : toute la ville, et la réponse ne porte pas `win`.
+    const want = Array.isArray(body.win) && body.win.length <= SEASON.winMax && body.win.every((k) => typeof k === 'string' && SEASON_TILE.test(k)) ? body.win : null;
+    if (Array.isArray(body.win) && !want) return refuse(400, 'requete');
+    let ville = city.ville, win = null;
+    if (want && city.ville.mode === 'quartiers') {
+      win = new Set(want.filter((k) => city.ville.tiles[k]));
+      const tiles = {};
+      for (const [tk, t] of Object.entries(city.ville.tiles)) tiles[tk] = !t.b || win.has(tk) ? t : { ...t, b: undefined, f: 1 };
+      ville = { ...city.ville, tiles };
+    }
+    // La fenêtre du joueur assis suit ce que son jeu vient de lire (aucune sans `win` : il a tout lu).
+    const sub = acc ? subOf(w, acc) : null;
+    if (sub) sub.win = win ? new Set(win) : null;
+    // hab : ce serveur connaît le geste `h` (habitant trouvé) ; un jeu ne l'envoie que si l'état le dit. win : il sait tenir une fenêtre.
+    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville, lent: lentSnapshot(city, win), hab: 1, mort: R.infectMs / 1000, ...(win ? { win: 1 } : {}) }) };
   }
 
   // Pâtés d'une tuile découpée : [clé, appartenance (1 dedans, 0 dehors, -1 inconnu), plancher, logements, bâtiments,
@@ -988,9 +1073,11 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     }
     return out;
   }
-  function tile(w, b) {
+  // sub : le joueur qui découpe ; à fenêtre, la tuile et celles que la réponse lui rend y entrent (il est autour).
+  function tile(w, b, sub = null) {
     const city = w.city, v = city.ville;
     const tk = b.t;
+    if (sub?.win && typeof tk === 'string' && v.tiles[tk] && sub.win.size < SEASON.winMax) sub.win.add(tk);
     if (typeof tk !== 'string' || !SEASON_TILE.test(tk) || !v.tiles[tk]) return { status: 200, body: { ok: true, ignored: true, tiles: {} } };
     const all = readPates(b.pates);
     if (!all) return refuse(400, 'requete');
@@ -1009,23 +1096,25 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (city.sig.get(tk) === sig) return { status: 200, body: { ok: true, same: true, rv: city.rv, tiles: cur, ...placesSince(v, b.qn) } };
     const member = (p) => (p.m === 1 ? true : p.m === 0 ? false : null);
     if (typeof b.l === 'boolean') member.leak = b.l;
-    const before = new Map(Object.entries(v.tiles).map(([k, t]) => [k, JSON.stringify(t)]));
     const qk0 = v.qk.length;
     const r = placeTile(v, { tile: tk, pates }, { member, force });
     if (!r.ok) return { status: 200, body: { ok: true, waiting: true, rv: city.rv, tiles: {} } };
     city.sig.set(tk, sig);
     stats.tiles++;
-    reindex(city);
+    // Tuiles changées : celles que placeTile dit avoir touchées (la découpée, la voisine qui reçoit son reste ou une rangée errante) ;
+    // comparer toute la ville avant et après coûtait 20 ms par découpe dans une commune de 400 tuiles.
     const changed = {};
-    for (const [k, t] of Object.entries(v.tiles)) {
-      if (before.get(k) === JSON.stringify(t)) continue;
-      changed[k] = t;
+    for (const k of r.touched ?? [tk]) {
+      if (!v.tiles[k]) continue;
+      changed[k] = v.tiles[k];
       city.dirty.tiles.add(k);
     }
+    reindexTiles(city, r.touched ?? [tk]);
     city.dirty.meta = true;
     city.cnt = true;
     for (const [i, j] of nb) addEdge(city, pates[i].key, pates[j].key);
     const places = placesSince(v, qk0);
+    if (sub?.win) for (const k of Object.keys(changed)) if (sub.win.size < SEASON.winMax) sub.win.add(k);
     for (const k of Object.keys(changed)) pushTile(w, k, null, places);
     watchUnits(city);                                     // une tuile de plus peut permettre de reprendre un quartier
     return { status: 200, body: { ok: true, rv: city.rv, tiles: changed, ...(isInt(b.qn) ? placesSince(v, b.qn) : places) } };
@@ -1147,6 +1236,12 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   async function onMessage(s, msg) {
     if (msg.o === 'cancel') return leaveLine(s);
     if (msg.o === 'out') { detach(s); return leaveLine(s); }
+    if (msg.o === 'win') {
+      const sub = subs.get(s);
+      if (!sub?.win || !sub.w.city || !sub.winBucket.take()) return undefined;
+      openWindow(sub, msg.k);
+      return undefined;
+    }
     if (msg.o === 'ev') {
       const sub = subs.get(s);
       if (!sub || !sub.w.city || phaseOf() !== 'en-cours') return undefined;
@@ -1180,7 +1275,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (entry) dropEntry(entry);
     const sub = { s, w, accountId: s.accountId, leases: new Map(), holdAt: 0, kills: 0, kills0: p.kills ?? 0, dirtyKills: false, bucket: createBucket(20, 6, now),
       killBucket: createBucket(R.killBurst, R.killPerSec, now), rescueBucket: createBucket(R.rescueBurst, R.rescuePerSec, now),
-      unitBucket: createBucket(R.unitAsk[0], R.unitAsk[1], now) };
+      unitBucket: createBucket(R.unitAsk[0], R.unitAsk[1], now), win: null, winBucket: createBucket(R.winAsk[0], R.winAsk[1], now) };
     subs.set(s, sub);
     w.subs.add(sub);
     w.city.playedAt = now();

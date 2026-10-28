@@ -2,8 +2,10 @@
 // routes des comptes (spécification des comptes, 4.2) : POST /v1/account/*, POST /v1/save/{get,put}.
 // Réponses en JSON avec les en-têtes de la section 6.2 ; CORS pour les origines admises seulement, jamais de
 // cookie ni d'Allow-Credentials ; corps de 8 Ko au plus (256 Kio et un peu plus pour /v1/save/put ; 413 au-delà) ;
-// 404 pour tout le reste, comptes compris quand ils sont coupés.
+// 404 pour tout le reste, comptes compris quand ils sont coupés. Une grosse réponse JSON (8 Kio et plus : état d'une grande ville de la
+// saison, sauvegarde) part compressée en gzip quand le navigateur l'accepte (il le dit toujours, et la décompresse seul).
 import net from 'node:net';
+import zlib from 'node:zlib';
 import { RULES } from '../../prototype/src/net/protocol.js';
 import { ACCOUNT_RULES } from '../../prototype/src/net/account.js';
 import { SEASON_RULES } from './season.js';
@@ -20,6 +22,7 @@ const ACCOUNT_ROUTES = new Map([
 ]);
 // Routes des saisons (season.js) : POST avec la session du compte ; GET /v1/season/progress est public (cache de 30 s).
 const SEASON_POST = new Map(['join', 'state', 'seed', 'enter', 'tile', 'adj', 'home'].map((r) => [`/v1/season/${r}`, r]));
+const GZIP_MIN = 8192;
 const BASE_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-store',
@@ -85,6 +88,17 @@ export function pathOf(url) {
   return q < 0 ? url : url.slice(0, q);
 }
 
+// Le client accepte-t-il gzip ? (Accept-Encoding : « gzip », « gzip;q=0.8 », jamais « gzip;q=0 ».)
+export function acceptsGzip(header) {
+  if (typeof header !== 'string') return false;
+  return header.split(',').some((part) => {
+    const [name, ...params] = part.split(';').map((x) => x.trim().toLowerCase());
+    if (name !== 'gzip') return false;
+    const q = params.find((x) => x.startsWith('q='));
+    return !q || Number(q.slice(2)) > 0;
+  });
+}
+
 export function originAllowed(origins, origin) {
   return typeof origin === 'string' && origins.includes(origin.replace(/\/+$/, '').toLowerCase());
 }
@@ -132,8 +146,24 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
     const text = plain ? body : typeof body?.json === 'string' ? body.json : JSON.stringify(body);
     const h = { ...headersFor(req, plain ? 'text/plain; charset=utf-8' : undefined), ...extraHeaders,
       'Content-Length': Buffer.byteLength(text) };
-    res.writeHead(status, h);
-    res.end(req.method === 'HEAD' ? undefined : text);
+    if (text.length < GZIP_MIN) {
+      res.writeHead(status, h);
+      res.end(req.method === 'HEAD' ? undefined : text);
+      return;
+    }
+    // Grosse réponse : gzip rapide (niveau 1, ÷4 à ÷5 sur l'état d'une ville), hors de la boucle (réserve de fils de Node).
+    h.Vary = 'Origin, Accept-Encoding';
+    if (req.method === 'HEAD' || !acceptsGzip(req.headers['accept-encoding'])) {
+      res.writeHead(status, h);
+      res.end(req.method === 'HEAD' ? undefined : text);
+      return;
+    }
+    zlib.gzip(text, { level: 1 }, (err, buf) => {
+      if (res.headersSent || res.destroyed) return;
+      if (err) { res.writeHead(status, h); res.end(text); return; }
+      res.writeHead(status, { ...h, 'Content-Encoding': 'gzip', 'Content-Length': buf.length });
+      res.end(buf);
+    });
   }
 
   // Route des comptes : limite par adresse avant la lecture du corps, puis accounts.handle → { status, body | raw }.

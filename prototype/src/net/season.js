@@ -139,8 +139,11 @@ export function createSeasonNet({
 
   // ---------- Abonnement ----------
 
-  let sub = null;           // { commune, h: { msg, resync, leases, lost, back }, buffer, ready, wait, down }
+  let sub = null;           // { commune, h: { msg, resync, leases, lost, back, window }, buffer, ready, wait, down }
   const offs = [];
+  // Grande ville : le serveur tient une fenêtre (l'état porte `win`) ; le jeu y ajoute les tuiles où il arrive (`want`). Un ancien serveur ne la
+  // tient pas, et prendrait le message `win` pour un abonnement : rien n'est alors demandé.
+  let windowed = false;
 
   function onSv(msg) {
     if (!sub) return;
@@ -221,8 +224,10 @@ export function createSeasonNet({
     // une seule reprise (le `in` en route la satisfait ; un vrai refus se répète et reste dit).
     if (!r.ok && r.why === 'commune') r = await subscribe();
     if (!r.ok) return r;
-    const st = await call('state');
+    // win : les tuiles dont la copie a déjà les rangées (rien à l'entrée) ; le serveur ne rend que celles-là (grande ville).
+    const st = await call('state', { win: (sub?.h.window?.() ?? []).slice(0, SEASON.winMax) });
     if (!st.ok) return { ok: false, why: st.code ?? 'base', status: st.status };
+    windowed = st.win === 1;
     return { ok: true, state: st, rv: st.rv };
   }
   // Après `start` : les messages gardés sont rendus à l'appelant dans l'ordre, puis le fil direct reprend.
@@ -248,8 +253,18 @@ export function createSeasonNet({
     s.h.back?.({ ok: true });
   }
 
+  // Tuiles à ajouter à la fenêtre (le jeu y arrive) : le serveur rend leur rapport et leurs rangées par la connexion. Faux sans fenêtre.
+  function want(keys) {
+    if (!windowed || !sub?.ready || !keys.length) return false;
+    for (let i = 0; i < keys.length; i += SEASON.winPerMsg) {
+      if (!online?.season?.({ o: 'win', k: keys.slice(i, i + SEASON.winPerMsg) })) return false;
+    }
+    return true;
+  }
+
   function open(commune, handlers = {}) {
     close();
+    windowed = false;
     sub = { commune, h: handlers, buffer: [], ready: false, wait: null, down: false };
     if (online?.on) {
       offs.push(online.on('sv', onSv));
@@ -274,6 +289,8 @@ export function createSeasonNet({
   return {
     join: (level) => call('join', level ? { level } : {}),
     state: () => call('state'),
+    want,
+    get windowed() { return windowed; },
     seed: (body) => call('seed', body),
     enter: (key) => call('enter', { key }),
     tile: (body) => call('tile', body),

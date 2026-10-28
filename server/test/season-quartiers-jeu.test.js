@@ -213,10 +213,16 @@ test('grande commune : ouverte par quartiers, un quartier commence puis repris, 
     assert.equal(pb.ville.mode, 'quartiers');
     assert.deepEqual(Object.keys(pb.ville.units), [ukey]);
     assert.deepEqual(pb.ville.qk, sv.qk, 'mêmes lieux');
-    assert.equal(rowsOf(pb.ville), rowsOf(sv));
+    // Fenêtre (étape 2) : à l'entrée, b ne lit que le rapport des tuiles, sans rangées ; elles arrivent pour les tuiles où il va (`win`).
+    assert.equal(b.net.windowed, true);
+    assert.deepEqual(Object.entries(pb.ville.tiles).filter(([, t]) => t.b).map(([k]) => k), [], 'aucune rangée à l\'entrée');
+    assert.ok(Object.entries(pb.ville.tiles).every(([k, t]) => t.f === (sv.tiles[k].b ? 1 : undefined)), 'tuiles placées marquées f');
+    const placed0 = srv.seasons.debug().stats.tiles;
     await pb.rt.ensureAround(0, 0, { wait: true });
     await settle(pa, pb);
-    assert.equal(rowsOf(pb.ville), rowsOf(sv));
+    assert.equal(rowsOf(pb.ville), rowsOf(sv), 'les tuiles autour de b (toute la commune ici) ont leurs rangées');
+    assert.equal(srv.seasons.debug().stats.tiles, placed0, 'sans tuile redécoupée par le serveur');
+    assert.equal(pb.rt.stats().known, pa.rt.stats().known, 'pâtés de toute la ville comptés par le serveur');
 
     // 4. Le quartier est repris (la Nuit du cœur et les rues vidées sont jouées côté serveur dans l'essai du serveur) : il quitte les deux copies.
     const city = serverCity();

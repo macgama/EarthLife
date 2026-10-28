@@ -548,8 +548,9 @@ function rehome(ville, fromKey, pool) {
 // rangée dont le pâté a disparu rejoint celui qui contient son point (ou le plus proche) ; un pâté intact devenu dehors
 // rend sa part à la tuile ; les nouveaux pâtés reçoivent la part du calcul d'un bloc tant que le reste de la tuile y
 // suffit ; ce qui reste va aux pâtés rouges de la tuile (à défaut, à ses pâtés non libérés), sinon à une voisine.
-// Une tuile hors du recensement n'a ni zombie ni habitant. Rend { ok, waiting?, added, moved, rows } ; avec force,
-// waiting compte les pâtés placés à titre provisoire.
+// Une tuile hors du recensement n'a ni zombie ni habitant. Rend { ok, waiting?, added, moved, rows, touched } ; avec force,
+// waiting compte les pâtés placés à titre provisoire ; touched : les tuiles changées (celle-ci, et la voisine qui a reçu son reste ou
+// une rangée errante), pour que le serveur ne relise pas toute la ville.
 export function placeTile(ville, cut, { member = () => true, force = false } = {}) {
   const tk = cut?.tile;
   const t = tk ? ville.tiles[tk] : null;
@@ -575,6 +576,7 @@ export function placeTile(ville, cut, { member = () => true, force = false } = {
   let added = 0, moved = 0, canonical = false;
   let rows = null;
   const strays = [];
+  const touched = new Set([tk]);
 
   // Même ensemble de pâtés qu'au dernier calcul d'une tuile canonique (rangées allégées, provisoires connus dedans).
   const same = t.k === 1 && sameSig(t.n, sig) && oldKeys.every((k) => insideKeys.has(k));
@@ -644,7 +646,9 @@ export function placeTile(ville, cut, { member = () => true, force = false } = {
     const pool = [...t.rest];
     addTo(t.p, pool, -1);
     t.rest = [0, 0, 0];
-    if (rehome(ville, tk, pool) === null) {
+    const dest = rehome(ville, tk, pool);
+    if (dest) touched.add(dest);
+    if (dest === null) {
       addTo(t.p, pool);
       t.rest = pool;
       if (!inside.length && !oldKeys.length) t.b = null; // rien ne la reçoit encore : on réessaiera
@@ -656,6 +660,7 @@ export function placeTile(ville, cut, { member = () => true, force = false } = {
     const target = nearestRow(ville, keyPoint(k), tk);
     if (!target) { t.b[k] = row; continue; }
     const tt = ville.tiles[target.tile];
+    touched.add(target.tile);
     tt.b[target.key] = mergeRows(tt.b[target.key], row);
     absorb(ville, target.key, tt.b[target.key]);
     const pool = poolOf(ville, row);
@@ -672,7 +677,7 @@ export function placeTile(ville, cut, { member = () => true, force = false } = {
   t.q = [...new Set(inside.filter((p) => !isDone(p)).map((p) => qIndex(ville, p.qkey)))].sort((a, b) => a - b);
   delete t.wt; // ancien format : pâtés en attente dans t.rest (avant les pâtés provisoires)
   reindex(ville);
-  return { ok: true, added, moved, rows: t.b ? Object.keys(t.b).length : 0, ...(waiting ? { waiting } : {}) };
+  return { ok: true, added, moved, rows: t.b ? Object.keys(t.b).length : 0, touched: [...touched], ...(waiting ? { waiting } : {}) };
 }
 
 // Tuile entière : ses rangées et son reste font exactement sa part (aucun quartier repris n'en a retiré de pâté).
