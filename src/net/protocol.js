@@ -30,6 +30,8 @@ export const RULES = {
 // Dans une ville en quartiers, `tile` porte `qi` et `qk` : les lieux (clés de quartier) ajoutés à `ville.qk` depuis l'indice `qi`.
 export const SEASON = {
   maxEvents: 40, maxRows: 400, maxUnits: 160, maxPlaces: 400, rowLength: 9, seats: 100, days: 60, quartiersLevel: 4,
+  // Fenêtre (grande ville) : les tuiles dont ce jeu reçoit les rangées ; `win` en demande 32 de plus au plus par message, 400 en tout.
+  winPerMsg: 32, winMax: 400,
   levels: ['facile', 'moyen', 'difficile'],
   noWhy: ['compte', 'inscription', 'commune', 'monde', 'fin', 'avenir', 'base', 'attente'],
 };
@@ -332,7 +334,7 @@ const CLIENT = {
   },
   g(o, out) { out.k = int(o, 'k', 0, GESTURES.length - 1); },
   sv(o, out) {
-    out.o = oneOf(o, 'o', ['in', 'ev', 'out', 'cancel']);
+    out.o = oneOf(o, 'o', ['in', 'ev', 'out', 'cancel', 'win']);
     if (out.o === 'in') {
       const c = get(o, 'c');
       out.c = typeof c === 'string' && SEASON_COMMUNE.test(c) ? c : bad('c');
@@ -349,6 +351,11 @@ const CLIENT = {
         } else if (len === 3 && !inRange(ev[2], 1, 60)) bad('e');
         return len === 3 ? [ev[0], ev[1], ev[2]] : [ev[0], ev[1]];
       });
+    } else if (out.o === 'win') {
+      // Tuiles à ajouter à la fenêtre ; un jeu ne l'envoie que si l'état de la saison porte `win` (un ancien serveur prendrait ce message pour un abonnement).
+      const k = get(o, 'k');
+      if (!Array.isArray(k) || k.length < 1 || k.length > SEASON.winPerMsg || !k.every((x) => typeof x === 'string' && SEASON_TILE.test(x))) bad('k');
+      out.k = k.slice();
     }
   },
   hide(o, out) { out.sid = int(o, 'sid', 1, MAX_U31 - 1); },
@@ -430,7 +437,8 @@ function seasonTriple(v, f) {
 function seasonTile(v) {
   if (!isObj(v)) bad('v');
   const out = { p: seasonTriple(get(v, 'p'), 'v'), rest: seasonTriple(get(v, 'rest'), 'v') };
-  for (const f of ['k', 'o', 'e']) if (get(v, f) !== undefined) out[f] = inRange(get(v, f), 0, 1) ? get(v, f) : bad('v');
+  // f : tuile placée dont ce jeu n'a pas les rangées (hors de sa fenêtre) ; il les demande avec `win` en s'approchant.
+  for (const f of ['k', 'o', 'e', 'f']) if (get(v, f) !== undefined) out[f] = inRange(get(v, f), 0, 1) ? get(v, f) : bad('v');
   const n = get(v, 'n');
   if (n !== undefined) out.n = Array.isArray(n) && n.length === 2 && n.every((x) => inRange(x, 0, 1e9)) ? n.slice() : bad('v');
   const q = get(v, 'q');
@@ -481,6 +489,9 @@ function seasonCounts(v) {
   // tn : habitants devenus zombies (morts de joueurs), lo : ville perdue (1) ; un serveur d'avant la mort ne les donne pas.
   if (get(v, 'tn') !== undefined) out.tn = int(v, 'tn', 0, 1e9);
   if (get(v, 'lo') !== undefined) out.lo = inRange(get(v, 'lo'), 0, 1) ? get(v, 'lo') : bad('c');
+  // pk, pf : pâtés placés et pâtés libérés de toute la ville (un jeu à fenêtre n'a pas toutes les rangées) ; un serveur d'avant la fenêtre ne les donne pas.
+  if (get(v, 'pk') !== undefined) out.pk = int(v, 'pk', 0, 1e7);
+  if (get(v, 'pf') !== undefined) out.pf = int(v, 'pf', 0, 1e7);
   const un = get(v, 'un');
   if (!isObj(un) || Object.keys(un).length > SEASON.maxUnits) bad('c');
   for (const key of Object.keys(un)) {
