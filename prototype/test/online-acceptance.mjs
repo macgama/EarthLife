@@ -2231,8 +2231,8 @@ await scenario('O28', 'salon du menu', async () => {
 });
 
 // =====================================================================================================
-// O29 : villes de la saison sur la carte du menu : les repères sont à l'écran (cadrés d'office), toucher un repère ou un niveau choisit
-// ce niveau et centre sa ville sans changer le lieu choisi, « Partie libre » ramène la carte au lieu choisi, « À plusieurs » recadre ;
+// O29 : villes de la saison sur la carte du menu : seules celles du niveau choisi au menu sont sur la carte (Facile d'office, cadrées d'office),
+// toucher un niveau change les repères et centre sa ville sans changer le lieu choisi, « Partie libre » ramène la carte au lieu choisi, « À plusieurs » recadre ;
 // sur téléphone (panneau déployé, bande de carte étroite), la ville du niveau seule, entière sous l'en-tête et au-dessus du panneau
 // =====================================================================================================
 await scenario('O29', 'villes de la saison sur la carte du menu', async () => {
@@ -2279,25 +2279,29 @@ await scenario('O29', 'villes de la saison sur la carte du menu', async () => {
 
   const N = await open('N2 (ordinateur, villes sur la carte)', desktop, url, { waitGame: false, before: withCities });
   const free = (v) => [Math.round((v.cardRight + v.win[0]) / 2), Math.round(v.win[1] / 2)];
-  const framed = await until(N, (v) => v.tab === 'saison' && inFree(v.pins.facile, v) && inFree(v.pins.moyen, v));
-  check(framed.ok, `N2 : les deux villes sont à l'écran, hors du panneau (${JSON.stringify(framed.v?.pins)}, panneau jusqu'à ${framed.v?.cardRight})`);
+  // Un seul niveau à la fois : « Facile » (proposé d'office) montre Vulliens, pas Pérouges (Moyen).
+  const framed = await until(N, (v) => v.tab === 'saison' && inFree(v.pins.facile, v) && !v.pins.moyen);
+  check(framed.ok, `N2 : seule la ville du niveau « Facile » est sur la carte, hors du panneau (${JSON.stringify(framed.v?.pins)}, panneau jusqu'à ${framed.v?.cardRight})`);
   await shot(N, 'o29-ordi-villes');
   const place0 = framed.v?.place;
-  // Un repère touché : son niveau est choisi, sa ville au centre de la carte libre, le lieu choisi ne bouge pas.
-  await N.page.click('.maplibregl-marker.map-pin-saison-moyen');
-  const moyen = await until(N, (v) => v.checked === 'moyen' && near(v.pins.moyen, ...free(v), 70));
-  check(moyen.ok && JSON.stringify(moyen.v.place) === JSON.stringify(place0), `N2 : repère « Moyen » touché : niveau choisi, Pérouges au centre (${JSON.stringify(moyen.v?.pins?.moyen)}), lieu inchangé (${JSON.stringify(moyen.v?.place)})`);
-  // Un niveau touché : sa ville vient au centre.
+  // Un niveau touché : sa ville vient au centre, celles des autres niveaux quittent la carte, le lieu choisi ne bouge pas.
+  await click(N, '#fronts .front[data-level="moyen"]');
+  const moyen = await until(N, (v) => v.checked === 'moyen' && near(v.pins.moyen, ...free(v), 70) && !v.pins.facile);
+  check(moyen.ok && JSON.stringify(moyen.v.place) === JSON.stringify(place0), `N2 : niveau « Moyen » touché : Pérouges au centre (${JSON.stringify(moyen.v?.pins)}), Vulliens retirée, lieu inchangé (${JSON.stringify(moyen.v?.place)})`);
   await click(N, '#fronts .front[data-level="facile"]');
-  const facile = await until(N, (v) => v.checked === 'facile' && near(v.pins.facile, ...free(v), 70));
-  check(facile.ok, `N2 : niveau « Facile » touché : Vulliens au centre (${JSON.stringify(facile.v?.pins?.facile)})`);
-  // Partie libre : la carte revient au lieu choisi ; À plusieurs : elle recadre les villes.
+  const facile = await until(N, (v) => v.checked === 'facile' && near(v.pins.facile, ...free(v), 70) && !v.pins.moyen);
+  check(facile.ok, `N2 : niveau « Facile » touché : Vulliens au centre, Pérouges retirée (${JSON.stringify(facile.v?.pins)})`);
+  // Un repère touché : son niveau reste choisi et sa ville au centre de la carte libre.
+  await N.page.click('.maplibregl-marker.map-pin-saison-facile');
+  const pin = await until(N, (v) => v.checked === 'facile' && near(v.pins.facile, ...free(v), 70) && !v.pins.moyen);
+  check(pin.ok && JSON.stringify(pin.v.place) === JSON.stringify(place0), `N2 : repère « Facile » touché : Vulliens au centre (${JSON.stringify(pin.v?.pins?.facile)}), lieu inchangé (${JSON.stringify(pin.v?.place)})`);
+  // Partie libre : la carte revient au lieu choisi ; À plusieurs : elle recadre la ville du niveau.
   await click(N, '#menu-tabs [data-tab="libre"]');
   const libre = await until(N, (v) => v.tab === 'libre' && near(v.mine, ...free(v), 90));
   check(libre.ok, `N2 : « Partie libre » ramène la carte au lieu choisi (${JSON.stringify(libre.v?.mine)})`);
   await click(N, '#menu-tabs [data-tab="saison"]');
-  const again = await until(N, (v) => v.tab === 'saison' && inFree(v.pins.facile, v) && inFree(v.pins.moyen, v));
-  check(again.ok, `N2 : « À plusieurs » recadre les deux villes (${JSON.stringify(again.v?.pins)})`);
+  const again = await until(N, (v) => v.tab === 'saison' && inFree(v.pins.facile, v) && !v.pins.moyen);
+  check(again.ok, `N2 : « À plusieurs » recadre la ville du niveau (${JSON.stringify(again.v?.pins)})`);
   await closeCtx(N);
 
   // Téléphone : la bande de carte entre l'en-tête et le panneau est trop étroite pour plusieurs repères.
@@ -2310,7 +2314,7 @@ await scenario('O29', 'villes de la saison sur la carte du menu', async () => {
 
 // =====================================================================================================
 // O30 : ville annoncée : un niveau sans ville en jeu montre la ville que le serveur annonce (nom, badge « Annoncée », repère sur
-// la carte), le bouton ne demande pas de choisir la ville, et la bannière ne compte pas encore de ville en jeu
+// la carte quand le niveau est choisi), le bouton ne demande pas de choisir la ville, et la bannière ne compte pas encore de ville en jeu
 // =====================================================================================================
 await scenario('O30', 'ville annoncée au menu', async () => {
   const NOW = Date.now(), DAY = 86400000;
@@ -2355,8 +2359,11 @@ await scenario('O30', 'ville annoncée au menu', async () => {
   check(shown.v?.facile?.badge === 'Annoncée' && shown.v?.difficile?.badge === 'Annoncée', `N3 : badge « Annoncée » (${shown.v?.facile?.badge}, ${shown.v?.difficile?.badge})`);
   check(/Ville annoncée/.test(shown.v?.facile?.nums ?? '') && shown.v?.facile?.saved === '' && shown.v?.facile?.pct === '0%', `N3 : pas de décompte de zombies pour une ville pas commencée (« ${shown.v?.facile?.nums} », sauvés « ${shown.v?.facile?.saved} », barre ${shown.v?.facile?.pct})`);
   check(shown.v?.moyen?.city === 'Ville à choisir' && shown.v?.moyen?.badge === 'À choisir', `N3 : un niveau sans annonce reste « à choisir » (${shown.v?.moyen?.city}, ${shown.v?.moyen?.badge})`);
-  const pins = await until(N, (v) => v.pins === 'difficile,facile');
-  check(pins.ok, `N3 : un repère par ville annoncée sur la carte (${pins.v?.pins})`);
+  const pins = await until(N, (v) => v.pins === 'facile');
+  check(pins.ok, `N3 : le repère de la ville annoncée du niveau proposé (Facile) est sur la carte, pas celui de Difficile (${pins.v?.pins})`);
+  await click(N, '#fronts .front[data-level="difficile"]');
+  const hard = await until(N, (v) => v.pins === 'difficile');
+  check(hard.ok, `N3 : niveau « Difficile » touché : le repère de sa ville annoncée remplace celui de Facile (${hard.v?.pins})`);
   await click(N, '#fronts .front[data-level="facile"]');
   const cta = await until(N, (v) => /Rejoindre · Facile/.test(v.cta));
   check(cta.ok && /Lyon · ville annoncée/.test(cta.v.cta) && !/choisir la ville|Sois le premier/.test(cta.v.cta), `N3 : le bouton dit la ville annoncée et ne demande pas de la choisir (« ${cta.v?.cta} »)`);
