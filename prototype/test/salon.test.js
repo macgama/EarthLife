@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  FRONT_LEVELS, DEFAULT_FRONT, BLOCKED, clockOf, frontModel, summaryOf, ctaModel, destinationOf, pinsOf, framingOf, createTabs,
+  FRONT_LEVELS, DEFAULT_FRONT, BLOCKED, clockOf, frontModel, summaryOf, ctaModel, destinationOf, pinsOf, pinsOfLevel, shownLevel, framingOf, createTabs,
 } from '../src/salon.js';
 
 const DAY = 86_400_000;
@@ -123,6 +123,24 @@ test('repères de la carte : seulement les villes dont on connaît la position',
   assert.equal(pins.length, 1, 'Pérouges n\'a pas de coordonnées, le niveau difficile pas de ville');
   assert.deepEqual(pins[0], { level: 'facile', key: 'c1', lat: 46.6, lon: 6.8, tone: 'warn', own: false, started: true, label: 'Facile · Vulliens', tag: 'Vulliens · 310/729 sauvés · 12 en ligne' });
   assert.deepEqual(pinsOf([]), []);
+});
+
+test('carte du menu : un seul niveau à la fois (la même ville ouverte à deux niveaux ne se double plus)', () => {
+  const pins = [
+    { level: 'facile', key: 'c1', lat: 46.6, lon: 6.8, tone: 'warn', own: true },
+    { level: 'facile', key: 'c3', lat: 46.5, lon: 6.7, tone: 'idle', own: false },
+    { level: 'moyen', key: 'c1', lat: 46.601, lon: 6.801, tone: 'warn', own: false },
+  ];
+  assert.deepEqual(pinsOfLevel(pins, 'facile').map((p) => p.key), ['c1', 'c3']);
+  assert.deepEqual(pinsOfLevel(pins, 'moyen').map((p) => `${p.level}:${p.key}`), ['moyen:c1']);
+  assert.deepEqual(pinsOfLevel(pins, 'difficile'), [], 'un niveau sans ville : carte vide');
+  assert.deepEqual(pinsOfLevel(undefined, 'facile'), []);
+  // Niveau montré : celui du joueur inscrit d'abord (il ne change plus), puis celui touché au menu, sinon le niveau proposé.
+  assert.equal(shownLevel({ enrolled: 'difficile', pick: 'facile' }), 'difficile');
+  assert.equal(shownLevel({ enrolled: null, pick: 'moyen' }), 'moyen');
+  assert.equal(shownLevel({ pick: 'nimporte' }), DEFAULT_FRONT);
+  assert.equal(shownLevel(), DEFAULT_FRONT);
+  assert.equal(shownLevel({ enrolled: 'nimporte', pick: 'moyen' }), 'moyen', 'un niveau inconnu est ignoré');
 });
 
 test('cadrage de la carte : la ville du niveau touché, sinon toutes les villes, sinon rien', () => {
