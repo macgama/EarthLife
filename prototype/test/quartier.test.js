@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   NIVEAUX, LEVEL_KEYS, NIVEAU_DEFAUT, QUARTIER, ETAT, ROW, LINE,
   apportion, zombiesFor, reserveFor, nestSize, heartWaves, levelSummary, flagNights, supplyFor, tilePools,
-  startVille, restartVille, placeTile, startUnit, setCoeur, blockInfo, counters, checkVille, cityStatus, zombiesLeft,
+  startVille, restartVille, placeTile, capsOf, startUnit, setCoeur, blockInfo, counters, checkVille, cityStatus, zombiesLeft,
   lend, giveBack, recallAll, kill, take, drawReserve, settle, move, regrow, fallFlag, dropFlag, openNest, plantFlag,
   liberate, rescueOne, infectOne, humansLeft, othersCleared, volunteersNight, homeWeights, hiddenByBuilding, takeHome, canChangeLevel, changeLevel,
   finishUnit, villeLine, compactVille, rowCount, rekeyVille, watched, keyPoint, unitKeyOf,
@@ -533,8 +533,9 @@ test('changer de niveau après des zombies abattus : zombies au départ toujours
   assert.equal(JSON.stringify(x), snap);
 });
 
-test('bornes à l\'écriture : 400 tuiles par ville, 400 lieux, noms nettoyés, tuiles en échec estimées', () => {
-  const many = Object.fromEntries(Array.from({ length: CENSUS_MAX_TILES + 1 }, (_, i) => [`14/${i}/1`, 10]));
+test('bornes à l\'écriture : 2 000 tuiles par ville, 400 lieux, noms nettoyés, tuiles en échec estimées', () => {
+  assert.equal(QUARTIER.maxTiles, 2000, 'une commune de saison jusqu\'à 2 000 tuiles ; la partie libre s\'arrête à CENSUS_MAX_TILES (contourTiles)');
+  const many = Object.fromEntries(Array.from({ length: QUARTIER.maxTiles + 1 }, (_, i) => [`14/${i}/1`, 10]));
   assert.equal(startVille({ key: 'c01290', population: 1000, tiles: many }), null);
   const v = startVille({ key: 'c01290', name: 'Pé\u202erouges<b>', population: 1000, tiles: { '14/1/1': 300, '14/2/1': 100, '14/3/1': 200 }, failed: ['14/4/1'] });
   assert.equal(v.name, 'Pé rouges b');
@@ -550,6 +551,20 @@ test('bornes à l\'écriture : 400 tuiles par ville, 400 lieux, noms nettoyés, 
   assert.ok(w.qk.includes(''));
   ok(w);
   assert.equal(ROW_LENGTH, 9);
+});
+
+test('commune de plus de 400 tuiles (saison) : un lieu par tuile, deux quartiers en cours pour cinq tuiles ; 400 tuiles au plus : bornes d\'origine', () => {
+  const tiles = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`14/${i}/1`, 10]));
+  assert.deepEqual(capsOf(startVille({ key: 'c1', population: 5000, mode: 'quartiers', tiles: tiles(400) })), { places: 400, units: 160 });
+  assert.deepEqual(capsOf(startVille({ key: 'c1', population: 5000, mode: 'quartiers', tiles: tiles(10) })), { places: 400, units: 160 });
+  const big = startVille({ key: 'c1', population: 50000, mode: 'quartiers', tiles: tiles(1000) });
+  assert.deepEqual(capsOf(big), { places: 1000, units: 400 });
+  // Lieux d'une vaste commune : au-delà de 400, ils restent nommés jusqu'à la borne de la ville.
+  const cut = fakeCut(0, 1, 450, { qkeys: Array.from({ length: 450 }, (_, i) => `q45.${String(1000 + i)}_5.0000`) });
+  const v = startVille({ key: 'c1', population: 50000, mode: 'quartiers', tiles: { ...tiles(1000), ...floorsOf([cut]) } });
+  placeTile(v, cut);
+  assert.equal(v.qk.length, 450);
+  assert.ok(!v.qk.includes(''));
 });
 
 test('tuiles du recensement en échec : part estimée selon leur surface dans le contour, jamais la médiane', () => {

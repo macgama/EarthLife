@@ -115,6 +115,8 @@
 //   seasonHomes(season) → { 'niveau|commune': joueurs installés (une maison posée dans la commune où ils jouent) }
 //   seasonDocs(world, commune?) → [{ commune, part, rev, data }] (une seule commune si donnée), seasonDocPut({ world, commune, part, rev, data, nowMs }),
 //   seasonDocsPut({ world, commune, parts: [{ part, rev, data }], nowMs }) : plusieurs pièces d'une commune en une transaction
+//   seasonParts(world, part) → [{ commune, rev, data }] : une même pièce de toutes les communes (le résumé de chaque ville, `sum`),
+//                              seasonParts(world, part, { data: false }) → [{ commune, rev }] (sans les données)
 //                                                               compare-et-écrit : écrit si rev = base (toujours si
 //                                                               force) ; crée (rev 1) si base = 0 et aucune ligne
 // Player = { id, tokenHash, name: [a, p, n], nameDay, nameChanges, createdOn, seenOn, hiddenUntil, bannedUntil }
@@ -725,6 +727,11 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
     async seasonDocs(world, commune = null) {
       guard();
       return [...seasonDocs.values()].filter((d) => d.world === world && (commune === null || d.commune === commune)).map((d) => ({ commune: d.commune, part: d.part, rev: d.rev, data: d.data }));
+    },
+    async seasonParts(world, part, { data = true } = {}) {
+      guard();
+      return [...seasonDocs.values()].filter((d) => d.world === world && d.part === part)
+        .map((d) => (data ? { commune: d.commune, rev: d.rev, data: d.data } : { commune: d.commune, rev: d.rev }));
     },
     async seasonDocPut({ world, commune, part, rev, data }) {
       guard();

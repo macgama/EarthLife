@@ -79,8 +79,8 @@ test('front : niveau choisi, niveau verrouillé, étiquettes', () => {
 
 test('totaux : joueurs en ligne, villes désinfectées, zombies et sauvés', () => {
   const s = summaryOf(fronts());
-  assert.deepEqual(s, { online: 15, players: 46, cities: 2, cleaned: 1, zombies: 277, saved: 369 });
-  assert.deepEqual(summaryOf([]), { online: 0, players: 0, cities: 0, cleaned: 0, zombies: 0, saved: 0 });
+  assert.deepEqual(s, { online: 15, players: 46, cities: 2, cleaned: 1, zombies: 277, saved: 369, world: 'Le monde : 369 habitants sauvés sur 8,1 milliards · 2 villes ouvertes' });
+  assert.deepEqual(summaryOf([]), { online: 0, players: 0, cities: 0, cleaned: 0, zombies: 0, saved: 0, world: '' });
 });
 
 test('bouton unique : rejoindre, reprendre, indisponible', () => {
@@ -407,5 +407,31 @@ test('repères de la carte : pâles tant que le sauvetage n\'a pas commencé, sa
 
 test('totaux de la bannière : toutes les villes ouvertes, tous niveaux', () => {
   const s = summaryOf(manyFronts());
-  assert.deepEqual(s, { online: 7, players: 40, cities: 3, cleaned: 1, zombies: 200, saved: 30 });
+  assert.deepEqual(s, { online: 7, players: 40, cities: 3, cleaned: 1, zombies: 200, saved: 30, world: 'Le monde : 30 habitants sauvés sur 8,1 milliards · 3 villes ouvertes' });
+});
+
+// Le monde entier (étape 3) : le serveur ne détaille qu'une partie des villes d'un niveau ; il compte toutes les autres.
+test('monde entier : totaux du serveur pour tout le niveau, villes proches ajoutées, les autres en repères regroupés', () => {
+  const entry = {
+    players: 9, online: 2, seats: 100, open: 250,
+    totals: { cities: 250, started: 40, cleaned: 3, zombies: 90000, saved: 1234, toSave: 500000, population: 600000 },
+    cities: [{ key: 'c1', name: 'Lyon', lat: 45.76, lon: 4.84, status: 'en-cours', zombies: 500, zombies0: 600, saved: 10, toSave: 900, online: 2, homes: 1 }],
+    near: [{ key: 'c1', name: 'Lyon', lat: 45.76, lon: 4.84, status: 'en-cours', zombies: 500, zombies0: 600, saved: 10, toSave: 900, online: 2, homes: 1 },
+      { key: 'c2', name: 'Villeurbanne', lat: 45.77, lon: 4.88, status: 'en-cours', zombies: 300, zombies0: 300, saved: 0, toSave: 500 }],
+    marks: [[48.85, 2.35, 120, 7], [43.3, 5.37, 1, 0], ['x', 1, 2, 0], [10, 10, 0, 0]],
+  };
+  const f = frontModel('facile', entry, {});
+  assert.deepEqual(f.cities.map((c) => c.key), ['c1', 'c2'], 'les villes proches s\'ajoutent, une seule fois chacune');
+  assert.equal(f.open, 250);
+  assert.equal(f.others, 249);
+  assert.deepEqual(f.totals, { cities: 250, cleaned: 3, zombies: 90000, saved: 1234 });
+  assert.deepEqual(f.zones, [{ lat: 48.85, lon: 2.35, n: 120, started: 7 }, { lat: 43.3, lon: 5.37, n: 1, started: 0 }], 'cases illisibles ou vides laissées');
+  const pins = pinsOf([f]);
+  assert.deepEqual(pins.map((p) => p.key), ['c1', 'c2', 'zone-0', 'zone-1']);
+  const z = pins.find((p) => p.key === 'zone-0');
+  assert.deepEqual([z.zone, z.tone, z.tag, z.label], [120, 'warn', '120 villes · 7 en cours', 'Facile · 120 villes ouvertes par ici']);
+  assert.equal(pins.find((p) => p.key === 'zone-1').tone, 'idle');
+  const s = summaryOf([f]);
+  assert.deepEqual([s.cities, s.saved], [250, 1234]);
+  assert.equal(s.world.replace(/\s/g, ' '), 'Le monde : 1 234 habitants sauvés sur 8,1 milliards · 250 villes ouvertes');
 });

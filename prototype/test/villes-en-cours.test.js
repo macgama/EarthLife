@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { startedOf, lostOf, cityNote, liveCities } from '../src/villes-en-cours.js';
+import { startedOf, lostOf, cityNote, liveCities, levelRows, levelMarks } from '../src/villes-en-cours.js';
 
 const ROW = (key, o = {}) => ({ key, name: key.toUpperCase(), lat: 46.5, lon: 6.5, saved: 0, killed: 0, homes: 0, toSave: 640, online: 0, status: 'en-cours', ...o });
 
@@ -33,4 +33,14 @@ test('villes d\'un niveau : position valide seulement, la tienne écartée, cell
   assert.equal(out[2].started, false);
   assert.deepEqual(liveCities(undefined), []);
   assert.deepEqual(liveCities({ city: ROW('z', { saved: 1 }) }).map((c) => c.key), ['z'], 'un serveur d\'avant le choix libre ne donne que `city`');
+});
+
+test('monde entier : villes détaillées et villes proches réunies (une fois chacune), repères regroupés lisibles seulement', () => {
+  const entry = { cities: [{ key: 'a', lat: 1, lon: 1 }, null, { key: '' }], near: [{ key: 'a', lat: 1, lon: 1 }, { key: 'b', lat: 2, lon: 2, saved: 3 }] };
+  assert.deepEqual(levelRows(entry).map((c) => c.key), ['a', 'b']);
+  assert.deepEqual(levelRows({ city: { key: 'v' } }).map((c) => c.key), ['v'], 'serveur d\'avant le choix libre');
+  assert.deepEqual(levelRows(null), []);
+  assert.deepEqual(liveCities(entry).map((c) => c.key), ['b', 'a']);
+  assert.deepEqual(levelMarks({ marks: [[1, 2, 3, 9], [95, 0, 2, 0], [1, 2, 0, 0], 'x', [1, 2]] }), [{ lat: 1, lon: 2, n: 3, started: 3 }]);
+  assert.deepEqual(levelMarks({}), []);
 });

@@ -24,7 +24,7 @@ export const TERRITORY_VERSION = 1;
 // pas, une ville peut donc s'écrire au-delà de `rows`). tiles, places et units : jamais moins que QUARTIER.
 export const TERRITORY_LIMITS = {
   maxBytes: 120_000, rows: 1500, readRows: 6000, playing: 4, villes: 200, voisines: 60,
-  tiles: Math.max(400, QUARTIER.maxTiles), units: Math.max(1000, QUARTIER.maxUnits), places: Math.max(1000, QUARTIER.maxPlaces), nameChars: 80,
+  tiles: Math.max(400, QUARTIER.maxTiles), units: Math.max(1000, QUARTIER.maxUnits), places: Math.max(2000, QUARTIER.maxPlaces), nameChars: 80,
 };
 export const TERRITORY_MESSAGES = {
   full: 'Territoire trop grand : les pâtés des villes en pause ont été allégés',

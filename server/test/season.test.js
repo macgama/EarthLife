@@ -822,7 +822,7 @@ test('rangement : écriture par pièces, relecture à l\'identique, voisinages c
   w.room.tick();
   await w.seasons.flush();
   const docs = await w.store.seasonDocs('1.facile');
-  assert.deepEqual(docs.map((d) => d.part).sort(), ['adj', 'meta', `t:${TA}`, `t:${TB}`].sort());
+  assert.deepEqual(docs.map((d) => d.part).sort(), ['adj', 'meta', 'sum', `t:${TA}`, `t:${TB}`].sort());
   const again = createSeasons({ store: w.store, now: () => w.clock.t });
   await again.init();
   const p = await again.handle('/v1/season/state', JSON.stringify({ ses: a.ses }));
@@ -951,7 +951,7 @@ test('évolution de la saison : l\'épingle de la ville est arrondie à 3 décim
   const c = (await w.seasons.progress()).body.levels.facile.city;
   assert.equal(c.lat, 45.903);
   assert.equal(c.lon, 5.18);
-  assert.deepEqual(Object.keys((await w.seasons.progress()).body.levels.moyen), ['players', 'online', 'seats', 'city', 'cities', 'citiesMax']);
+  assert.deepEqual(Object.keys((await w.seasons.progress()).body.levels.moyen), ['players', 'online', 'seats', 'city', 'cities', 'citiesMax', 'open', 'totals']);
 });
 
 // ---------- Ville annoncée (season-cities.js) : une ville fixée par niveau, avant le premier joueur ----------
@@ -987,7 +987,7 @@ test('ville annoncée : l\'inscription et l\'évolution de la saison la disent a
   assert.equal(p.facile.city, null);
   assert.deepEqual(p.facile.cities, []);
   assert.equal(p.difficile.announced, undefined);                                 // pas annoncé : rien de plus qu'avant
-  assert.deepEqual(Object.keys(p.difficile), ['players', 'online', 'seats', 'city', 'cities', 'citiesMax']);
+  assert.deepEqual(Object.keys(p.difficile), ['players', 'online', 'seats', 'city', 'cities', 'citiesMax', 'open', 'totals']);
 });
 
 test('ville annoncée : une proposition (toute autre commune reste permise), la commune annoncée garde le nom et le point de l\'annonce', async () => {
@@ -1100,7 +1100,9 @@ test('choix libre : serveur redémarré, toutes les villes du niveau reviennent 
   await again.init();
   const p = (await again.progress()).body.levels.facile;
   assert.deepEqual(p.cities.map((x) => x.key).sort(), ['c01283', 'c99999']);
-  assert.equal(again.debug().levelCities('facile').length, 2);
+  // Le menu ne lit que les résumés des villes (pièce sum) : aucune n'est chargée pour lui.
+  assert.equal(again.debug().levelOpen('facile').length, 2);
+  assert.equal(again.debug().levelCities('facile').length, 0, 'aucune ville chargée pour le menu');
   const jb = await again.handle('/v1/season/join', JSON.stringify({ ses: b.ses }));
   assert.equal(jb.body.city.key, 'c99999');
   const ja = await again.handle('/v1/season/join', JSON.stringify({ ses: a.ses }));
@@ -1110,4 +1112,79 @@ test('choix libre : serveur redémarré, toutes les villes du niveau reviennent 
   await third.init();
   const st = await third.handle('/v1/season/state', JSON.stringify({ ses: b.ses }));
   assert.equal(JSON.parse(st.raw).ville.key, 'c99999');
+});
+
+// Le monde entier (étape 3) : une ville n'est en mémoire que pendant qu'on y joue.
+test('monde entier : une ville sans joueur se décharge (son résumé reste au menu), un joueur qui revient la relit telle quelle', async () => {
+  const w = rig({ rules: { unloadMs: 60000, unloadEveryMs: 10000 } });
+  const a = await seeded(w);
+  await a.send({ o: 'in', c: SEED.key });
+  const [k] = redBlock(w);
+  await a.ev(['l', k, 1]);
+  await a.ev(['k', k, 1]);
+  const zombies = zombiesLeft(cityOf(w).ville);
+  // Assis : jamais déchargée, même longtemps après.
+  for (let i = 0; i < 12; i++) w.jump(w.clock.t + 15000);
+  assert.ok(cityOf(w), 'un joueur assis garde sa ville en mémoire');
+  await a.send({ o: 'out' });
+  for (let i = 0; i < 6; i++) { w.jump(w.clock.t + 15000); await w.seasons.flush(); }   // le rangement finit entre deux tics
+  const world = w.seasons.debug().worldOf('facile', SEED.key);
+  assert.equal(world.city, null, 'sans joueur depuis une minute, rangée : déchargée');
+  assert.equal(world.sum.zombies, zombies);
+  assert.equal(w.seasons.stats().unloads, 1);
+  const row = (await w.seasons.progress()).body.levels.facile.cities[0];
+  assert.deepEqual([row.key, row.zombies, row.killed, row.online], [SEED.key, zombies, 1, 0]);
+  assert.equal(w.seasons.debug().levelCities('facile').length, 0, 'le menu ne la recharge pas');
+  // Le joueur revient : la ville est relue, à l'identique.
+  const st = await a.call('/v1/season/state', {});
+  assert.equal(st.status, 200);
+  assert.equal(zombiesLeft(cityOf(w).ville), zombies);
+  assert.ok(checkVille(cityOf(w).ville).ok);
+  await a.send({ o: 'in', c: SEED.key });
+  assert.equal(a.sv('in').length, 2);
+});
+
+test('monde entier : plus de 30 villes par niveau ; progress en détaille quelques-unes, compte toutes les autres en repères, near donne les plus proches', async () => {
+  assert.ok(SEASON_RULES.citiesMax >= 1000, `villes par niveau : ${SEASON_RULES.citiesMax}`);
+  const w = rig({ rules: { progressCities: 2, nearCities: 1, citiesMax: 4 } });
+  const spots = [[45.9, 5.2], [46.1, 5.4], [48.85, 2.35], [48.86, 2.36]];
+  for (const [i, [lat, lon]] of spots.entries()) {
+    const p = await w.player(10 + i);
+    const r = await p.call('/v1/season/seed', { ...SEED, key: `c0000${i}`, name: `Ville ${i}`, place: { lat, lon, name: `Ville ${i}` }, pop: 300 + i });
+    assert.equal(r.body.created, true, JSON.stringify(r.body));
+  }
+  const late = await w.player(20);
+  assert.equal((await late.call('/v1/season/seed', { ...SEED, key: 'c00009', place: { lat: 1, lon: 1, name: 'x' } })).body.code, 'villes-max');
+  w.jump(w.clock.t + 31000);
+  const p = (await w.seasons.progress()).body.levels.facile;
+  assert.equal(p.cities.length, 2);
+  assert.equal(p.open, 4);
+  assert.deepEqual([p.totals.cities, p.totals.population], [4, 300 + 301 + 302 + 303]);
+  assert.equal(p.marks.reduce((n, m) => n + m[2], 0), 2, 'les deux villes non détaillées sont dans les repères');
+  assert.ok(p.marks.every((m) => m.length === 4 && Math.abs(m[0]) <= 90 && Math.abs(m[1]) <= 180));
+  assert.equal(p.near, undefined, 'sans point, pas de villes proches');
+  const near = (await w.seasons.progress({ near: { lat: 48.86, lon: 2.36 } })).body.levels.facile.near;
+  assert.deepEqual(near.map((r) => r.key), ['c00003']);
+});
+
+test('monde entier : une ville rouverte joue la dernière nuit passée sans elle, une seule fois', async () => {
+  const w = rig({ rules: { unloadMs: 60000, unloadEveryMs: 10000 } });
+  const a = await seeded(w);
+  await a.send({ o: 'in', c: SEED.key });
+  await a.ev(['c', redBlock(w)[0]]);
+  await a.send({ o: 'out' });
+  for (let i = 0; i < 6; i++) { w.jump(w.clock.t + 15000); await w.seasons.flush(); }   // le rangement finit entre deux tics
+  assert.equal(cityOf(w), null);
+  // La nuit passe (23 h UTC à Pérouges) sans la ville en mémoire ; le lendemain matin, un joueur revient.
+  w.jump(T0 + 11 * 3600000);
+  w.jump(T0 + 20 * 3600000);
+  assert.equal(cityOf(w), null);
+  assert.equal((await a.call('/v1/season/state', {})).status, 200);
+  const v = cityOf(w).ville;
+  assert.equal(v.vn, '2026-10-06', 'la nuit du 6 au 7 octobre est jouée à la relecture');
+  assert.ok(checkVille(v).ok);
+  const z = zombiesLeft(v);
+  await a.send({ o: 'in', c: SEED.key });
+  w.jump(w.clock.t + 31000);
+  assert.equal(zombiesLeft(v), z, 'de jour, rien de plus');
 });

@@ -15,7 +15,7 @@ import { WebSocket } from 'ws';
 import { startServer, makeHmac, sweepSockets, BACKPRESSURE, CONTROL } from '../src/main.js';
 import { buildConfig, loadConfig, parseEnvText, parsePort, roomConfig } from '../src/config.js';
 import { createLog, cleanFields } from '../src/log.js';
-import { clientIp, ipScope, normIp, acceptsGzip, createHttpHandler } from '../src/http.js';
+import { clientIp, ipScope, normIp, acceptsGzip, createHttpHandler, nearOf } from '../src/http.js';
 import zlib from 'node:zlib';
 import { createMemoryStore } from '../src/store-memory.js';
 import { startDevServer } from '../dev.mjs';
@@ -387,6 +387,13 @@ test('GET /v1/health, GET /, 404, 405 et en-têtes de la section 6.2', async () 
   }
 });
 
+test('progression de la saison : le point near est lu dans l\'adresse, arrondi au centième, ignoré s\'il est illisible', () => {
+  assert.deepEqual(nearOf('/v1/season/progress?near=45.76123,4.83567'), { lat: 45.76, lon: 4.84 });
+  assert.deepEqual(nearOf('/v1/season/progress?x=1&near=-33.9,-70.6'), { lat: -33.9, lon: -70.6 });
+  for (const u of ['/v1/season/progress', '/v1/season/progress?near=91,0', '/v1/season/progress?near=1,181', '/v1/season/progress?near=a,b',
+    '/v1/season/progress?near=1,2,3', '/v1/season/progress?near=1e3,2', null]) assert.equal(nearOf(u), null, String(u));
+});
+
 test('routes de la saison : progression publique mise en cache 30 s, POST seulement avec corps borné, origine étrangère refusée, coupées avec SEASONS=0', async () => {
   const srv = await serve();
   try {
@@ -397,6 +404,9 @@ test('routes de la saison : progression publique mise en cache 30 s, POST seulem
     const body = await pr.json();
     assert.equal(body.ok, true);
     assert.ok(Array.isArray(body.levels) || body.season, JSON.stringify(body));
+    // near : les villes proches d'un point, par niveau (même cache public, l'adresse porte le point).
+    const pn = await (await fetch(`${srv.url}/v1/season/progress?near=45.9,5.2`, { headers: { Origin: GAME } })).json();
+    assert.ok(Array.isArray(pn.levels.facile.near), JSON.stringify(pn.levels.facile));
     const post = (route, text, headers = {}) => fetch(`${srv.url}/v1/season/${route}`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8', ...headers }, body: text });
     // Sans session : refusé en clair, jamais d'erreur serveur.
     for (const route of ['join', 'state', 'seed', 'tile', 'adj', 'home']) {

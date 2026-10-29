@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createOnline, createServerClock, NULL_ONLINE, ONLINE, ONLINE_KEYS, serverFromParams } from '../src/online.js';
-import { parseClient, metersBetween, fromE6, nameOf, cellOf, toE6 } from '../src/net/protocol.js';
+import { parseClient, metersBetween, fromE6, nameOf, cellOf, toE6, CLIENT_LEVEL } from '../src/net/protocol.js';
 import { makeZone, zoneStatus } from '../src/privacy.js';
 
 const T0 = 1791640000000;
@@ -196,7 +196,7 @@ test('santé puis hello ; welcome : en ligne, surnom recomposé', async () => {
   assert.equal(ws.url, 'ws://127.0.0.1:8787/v1/ws');
   assert.equal(h.online.worldCount, 12, 'compte du monde lu dans la santé');
   ws.accept();
-  assert.deepEqual(ws.sent, [{ t: 'hello', v: 1, cl: 4, tok: null, c: 'dev' }]);
+  assert.deepEqual(ws.sent, [{ t: 'hello', v: 1, cl: 5, tok: null, c: 'dev' }]);
   ws.deliver(welcomeMsg(h));
   assert.equal(h.online.status, 'en-ligne');
   assert.deepEqual(h.online.me, { name: 'Renard des Quais 27', left: null, sid: 7 });
@@ -356,6 +356,30 @@ test('12 s sans message : hors ligne, puis reconnexion', async () => {
   assert.equal(h.online.status, 'connexion');
 });
 
+// Page figée (arrivée dans une ville, appareil chargé) : le minuteur des 12 s part en retard, avant les messages reçus pendant ce temps.
+test('page figée : le silence laisse passer les messages arrivés pendant le gel, puis coupe 1,5 s plus tard s\'il n\'y en a pas', async () => {
+  const h = harness();
+  const ws = await connect(h, { beat: false });
+  await h.clock.advance(11000);
+  h.clock.setSkew(3000);                                   // la page reprend la main 3 s après l'heure du minuteur
+  await h.clock.advance(1000);
+  assert.equal(h.online.status, 'en-ligne', 'pas coupé à l\'heure : la page était figée');
+  ws.deliver({ t: 'near', ts: h.clock.now(), p: [], f: [], c: 0 });
+  await h.clock.advance(11999);
+  assert.equal(h.online.status, 'en-ligne', 'le message reçu relance les 12 s');
+  await h.clock.advance(1);
+  assert.equal(h.online.status, 'hors-ligne', 'vrai silence de 12 s : coupé à l\'heure');
+  const h2 = harness();
+  const ws2 = await connect(h2, { beat: false });
+  await h2.clock.advance(11000);
+  h2.clock.setSkew(3000);
+  await h2.clock.advance(1000 + ONLINE.stallGraceMs - 1);
+  assert.equal(h2.online.status, 'en-ligne');
+  await h2.clock.advance(1);
+  assert.equal(h2.online.status, 'hors-ligne', 'rien après le gel : coupé 1,5 s plus tard');
+  assert.equal(ws2.readyState, 3);
+});
+
 test('délais 1, 2, 4, 8, 16 puis 30 s, à ±20 % ; remis à zéro après 60 s connectées', async () => {
   for (const [r, k] of [[() => 0, 0.8], [() => 0.999999, 1.2], [() => 0.5, 1]]) {
     const h = harness({ rand: r });
@@ -432,7 +456,7 @@ test('repli HTTP après 3 échecs WebSocket alors que /v1/health répond, gardé
   assert.equal(first.method, 'POST');
   assert.equal(first.opts.headers['Content-Type'], 'text/plain;charset=UTF-8', 'requête simple au sens de CORS');
   assert.equal(first.opts.credentials, 'omit');
-  assert.deepEqual(first.json, { v: 1, tok: null, sid: null, msgs: [{ t: 'hello', v: 1, cl: 4, tok: null, c: 'dev' }] });
+  assert.deepEqual(first.json, { v: 1, tok: null, sid: null, msgs: [{ t: 'hello', v: 1, cl: 5, tok: null, c: 'dev' }] });
   assert.equal(h.online.status, 'lent');
   assert.equal(h.online.transport, 'poll');
   assert.equal(h.online.worldCount, 2);
@@ -680,7 +704,7 @@ test('maintenance sans choix rangé : pastille « maintenance », puis la carte 
 
 test('version périmée : « Mets le jeu à jour », plus aucun essai', async () => {
   const h = harness();
-  h.health.minClient = 5;
+  h.health.minClient = CLIENT_LEVEL + 1;
   h.online.start();
   await h.clock.advance(0);
   assert.equal(h.online.status, 'perime');
@@ -1848,7 +1872,7 @@ test('compte : hello avec ses et tok nul, welcome sans jeton rangé ; sans sessi
   await h.clock.advance(0);
   const ws = h.WS.last();
   ws.accept();
-  assert.deepEqual(ws.sent[0], { t: 'hello', v: 1, cl: 4, tok: null, ses: SES, c: 'dev' });
+  assert.deepEqual(ws.sent[0], { t: 'hello', v: 1, cl: 5, tok: null, ses: SES, c: 'dev' });
   // Un welcome qui porterait un jeton (il n'en porte jamais avec ses) : rien n'est rangé à la place de l'anonyme.
   ws.deliver(welcomeMsg(h, { tok: 'Z'.repeat(43) }));
   assert.equal(JSON.parse(storage.getItem(TOKEN_KEY)).tok, TOK, 'jeton anonyme intact');
@@ -1858,7 +1882,7 @@ test('compte : hello avec ses et tok nul, welcome sans jeton rangé ; sans sessi
   h.online.relink();
   await h.clock.advance(0);
   h.WS.last().accept();
-  assert.deepEqual(h.WS.last().sent[0], { t: 'hello', v: 1, cl: 4, tok: TOK, c: 'dev' });
+  assert.deepEqual(h.WS.last().sent[0], { t: 'hello', v: 1, cl: 5, tok: TOK, c: 'dev' });
   const k = harness({ storage, session: () => { throw new Error('compte'); } });
   k.online.start();
   await k.clock.advance(0);
@@ -1896,7 +1920,7 @@ test('compte : err session, événement puis reconnexion avec le jeton anonyme (
   const next = h.WS.last();
   assert.notEqual(next, ws, 'nouvelle connexion tout de suite');
   next.accept();
-  assert.deepEqual(next.sent[0], { t: 'hello', v: 1, cl: 4, tok: TOK, c: 'dev' });
+  assert.deepEqual(next.sent[0], { t: 'hello', v: 1, cl: 5, tok: TOK, c: 'dev' });
   // Sans personne pour relink : nouvel essai espacé, pas de rafale.
   const g = harness({ session: () => SES });
   let seen = 0;

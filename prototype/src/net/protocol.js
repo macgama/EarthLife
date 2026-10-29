@@ -3,7 +3,9 @@
 // Module pur, partagé tel quel par le jeu et par le serveur : il n'importe rien.
 
 export const PROTOCOL = 1;
-export const CLIENT_LEVEL = 4;                    // comparé à minClient (section 4.8) ; 2 : saisons (message `sv`) ; 3 : file d'attente de la saison ; 4 : grandes villes de la saison, par quartiers
+// Comparé à minClient (section 4.8) ; 2 : saisons (message `sv`) ; 3 : file d'attente de la saison ; 4 : grandes villes de la saison, par quartiers ;
+// 5 : communes de plus de 400 tuiles en saison (SEASON.vastTiles).
+export const CLIENT_LEVEL = 5;
 // crown : posé par le serveur seulement, dans les lignes de `near` d'un survivant en couronne anonyme (spec 3.1 et
 // 6.6 : jamais de flèche vers lui) ; un client ne l'envoie pas (allure de 0 à 15).
 export const FLAGS = { run: 1, inside: 2, carrying: 4, down: 8, crown: 16 };
@@ -26,10 +28,12 @@ export const RULES = {
 // file). Serveur : in, no, full, wait (rang et taille de la file), go (une place est gardée ms), rows, tile, cnt, ls (prêts de tous les
 // joueurs), un (un quartier commence), ud (un quartier est repris), deny, end. Un client sans `q` reçoit `full` quand le niveau est complet, comme avant la file.
 // Une rangée de pâté a 9 nombres (quartier.js, ROW) ; un message du serveur tient en 16 Ko. `cl` (niveau du client, `in` et corps HTTP) :
-// une ville en quartiers (mode « quartiers ») n'est ouverte qu'aux clients de niveau 4 au moins ; un ancien client reçoit le refus `mode`.
+// une ville en quartiers (mode « quartiers ») n'est ouverte qu'aux clients de niveau 4 au moins, une commune de plus de vastTiles tuiles qu'à
+// ceux de niveau 5 ; un ancien client reçoit le refus `mode`.
 // Dans une ville en quartiers, `tile` porte `qi` et `qk` : les lieux (clés de quartier) ajoutés à `ville.qk` depuis l'indice `qi`.
 export const SEASON = {
-  maxEvents: 40, maxRows: 400, maxUnits: 160, maxPlaces: 400, rowLength: 9, seats: 100, days: 60, quartiersLevel: 4,
+  // maxUnits, maxPlaces : ceux d'une commune de 2 000 tuiles (capsOf de quartier.js) ; une ville de 400 tuiles au plus en reste à 160 et 400.
+  maxEvents: 40, maxRows: 400, maxUnits: 800, maxPlaces: 2000, rowLength: 9, seats: 100, days: 60, quartiersLevel: 4, vastLevel: 5, vastTiles: 400,
   // Fenêtre (grande ville) : les tuiles dont ce jeu reçoit les rangées ; `win` en demande 32 de plus au plus par message, 400 en tout.
   winPerMsg: 32, winMax: 400,
   levels: ['facile', 'moyen', 'difficile'],

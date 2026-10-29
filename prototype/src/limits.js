@@ -14,6 +14,9 @@ export const ZONES_VERSION = 1;
 // est trop grande pour être recensée (contourTiles rend une liste vide) et startVille refuse de la commencer.
 // Même borne à l'écriture et à la relecture du territoire (territory-store.js).
 export const CENSUS_MAX_TILES = 400;
+// Saison (étape 3, le monde entier) : une commune jusqu'à 2 000 tuiles (environ 5 000 km² à nos latitudes : Rome, Moscou) ; on en recense
+// CENSUS_MAX_TILES autour du départ, les autres reçoivent une part estimée d'après leur surface dans le contour.
+export const SEASON_MAX_TILES = 2000;
 
 export const ZONE_GRID = {
   extent: 4096,   // coordonnées entières d'une tuile MVT

@@ -88,6 +88,15 @@ export function pathOf(url) {
   return q < 0 ? url : url.slice(0, q);
 }
 
+// Point `near` de /v1/season/progress (?near=45.76,4.84) : { lat, lon } arrondis au centième (environ 1 km), ou null s'il est absent ou illisible.
+export function nearOf(url) {
+  const m = typeof url === 'string' ? /[?&]near=(-?\d{1,2}(?:\.\d{1,6})?),(-?\d{1,3}(?:\.\d{1,6})?)(?:&|$)/.exec(url) : null;
+  if (!m) return null;
+  const lat = Number(m[1]), lon = Number(m[2]);
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { lat: Math.round(lat * 100) / 100, lon: Math.round(lon * 100) / 100 };
+}
+
 // Le client accepte-t-il gzip ? (Accept-Encoding : « gzip », « gzip;q=0.8 », jamais « gzip;q=0 ».)
 export function acceptsGzip(header) {
   if (typeof header !== 'string') return false;
@@ -279,7 +288,7 @@ export function createHttpHandler({ room, config, log = () => {}, isBanned = () 
       if (route === 'account') return await accountPost(req, res, p);
       if (route === 'season') return await seasonPost(req, res, p);
       if (route === 'progress') {
-        const r = await seasons.progress();
+        const r = await seasons.progress({ near: nearOf(req.url) });
         return reply(req, res, r.status, r.body, r.status === 200 ? { 'Cache-Control': 'public, max-age=30' } : {});
       }
       return await post(req, res, route);
