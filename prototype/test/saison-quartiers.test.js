@@ -35,7 +35,8 @@ const mirror = (v) => JSON.parse(JSON.stringify(v));
 // ---------- Protocole ----------
 
 test('niveau du client : `in` le dit, 4 pour les grandes villes ; un vieux client sans `cl` reste compris', () => {
-  assert.equal(CLIENT_LEVEL, SEASON.quartiersLevel);
+  assert.ok(CLIENT_LEVEL >= SEASON.quartiersLevel);
+  assert.equal(CLIENT_LEVEL, SEASON.vastLevel, 'les communes de plus de 400 tuiles aussi');
   assert.deepEqual(validateClient({ t: 'sv', o: 'in', c: 'c01283', q: true, cl: 4 }).msg, { t: 'sv', o: 'in', c: 'c01283', q: true, cl: 4 });
   assert.deepEqual(validateClient({ t: 'sv', o: 'in', c: 'c01283' }).msg, { t: 'sv', o: 'in', c: 'c01283' });
   for (const cl of [0, -1, 1.5, '4', 5000]) assert.equal(validateClient({ t: 'sv', o: 'in', c: 'c01283', cl }).ok, false, `cl ${cl}`);
@@ -73,7 +74,7 @@ test('serveur : `un` (un quartier commence), `ud` (un quartier est repris), `til
   assert.equal(parsed.ok, true);
   assert.deepEqual([parsed.msg.qi, parsed.msg.qk], [2, [Q1, '']]);
   assert.equal(ok({ ...tile, qi: undefined, qk: undefined }).ok, true, 'ville entière : pas de lieux');
-  for (const bad of [{ ...tile, qk: ['../x'] }, { ...tile, qk: 'q' }, { ...tile, qi: -1 }, { ...tile, qk: new Array(401).fill(Q1) }]) {
+  for (const bad of [{ ...tile, qk: ['../x'] }, { ...tile, qk: 'q' }, { ...tile, qi: -1 }, { ...tile, qk: new Array(SEASON.maxPlaces + 1).fill(Q1) }]) {
     assert.equal(ok(bad).ok, false, JSON.stringify(bad).slice(0, 80));
   }
   assert.ok(SEASON_QKEY.test('') && SEASON_QKEY.test(Q1) && SEASON_QKEY.test('k12_34') && !SEASON_QKEY.test('b45.9_5.1'));
@@ -172,7 +173,7 @@ test('villes en cours : une grande ville dit ses quartiers repris', () => {
 
 test('carte « Ville trop grande » : la taille de la commune est dite, les grandes villes se jouent par quartiers', () => {
   const t = CITY_TEXT.seasonTooBig('Moscou', 13010112);
-  assert.ok(t.startsWith('Moscou (13') && t.includes('habitants') && t.includes('400 tuiles'), t);
+  assert.ok(t.startsWith('Moscou (13') && t.includes('habitants') && t.includes('2 000 tuiles'), t);
   assert.ok(CITY_TEXT.seasonTooBig('', null).startsWith('Cette commune s\''), 'sans nom ni population');
   assert.ok(CITY_TEXT.quartiersSeason.includes('quartier par quartier'));
 });

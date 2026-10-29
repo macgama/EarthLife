@@ -10,7 +10,7 @@ import {
   NIVEAUX, LEVEL_KEYS, NIVEAU_DEFAUT, ETAT, QUARTIER, ROW, startVille, memberOf, censusWeights, censusBlocks, levelSummary, placeTile,
   blockInfo, counters, cityStatus, giveBack, fallFlag,
   regrow, volunteersNight, homeWeights, hiddenByBuilding, takeHome, heartWaves, nestSize, keyPoint, startUnit, finishUnit,
-  unitTilesMissing, unitKeyOf, zombiesLeft, supplyFor, villeLine, flagNights,
+  unitTilesMissing, unitKeyOf, zombiesLeft, supplyFor, villeLine, flagNights, failedWeights,
 } from './quartier.js';
 import {
   soloOps, seasonOps, applyRows, applyTile, applyCounts, applyLent, adoptTiles, applyPlaces, applyUnit, applyUnitDone, resync as resyncVille,
@@ -20,7 +20,7 @@ import {
   censusUnit, contourTiles, hasContour, chapterMode, communeMembership, neighboursFromZones, offlinePlace, offlineCommune,
   withEstimate, zoneTiles, populationLabel, rekeyCommune, groupDigits, pointInContour,
 } from './commune.js';
-import { createZoneGraph, lonLatToTilePx } from './limits.js';
+import { createZoneGraph, lonLatToTilePx, CENSUS_MAX_TILES, SEASON_MAX_TILES } from './limits.js';
 import { censusPlan, mergeCensus, pateAt, edgeNeighbours, blocksTileKey, createBlocksClient } from './blocks.js';
 import { createBlocksJobs } from './blocks-worker.js';
 import { tileUrl } from './tiles.js';
@@ -73,7 +73,7 @@ export const CITY_TEXT = {
   quartiers: 'Une grande ville : elle se sauve quartier par quartier. Commence par le tien.',
   quartiersSeason: 'Grande ville : elle se sauve quartier par quartier. Le quartier où tu entres commence pour tous les joueurs ; la ville est sauvée quand tous ses quartiers sont repris.',
   // Saison : la commune dépasse ce que le recensement sait compter (CENSUS_MAX_TILES tuiles de carte, environ 1 000 km²).
-  seasonTooBig: (name, population) => `${name || 'Cette commune'}${Number.isInteger(population) && population > 0 ? ` (${groupDigits(population)} habitants)` : ''} s'étend sur plus de 400 tuiles de carte, environ 1 000 km² : le recensement ne sait pas la compter d'un coup. Choisis une commune plus petite : les grandes villes se jouent par quartiers, jusqu'à cette taille.`,
+  seasonTooBig: (name, population) => `${name || 'Cette commune'}${Number.isInteger(population) && population > 0 ? ` (${groupDigits(population)} habitants)` : ''} s'étend sur plus de 2 000 tuiles de carte, environ 5 000 km² : le jeu ne sait pas encore la découper. Choisis une commune plus petite : les grandes villes se jouent par quartiers, jusqu'à cette taille.`,
   liberated: (n) => `${groupDigits(n)} habitant${n > 1 ? 's sortent' : ' sort'} de ${n > 1 ? 'leurs cachettes' : 'sa cachette'}`,
 };
 
@@ -169,8 +169,11 @@ function referencePoint(graph, place, unit, commune) {
 // avec sa relance et son repli, graphe des zones, appartenance, poids, mode et carte des niveaux. N'écrit rien dans le
 // territoire (beginCity le fait une fois le niveau choisi). deps : { client, communes, template, log? } ; place :
 // { lat, lon, name, aroundMe? } ; onProgress({ step, text, done?, total? }). Rend { ok: true, … } ou { ok: false, reason }
-// avec reason : 'no-streets' (aucune tuile lisible), 'too-big' (plus de 400 tuiles), 'empty' (presque personne), 'aborted'.
-export async function prepareCity(deps, place, { onProgress = () => {}, signal = null, now = Date.now() } = {}) {
+// avec reason : 'no-streets' (aucune tuile lisible), 'too-big' (plus de 400 tuiles, 2 000 en saison), 'empty' (presque personne), 'aborted'.
+// season : commune jusqu'à SEASON_MAX_TILES tuiles ; au-delà de CENSUS_MAX_TILES, seules les plus proches du départ sont recensées, les
+// autres (`estimated`) reçoivent une part d'après leur surface dans le contour et la densité des tuiles recensées (failedWeights).
+// censusMax : tuiles recensées au plus (les essais la baissent pour jouer une vaste commune avec les tuiles d'essai).
+export async function prepareCity(deps, place, { onProgress = () => {}, signal = null, now = Date.now(), season = false, censusMax = CENSUS_MAX_TILES } = {}) {
   const { client, communes, template } = deps;
   const log = deps.log ?? (() => {});
   const maison = { lat: place.lat, lon: place.lon };
@@ -219,7 +222,7 @@ export async function prepareCity(deps, place, { onProgress = () => {}, signal =
   // 2.2 Le recensement : par le contour, sinon de proche en proche par les zones.
   const knownPop = Number.isInteger(unit.population) && unit.population >= 0;
   const cut = !knownPop || unit.population <= 2000;
-  let census = null;
+  let census = null, estimated = [];
   let lastDone = 0;
   const progress = (base, total) => ({ onProgress: (m) => {
     const done = base + (m.done ?? 0);
@@ -228,9 +231,16 @@ export async function prepareCity(deps, place, { onProgress = () => {}, signal =
   } });
   const run = async (tiles, base, total) => client.census(template, tiles, unit.contour, { level: unit.level, cut, signal, ...progress(base, total) });
   if (hasContour(unit.contour)) {
-    const all = contourTiles(unit.contour);
+    const all = contourTiles(unit.contour, season ? { max: SEASON_MAX_TILES } : {});
     if (!all.length) return { ok: false, reason: 'too-big', unit, commune };
-    const tiles = censusPlan(all, maison);
+    const plan = censusPlan(all, maison);
+    let tiles = plan;
+    // Vaste commune (saison) : les censusMax tuiles les plus proches du départ sont recensées (dans l'ordre du plan), les autres estimées.
+    if (season && plan.length > censusMax) {
+      const keep = new Set([...plan].sort((a, b) => a.d - b.d).slice(0, censusMax).map((t) => t.key));
+      tiles = plan.filter((t) => keep.has(t.key));
+      estimated = plan.filter((t) => !keep.has(t.key)).map((t) => t.key);
+    }
     onProgress({ step: 'census', done: 0, total: tiles.length, text: CITY_TEXT.counting(unit.name, 0, tiles.length) });
     census = await run(tiles, 0, tiles.length).catch((err) => { guard(err); log(`recensement : ${err?.message ?? err}`); return null; });
     if (!census) return { ok: false, reason: 'no-streets', unit, commune };
@@ -283,12 +293,14 @@ export async function prepareCity(deps, place, { onProgress = () => {}, signal =
   // 2.4 Poids, nombre de pâtés, mode ; 2.5 carte des niveaux.
   let weights = censusWeights(census, fn);
   if (!Object.values(weights).some((w) => w > 0)) weights = Object.fromEntries(census.results.map((r) => [r.tile, Math.max(1, r.floor)]));
-  const blocks = censusBlocks(census, fn);
+  if (estimated.length) weights = { ...weights, ...failedWeights(weights, estimated.filter((k) => !Object.hasOwn(weights, k)), unit.contour) };
+  // Commune en partie estimée : son nombre de pâtés n'est pas connu (le mode se décide sur ceux qui sont comptés).
+  const blocks = estimated.length ? null : censusBlocks(census, fn);
   const partial = censusBlocks(census, fn, { partial: true });
   const mode = chapterMode(unit.population, blocks, { partial }) ?? 'entiere';
   const summary = levelSummary(unit.population, mode);
   return {
-    ok: true, place, maison, ref, commune, unit, census, graph, fn, member, weights, mode, summary, blocks, partial, incomplete,
+    ok: true, place, maison, ref, commune, unit, census, graph, fn, member, weights, mode, summary, blocks, partial, incomplete, estimated: estimated.length,
     offline, notes, homeCut: first, aroundMe: !!place.aroundMe,
   };
 }
@@ -596,7 +608,7 @@ export function createCityRuntime(deps) {
     if (S) return settleWaitingSeason();
     if (!waiting.size || disposed) return;
     let more = frontierTiles().slice(0, CITY.maxFlight * 2);
-    if (placed.size + flight.size + more.length > QUARTIER.maxTiles) more = [];
+    if (placed.size + flight.size + more.length > CENSUS_MAX_TILES) more = [];
     if (more.length) { await Promise.all(more.map((t) => cutTile(t.x, t.y, { silent: true }))); }
     for (const [key, res] of [...waiting]) {
       const r = placeTile(ville, res, { member, force: forced.has(key) });

@@ -12,7 +12,7 @@ import {
 import { createBlocksClient } from '../src/blocks.js';
 import { findCommune, findNeighbours, createCommuneCache } from '../src/commune.js';
 import { createTerritoryStore, currentVille, parseTerritory } from '../src/territory-store.js';
-import { checkVille, counters, blockInfo, cityStatus, zombiesLeft, LEVEL_KEYS, NIVEAUX, heartWaves, ROW, hiddenByBuilding } from '../src/quartier.js';
+import { checkVille, counters, blockInfo, cityStatus, zombiesLeft, LEVEL_KEYS, NIVEAUX, heartWaves, ROW, hiddenByBuilding, startVille } from '../src/quartier.js';
 import { createGrid } from '../src/collision.js';
 import { createZombieDirector, createPlayer } from '../src/game.js';
 import { gameplayModifiers, forcedWeather } from '../src/weather.js';
@@ -156,6 +156,24 @@ test('prepareCity : une tuile du recensement en échec est relancée une fois, l
   const began = beginCity({ store: createTerritoryStore({ storage: memoryStorage() }), communes: null }, prep, 'moyen');
   assert.ok(began.ok);
   assert.ok(checkVille(began.ville).ok);
+});
+
+test('prepareCity en saison : vaste commune, seules les tuiles proches du départ sont recensées, les autres estimées d\'après le contour', async () => {
+  const client = makeClient();
+  const prep = await prepareCity({ client, communes: createCommuneCache(memoryStorage()), template: TEMPLATE }, HOME, { season: true, censusMax: 2 });
+  assert.ok(prep.ok);
+  assert.equal(prep.census.results.length + prep.census.failed.length, 2, 'deux tuiles recensées');
+  assert.equal(prep.estimated, 6);
+  assert.deepEqual(prep.census.results.map((r) => r.tile).sort(), ['14/8427/5834', '14/8427/5835'], 'les deux tuiles du départ');
+  const keys = Object.keys(prep.weights);
+  assert.equal(keys.length, 8, 'toutes les tuiles du contour ont un poids');
+  assert.ok(keys.every((k) => Number.isFinite(prep.weights[k]) && prep.weights[k] >= 0));
+  const v = startVille({ key: prep.unit.key, population: prep.unit.population, mode: 'quartiers', tiles: prep.weights, contour: prep.unit.contour, at: 1 });
+  assert.ok(v && checkVille(v).ok);
+  assert.equal(Object.values(v.tiles).reduce((a, t) => a + t.p[0], 0), prep.unit.population);
+  // Hors saison, la même borne ne recense que ses deux tuiles : rien n'est estimé.
+  const free = await prepareCity({ client, communes: createCommuneCache(memoryStorage()), template: TEMPLATE }, HOME, { censusMax: 2 });
+  assert.equal(free.estimated, 0);
 });
 
 // ---------- Conservation avec le vrai directeur ----------

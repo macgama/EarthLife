@@ -517,3 +517,24 @@ test('quartiers, fenêtre : une petite ville se joue en entier, une fenêtre mal
   assert.ok(a.sv('rows').some((m) => m.r[TA]?.[key(0, 0)]));
   for (const win of [['zz'], [3], Array(401).fill(TA)]) assert.equal((await a.call('/v1/season/state', { win })).status, 400, JSON.stringify(win).slice(0, 20));
 });
+
+// Le monde entier (étape 3) : une commune de plus de 400 tuiles (Rome, Moscou) s'ouvre pour un jeu de niveau 5 ; un jeu de niveau 4 reçoit `mode`.
+test('quartiers : une commune de plus de 400 tuiles s\'ouvre pour un jeu de niveau 5, un jeu de niveau 4 reçoit un refus lisible', async () => {
+  const w = rig();
+  const vast = { ...SEED, key: 'r58091', name: 'Moscou', pop: 13000000,
+    tiles: Object.fromEntries(Array.from({ length: 1800 }, (_, i) => [`14/${9900 + (i % 45)}/${5100 + Math.floor(i / 45)}`, 1000 + i])) };
+  const vastCity = () => w.seasons.debug().worldOf('facile', vast.key).city;
+  const a = await w.player(1, { cl: 5 }), old = await w.player(2);
+  assert.ok(JSON.stringify(vast).length > 24576, 'les poids de 1 800 tuiles dépassent l\'ancienne borne du corps');
+  assert.deepEqual([(await old.call('/v1/season/seed', vast)).body.code, vastCity()], ['mode', null]);
+  const r = await a.call('/v1/season/seed', vast);
+  assert.deepEqual([r.status, r.body.created], [200, true], JSON.stringify(r.body));
+  const v = vastCity().ville;
+  assert.equal(Object.keys(v.tiles).length, 1800);
+  assert.ok(checkVille(v).ok);
+  assert.equal((await old.call('/v1/season/enter', { key: vast.key })).body.code, 'mode');
+  assert.equal((await old.call('/v1/season/join', {})).body.city, null);
+  assert.equal((await a.call('/v1/season/state', {})).status, 200);
+  await a.send({ o: 'in', c: vast.key });
+  assert.equal(a.sv('in').length, 1);
+});

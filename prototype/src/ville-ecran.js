@@ -17,7 +17,7 @@ import { addHabitant, clearHabitants } from './habitants.js';
 import { SEASON_TEXT } from './net/season.js';
 import { insideTiles, resumeHome } from './saison-miroir.js';
 import { createMenuSheet } from './menu-sheet.js';
-import { liveCities, cityNote } from './villes-en-cours.js';
+import { liveCities, cityNote, levelRows } from './villes-en-cours.js';
 import { createSalon, createTabs, frontModel, summaryOf, ctaModel, destinationOf, clockOf, pinsOf, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
 const LEVEL_KEY = 'earthlife.niveau';
@@ -43,7 +43,7 @@ export function createCityGame(host) {
   let pendingFirst = null;   // { name, zombies, hidden } de la ville qui commence
   // Menu : inscription, état des lieux (relu au plus toutes les 30 s), niveau voulu avant de se connecter, message passager, et ce que le joueur
   // a touché pour choisir sa ville (`sel` : un repère de ville ou un point de la carte, sinon rien : il reprend sa ville ou prend la proposition).
-  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, liveAt: 0, busy: false, after: null, note: '', noteAt: 0, pins: [], framed: false, sel: null };
+  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, liveAt: 0, busy: false, after: null, note: '', noteAt: 0, pins: [], framed: false, sel: null, near: null };
   const ls = (() => { try { return window.localStorage; } catch { return null; } })();
   let salon = null, tabs = null, sheet = null;
   const seasonRef = { rt: null };                                            // runtime de la saison en cours (messages du serveur)
@@ -225,10 +225,11 @@ export function createCityGame(host) {
   // → true si la ville est choisie ; false si le niveau n'existe pas ou si le joueur est inscrit à un autre niveau (la note du salon le dit).
   function selectCity(level, key) {
     if (!FRONT_LEVELS.includes(level)) return false;
+    if (/^zone-\d+$/.test(key)) return openZone(level, key);
     const enrolled = seasonUi.enrolled?.level ?? null;
     if (enrolled && enrolled !== level) { seasonUi.note = 'Ton niveau est choisi pour la saison : il ne change plus.'; seasonUi.noteAt = Date.now(); syncSeason(); return false; }
     if ($('menu')?.dataset.tab !== 'saison') doc.querySelector('#menu-tabs [data-tab="saison"]')?.click();
-    const row = seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === key) ?? null;
+    const row = rowOf(level, key);
     const ann = seasonUi.progress?.levels?.[level]?.announced;
     const name = row?.name ?? (ann?.key === key ? ann.name : ownOf()?.key === key ? ownOf().name : '');
     seasonUi.sel = { kind: 'city', level, key, name };
@@ -238,9 +239,34 @@ export function createCityGame(host) {
     picker.frameCities?.(framingOf(seasonUi.pins, level, key));
     return true;
   }
+  // Ligne d'une ville du niveau dans l'état des lieux (villes détaillées et villes proches du point demandé), ou null.
+  function rowOf(level, key) {
+    return levelRows(seasonUi.progress?.levels?.[level]).find((c) => c.key === key) ?? null;
+  }
+  // Point autour duquel l'état des lieux détaille les villes (near) : le groupe de villes touché, ta ville, le lieu touché, ou le lieu de la carte.
+  function nearPoint() {
+    const own = ownOf();
+    const p = seasonUi.near ?? (Number.isFinite(own?.lat) ? own : null) ?? (seasonUi.sel?.kind === 'place' ? seasonUi.sel.place : null) ?? picker.getPlace?.() ?? null;
+    return p && Number.isFinite(p.lat) && Number.isFinite(p.lon) ? { lat: p.lat, lon: p.lon } : null;
+  }
+  // Repère regroupé touché (plusieurs villes ouvertes par ici) : l'état des lieux est relu autour de lui, ses villes y prennent chacune leur
+  // repère et la carte s'y pose.
+  function openZone(level, key) {
+    const pin = seasonUi.pins.find((p) => p.level === level && p.key === key);
+    if (!pin) return false;
+    seasonUi.near = { lat: pin.lat, lon: pin.lon };
+    picker.frameCities?.({ kind: 'city', level, key, lat: pin.lat, lon: pin.lon });
+    seasonUi.at = 0;
+    refreshSeason().then(() => {
+      const near = levelRows({ cities: seasonUi.progress?.levels?.[level]?.near ?? [] }).map((c) => c.key);
+      const frame = framingOf(seasonUi.pins.filter((p) => p.level === level && near.includes(p.key)));
+      if (frame) picker.frameCities?.(frame);
+    }).catch(() => {});
+    return true;
+  }
   // Une ville de la saison telle que le serveur la donne (amis : où est un ami) : { name, lat?, lon? } ou null si elle n'est pas dans l'état des lieux.
   function cityOf(level, key) {
-    const row = seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === key);
+    const row = rowOf(level, key);
     if (!row) return null;
     const pin = seasonUi.pins.find((p) => p.level === level && p.key === key);
     return { name: typeof row.name === 'string' ? row.name : '', ...(pin ? { lat: pin.lat, lon: pin.lon } : {}) };
@@ -249,6 +275,7 @@ export function createCityGame(host) {
   function placeChosen(place) {
     if (!place || $('menu')?.dataset.tab !== 'saison') return;
     seasonUi.sel = { kind: 'place', place: { lat: place.lat, lon: place.lon, name: place.name } };
+    seasonUi.near = null;                                  // les villes détaillées sont désormais celles autour du lieu touché
     syncSeason();
   }
   // Connexion ou déconnexion du compte : l'inscription et l'état des lieux sont relus tout de suite. Un joueur venu pour
@@ -269,7 +296,7 @@ export function createCityGame(host) {
     seasonUi.busy = true;
     seasonUi.at = Date.now();
     try {
-      const [p, j] = await Promise.all([n.progress(), signedIn() ? n.join() : Promise.resolve(null)]);
+      const [p, j] = await Promise.all([n.progress({ near: nearPoint() }), signedIn() ? n.join() : Promise.resolve(null)]);
       seasonUi.failed = !p.ok;
       if (p.ok) seasonUi.progress = p;
       seasonUi.enrolled = j?.ok && j.enrolled !== false ? j : null;
@@ -289,7 +316,8 @@ export function createCityGame(host) {
     liveBusy = true;
     seasonUi.liveAt = Date.now();
     try {
-      const p = await n.progress();
+      const own = ownOf();
+      const p = await n.progress({ near: Number.isFinite(own?.lat) ? own : null });
       if (p.ok) seasonUi.progress = p;
     } catch { /* la dernière lecture fait foi */ } finally {
       liveBusy = false;
@@ -441,7 +469,7 @@ export function createCityGame(host) {
     if (!template) { host.setLoading(null); await askCard(infoCard('Rues injoignables', 'Les rues réelles ne répondent pas : réessaie dans un instant.'), 'ok'); return null; }
     let prep;
     try {
-      prep = await prepareCity({ client, communes, template, store, log: (m) => console.warn('ville', m) }, place, { onProgress: (m) => host.setLoading(m.text) });
+      prep = await prepareCity({ client, communes, template, store, log: (m) => console.warn('ville', m) }, place, { onProgress: (m) => host.setLoading(m.text), season: true });
     } catch (err) {
       host.setLoading(null);
       if (err?.name !== 'AbortError') console.warn('Préparation de la ville', err);
@@ -495,7 +523,7 @@ export function createCityGame(host) {
   // Entrer dans une ville déjà ouverte du niveau (repère touché), avec une carte de confirmation quand on quitte une autre ville.
   async function enterCity(level, target, own) {
     const n = net();
-    const row = seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === target.key) ?? null;
+    const row = rowOf(level, target.key);
     if (own) {
       const name = row?.name || target.name || 'cette ville';
       const stats = row ? [`${groupDigits(row.zombies)} zombies restants, ${groupDigits(row.saved)} / ${groupDigits(row.toSave)} habitants sauvés${row.online ? `, ${plural(row.online, 'survivant', 'survivants')} en ligne` : ''}.`] : [];
@@ -564,14 +592,14 @@ export function createCityGame(host) {
       ({ city, prep } = seeded);
       home = seeded.home ?? (seeded.same ? home : null);
     } else if (dest.kind === 'place') {
-      const known = (key) => levelInfo?.cities?.find((c) => c.key === key) ?? null;
+      const known = (key) => levelRows(levelInfo).find((c) => c.key === key) ?? null;
       const seeded = await seedCity(dest.place, level, { own, known });
       if (!seeded) { syncSeason(); return null; }
       ({ city, prep } = seeded);
       home = seeded.same ? home : seeded.home ?? null;
     } else if (dest.kind === 'city' && !(own && own.key === dest.city.key)) {
       const a = dest.announced ?? levelInfo?.announced ?? null;
-      const open = !!levelInfo?.cities?.some((c) => c.key === dest.city.key);
+      const open = levelRows(levelInfo).some((c) => c.key === dest.city.key);
       if (a && a.key === dest.city.key && !open) {
         // Ville annoncée pas encore ouverte : on l'ouvre (recensement de son lieu).
         const seeded = await seedCity(null, level, { announced: a, own });
@@ -643,8 +671,9 @@ export function createCityGame(host) {
     const n = net(), enrolled = seasonUi.enrolled;
     if (!n?.enabled || !enrolled?.level || !place) return null;
     const level = enrolled.level, own = ownOf();
-    try { const p = await n.progress(); if (p.ok) seasonUi.progress = p; } catch { /* l'état des lieux déjà lu fait foi */ }
-    const known = (key) => seasonUi.progress?.levels?.[level]?.cities?.find((c) => c.key === key) ?? null;
+    // Les villes autour du point choisi : la sienne y est si elle est ouverte (le serveur ne détaille pas toutes les villes du monde).
+    try { const p = await n.progress({ near: place }); if (p.ok) seasonUi.progress = p; } catch { /* l'état des lieux déjà lu fait foi */ }
+    const known = (key) => rowOf(level, key);
     const seeded = await seedCity(place, level, { own, known, deferred: true });
     if (!seeded) return null;
     if (seeded.same) {

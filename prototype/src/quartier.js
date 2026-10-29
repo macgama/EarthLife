@@ -6,7 +6,7 @@
 // Une ville est un objet JSON simple, rangé tel quel par territory-store.js. Les zombies prêtés au jeu (à l'écran,
 // dans une horde, une contre-attaque) ne sont pas rangés : au rechargement, ils sont rentrés dans leur pâté.
 // Module pur : ni DOM, ni réseau, ni horloge (les instants sont passés en paramètre) ; il tourne sous node.
-import { lonLatToTilePx, cleanText, contourTileShare, zoneLevel as zoneLevelOf, CENSUS_MAX_TILES } from './limits.js';
+import { lonLatToTilePx, cleanText, contourTileShare, zoneLevel as zoneLevelOf, SEASON_MAX_TILES } from './limits.js';
 
 // Niveaux (section 5) : part de la population devenue zombie (20 % dans le message de Gaël, 35 et 50 % par défaut,
 // question 3), taille des hordes, coureurs en plus, 4e vague quand la 3e atteint le plafond, tirages de butin en plus
@@ -34,9 +34,10 @@ export const QUARTIER = {
   orange: 0.5,                    // pâté nettoyé sans fanion : revient à la moitié de son stock (première conception)
   source: 2,                      // une source amène 2 zombies d'un pâté rouge plus lointain
   fall: 0.5,                      // un fanion tombé : la moitié du stock de départ au plus, venue des voisins
-  maxTiles: CENSUS_MAX_TILES,     // bornes à l'écriture (territory-store.js relit au moins autant) : tuiles par ville,
+  maxTiles: SEASON_MAX_TILES,     // bornes à l'écriture (territory-store.js relit au moins autant) : tuiles par ville (2 000 en saison,
+                                  // la partie libre s'arrête à CENSUS_MAX_TILES, contourTiles),
   maxPlaces: 400,                 // lieux-dits et quartiers (ville.qk ; au-delà, le pâté va au lieu sans nom ''),
-  maxUnits: 160,                  // quartiers en cours
+  maxUnits: 160,                  // quartiers en cours (les deux : plus dans une commune de plus de 400 tuiles, voir capsOf)
 };
 
 // États d'un pâté (première conception, section 3) ; le gris (inconnu) est affaire d'affichage.
@@ -221,7 +222,7 @@ const TILE = /^\d{1,2}\/\d{1,7}\/\d{1,7}$/;
 // Poids estimés des tuiles du recensement en échec (voir startVille) : densité moyenne des tuiles recensées qui
 // touchent le contour × part de surface de la tuile dans le contour, en m² entiers ; sans contour (ou sans aucune
 // surface), le plus petit poids positif des tuiles recensées (1 s'il n'y en a aucun).
-function failedWeights(weights, estimated, contour) {
+export function failedWeights(weights, estimated, contour) {
   const share = (k) => { const { z, x, y } = tileXY(k); return contourTileShare(contour, x, y, z); };
   const out = {};
   const mine = estimated.map((k) => [k, share(k)]);
@@ -363,13 +364,20 @@ export function unitKeyOf(ville, key) {
   return row ? unitKeyOfRow(ville, row) : null;
 }
 
-// Lieu-dit ou quartier d'un pâté découpé : indice dans ville.qk (ajouté au besoin). Au-delà de QUARTIER.maxPlaces
+// Bornes d'une ville : lieux (ville.qk) et quartiers en cours. Une ville de 400 tuiles au plus garde celles de QUARTIER (les anciens jeux
+// les connaissent) ; une commune plus vaste (saison, jeu de niveau 5) en a plus : un lieu par tuile, deux quartiers en cours pour cinq tuiles.
+export function capsOf(ville) {
+  const n = Object.keys(ville?.tiles ?? {}).length;
+  return { places: Math.max(QUARTIER.maxPlaces, n), units: Math.max(QUARTIER.maxUnits, Math.ceil(n * 0.4)) };
+}
+
+// Lieu-dit ou quartier d'un pâté découpé : indice dans ville.qk (ajouté au besoin). Au-delà de capsOf(ville).places
 // lieux, le pâté va au lieu sans nom '' : la ville relue a toujours les mêmes lieux que la ville écrite.
 function qIndex(ville, qkey) {
   let k = typeof qkey === 'string' && qkey ? qkey : '';
   let i = ville.qk.indexOf(k);
   if (i >= 0) return i;
-  if (k && ville.qk.length >= QUARTIER.maxPlaces - 1) {
+  if (k && ville.qk.length >= QUARTIER.maxPlaces - 1 && ville.qk.length >= capsOf(ville).places - 1) {
     k = '';
     i = ville.qk.indexOf(k);
     if (i >= 0) return i;
@@ -757,14 +765,15 @@ function takeReserve(ville, ukey) {
 
 // Début d'un quartier d'une grande ville (ses tuiles placées) : 10 % de ses zombies, 90 au plus, se cachent dans le
 // nid du cœur ; un hameau de moins de 8 pâtés n'a ni réserve ni Nuit du cœur. Rend le quartier, ou null : entrée
-// invalide, QUARTIER.maxUnits quartiers déjà en cours, ou tuiles qui peuvent encore porter de ses pâtés pas encore
+// invalide, capsOf(ville).units quartiers déjà en cours, ou tuiles qui peuvent encore porter de ses pâtés pas encore
 // placées (unitTilesMissing : le jeu les fait découper, puis rappelle startUnit).
 export function startUnit(ville, ukey, { name = '', coeur = null, at = 0 } = {}) {
   if (ville.mode !== 'quartiers' || typeof ukey !== 'string' || !ukey || ville.done[ukey]) return null;
   if (ville.units[ukey]) return ville.units[ukey];
-  if (Object.keys(ville.units).length >= QUARTIER.maxUnits || unitTilesMissing(ville, ukey).length) return null;
+  const units = Object.keys(ville.units).length;
+  if ((units >= QUARTIER.maxUnits && units >= capsOf(ville).units) || unitTilesMissing(ville, ukey).length) return null;
   if (!ville.qk.includes(ukey)) {
-    if (ville.qk.length >= QUARTIER.maxPlaces) return null;
+    if (ville.qk.length >= QUARTIER.maxPlaces && ville.qk.length >= capsOf(ville).places) return null;
     ville.qk.push(ukey);
   }
   const { reserve, z0 } = takeReserve(ville, ukey);

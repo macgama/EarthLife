@@ -23,8 +23,12 @@
 //    que la partie libre : le joueur qui entre dans un quartier le commence (geste `U` : startUnit, réserve du cœur prise dans ses pâtés,
 //    message `un`) ; un quartier sans zombie ni réserve est repris par le serveur (finishUnit, message `ud` : ses pâtés quittent la
 //    ville) ; la ville est sauvée quand elle n'a plus aucun zombie, donc quand tous ses quartiers sont repris.
+//  - Le monde entier (étape 3, 29 octobre) : une ville ouverte n'est en mémoire que pendant qu'on y joue. Sans joueur depuis `unloadMs`,
+//    rangée, elle est déchargée ; son résumé (pièce `sum`, rangée avec elle) suffit au menu, qui ne lit plus jamais les villes entières.
+//    `progress` donne par niveau les compteurs de toutes les villes, les plus jouées en détail, les autres en repères regroupés, et les
+//    villes proches d'un point (`near`). Rouverte, une ville joue la dernière nuit passée sans elle.
 // Limites connues de la première version (écrites dans la conception) : pas de partition par monde de la présence, des traces et des
-// refuges ; la ville entière est envoyée à chaque abonnement (étape 2 : seulement le tour du joueur).
+// refuges.
 import { createHash } from 'node:crypto';
 import { cleanText } from '../../prototype/src/limits.js';
 import { isNightAt, nightKey } from '../../prototype/src/horde.js';
@@ -48,6 +52,8 @@ const finite = (v, max) => typeof v === 'number' && Number.isFinite(v) && Math.a
 const M_PER_DEG = 111195;
 // Client assez récent pour une ville en quartiers (CLIENT_LEVEL 4 au moins, dit par `cl` dans les corps HTTP et le message `in`).
 const modern = (cl) => isInt(cl) && cl >= SEASON.quartiersLevel;
+// Ce client sait-il jouer cette ville ? Une ville en quartiers demande le niveau 4, une commune de plus de vastTiles tuiles le niveau 5.
+const playable = (ville, cl) => (ville.mode !== 'quartiers' || modern(cl)) && (Object.keys(ville.tiles).length <= SEASON.vastTiles || (isInt(cl) && cl >= SEASON.vastLevel));
 const distM = (a, b) => Math.hypot((a.lon - b.lon) * Math.cos((((a.lat + b.lat) / 2) * Math.PI) / 180) * M_PER_DEG, (a.lat - b.lat) * M_PER_DEG);
 
 export const SEASON_RULES = {
@@ -55,9 +61,15 @@ export const SEASON_RULES = {
   flushMs: 15000, cntMs: 1000, leaseMax: 90, leaseIdleMs: 600000, killBurst: 60, killPerSec: 6, rescueBurst: 6, rescuePerSec: 1 / 6, infectMs: 600000, popMin: 100, adjMaxM: 1500, progressMs: 30000, leaseTtlMs: 15000, nightEveryMs: 30000, checkEveryMs: 60000,
   initRetryMs: 5000, playedMs: DAY, enrolCacheMs: 60000,
   rowsPerMsg: 150, pairsMax: 40000, pairsPerReq: 600, pates: 800, nbPairs: 4000, unitCheckMs: 2000, unitAsk: [10, 0.5], winAsk: [20, 2],
-  citiesMax: 30,                                         // villes ouvertes au plus par niveau (choix libre)
+  // Villes ouvertes au plus par niveau (choix libre) : seules celles où l'on joue restent en mémoire (unloadMs), le menu lit leurs résumés.
+  citiesMax: 5000, unloadMs: 300000, unloadEveryMs: 30000,
+  // Tas du serveur (192 Mo) : environ 200 octets par pâté découpé chargé ; au-delà de patesMax, les villes sans joueur sont déchargées sans attendre.
+  patesMax: 400000,
+  // progress : villes en détail par niveau, villes proches d'un point (near), repères regroupés par case de markDeg degrés.
+  progressCities: 60, nearCities: 30, markDeg: 1, marksMax: 100,
   queueMax: 500, holdMs: 120000, seatGraceMs: 60000, queueGraceMs: 60000, waitEveryMs: 2000,   // file d'attente par niveau
-  body: { join: 1024, state: 8192, home: 1024, enter: 1024, seed: 24576, tile: 131072, adj: 32768 },    // state : la fenêtre du jeu (400 tuiles au plus)
+  // state : la fenêtre du jeu (400 tuiles au plus) ; seed : les poids d'une commune de QUARTIER.maxTiles tuiles.
+  body: { join: 1024, state: 8192, home: 1024, enter: 1024, seed: 98304, tile: 131072, adj: 32768 },
   // [capacité, jetons par seconde] par compte et par route.
   rate: { join: [12, 0.2], state: [6, 0.05], seed: [3, 0.02], enter: [6, 0.05], tile: [30, 0.5], adj: [30, 0.5], home: [6, 0.05] },
   // Par adresse, avant toute lecture du corps : [capacité, jetons par seconde] ; l'adresse illisible partage un seau dix fois plus large.
@@ -91,8 +103,9 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   const limits = new Map();            // compte → { route: seau }
   const ipLimits = new Map();          // adresse → seau
   const enrol = new Map();             // compte → { player, at }
-  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, moves: 0, errors: 0, integrity: 0, idleReleased: 0, queued: 0, promoted: 0, expired: 0, unitsStarted: 0, unitsDone: 0 };
-  let lastFlush = now(), lastNight = now(), lastCheck = now(), lastWaits = now(), lastProgress = { at: -Infinity, body: null }, flushing = null;
+  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, moves: 0, errors: 0, integrity: 0, idleReleased: 0, queued: 0, promoted: 0, expired: 0, unitsStarted: 0, unitsDone: 0,
+    loads: 0, unloads: 0 };
+  let lastFlush = now(), lastNight = now(), lastCheck = now(), lastWaits = now(), lastUnload = now(), lastProgress = { at: -Infinity, body: null, rows: null, near: null }, flushing = null;
 
   // ---------- Saison ----------
 
@@ -130,13 +143,16 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const k = `${level}/${commune}`;
     let w = worlds.get(k);
     if (!w) {
-      w = { id: `${season.id}.${level}`, level, commune, city: null, subs: new Set(), loaded: false, loading: null, ended: false };
+      // sum : résumé de la ville quand elle n'est pas en mémoire (rangé avec elle, ou laissé au déchargement) ; touchedAt : dernière requête.
+      w = { id: `${season.id}.${level}`, level, commune, city: null, sum: null, subs: new Set(), loaded: false, loading: null, ended: false, touchedAt: 0, unloadedAt: 0 };
       worlds.set(k, w);
     }
     return w;
   }
   const levelWorlds = (level) => [...worlds.values()].filter((w) => w.level === level);
   const levelCities = (level) => levelWorlds(level).filter((w) => w.city);
+  // Villes ouvertes du niveau, en mémoire ou non.
+  const levelOpen = (level) => levelWorlds(level).filter((w) => w.city || w.sum);
   // Joueurs assis au niveau, toutes villes confondues : les 100 places sont celles du niveau.
   const levelUsed = (level) => levelWorlds(level).reduce((n, w) => n + w.subs.size, 0);
 
@@ -249,7 +265,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const city = {
       key, name: ville.name, place, ville, playedAt, adj: new Map(), pairs: 0, pateTile: new Map(), rv: 0,
       dirty: { meta: true, tiles: new Set(), adj: false }, rows: new Map(), lentDirty: new Set(), cnt: false, cntAt: 0, cntSent: new Map(), sig: new Map(), revs: new Map(),
-      nightDone: null, unitCheck: new Set(), unitCheckAt: 0, heart: new Map(), fell: new Map(),
+      nightDone: null, unitCheck: new Set(), unitCheckAt: 0, heart: new Map(), fell: new Map(), sumSent: null,
     };
     reindex(city);
     if (ville.mode === 'quartiers') for (const k of Object.keys(ville.units)) city.unitCheck.add(k);   // arrêt brutal : un quartier fini est repris
@@ -278,32 +294,52 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   }
 
   async function load(w) {
+    w.touchedAt = now();
     if (w.loaded) return;
     w.loading ??= (async () => {
       hydrate(w, await store.seasonDocs(w.id, w.commune));
+      if (w.city) { stats.loads++; missedNight(w); }
     })().finally(() => { w.loading = null; });
     await w.loading;
   }
 
-  // Toutes les villes ouvertes d'un niveau, une seule lecture : le menu les liste (progress) et les repères en dépendent.
+  // Ville relue après un déchargement (ou un redémarrage) : la dernière nuit passée sans elle est jouée, une seule, comme si elle était restée
+  // en mémoire (nights : la nuit solaire de la commune, si quelqu'un y a joué dans les 24 h qui la précèdent).
+  function missedNight(w) {
+    const city = w.city, t = now();
+    const { lat, lon } = city.place ?? {};
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || w.ended) return;
+    for (let u = t; u >= Math.max(t - DAY, w.unloadedAt, city.playedAt); u -= 1800000) {
+      if (u - city.playedAt > R.playedMs || !isNightAt(u, lat, lon)) continue;
+      const key = nightKey(u, Math.round(lon / 15) * 3600);
+      if (city.nightDone === key || city.ville.vn === key) return;
+      if (isNightAt(t, lat, lon) && key === nightKey(t, Math.round(lon / 15) * 3600)) return;   // la nuit en cours : nights la jouera
+      city.nightDone = key;
+      runNight(city, key);
+      return;
+    }
+  }
+
+  // Toutes les villes ouvertes d'un niveau, une seule lecture de leurs résumés (pièce `sum`) : le menu les liste (progress) sans les charger.
+  // Une ville rangée avant les résumés (meta sans sum) est chargée une fois : son résumé est rangé au prochain rangement, puis elle se décharge.
   async function loadLevel(level) {
     let st = levelLoad.get(level);
     if (!st) levelLoad.set(level, (st = { done: false, loading: null }));
     if (st.done) return;
     st.loading ??= (async () => {
-      const docs = await store.seasonDocs(`${season.id}.${level}`);
-      const by = new Map();
-      for (const d of docs) {
-        if (!by.has(d.commune)) by.set(d.commune, []);
-        by.get(d.commune).push(d);
+      const world = `${season.id}.${level}`;
+      const [sums, metas] = await Promise.all([store.seasonParts(world, 'sum'), store.seasonParts(world, 'meta', { data: false })]);
+      const has = new Set();
+      for (const d of sums) {
+        if (!SEASON_COMMUNE.test(d.commune)) continue;
+        const w = worldOf(level, d.commune);
+        try { if (!w.city) w.sum = JSON.parse(d.data); has.add(d.commune); } catch { /* résumé illisible : la ville est relue en entier */ }
       }
-      for (const [commune, list] of by) {
-        if (!SEASON_COMMUNE.test(commune)) continue;
+      for (const { commune } of metas) {
+        if (has.has(commune) || !SEASON_COMMUNE.test(commune)) continue;
         const w = worldOf(level, commune);
-        if (w.loaded) continue;
-        if (w.loading) { await w.loading; continue; }
         // Une ville abîmée ne prive pas le menu des autres : elle reste à relire (load) quand un joueur la demande.
-        try { hydrate(w, list); } catch (err) { stats.errors++; log('erreur', { type: 'saison-lecture', monde: w.id, err: err?.name }); }
+        try { await load(w); } catch (err) { stats.errors++; log('erreur', { type: 'saison-lecture', monde: w.id, err: err?.name }); }
       }
       st.done = true;
     })().finally(() => { st.loading = null; });
@@ -322,6 +358,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       city.dirty.meta = false;
       city.revs.set('meta', meta.rev);
       for (const d of mine) if (d.part.startsWith('t:')) city.revs.set(d.part, d.rev);
+      const sum = mine.find((d) => d.part === 'sum');
+      if (sum) { city.revs.set('sum', sum.rev); city.sumSent = sum.data; }
       const adj = mine.find((d) => d.part === 'adj');
       if (adj) {
         const a = JSON.parse(adj.data);
@@ -329,6 +367,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
         for (const [i, j] of a.e ?? []) addEdge(city, a.k[i], a.k[j]);
       }
       w.city = city;
+      w.sum = null;
       const chk = checkVille(city.ville);
       if (!chk.ok) { stats.integrity++; log('erreur', { type: 'saison-conservation', monde: w.id, n: chk.errors.length }); }
     }
@@ -359,7 +398,9 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!city) return;
     const { dirty } = city;
     const tiles = [...dirty.tiles], meta = dirty.meta, adj = dirty.adj;
-    if (!tiles.length && !meta && !adj) return;
+    if (!tiles.length && !meta && !adj && city.sumSent !== null) return;
+    // Le résumé du menu, rangé avec la ville quand il a changé (une ville sans joueur se décharge ; le menu ne lit que lui).
+    const sum = JSON.stringify(summaryOf(city));
     dirty.tiles = new Set();
     dirty.meta = false;
     dirty.adj = false;
@@ -374,9 +415,12 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       for (const [a, set] of city.adj) for (const b of set) if (a < b) e.push([idx.get(a), idx.get(b)]);
       add('adj', JSON.stringify({ k: keys, e }));
     }
+    if (sum !== city.sumSent) add('sum', sum);
+    if (!parts.length) return;
     try {
       await store.seasonDocsPut({ world: w.id, commune: city.key, parts, nowMs: now() });
       for (const { part, rev } of parts) city.revs.set(part, rev);
+      if (parts.some((x) => x.part === 'sum')) city.sumSent = sum;
     } catch (err) {
       stats.errors++;
       log('erreur', { type: 'saison-ecriture', err: err?.code ?? err?.name });
@@ -949,7 +993,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const w = p.commune ? worldOf(p.level, p.commune) : null;
     if (w) await load(w);
     // Un ancien client ne sait pas jouer une grande ville : pour lui, le joueur n'en a pas encore, il en choisit une autre.
-    const city = w?.city && (w.city.ville.mode !== 'quartiers' || modern(body.cl)) ? w.city : null;
+    const city = w?.city && playable(w.city.ville, body.cl) ? w.city : null;
     return { status: 200, body: { ok: true, now: now(), season: seasonView(), level: p.level, world: `${season.id}.${p.level}`, city: cityView(city),
       ...(city ? {} : announcedOf(p.level)),
       home: homeView(p), seats: { used: levelUsed(p.level), max: R.seats } } };
@@ -985,7 +1029,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const w = worldOf(p.level, b.key);
     await load(w);
     if (!w.city) return refuse(409, 'inconnue');
-    if (w.city.ville.mode === 'quartiers' && !modern(b.cl)) return refuse(409, 'mode');
+    if (!playable(w.city.ville, b.cl)) return refuse(409, 'mode');
     return moveTo(acc, p, w);
   }
 
@@ -1002,12 +1046,13 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const mode = b.mode === undefined ? 'entiere' : b.mode;
     if (mode !== 'entiere' && mode !== 'quartiers') return refuse(400, 'requete');
     await load(w);
-    const open = () => (w.city.ville.mode === 'quartiers' && !modern(b.cl) ? refuse(409, 'mode') : moveTo(acc, p, w));
+    const open = () => (!playable(w.city.ville, b.cl) ? refuse(409, 'mode') : moveTo(acc, p, w));
     if (w.city) return open();
     if (mode === 'quartiers' && !modern(b.cl)) return refuse(409, 'mode');
+    if (isObj(b.tiles) && Object.keys(b.tiles).length > SEASON.vastTiles && !(isInt(b.cl) && b.cl >= SEASON.vastLevel)) return refuse(409, 'mode');
     await loadLevel(p.level);
     if (w.city) return open();
-    if (levelCities(p.level).length >= R.citiesMax) return refuse(409, 'villes-max', { max: R.citiesMax });
+    if (levelOpen(p.level).length >= R.citiesMax) return refuse(409, 'villes-max', { max: R.citiesMax });
     // La ville annoncée du niveau garde son nom et son point (le même pour tous), quel que soit le lieu touché au menu.
     const ann = announced[p.level]?.key === b.key ? announced[p.level] : null;
     const tiles = {};
@@ -1038,7 +1083,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
 
   function state(w, body = {}, acc = null) {
     const city = w.city;
-    if (city.ville.mode === 'quartiers' && !modern(body.cl)) return refuse(409, 'mode');
+    if (!playable(city.ville, body.cl)) return refuse(409, 'mode');
     // Grande ville : win, les tuiles dont le jeu veut les rangées (sa fenêtre, vide à l'entrée) ; les autres tuiles placées viennent sans rangées (f),
     // il les demande en avançant (message `win`), et les diffusions ne lui portent que sa fenêtre. Sans `win` (ancien jeu) ou dans une petite ville
     // (jouée en entier) : toute la ville, et la réponse ne porte pas `win`.
@@ -1171,46 +1216,129 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return a ? { announced: { key: a.key, name: a.name, ...coords(a) } } : {};
   };
 
-  // Une ville telle que le menu la montre (repère sur la carte, carte du niveau).
-  // homes : joueurs installés dans la ville (une maison posée), lus avec les inscriptions : avec saved et killed, ils disent si le sauvetage a commencé.
-  function cityRow(w, homes = {}) {
-    const city = w.city, v = city.ville;
+  // Résumé d'une ville, rangé avec elle (pièce `sum`) : ce que le menu en montre, lisible sans la charger.
+  function summaryOf(city) {
+    const v = city.ville;
     return { key: city.key, name: city.name, ...coords(city.place), population: v.population, zombies: zombiesLeft(v), zombies0: v.zombies0, saved: v.saved,
-      toSave: v.hidden0, flags: v.flags, killed: v.killed[0] + v.killed[1] + v.killed[2], status: cityStatus(v), startMs: v.start, online: w.subs.size,
-      homes: homes[`${w.level}|${city.key}`] ?? 0,
+      toSave: v.hidden0, flags: v.flags, killed: v.killed[0] + v.killed[1] + v.killed[2], status: cityStatus(v), startMs: v.start,
       // Grande ville : quartiers commencés et repris (le nombre total ne se connaît qu'une fois toute la ville explorée).
       ...(v.mode === 'quartiers' ? { mode: v.mode, units: Object.keys(v.units).length, done: Object.keys(v.done).length } : {}) };
   }
-
-  // Évolution de la saison (écran du menu) : publique, gardée 30 s. Par niveau : `cities` (toutes les villes ouvertes, la ville annoncée
-  // d'abord, puis les plus jouées) et `city`, la première (mise en avant, lue par les anciens jeux).
-  async function progress() {
-    if (!(await init())) return refuse(503, 'base');
-    const t = now();
-    if (lastProgress.body && t - lastProgress.at < R.progressMs) return { status: 200, body: lastProgress.body };
-    try {
-      const [counts, homes] = await Promise.all([store.seasonCounts(season.id), store.seasonHomes(season.id)]);
-      const levels = {};
-      for (const level of LEVELS) {
-        await loadLevel(level);
-        const annKey = announced[level]?.key ?? null;
-        const cities = levelCities(level).map((w) => cityRow(w, homes))
-          .sort((a, b) => (b.key === annKey) - (a.key === annKey) || b.online - a.online || a.startMs - b.startMs || (a.key < b.key ? -1 : 1));
-        levels[level] = {
-          players: counts[level] ?? 0, online: levelUsed(level), seats: R.seats,
-          city: cities[0] ?? null, cities, citiesMax: R.citiesMax,
-          ...announcedOf(level),
-        };
-      }
-      lastProgress = { at: t, body: { ok: true, now: t, season: seasonView(), levels } };
-      return { status: 200, body: lastProgress.body };
-    } catch (err) {
-      stats.errors++;
-      log('erreur', { type: 'saison-progres', err: err?.code ?? err?.name });
-      return refuse(503, 'base');
-    }
+  // Une ville telle que le menu la montre (repère sur la carte, carte du niveau) : son résumé (calculé si elle est en mémoire), plus ses joueurs.
+  // homes : joueurs installés dans la ville (une maison posée), lus avec les inscriptions : avec saved et killed, ils disent si le sauvetage a commencé.
+  function cityRow(w, homes = {}) {
+    const sum = w.city ? summaryOf(w.city) : w.sum;
+    return { ...sum, online: w.subs.size, homes: homes[`${w.level}|${sum.key}`] ?? 0 };
   }
 
+  // Villes sans joueur déchargées : rangées (rien en attente), sans requête depuis unloadMs, ou tout de suite au-delà de patesMax pâtés en
+  // mémoire (les moins récemment jouées d'abord). Leur résumé reste pour le menu ; un joueur qui revient les relit (load).
+  function unloadIdle(t) {
+    if (flushing) return;
+    let pates = 0;
+    const idle = [];
+    for (const w of worlds.values()) {
+      const city = w.city;
+      if (!city) continue;
+      pates += city.pateTile.size;
+      const d = city.dirty;
+      if (w.subs.size || w.loading || d.meta || d.adj || d.tiles.size || city.sumSent === null) continue;
+      idle.push(w);
+    }
+    idle.sort((a, b) => a.touchedAt - b.touchedAt);
+    for (const w of idle) {
+      const over = pates > R.patesMax;
+      if (!over && t - w.touchedAt < R.unloadMs) continue;
+      pates -= w.city.pateTile.size;
+      w.sum = summaryOf(w.city);
+      w.city = null;
+      w.loaded = false;
+      w.unloadedAt = t;
+      stats.unloads++;
+    }
+    if (pates > R.patesMax) log('erreur', { type: 'saison-memoire', pates, max: R.patesMax });
+  }
+
+  // Villes les plus proches d'un point (near), parmi les lignes d'un niveau.
+  function nearest(rows, near, k) {
+    const cos = Math.cos((near.lat * Math.PI) / 180);
+    const d = (r) => (r.lat - near.lat) ** 2 + ((r.lon - near.lon) * cos) ** 2;
+    return rows.filter((r) => Number.isFinite(r.lat)).map((r) => [d(r), r]).sort((a, b) => a[0] - b[0]).slice(0, k).map(([, r]) => r);
+  }
+  // Repères regroupés : les villes que la liste ne détaille pas, par case de markDeg degrés : [lat, lon, villes, commencées] (position
+  // moyenne des villes de la case, à 2 décimales), les cases les plus peuplées d'abord.
+  function marksOf(rows) {
+    const cells = new Map();
+    for (const r of rows) {
+      if (!Number.isFinite(r.lat) || !Number.isFinite(r.lon)) continue;
+      const k = `${Math.floor(r.lat / R.markDeg)}_${Math.floor(r.lon / R.markDeg)}`;
+      let c = cells.get(k);
+      if (!c) cells.set(k, (c = { lat: 0, lon: 0, n: 0, started: 0 }));
+      c.lat += r.lat;
+      c.lon += r.lon;
+      c.n++;
+      if (r.homes || r.saved || r.killed) c.started++;
+    }
+    const r2 = (v) => Math.round(v * 100) / 100;
+    return [...cells.values()].sort((a, b) => b.n - a.n).slice(0, R.marksMax).map((c) => [r2(c.lat / c.n), r2(c.lon / c.n), c.n, c.started]);
+  }
+
+  // Évolution de la saison (écran du menu) : publique, gardée 30 s. Par niveau : `cities`, les progressCities villes les plus suivies (la
+  // ville annoncée d'abord, puis celles où l'on joue, celles où le sauvetage a commencé, les plus sauvées) et `city`, la première (mise en
+  // avant, lue par les anciens jeux) ; `open` et `totals` : toutes les villes ouvertes du niveau ; `marks` : les autres, en repères regroupés.
+  // near ({ lat, lon }, facultatif) : `near`, les nearCities villes les plus proches de ce point (la tienne, celles autour d'un repère touché).
+  async function progress({ near = null } = {}) {
+    if (!(await init())) return refuse(503, 'base');
+    const t = now();
+    if (!lastProgress.body || t - lastProgress.at >= R.progressMs) {
+      try {
+        const [counts, homes] = await Promise.all([store.seasonCounts(season.id), store.seasonHomes(season.id)]);
+        const levels = {}, rowsBy = {};
+        for (const level of LEVELS) {
+          await loadLevel(level);
+          const annKey = announced[level]?.key ?? null;
+          const started = (r) => (r.homes || r.saved || r.killed ? 1 : 0);
+          const rows = levelOpen(level).map((w) => cityRow(w, homes))
+            .sort((a, b) => (b.key === annKey) - (a.key === annKey) || b.online - a.online || started(b) - started(a) || b.saved - a.saved
+              || a.startMs - b.startMs || (a.key < b.key ? -1 : 1));
+          const cities = rows.slice(0, R.progressCities);
+          const totals = { cities: rows.length, started: 0, cleaned: 0, zombies: 0, saved: 0, toSave: 0, population: 0 };
+          for (const r of rows) {
+            totals.started += started(r);
+            if (r.status === 'nettoyee') totals.cleaned++;
+            totals.zombies += r.zombies;
+            totals.saved += r.saved;
+            totals.toSave += r.toSave;
+            totals.population += r.population;
+          }
+          rowsBy[level] = rows;
+          levels[level] = {
+            players: counts[level] ?? 0, online: levelUsed(level), seats: R.seats,
+            city: cities[0] ?? null, cities, citiesMax: R.citiesMax, open: rows.length, totals,
+            ...(rows.length > cities.length ? { marks: marksOf(rows.slice(cities.length)) } : {}),
+            ...announcedOf(level),
+          };
+        }
+        lastProgress = { at: t, body: { ok: true, now: t, season: seasonView(), levels }, rows: rowsBy, near: new Map() };
+      } catch (err) {
+        stats.errors++;
+        log('erreur', { type: 'saison-progres', err: err?.code ?? err?.name });
+        return refuse(503, 'base');
+      }
+    }
+    if (!near) return { status: 200, body: lastProgress.body };
+    // Gardée elle aussi jusqu'à la prochaine lecture, par point (arrondi au centième par http.js) : 500 points au plus.
+    const nk = `${near.lat},${near.lon}`;
+    let body = lastProgress.near.get(nk);
+    if (!body) {
+      const levels = {};
+      for (const [level, entry] of Object.entries(lastProgress.body.levels)) levels[level] = { ...entry, near: nearest(lastProgress.rows[level], near, R.nearCities) };
+      body = { ...lastProgress.body, levels };
+      if (lastProgress.near.size >= 500) lastProgress.near.clear();
+      lastProgress.near.set(nk, body);
+    }
+    return { status: 200, body };
+  }
   // ---------- WebSocket (message sv) ----------
 
   const no = (s, why) => send(s, { t: 'sv', o: 'no', why });
@@ -1262,7 +1390,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     await load(w);
     if (s.state === 'closed') return undefined;
     if (!w.city || w.city.key !== msg.c) return no(s, 'commune');
-    if (w.city.ville.mode === 'quartiers' && !modern(msg.cl)) return no(s, 'monde');       // ancien client : refus lisible (jamais une ville qu'il ne sait pas lire)
+    if (!playable(w.city.ville, msg.cl)) return no(s, 'monde');       // ancien client : refus lisible (jamais une ville qu'il ne sait pas lire)
     const old = subs.get(s);
     if (old && old.w === w) return send(s, { t: 'sv', o: 'in', rv: w.city.rv });
     detach(s, { ghost: true });
@@ -1328,6 +1456,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       for (const level of waitsDirty) pushWaits(level);
       waitsDirty.clear();
     }
+    // Avant le rangement du même tic (qui laisse `flushing` pendant ses écritures) : seules les villes déjà rangées se déchargent.
+    if (t - lastUnload >= R.unloadEveryMs) { lastUnload = t; unloadIdle(t); }
     if (t - lastFlush >= R.flushMs) { lastFlush = t; flush(); }
     if (t - lastNight >= R.nightEveryMs) {
       lastNight = t;
@@ -1354,11 +1484,13 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       for (const w of worlds.values()) online += w.subs.size;
       let waits = 0;
       for (const q of queues.values()) waits += q.length;
-      const out = { ...stats, online, waiting: waits, held: held.size };
+      let loaded = 0;
+      for (const w of worlds.values()) if (w.city) loaded++;
+      const out = { ...stats, online, waiting: waits, held: held.size, loaded, open: worlds.size };
       for (const k of Object.keys(stats)) stats[k] = 0;
       return out;
     },
     // Pour les essais.
-    debug() { return { season, ready, worlds, subs, stats, worldOf, levelCities, queues, held, freeSeats }; },
+    debug() { return { season, ready, worlds, subs, stats, worldOf, levelCities, levelOpen, queues, held, freeSeats, unloadIdle }; },
   };
 }

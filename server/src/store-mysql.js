@@ -808,6 +808,10 @@ export function createMysqlStore({
         : await one('SELECT commune, part, rev, data FROM el_season_docs WHERE world = ? AND commune = ?', [world, commune]);
       return r.map((x) => ({ commune: x.commune, part: x.part, rev: Number(x.rev), data: String(x.data) }));
     },
+    async seasonParts(world, part, { data = true } = {}) {
+      const r = await one(`SELECT commune, rev${data ? ', data' : ''} FROM el_season_docs WHERE world = ? AND part = ?`, [world, part]);
+      return r.map((x) => (data ? { commune: x.commune, rev: Number(x.rev), data: String(x.data) } : { commune: x.commune, rev: Number(x.rev) }));
+    },
     async seasonDocPut({ world, commune, part, rev, data, nowMs = Date.now() }) {
       await one('INSERT INTO el_season_docs (world, commune, part, rev, data, updated_ms) VALUES (?, ?, ?, ?, ?, ?) '
         + 'ON DUPLICATE KEY UPDATE rev = VALUES(rev), data = VALUES(data), updated_ms = VALUES(updated_ms)',

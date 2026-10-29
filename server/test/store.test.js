@@ -569,6 +569,11 @@ for (const B of BACKENDS) {
       const rangees = (await s.seasonDocs('1.facile', 'c01283')).sort((x, y) => (x.part < y.part ? -1 : 1));
       assert.deepEqual(rangees.map((d) => [d.part, d.rev, d.data]), [['meta', 3, '{"v":3}'], ['t:14/8500/5800', 2, '{"z":1}'], ['t:14/8501/5800', 1, '{"z":2}']]);
       assert.equal((await s.seasonDocs('1.facile', 'c99999')).length, 1, 'une autre ville du même niveau n\'est pas touchée');
+      // Une même pièce de toutes les villes d'un niveau (le menu lit les résumés `sum` sans charger les villes).
+      assert.deepEqual((await s.seasonParts('1.facile', 'meta')).map((d) => [d.commune, d.rev, d.data]).sort(), [['c01283', 3, '{"v":3}'], ['c99999', 1, '{}']]);
+      assert.deepEqual((await s.seasonParts('1.facile', 'meta', { data: false })).sort((x, y) => (x.commune < y.commune ? -1 : 1)), [{ commune: 'c01283', rev: 3 }, { commune: 'c99999', rev: 1 }]);
+      assert.deepEqual(await s.seasonParts('1.facile', 'sum'), []);
+      assert.deepEqual(await s.seasonParts('1.moyen', 'meta'), []);
       await s.seasonDocsPut({ world: '1.facile', commune: 'c01283', nowMs: T0 + 3, parts: [] });
       assert.equal((await s.seasonDocs('1.facile', 'c01283')).length, 3, 'rien à ranger : rien ne change');
       // Changer de ville : la commune change, la maison repasse à vide.
