@@ -208,6 +208,16 @@ export function pinsOf(fronts) {
   return out;
 }
 
+// Niveau dont la carte du menu montre les villes : celui du joueur inscrit (il ne change plus), sinon celui touché au menu, sinon le niveau proposé.
+// Un seul niveau à la fois : une même ville peut être ouverte à deux niveaux (Vulliens en Facile et en Moyen) et les repères se confondaient.
+export function shownLevel({ enrolled = null, pick = null } = {}) {
+  if (FRONT_LEVELS.includes(enrolled)) return enrolled;
+  return FRONT_LEVELS.includes(pick) ? pick : DEFAULT_FRONT;
+}
+
+// Les repères d'un seul niveau (ceux que la carte du menu pose) ; pinsOf garde les trois niveaux pour le cadrage, les amis et le bouton.
+export const pinsOfLevel = (pins, level) => (Array.isArray(pins) ? pins.filter((p) => p.level === level) : []);
+
 // Cadrage de la carte du menu sur ces repères : une ville (level et key), les villes d'un niveau, ou toutes ensemble ; null s'il n'y a rien à
 // montrer (aucun repère, ou niveau sans ville : la carte ne bouge pas).
 export function framingOf(pins, level = null, key = null) {
