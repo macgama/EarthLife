@@ -18,6 +18,9 @@ export const ONLINE = {
   pollIdleMs: 3000, queueMax: 100, queueMaxAgeMs: 86400000,
   // Ajouts (sections 3.4, 5.6 et 5.7) : délais de connexion, battement montant, seuils d'envoi des positions.
   welcomeTimeoutMs: 5000, silenceMs: 12000, beatMs: 5000, stableMs: 60000, fullRetryMs: 60000,
+  // Silence constaté plus de stallMs après l'heure : la page était figée (arrivée dans une ville, appareil chargé) ; les messages reçus
+  // pendant ce temps passent d'abord, la connexion n'est coupée que stallGraceMs plus tard s'ils ne sont pas venus.
+  stallMs: 1000, stallGraceMs: 1500,
   maintenanceRetryMs: 60000, pollKeepMs: 86400000, poll429Ms: 2000, pollUrgentMs: 400, requestTimeoutMs: 10000,
   jumpM: 20, moveM: 0.25, turnRad: 0.15, movingMs: 1500, maxBuffered: 512, poseFreshMs: 2000, markAfterJumpMs: 5500,
   replayPacket: 30, refugeRetryMs: 60000, refugeNearM: 140, refugeFarRetryMs: 10000, renameTimeoutMs: 10000,
@@ -524,9 +527,21 @@ export function createOnline({
     }
   }
 
+  let silenceDue = 0, silenceGrace = false;
+  function armSilence() {
+    silenceDue = now() + ONLINE.silenceMs;
+    silenceGrace = false;
+    later('silence', ONLINE.silenceMs, onSilence);
+  }
   function onSilence() {
     const l = link;
-    if (l) lost(l);
+    if (!l) return;
+    if (!silenceGrace && now() - silenceDue > ONLINE.stallMs) {
+      silenceGrace = true;
+      later('silence', ONLINE.stallGraceMs, onSilence);
+      return;
+    }
+    lost(l);
   }
 
   // ---------- Messages du serveur ----------
@@ -541,7 +556,7 @@ export function createOnline({
   function handle(msg) {
     const l = link;
     if (!l) return;
-    later('silence', ONLINE.silenceMs, onSilence);
+    armSilence();
     if (l.state !== 'live' && msg.t !== 'welcome' && msg.t !== 'err' && msg.t !== 'bye') return;
     switch (msg.t) {
       case 'welcome': return onWelcome(l, msg);
@@ -914,7 +929,7 @@ export function createOnline({
           // Le serveur répond, il demande seulement d'espacer : pas « Hors ligne ».
           tooMany++;
           if (tooMany >= 2) slowPoll = true;
-          if (l.state === 'live') later('silence', ONLINE.silenceMs, onSilence);
+          if (l.state === 'live') armSilence();
           return 'busy';
         }
         if (!res.ok) return 'fail';
@@ -923,7 +938,7 @@ export function createOnline({
         if (link !== l) return 'gone';
         tooMany = 0;
         pollFailing = false;
-        later('silence', ONLINE.silenceMs, onSilence);
+        armSilence();
         const refused = r.msgs.some((m) => m.t === 'err' || m.t === 'bye');
         if (refused) requeue();
         for (const m of r.msgs) {

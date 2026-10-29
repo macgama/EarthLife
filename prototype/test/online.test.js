@@ -356,6 +356,30 @@ test('12 s sans message : hors ligne, puis reconnexion', async () => {
   assert.equal(h.online.status, 'connexion');
 });
 
+// Page figée (arrivée dans une ville, appareil chargé) : le minuteur des 12 s part en retard, avant les messages reçus pendant ce temps.
+test('page figée : le silence laisse passer les messages arrivés pendant le gel, puis coupe 1,5 s plus tard s\'il n\'y en a pas', async () => {
+  const h = harness();
+  const ws = await connect(h, { beat: false });
+  await h.clock.advance(11000);
+  h.clock.setSkew(3000);                                   // la page reprend la main 3 s après l'heure du minuteur
+  await h.clock.advance(1000);
+  assert.equal(h.online.status, 'en-ligne', 'pas coupé à l\'heure : la page était figée');
+  ws.deliver({ t: 'near', ts: h.clock.now(), p: [], f: [], c: 0 });
+  await h.clock.advance(11999);
+  assert.equal(h.online.status, 'en-ligne', 'le message reçu relance les 12 s');
+  await h.clock.advance(1);
+  assert.equal(h.online.status, 'hors-ligne', 'vrai silence de 12 s : coupé à l\'heure');
+  const h2 = harness();
+  const ws2 = await connect(h2, { beat: false });
+  await h2.clock.advance(11000);
+  h2.clock.setSkew(3000);
+  await h2.clock.advance(1000 + ONLINE.stallGraceMs - 1);
+  assert.equal(h2.online.status, 'en-ligne');
+  await h2.clock.advance(1);
+  assert.equal(h2.online.status, 'hors-ligne', 'rien après le gel : coupé 1,5 s plus tard');
+  assert.equal(ws2.readyState, 3);
+});
+
 test('délais 1, 2, 4, 8, 16 puis 30 s, à ±20 % ; remis à zéro après 60 s connectées', async () => {
   for (const [r, k] of [[() => 0, 0.8], [() => 0.999999, 1.2], [() => 0.5, 1]]) {
     const h = harness({ rand: r });
