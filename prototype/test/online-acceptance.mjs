@@ -2245,7 +2245,7 @@ await scenario('O29', 'villes de la saison sur la carte du menu', async () => {
       difficile: { players: 0, online: 0, seats: 100, city: null },
     },
   };
-  const withCities = (ctx) => ctx.route('**/v1/season/progress', (r) => r.fulfill({
+  const withCities = (ctx) => ctx.route('**/v1/season/progress*', (r) => r.fulfill({
     status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': ORIGIN, 'cache-control': 'no-store' }, body: JSON.stringify(progress),
   }));
   const url = `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&server=http://127.0.0.1:${srv.port}`;
@@ -2322,7 +2322,7 @@ await scenario('O30', 'ville annoncée au menu', async () => {
       difficile: { players: 0, online: 0, seats: 100, city: null, announced: { key: 'c01283', name: 'Pérouges', lat: 45.903, lon: 5.18 } },
     },
   };
-  const withAnnounced = (ctx) => ctx.route('**/v1/season/progress', (r) => r.fulfill({
+  const withAnnounced = (ctx) => ctx.route('**/v1/season/progress*', (r) => r.fulfill({
     status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': ORIGIN, 'cache-control': 'no-store' }, body: JSON.stringify(progress),
   }));
   const url = `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&server=http://127.0.0.1:${srv.port}`;
@@ -2381,7 +2381,7 @@ await scenario('O31', 'plusieurs villes dans un niveau', async () => {
       difficile: { players: 0, online: 0, seats: 100, city: null, cities: [] },
     },
   };
-  const withCities = (ctx) => ctx.route('**/v1/season/progress', (r) => r.fulfill({
+  const withCities = (ctx) => ctx.route('**/v1/season/progress*', (r) => r.fulfill({
     status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': ORIGIN, 'cache-control': 'no-store' }, body: JSON.stringify(progress),
   }));
   const url = `${ORIGIN}/index.html?lat=45.7578&lon=4.832&time=day&debug=1&server=http://127.0.0.1:${srv.port}`;

@@ -591,7 +591,8 @@ export function createCityRuntime(deps) {
     if (!waiting.size || disposed) return;
     adoptKnown();
     let more = frontierTiles().slice(0, CITY.maxFlight * 2);
-    if (placed.size + flight.size + more.length > QUARTIER.maxTiles) more = [];
+    // Voisines lues pour l'appartenance : 400 tuiles par partie au plus, même dans une vaste commune (le joueur n'en a que le tour).
+    if (placed.size + flight.size + more.length > CENSUS_MAX_TILES) more = [];
     if (more.length) await Promise.all(more.map((t) => cutTile(t.x, t.y, { silent: true })));
     for (const [key, res] of [...waiting]) await placeSeason(res, { force: forced.has(key) });
     if (waiting.size && !more.length && !flight.size) {
