@@ -18,7 +18,7 @@ import { SEASON_TEXT } from './net/season.js';
 import { insideTiles, resumeHome } from './saison-miroir.js';
 import { createMenuSheet } from './menu-sheet.js';
 import { liveCities, cityNote } from './villes-en-cours.js';
-import { createSalon, createTabs, frontModel, summaryOf, ctaModel, destinationOf, clockOf, pinsOf, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
+import { createSalon, createTabs, frontModel, summaryOf, ctaModel, destinationOf, clockOf, pinsOf, pinsOfLevel, shownLevel, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
 const LEVEL_KEY = 'earthlife.niveau';
 const DAY_MS = 86_400_000;
@@ -99,7 +99,7 @@ export function createCityGame(host) {
       sheet?.close();
       picker.resize?.();
       if (name === 'libre') picker.recenter?.();
-      else picker.frameCities?.(framingOf(seasonUi.pins), { prefer: salon?.pick() ?? DEFAULT_FRONT });
+      else picker.frameCities?.(framingOf(seasonUi.pins, shownLevel({ enrolled: seasonUi.enrolled?.level, pick: salon?.pick() })), { prefer: salon?.pick() ?? DEFAULT_FRONT });
     }) });
     // L'état des lieux se relit tant que le menu est ouvert (au plus toutes les 30 s), les jours restants se remettent à l'heure.
     // Dans la partie (menu fermé), les villes en cours des cartes de jeu se relisent aussi, une fois par minute au plus.
@@ -206,13 +206,14 @@ export function createCityGame(host) {
       cta: ctaModel({ fronts, enrolled, own, sel: seasonUi.sel, pick: ctx.pick, signedIn: signedIn(), status, place: picker.getPlace(), loaded: !!progress }),
     });
     seasonUi.pins = progress ? pinsOf(fronts) : [];
-    picker.setSeasonCities?.(seasonUi.pins);
+    const shown = shownLevel({ enrolled, pick: ctx.pick });
+    picker.setSeasonCities?.(pinsOfLevel(seasonUi.pins, shown));
     host.seasonCitiesChanged?.();
     // Le menu s'ouvre sur « À plusieurs » : la carte montre d'office où sont les villes (une fois par ouverture du menu, et pas si le
     // joueur a déjà bougé la carte).
     if (seasonUi.pins.length && !seasonUi.framed && $('menu')?.dataset.tab === 'saison' && !$('menu').classList.contains('hidden')) {
       seasonUi.framed = true;
-      picker.frameCities?.(framingOf(seasonUi.pins), { auto: true, prefer: salon?.pick() ?? DEFAULT_FRONT });
+      picker.frameCities?.(framingOf(seasonUi.pins, shown), { auto: true, prefer: shown });
     }
   }
   // Ta ville de la saison (celle que tu as choisie), telle que l'inscription la donne : { key, name, lat, lon } ou null.
