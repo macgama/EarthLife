@@ -1091,6 +1091,10 @@ async function desktop() {
   await foreign(life1, 18000);
   const life2 = await newLife(before2);
   check(!!life2 && !(await ailleurs()), `${tag} 7 bis : la dernière écriture de la vie précédente n'est pas une autre page (reprise toute seule, sans carte)`);
+  // La reprise toute seule le dit (relance.js) : carte « Partie relancée » avec la cause, fermée par « Continuer ».
+  const relance = await until(page, () => { const c = document.getElementById('card'); return !c.classList.contains('hidden') && /Partie relancée/.test(c.textContent) ? c.textContent.replace(/\s+/g, ' ').trim() : null; }, null, 20000);
+  check(!!relance && /Une autre page du jeu avait écrit ta partie/.test(relance) && /Détail : other-/.test(relance), `${tag} 7 bis : la reprise toute seule le dit, carte « Partie relancée » avec sa cause (« ${(relance ?? '?').slice(0, 160)} »)`);
+  if (relance) await page.click('#card [data-card-btn="ok"]');
   // Ancienne version du jeu (aucune présence) qui a écrit il y a 18 s : elle ne compte plus. La reprise de la vie précédente vient
   // d'avoir lieu : on retire le garde-fou d'une minute par onglet (« une même page ne se reprend la main qu'une fois par minute »),
   // sans quoi cette deuxième reprise garderait la carte.

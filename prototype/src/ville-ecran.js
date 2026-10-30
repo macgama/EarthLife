@@ -1168,7 +1168,7 @@ export function createCityGame(host) {
       if (!n || host.getSession() !== s) return;
       const place = { lat: n.lat, lon: n.lon, name: n.name, area: 'Commune voisine' };
       picker.setPlace(place, { fly: false });
-      host.startGame(place, { confirmed: true });
+      host.startGame(place, { confirmed: true, why: 'commune voisine choisie' });
     }, { escape: 'close' });
   }
 
