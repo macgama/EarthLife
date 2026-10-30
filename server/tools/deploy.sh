@@ -17,7 +17,9 @@
 #   deploy.sh release    check, upload, switch, wait (15 min au premier déploiement, sinon 2 min), rollback si la
 #                        nouvelle version ne répond pas (et seulement si la bascule a eu lieu), clean : le travail deploy
 # Redémarrage par « sortie volontaire » (4.9) : le serveur voit restart.request plus récent que son démarrage, s'arrête
-# proprement et sort avec le code 1 ; le gestionnaire d'Infomaniak le relance sur current.
+# proprement et sort avec le code 1 ; son gardien (server/src/gardien.js) le relance sur current. Depuis le 30 octobre
+# 2026, le gestionnaire d'Infomaniak ne relance plus le site quand node sort : un serveur sans gardien (/v1/health sans
+# « gardien »: true) ne revient qu'après « Redémarrer » dans le Manager, et release attend alors 15 min en le disant.
 #
 # Variables. DEPLOY_SHA : 7 caractères hexadécimaux (par défaut, le début de GITHUB_SHA). EARTHLIFE_SERVER_URL (wait,
 # release). INFOMANIAK_SSH_HOST, INFOMANIAK_SSH_USER, INFOMANIAK_SSH_PORT (22), INFOMANIAK_APP_DIR (chemin absolu
@@ -364,15 +366,16 @@ cmd_switch() { do_switch; echo "first=$FIRST"; }
 cmd_wait() {
   need_sha
   need_url
-  local tries=${1:-$WAIT_TRIES} i body seen= start=$SECONDS end
+  local tries=${1:-$WAIT_TRIES} i body seen= seen_at=0 now= start=$SECONDS end
   need_int DEPLOY_WAIT_TRIES "$tries"
   need_int DEPLOY_WAIT_SECONDS "$WAIT_SECONDS"
   command -v curl >/dev/null || die "curl introuvable"
   end=$((start + tries * WAIT_SECONDS))
   for ((i = 1; i <= tries; i++)); do
+    now=
     if body=$(curl -fsS --connect-timeout 5 --max-time 5 "$URL/v1/health" 2>/dev/null); then
-      [[ $body =~ \"version\":\"([^\"]{1,20})\" ]] && seen=${BASH_REMATCH[1]}
-      if [[ $seen == "$SHA" ]]; then
+      [[ $body =~ \"version\":\"([^\"]{1,20})\" ]] && now=${BASH_REMATCH[1]} && seen=$now && seen_at=$i
+      if [[ $now == "$SHA" ]]; then
         echo "Le serveur sert la version $SHA (essai $i sur $tries)"
         return 0
       fi
@@ -380,8 +383,23 @@ cmd_wait() {
     (( i < tries && SECONDS + WAIT_SECONDS <= end )) || break
     sleep "$WAIT_SECONDS"
   done
-  fail "le serveur ne sert pas la version $SHA après $i essai$( ((i > 1)) && echo s ) en $((SECONDS - start)) s (dernière version vue : ${seen:-aucune réponse})"
+  # (Une page de maintenance d'Infomaniak répond sans version : elle compte comme une absence de réponse.)
+  local last="aucune réponse"
+  if [[ -n $seen && $seen_at == "$i" ]]; then last="dernière version vue : $seen"
+  elif [[ -n $seen ]]; then last="$seen vue à l'essai $seen_at, plus de réponse ensuite"
+  fi
+  fail "le serveur ne sert pas la version $SHA après $i essai$( ((i > 1)) && echo s ) en $((SECONDS - start)) s ($last)"
   return 1
+}
+
+# Le serveur en service a-t-il un gardien ? oui, non (il répond sans), ou rien (il ne répond pas).
+guard_state() {
+  local body
+  body=$(curl -fsS --connect-timeout 5 --max-time 5 "$URL/v1/health" 2>/dev/null) || { echo rien; return; }
+  if [[ $body == *'"gardien":true'* ]]; then echo oui
+  elif [[ $body == *'"version":'* ]]; then echo non
+  else echo rien
+  fi
 }
 
 # Rend dans RESTORED l'empreinte de la version remise en service.
@@ -418,11 +436,22 @@ cmd_release() {
   ssh_setup
   cmd_check
   cmd_upload
+  local guard
+  guard=$(guard_state)
   do_switch
   local tries=$WAIT_TRIES ok=0
   if [[ $FIRST == 1 ]]; then
     tries=$FIRST_TRIES
     notice "Premier déploiement : règle la commande de démarrage (node --max-old-space-size=192 …/earthlife-server/current/server/src/main.js) puis redémarre le site (section 4.7, étape 18)"
+  elif [[ $guard != oui ]]; then
+    # Infomaniak ne relance plus node quand il sort : sans gardien, le serveur s'arrête à la bascule et ne revient qu'au
+    # clic « Redémarrer » ; celui-ci lance la nouvelle version, qui a son gardien pour les déploiements suivants.
+    tries=$FIRST_TRIES
+    if [[ $guard == non ]]; then
+      notice "Le serveur en service n'a pas de gardien : dans le Manager, clique « Redémarrer » sur le site Node.js (une seule fois ; 15 min d'attente)"
+    else
+      notice "Le serveur ne répondait pas avant la bascule : dans le Manager, clique « Redémarrer » sur le site Node.js (15 min d'attente)"
+    fi
   fi
   if cmd_wait "$tries"; then ok=1; fi
   if [[ $ok == 0 && $FIRST == 0 ]]; then

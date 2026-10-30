@@ -1,6 +1,6 @@
 # Hébergement jetable de la répétition du déploiement (lot F, section 4.8) : il imite un site Node.js de
 # l'Hébergement Web d'Infomaniak. Utilisateur SSH « client », dossier personnel /srv/customer, dossier du site
-# sites/earthlife.needhelpapp.com, et un superviseur qui relance node quand il sort (gestionnaire d'Infomaniak, V10).
+# sites/earthlife.needhelpapp.com, et un superviseur qui lance node sans jamais le relancer (gestionnaire d'Infomaniak).
 # Construit et lancé par repetition.sh. Le mot de passe et la clé publique, jetables, n'arrivent qu'au démarrage du
 # conteneur (variables REHEARSAL_PASSWORD et REHEARSAL_PUBKEY), jamais dans l'image ; les clés d'hôte sont tirées à
 # chaque démarrage. pam_loginuid devient facultatif : dans un conteneur, il ne peut pas écrire loginuid et ferait

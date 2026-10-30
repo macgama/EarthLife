@@ -1198,7 +1198,7 @@ export function createRoom({
 
     health() {
       return { ok: true, v: PROTOCOL, minClient: cfg.minClient, version: cfg.version, ws: !!cfg.ws, db: dbReady(),
-        maintenance, invite: !!cfg.inviteCode, acct: !!cfg.accounts, online: worldCount(), now: now() };
+        maintenance, invite: !!cfg.inviteCode, acct: !!cfg.accounts, gardien: !!cfg.guarded, online: worldCount(), now: now() };
     },
 
     // Ligne de mesures (toutes les 5 min) : compteurs depuis l'appel précédent, puis remise à zéro.
