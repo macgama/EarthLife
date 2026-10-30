@@ -6,7 +6,7 @@ import {
   apportion, zombiesFor, reserveFor, nestSize, heartWaves, levelSummary, flagNights, supplyFor, tilePools,
   startVille, restartVille, placeTile, capsOf, startUnit, setCoeur, blockInfo, counters, checkVille, cityStatus, zombiesLeft,
   lend, giveBack, recallAll, kill, take, drawReserve, settle, move, regrow, fallFlag, dropFlag, openNest, plantFlag,
-  liberate, rescueOne, infectOne, humansLeft, othersCleared, volunteersNight, homeWeights, hiddenByBuilding, takeHome, canChangeLevel, changeLevel,
+  liberate, rescueOne, infectOne, humansLeft, othersCleared, volunteersNight, nightBackLine, homeWeights, hiddenByBuilding, takeHome, canChangeLevel, changeLevel,
   finishUnit, villeLine, compactVille, rowCount, rekeyVille, watched, keyPoint, unitKeyOf,
   memberOf, censusWeights, censusBlocks, unitTilesMissing, ROW_LENGTH,
 } from '../src/quartier.js';
@@ -1327,4 +1327,14 @@ test('infectOne : les cachés d\'une tuile pas encore placée tombent aussi ; la
   assert.ok(placeTile(v, cuts[1], { member }).ok);
   assert.equal(counters(v).zombies, z);
   ok(v);
+});
+
+test('retour de la nuit : la phrase dit combien de zombies sont revenus et où (les noms que le jeu connaît)', () => {
+  assert.equal(nightBackLine({ n: 0 }), '');
+  assert.equal(nightBackLine({}), '');
+  assert.equal(nightBackLine({ n: 1 }), 'Cette nuit, 1 zombie est revenu dans des pâtés vidés ou entamés.');
+  assert.equal(nightBackLine({ n: 18, spots: [{ name: 'Rue de la Gare', n: 12 }, { name: 'Chemin des Prés', n: 6 }] }),
+    'Cette nuit, 18 zombies sont revenus dans des pâtés vidés ou entamés : Rue de la Gare (12), Chemin des Prés (6).');
+  // Un pâté dont le jeu ne connaît pas encore le nom (grande ville) compte dans le total, sans être cité.
+  assert.equal(nightBackLine({ n: 5, spots: [{ name: '', n: 5 }] }), 'Cette nuit, 5 zombies sont revenus dans des pâtés vidés ou entamés.');
 });

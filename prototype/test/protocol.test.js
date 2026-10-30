@@ -458,6 +458,18 @@ test('saison : messages `sv` du serveur (prêts partagés, refus) et leurs refus
   assert.deepEqual(ok({ o: 'deny', d: [[k, 3]] }).msg.d, [[k, 3]]);
 });
 
+test('saison : retour de la nuit (`night`) : nuit, zombies revenus, pâtés les plus touchés, fanions tombés', () => {
+  const k = 'b45.90317_5.17939', k2 = 'b45.90384_5.17968';
+  const ok = (o) => parseServer(JSON.stringify({ t: 'sv', ...o }));
+  const night = { o: 'night', k: '2026-10-06', n: 9, b: [[k, 7], [k2, 2]], f: [k2] };
+  assert.deepEqual(ok(night).msg, { t: 'sv', ...night });
+  assert.deepEqual(ok({ ...night, b: [], f: [] }).msg.b, []);
+  for (const bad of [{ ...night, k: 'hier' }, { ...night, n: -1 }, { ...night, b: [[k, 0]] }, { ...night, b: [['../x', 1]] }, { ...night, b: [[k, 1], [k, 1], [k, 1], [k, 1]] },
+    { ...night, f: ['@q'] }, { ...night, f: [k, k, k, k] }, { o: 'night', k: '2026-10-06', n: 1 }]) {
+    assert.equal(ok(bad).ok, false, JSON.stringify(bad));
+  }
+});
+
 test('saison : file d\'attente (`q`, `cancel`, `wait`, `go`, `no` « attente »), un vieux serveur ou client reste compris', () => {
   const ok = (o) => parseServer(JSON.stringify({ t: 'sv', ...o }));
   assert.deepEqual(ok({ o: 'wait', rank: 7, size: 23 }).msg, { t: 'sv', o: 'wait', rank: 7, size: 23 });

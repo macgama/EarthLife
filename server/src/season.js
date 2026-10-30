@@ -27,6 +27,8 @@
 //    rangée, elle est déchargée ; son résumé (pièce `sum`, rangée avec elle) suffit au menu, qui ne lit plus jamais les villes entières.
 //    `progress` donne par niveau les compteurs de toutes les villes, les plus jouées en détail, les autres en repères regroupés, et les
 //    villes proches d'un point (`near`). Rouverte, une ville joue la dernière nuit passée sans elle.
+//  - Retour de la nuit (`city.night`, rangé dans meta) : ce que la repousse a ramené dans les pâtés vidés ou entamés et les fanions tombés. Le
+//    joueur présent le reçoit en message `night` ; celui qui revient le lit dans l'état (`night`), une seule fois (sa dernière vue, seenMs).
 // Limites connues de la première version (écrites dans la conception) : pas de partition par monde de la présence, des traces et des
 // refuges.
 import { createHash } from 'node:crypto';
@@ -37,7 +39,7 @@ import {
   volunteersNight, regrow, fallFlag, infectOne, checkVille, zombiesLeft, cityStatus, blockInfo, nestSize, keyPoint, startUnit, finishUnit, unitKeyOf,
   unitTilesMissing, ETAT, ROW, QUARTIER,
 } from '../../prototype/src/quartier.js';
-import { SEASON, SEASON_KEY, SEASON_COMMUNE, SEASON_TILE, SEASON_QKEY, TOKEN_RE, readJson } from '../../prototype/src/net/protocol.js';
+import { SEASON, SEASON_KEY, SEASON_COMMUNE, SEASON_TILE, SEASON_QKEY, SEASON_NIGHT_KEY, TOKEN_RE, readJson } from '../../prototype/src/net/protocol.js';
 import { createBucket } from './rules.js';
 import { ANNOUNCED_CITIES } from './season-cities.js';
 
@@ -46,6 +48,18 @@ const BLOCK = (k) => typeof k === 'string' && k[0] !== '@' && SEASON_KEY.test(k)
 const QKEY = SEASON_QKEY;
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex');
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+// Retour de la nuit : { k clé de la nuit, at instant où le serveur l'a jouée, n zombies revenus dans des pâtés vidés ou entamés, b les 3
+// pâtés les plus touchés [clé, nombre], f les fanions tombés (clés) }. Rangé avec la ville (meta) : relu avec prudence, sinon oublié.
+const NIGHT_SPOTS = 3;
+function nightOf(raw) {
+  if (!isObj(raw) || typeof raw.k !== 'string' || !SEASON_NIGHT_KEY.test(raw.k) || !Number.isFinite(raw.at)
+    || !Number.isInteger(raw.n) || raw.n < 0 || !Array.isArray(raw.b) || !Array.isArray(raw.f)) return null;
+  const b = raw.b.filter((e) => Array.isArray(e) && BLOCK(e[0]) && Number.isInteger(e[1]) && e[1] > 0).slice(0, NIGHT_SPOTS).map((e) => [e[0], e[1]]);
+  const f = raw.f.filter(BLOCK).slice(0, NIGHT_SPOTS);
+  return { k: raw.k, at: raw.at, n: raw.n, b, f };
+}
+// Ce que le jeu reçoit (état et message `night`) : sans l'instant.
+const nightMsg = (night) => ({ k: night.k, n: night.n, b: night.b, f: night.f });
 const isInt = Number.isInteger;
 const inRange = (v, lo, hi) => isInt(v) && v >= lo && v <= hi;
 const finite = (v, max) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= max;
@@ -261,9 +275,9 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return undefined;
   }
 
-  function makeCity({ key, place, ville, playedAt = 0 }) {
+  function makeCity({ key, place, ville, playedAt = 0, night = null }) {
     const city = {
-      key, name: ville.name, place, ville, playedAt, adj: new Map(), pairs: 0, pateTile: new Map(), rv: 0,
+      key, name: ville.name, place, ville, playedAt, night, adj: new Map(), pairs: 0, pateTile: new Map(), rv: 0,
       dirty: { meta: true, tiles: new Set(), adj: false }, rows: new Map(), lentDirty: new Set(), cnt: false, cntAt: 0, cntSent: new Map(), sig: new Map(), revs: new Map(),
       nightDone: null, unitCheck: new Set(), unitCheckAt: 0, heart: new Map(), fell: new Map(), sumSent: null,
     };
@@ -316,6 +330,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       if (isNightAt(t, lat, lon) && key === nightKey(t, Math.round(lon / 15) * 3600)) return;   // la nuit en cours : nights la jouera
       city.nightDone = key;
       runNight(city, key);
+      announceNight(w);
       return;
     }
   }
@@ -354,7 +369,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       const m = JSON.parse(meta.data);
       const ville = { ...m.ville, tiles: {} };
       for (const d of mine) if (d.part.startsWith('t:')) ville.tiles[d.part.slice(2)] = JSON.parse(d.data);
-      const city = makeCity({ key: meta.commune, place: m.place, ville, playedAt: m.playedAt ?? 0 });
+      const city = makeCity({ key: meta.commune, place: m.place, ville, playedAt: m.playedAt ?? 0, night: nightOf(m.night) });
       city.dirty.meta = false;
       city.revs.set('meta', meta.rev);
       for (const d of mine) if (d.part.startsWith('t:')) city.revs.set(d.part, d.rev);
@@ -409,7 +424,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const parts = [];
     const add = (part, data) => parts.push({ part, rev: (city.revs.get(part) ?? 0) + 1, data });
     for (const tk of tiles) if (city.ville.tiles[tk]) add(`t:${tk}`, JSON.stringify(city.ville.tiles[tk]));
-    if (meta) add('meta', JSON.stringify({ place: city.place, playedAt: city.playedAt, ville: { ...city.ville, tiles: undefined } }));
+    if (meta) add('meta', JSON.stringify({ place: city.place, playedAt: city.playedAt, night: city.night ?? undefined, ville: { ...city.ville, tiles: undefined } }));
     if (adj) {
       const keys = [...city.adj.keys()].sort(), idx = new Map(keys.map((k, i) => [k, i])), e = [];
       for (const [a, set] of city.adj) for (const b of set) if (a < b) e.push([idx.get(a), idx.get(b)]);
@@ -865,12 +880,15 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       const i = blockInfo(v, x);
       return i && (i.state === 'rouge' || i.state === 'nid') && i.zombies - i.lent > i.nest;
     });
+    const back = new Map(), fell = [];                  // pâté → zombies revenus, fanions tombés : dits au joueur à son retour
     for (const [k] of rows) {
       const i = blockInfo(v, k);
       if (!i || i.state === 'libere') continue;
       const entamed = i.state === 'rouge' && i.zombies < i.start;
       const orange = i.state === 'nettoye' && i.flagNights === 0 && i.start > 0;
-      if (entamed || orange) regrow(v, k, stock(k));
+      if (!entamed && !orange) continue;
+      const got = regrow(v, k, stock(k));
+      if (got > 0) back.set(k, got);
     }
     const flagged = [];
     for (const [k, row] of rows) {
@@ -883,12 +901,36 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       const watched = blockInfo(v, f.k).saved >= QUARTIER.watchers;
       if (watched && rand() < 0.5) continue;
       f.row[ROW.F] = Math.max(0, f.row[ROW.F] - 1);
-      if (f.row[ROW.F] === 0 && !fallFlag(v, f.k, f.hot).fell) f.row[ROW.F] = 1;
+      if (f.row[ROW.F] === 0) {
+        if (fallFlag(v, f.k, f.hot).fell) fell.push(f.k); else f.row[ROW.F] = 1;
+      }
     }
     for (const [k, row] of allRows(city)) if (before.get(k) !== row.join()) dirtyRow(city, k);
+    const spots = [...back].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+    const total = spots.reduce((n, [, got]) => n + got, 0);
+    city.night = total || fell.length ? { k: key, at: now(), n: total, b: spots.slice(0, NIGHT_SPOTS), f: fell.slice(0, NIGHT_SPOTS) } : null;
     dirtyCounts(city);
     watchUnits(city);                                     // les volontaires ont pu vider un quartier
     log('saison', { nuit: key, monde: city.key });
+  }
+  // Le joueur a su ce que la nuit a ramené : sa dernière vue passe devant, la route state ne le lui redira plus.
+  function markSeen(acc) {
+    const t = now();
+    const c = enrol.get(acc);
+    if (c) c.player.seenMs = t;
+    store.seasonPlayerSet(acc, season.id, { seenMs: t }).catch((err) => {
+      stats.errors++;
+      log('erreur', { type: 'saison-vu', err: err?.code ?? err?.name });
+    });
+  }
+  // Ceux qui sont dans la ville au moment de la nuit la reçoivent tout de suite ; les autres, à leur retour (route state).
+  function announceNight(w) {
+    const night = w.city?.night;
+    if (!night) return;
+    for (const sub of w.subs) {
+      send(sub.s, { t: 'sv', o: 'night', ...nightMsg(night) });
+      markSeen(sub.accountId);
+    }
   }
   function nights(t) {
     for (const w of worlds.values()) {
@@ -901,6 +943,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       if (t - city.playedAt > R.playedMs) continue;       // la ville ne bouge pas tant que personne n'y joue
       city.nightDone = key;
       runNight(city, key);
+      announceNight(w);
     }
   }
 
@@ -963,7 +1006,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const w = worldOf(p.level, p.commune);
     await load(w);
     if (!w.city) return refuse(409, 'vide');
-    if (name === 'state') return state(w, body, acc);
+    if (name === 'state') return state(w, body, acc, p);
     if (phase !== 'en-cours') return refuse(409, phase === 'terminee' ? 'fin' : 'avenir');
     // Découpes et voisinages : seulement de la part d'un joueur assis dans le monde (un siège par compte, bannis exclus).
     if ((name === 'tile' || name === 'adj') && ![...w.subs].some((x) => x.accountId === acc)) return refuse(409, 'abonnement');
@@ -1081,7 +1124,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return { status: r.status, body: { ...r.body, created: true } };
   }
 
-  function state(w, body = {}, acc = null) {
+  function state(w, body = {}, acc = null, player = null) {
     const city = w.city;
     if (!playable(city.ville, body.cl)) return refuse(409, 'mode');
     // Grande ville : win, les tuiles dont le jeu veut les rangées (sa fenêtre, vide à l'entrée) ; les autres tuiles placées viennent sans rangées (f),
@@ -1099,8 +1142,11 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     // La fenêtre du joueur assis suit ce que son jeu vient de lire (aucune sans `win` : il a tout lu).
     const sub = acc ? subOf(w, acc) : null;
     if (sub) sub.win = win ? new Set(win) : null;
+    // night : ce que la nuit a ramené depuis la dernière fois que ce joueur a été vu (geste, ou retour déjà dit) ; une seule fois.
+    const night = player && city.night && city.night.at > (player.seenMs ?? 0) ? city.night : null;
+    if (night) markSeen(acc);
     // hab : ce serveur connaît le geste `h` (habitant trouvé) ; un jeu ne l'envoie que si l'état le dit. win : il sait tenir une fenêtre.
-    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville, lent: lentSnapshot(city, win), hab: 1, mort: R.infectMs / 1000, ...(win ? { win: 1 } : {}) }) };
+    return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville, lent: lentSnapshot(city, win), hab: 1, mort: R.infectMs / 1000, ...(night ? { night: nightMsg(night) } : {}), ...(win ? { win: 1 } : {}) }) };
   }
 
   // Pâtés d'une tuile découpée : [clé, appartenance (1 dedans, 0 dehors, -1 inconnu), plancher, logements, bâtiments,

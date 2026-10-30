@@ -1036,26 +1036,35 @@ export function createCityRuntime(deps) {
     return [...(adj.get(key) ?? [])].filter((k) => { const i = blockInfo(ville, k); return i && (i.state === 'rouge' || i.state === 'nid') && i.zombies - i.lent > i.nest; });
   }
 
+  // Nom que le jeu connaît d'un pâté (sa rue, sinon son lieu) ; vide si le pâté n'est pas encore lu (grande ville).
+  const nameOf = (key) => pos.get(key)?.name || pos.get(key)?.place || '';
+  // Pâtés les plus touchés par la repousse, de la nuit : [{ name, n }] (3 au plus, les plus touchés d'abord) pour la phrase du retour.
+  const spotsOf = (list) => [...list].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([key, n]) => ({ name: nameOf(key), n }));
+
   // Une vraie nuit commence (une fois par clé de nuit) : les volontaires abattent, la nuit repousse, les fanions s'usent.
   // `played` : tu as joué ce jour-là (sinon ils gardent leurs rues sans rien abattre). `origin` : { x, z } du refuge.
   function nightly(night, { played = true, origin = null } = {}) {
     if (S || !night || state.nightDone === night || state.ended) return null;       // saison : les nuits sont jouées par le serveur
     state.nightDone = night;
     if (ville.vn === night) return null; // déjà jouée avant un rechargement
-    const rep = { volunteers: 0, street: '', regrown: 0, fallen: [], worn: 0 };
+    const rep = { volunteers: 0, street: '', regrown: 0, spots: [], fallen: [], worn: 0 };
     const vol = volunteersNight(ville, { night, frontier: frontier(), played });
     rep.volunteers = vol.killed;
     rep.street = vol.from.length ? pos.get(vol.from[0][0])?.name ?? '' : '';
     const asleep = (key) => origin && Math.hypot(pos.get(key).x - origin.x, pos.get(key).z - origin.z) > CITY.asleep;
     // Repousse : un pâté entamé regagne 25 % de son stock pris aux voisins, un pâté nettoyé sans fanion revient à moitié.
+    const back = [];
     for (const key of [...pos.keys()]) {
       const info = blockInfo(ville, key);
       if (!info || info.state === 'libere' || asleep(key)) continue;
       const entamed = info.state === 'rouge' && info.zombies < info.start;
       const orange = info.state === 'nettoye' && info.flagNights === 0 && info.start > 0;
       if (!entamed && !orange) continue;
-      rep.regrown += regrow(ville, key, neighbourStock(key));
+      const got = regrow(ville, key, neighbourStock(key));
+      rep.regrown += got;
+      if (got > 0) back.push([key, got]);
     }
+    rep.spots = spotsOf(back);
     // Usure : jusqu'à 3 fanions visés, ceux du front (voisins d'un pâté infesté) ; un fanion guetté tient une demi-nuit.
     const flagged = [];
     for (const key of pos.keys()) {
@@ -1324,6 +1333,12 @@ export function createCityRuntime(deps) {
       case 'ls': applyLent(ville, msg.l); break;
       case 'deny': applyDeny(msg.d); break;
       case 'end': state.seasonOver = true; onEvent({ type: 'season-end' }); break;
+      case 'night': {
+        // Le message est relu par parseServer ; l'état (HTTP) ne l'est pas : listes et nombre revérifiés.
+        const b = Array.isArray(msg.b) ? msg.b.filter((e) => Array.isArray(e) && typeof e[0] === 'string') : [], f = Array.isArray(msg.f) ? msg.f.filter((k) => typeof k === 'string') : [];
+        onEvent({ type: 'night-back', night: msg.k, regrown: Number.isFinite(msg.n) ? msg.n : 0, spots: spotsOf(b), fallen: f.map((k) => nameOf(k) || 'un pâté') });
+        break;
+      }
       case 'no': onEvent({ type: 'season-no', why: msg.why }); break;
       default: return;
     }
@@ -1342,6 +1357,7 @@ export function createCityRuntime(deps) {
     state.heartAt = -Infinity;
     for (const w of wanted.values()) w.at = -Infinity;     // demandes perdues avec la connexion : refaites au prochain passage
     adoptKnown();
+    if (fresh.night) applyServer({ o: 'night', ...fresh.night });     // la nuit est passée pendant la coupure (le serveur ne le redit pas)
   }
 
   function dispose(director = null) {

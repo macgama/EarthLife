@@ -1046,6 +1046,16 @@ export function regrow(ville, key, neighbours = []) {
   return got;
 }
 
+// Ce que la nuit a ramené, dit au joueur (il ne la voit pas : en saison le serveur la joue pendant qu'il est parti) :
+// `n` zombies revenus dans des pâtés vidés ou entamés, `spots` les plus touchés [{ name, n }] (les noms que le jeu connaît).
+export function nightBackLine({ n = 0, spots = [] } = {}) {
+  const total = nat(n);
+  if (!total) return '';
+  const where = spots.filter((s) => s?.name && nat(s.n) > 0).map((s) => `${s.name} (${nat(s.n)})`);
+  const verb = total > 1 ? 'zombies sont revenus' : 'zombie est revenu';
+  return `Cette nuit, ${total} ${verb} dans des pâtés vidés ou entamés${where.length ? ` : ${where.join(', ')}` : ''}.`;
+}
+
 // Un fanion qui tombe : seulement si des zombies voisins viennent le prendre, la moitié du stock de départ au plus.
 // Le pâté redevient rouge avec ceux qui sont venus ; ses habitants sauvés restent sauvés. Rend { fell, moved }.
 export function fallFlag(ville, key, neighbours = []) {

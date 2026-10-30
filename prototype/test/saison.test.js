@@ -481,11 +481,13 @@ async function seasonGame({ hab = false, mort = 0 } = {}) {
     },
   };
   let clock = 1e6;
+  const events = [];
   const rt = createCityRuntime({
     ville: copy, store: a.store, client: a.client, template: TEMPLATE, graph: a.prep.graph, fn: a.prep.fn, member: a.prep.member, unit: a.prep.unit,
     commune: a.prep.commune, proj: a.proj, maison: a.prep.ref, rand: rng(7), now: () => (clock += 1), season: { net, hab, mort },
+    onEvent: (e) => events.push(e),
   });
-  return { rt, net, copy, truth, advance: (ms) => { clock += ms; } };
+  return { rt, net, copy, truth, events, advance: (ms) => { clock += ms; } };
 }
 // Bâtiment d'un pâté placé qui cache encore au moins un habitant : { id, key }.
 const hiddenBuilding = (g) => {
@@ -586,6 +588,27 @@ test('ville de saison : une tuile inconnue du serveur est envoyée une fois, les
   assert.ok(g.rt.pos.size > 20, `pâtés placés : ${g.rt.pos.size}`);
   assert.ok(g.net.pairs.length > 0, 'voisinages envoyés pour tous les joueurs');
   assert.ok(g.net.pairs.every(([a, b]) => typeof a === 'string' && typeof b === 'string' && a !== b));
+});
+
+test('ville de saison : la nuit jouée par le serveur est dite au joueur (zombies revenus, plus touchés d\'abord, fanion tombé)', async () => {
+  const g = await seasonGame();
+  await g.rt.ensureAround(0, 0, { wait: true });
+  const [a, b, c] = [...g.rt.pos.keys()];
+  g.rt.applyServer({ o: 'night', k: '2026-10-06', n: 9, b: [[b, 2], [a, 7]], f: [c] });
+  const e = g.events.find((x) => x.type === 'night-back');
+  assert.equal(e.regrown, 9);
+  assert.deepEqual(e.spots.map((x) => x.n), [7, 2]);
+  const p = g.rt.pos.get(a);
+  assert.equal(e.spots[0].name, p.name || p.place);
+  assert.equal(e.fallen.length, 1);
+  // L'état de la saison n'est pas relu par parseServer : un champ abîmé ne casse rien.
+  g.rt.applyServer({ o: 'night', k: '2026-10-07', n: 'x', b: 3, f: null });
+  assert.equal(g.events.at(-1).regrown, 0);
+  assert.deepEqual(g.events.at(-1).spots, []);
+  // Une coupure pendant la nuit : l'état relu après coup porte le retour, que le serveur ne redira pas.
+  const before = g.events.length;
+  g.rt.resyncFrom({ ville: structuredClone(g.copy), lent: {}, hab: 1, night: { k: '2026-10-08', n: 4, b: [[a, 4]], f: [] } });
+  assert.equal(g.events.slice(before).filter((x) => x.type === 'night-back').map((x) => x.regrown).join(), '4');
 });
 
 test('ville de saison : tuile déjà connue du serveur, aucun envoi ; envoi refusé : nouvel essai après 8 s', async () => {
