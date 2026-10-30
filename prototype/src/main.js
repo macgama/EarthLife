@@ -87,6 +87,7 @@ import { createCityGame } from './ville-ecran.js';
 import { createSeasonNet } from './net/season.js';
 import { LEVEL_KEYS } from './quartier.js';
 import { encodeResume, decodeResume } from './reprise.js';
+import { RELAUNCH_KEY, encodeRelaunch, decodeRelaunch, relaunchLines, callerOf } from './relance.js';
 // Icônes (HUD, chargement, fin) sous un espace de noms : pas de conflit avec d'autres imports nommés.
 import * as icons from './icons.js';
 // Jeu à plusieurs : une couche posée à côté du jeu solo (spécification 7).
@@ -796,9 +797,20 @@ const resumeAfterTakeOver = (() => {
     return null;
   }
 })();
-if (params.get('autostart') === '1') startGame(picker.getPlace() ?? placeFromCity(CITIES[0]));
-else if (resumeAfterTakeOver?.season) startGame(picker.getPlace() ?? null, { season: resumeAfterTakeOver.season });
-else if (resumeAfterTakeOver && picker.getPlace()) startGame(picker.getPlace());
+// Pourquoi la page a rechargé toute seule (handOver) : lu une seule fois, dit sur une carte quand la partie est relancée.
+const relaunchCause = (() => {
+  try {
+    const v = sessionStorage.getItem(RELAUNCH_KEY);
+    sessionStorage.removeItem(RELAUNCH_KEY);
+    return decodeRelaunch(v);
+  } catch {
+    return null;
+  }
+})();
+const saidRelaunch = () => sayRelaunch(relaunchCause);
+if (params.get('autostart') === '1') startGame(picker.getPlace() ?? placeFromCity(CITIES[0])).then(saidRelaunch);
+else if (resumeAfterTakeOver?.season) startGame(picker.getPlace() ?? null, { season: resumeAfterTakeOver.season }).then(saidRelaunch);
+else if (resumeAfterTakeOver && picker.getPlace()) startGame(picker.getPlace()).then(saidRelaunch);
 else picker.show();
 
 // Sauvegarde à la sortie d'un bâtiment : un avis court (« Partie sauvegardée »), une fois toutes les 8 s au plus ; rien si la page ne peut
@@ -963,8 +975,13 @@ const samePlace = (a, b) => a && b && Math.abs(a.lat - b.lat) < 1e-6 && Math.abs
 // à 1 500 m ou moins, sinon le lieu choisi (expédition). Le monde est gardé si l'origine ne change pas et si la météo
 // a moins de 15 min ; le personnage n'est jamais remis à neuf. spawn : 'place' (départ ou reprise) ou 'refuge'
 // (réveil au refuge après une mort en expédition).
-async function startGame(place, { spawn = 'place', confirmed = false, season = null, dest = null } = {}) {
+// `why` : le motif d'une relance en partie (réveil au refuge, commune voisine) ; sans lui, une relance en partie est inexplicable
+// et la carte « Partie relancée » le dit (relance.js).
+async function startGame(place, { spawn = 'place', confirmed = false, season = null, dest = null, why = null } = {}) {
   if ((!place && !season) || starting) return;
+  const unexplained = !why && !!session?.player && $('menu').classList.contains('hidden')
+    ? { why: 'Le jeu a relancé la partie sans raison connue.', detail: callerOf(new Error().stack) } : null;
+  if (unexplained) console.warn('[relance] relance en partie sans motif', unexplained.detail);
   starting = true;
   try {
     // Page restée au menu pendant qu'une autre écrivait : on relit la partie avant de jouer (sinon cette page jouerait en
@@ -979,11 +996,21 @@ async function startGame(place, { spawn = 'place', confirmed = false, season = n
     // Premier passage en ligne : la carte « Jouer à plusieurs » avant le départ, jamais pendant une partie.
     if (spawn === 'place' && onlineOn) await onlineChoice();
     await launch(place, spawn, plan);
+    sayRelaunch(unexplained);
   } catch (err) {
     loadFailed(err);
   } finally {
     starting = false;
   }
+}
+
+// « Partie relancée » : la cause d'une relance que le joueur n'a pas demandée, sur une carte qui reste à l'écran (capture possible) ;
+// la même ligne va à la console ([relance]). Rien si la partie n'a pas démarré ou si une autre carte attend déjà.
+function sayRelaunch(info) {
+  if (!info) return;
+  try { console.info('[relance]', JSON.stringify({ ...info, now: Date.now() })); } catch { /* trace seulement */ }
+  if (!session?.player || $('hud').classList.contains('hidden') || cardInfo?.blocking) return;
+  showCard({ title: 'Partie relancée', tone: 'warn', lines: relaunchLines(info), buttons: [{ id: 'ok', label: 'Continuer', primary: true }] }, null, { escape: 'ok' });
 }
 
 async function launch(place, spawn, plan = { kind: 'free', place }, arrival = null) {
@@ -1283,7 +1310,7 @@ async function wakeUp(s, { quiet = false } = {}) {
     // Expédition : le réveil se fait au refuge, dans son propre monde (la mort est déjà sauvegardée).
     saveStore.flush('mort');
     starting = false;
-    await startGame(homePlace(), { spawn: 'refuge' });
+    await startGame(homePlace(), { spawn: 'refuge', why: 'réveil au refuge' });
     return;
   }
   p.health = 50;
@@ -3497,7 +3524,9 @@ function onSaveExternal(e) {
     // perdre ces changements, écraser la partie de l'autre serait pire. La carte laisse le choix (la partie reste à l'écran).
     // Autrement la reprise écrit la partie de l'écran (keepLive) ou relit celle de l'autre (rien à perdre).
     const lossy = !!e.unsaved && !e.keepLive && e.kind !== 'own';
-    if (!lossy && handOver(!!e.keepLive, e.kind === 'own')) return;
+    const at = saveStore.conflict?.savedAt;
+    const detail = `${e.type}, ${e.kind ?? 'type inconnu'}${e.unsaved ? ', changements non enregistrés' : ''}${Number.isFinite(at) ? `, l'autre page a écrit il y a ${Math.round((Date.now() - at) / 1000)} s` : ''}`;
+    if (!lossy && handOver(!!e.keepLive, e.kind === 'own', detail)) return;
   }
   // Stockage plein, territoire non enregistré ou allégé : un toast (une fois), le motif reste dans la ligne de la sauvegarde.
   if (e.type === 'full' || e.type === 'companion-full' || e.type === 'compacted' || e.type === 'dropped') {
@@ -3552,10 +3581,14 @@ function showTakeOverCard() {
 
 // « Reprendre ici » : relit la sauvegarde, reprend la main et recharge la page. `resume` (carte en partie) : la page
 // rechargée relance aussitôt la partie, sans repasser par le menu.
-function takeOver({ resume = false, keepLive = false } = {}) {
+// `relaunch` : { why, detail } d'une reprise que le joueur n'a pas demandée ; la page rechargée la dit sur la carte « Partie relancée ».
+function takeOver({ resume = false, keepLive = false, relaunch = null } = {}) {
   const res = saveStore.takeOver({ keepLive });
   if (res.ok) {
-    if (resume) { try { sessionStorage.setItem(RESUME_KEY, encodeResume(session?.seasonLevel ?? null)); } catch { /* sans stockage de session : retour au menu */ } }
+    if (resume) {
+      try { sessionStorage.setItem(RESUME_KEY, encodeResume(session?.seasonLevel ?? null)); } catch { /* sans stockage de session : retour au menu */ }
+      if (relaunch) { try { sessionStorage.setItem(RELAUNCH_KEY, encodeRelaunch(relaunch.why, relaunch.detail)); } catch { /* cause perdue, la console l'a */ } }
+    }
     reloadClean();
     return;
   }
@@ -3573,7 +3606,7 @@ const HANDOVER_KEY = 'earthlife.handover';
 const HANDOVER_GAP_MS = 60000;
 const HANDOVER_OWN_GAP_MS = 5000; // l'écriture vient de la vie précédente de cet onglet : pas de page à se disputer la main
 let handingOver = false;
-function handOver(keepLive = false, own = false) {
+function handOver(keepLive = false, own = false, detail = '') {
   if (handingOver) return true;
   let last = 0;
   try { last = Number(sessionStorage.getItem(HANDOVER_KEY)) || 0; } catch { /* sans stockage de session : pas de garde-fou */ }
@@ -3581,7 +3614,10 @@ function handOver(keepLive = false, own = false) {
   try { sessionStorage.setItem(HANDOVER_KEY, String(Date.now())); } catch { /* idem */ }
   handingOver = true;
   try {
-    takeOver({ resume: !!(session?.player && !$('hud').classList.contains('hidden')), keepLive });
+    takeOver({
+      resume: !!(session?.player && !$('hud').classList.contains('hidden')), keepLive,
+      relaunch: { why: 'Une autre page du jeu avait écrit ta partie puis avait disparu : cette page a repris la main toute seule.', detail },
+    });
   } finally {
     handingOver = false;
   }
