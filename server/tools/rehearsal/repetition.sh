@@ -6,8 +6,9 @@
 #   bash server/tools/rehearsal/repetition.sh --local   sans Docker ni sshd : SSH remplacé par bash -c
 #                                                       (DEPLOY_FAKE_REMOTE), superviseur lancé sur cette machine
 # Chaque passage : premier déploiement ; seconde version (le vrai serveur, avec le magasin en mémoire, voit
-# restart.request, sort avec le code 1, et le superviseur le relance sur la nouvelle version) ; version cassée exprès
-# (retour arrière automatique) ; retour arrière demandé ; nettoyage (3 versions gardées, jamais current ni previous).
+# restart.request, sort avec le code 1, et son gardien le relance sur la nouvelle version ; le superviseur, comme
+# Infomaniak depuis le 30 octobre 2026, ne relance rien) ; version cassée exprès (retour arrière automatique, relancé
+# par le gardien) ; retour arrière demandé ; nettoyage (3 versions gardées, jamais current ni previous).
 # En plus : garde-fous du dossier ; avec Docker, empreinte du serveur fausse ou absente, mauvais mot de passe,
 # conteneur sans mot de passe pour le passage par clé, et aucun secret dans les journaux ni sur le disque. Le mot de
 # passe et la clé sont tirés ici, jetables, et ne vivent que le temps du travail. Le conteneur coupe, comme
@@ -69,11 +70,14 @@ has_releases() {
 lacks_release() { local got; got=$(field releases); echo "versions présentes : $got"; [[ " $got " != *" $1 "* ]]; }
 sup_log() { if [[ $MODE == docker ]]; then docker logs "$NAME" 2>&1; else cat "$WORK/superviseur.log"; fi; }
 # (Journal lu d'abord en entier : avec pipefail, grep -q qui s'arrête tôt ferait échouer le tube.)
-restarted_with_1() {
+# Chaque redémarrage voulu : l'enfant sort avec le code 1 (volontaire) et le gardien le relance ; le processus lancé par
+# le superviseur, lui, ne sort jamais.
+restarted_by_guardian() {
   local l
   l=$(sup_log)
-  grep -q 'node sorti avec le code 1' <<< "$l" && ! grep -q 'node sorti avec le code 0' <<< "$l"
+  grep -q 'gardien {"sortie":1,"signal":null,"volontaire":true' <<< "$l" && ! grep -q 'node sorti' <<< "$l"
 }
+guarded() { local b; b=$(curl -fsS --max-time 5 "$EARTHLIFE_SERVER_URL/v1/health" 2>/dev/null || true); [[ $b == *'"gardien":true'* ]]; }
 not_in_logs() {
   local l
   l=$(sup_log; cat "$WORK/conteneurs.log" 2>/dev/null || true)
@@ -130,7 +134,8 @@ run_pass() {
   step "$label : connexion et garde-fous (check)" dep check
   step "$label : premier déploiement de $A" dep DEPLOY_SHA="$A" release
   step "$label : le serveur sert $A" serves "$A"
-  step "$label : déploiement de $B (sortie volontaire, relance par le superviseur)" dep DEPLOY_SHA="$B" release
+  step "$label : le serveur tourne sous son gardien" guarded
+  step "$label : déploiement de $B (sortie volontaire, relance par le gardien)" dep DEPLOY_SHA="$B" release
   step "$label : le serveur sert $B" serves "$B"
   step "$label : previous désigne $A" state_is previous "releases/$A"
   refused "$label : la version cassée $E échoue" dep DEPLOY_SHA="$E" DEPLOY_WAIT_TRIES=8 release
@@ -147,7 +152,7 @@ run_pass() {
   step "$label : nettoyage à 1 version" dep DEPLOY_KEEP=1 clean
   step "$label : restent current ($D) et previous ($B)" has_releases "$B" "$D"
   step "$label : le serveur sert toujours $D" serves "$D"
-  step "$label : chaque redémarrage voulu est sorti avec le code 1" restarted_with_1
+  step "$label : chaque redémarrage voulu est sorti avec le code 1 et relancé par le gardien" restarted_by_guardian
 }
 
 # Garde-fous du dossier, refusés avant toute écriture : sa forme ici (deploy.sh), sa place sous le dossier personnel
@@ -246,8 +251,8 @@ step "aucune clé ni empreinte laissée sur la machine par deploy.sh" tmp_empty
 
 # ---------- Bilan ----------
 echo
-echo "--- Superviseur (lancements et sorties du serveur)"
-sup_log | grep '^\[superviseur\]' | tail -n 40 || true
+echo "--- Superviseur et gardien (lancements et sorties du serveur)"
+sup_log | grep -E '^\[superviseur\]| gardien ' | tail -n 60 || true
 echo "Répétition du déploiement ($MODE) : $PASSED réussies, $FAILED en échec"
 if [[ $FAILED -gt 0 ]]; then
   echo "--- Fin du journal du superviseur et du serveur"

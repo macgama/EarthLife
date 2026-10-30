@@ -4,7 +4,7 @@
 // et les textes qui y ressemblent sont masqués, quel que soit l'appelant (adresses e-mail comprises). Débit borné : les refus, qu'un tiers
 // provoque à volonté (origine, taille, corps…), ont leur propre budget (120 lignes par minute, le surplus résumé par
 // motif) ; les autres lignes 600 par minute ; les événements du serveur lui-même, rares (mesures, modération,
-// démarrage, arrêt, base…), ne sont jamais retenus, pour qu'un flot de refus n'efface pas leur trace.
+// démarrage, arrêt, base, gardien…), ne sont jamais retenus, pour qu'un flot de refus n'efface pas leur trace.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -21,7 +21,7 @@ const TOKEN = /\b[A-Za-z0-9_-]{43}\b/g;
 const HASH = /\b[0-9a-f]{64}\b/gi;
 
 const NOISY = new Set(['refus']);
-const RESERVED = new Set(['demarrage', 'ecoute', 'arret', 'mesures', 'moderation', 'base', 'reglage', 'admin', 'purge', 'journal']);
+const RESERVED = new Set(['demarrage', 'ecoute', 'arret', 'mesures', 'moderation', 'base', 'reglage', 'admin', 'purge', 'journal', 'gardien']);
 
 const dayName = (ms) => new Date(ms).toISOString().slice(0, 10);
 

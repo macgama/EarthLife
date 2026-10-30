@@ -873,7 +873,7 @@ test('arrêt propre : bye restart avec un délai de 2 à 5 s, code 1012, écritu
 test('santé : JSON de /v1/health, compte caché en dessous de 2', async () => {
   const w = world({ cfg: { version: 'a1b2c3d', inviteCode: 'X' } });
   assert.deepEqual(w.room.health(), { ok: true, v: 1, minClient: 1, version: 'a1b2c3d', ws: true, db: true,
-    maintenance: false, invite: true, acct: false, online: 0, now: T0 });
+    maintenance: false, invite: true, acct: false, gardien: false, online: 0, now: T0 });
   const w2 = world();
   await w2.join(0, 0);
   assert.equal(w2.room.health().online, 0);

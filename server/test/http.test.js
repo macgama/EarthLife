@@ -355,7 +355,7 @@ test('GET /v1/health, GET /, 404, 405 et en-têtes de la section 6.2', async () 
     assert.equal(res.headers.get('access-control-allow-credentials'), null);
     assert.equal(res.headers.get('set-cookie'), null);
     const h = await res.json();
-    assert.deepEqual(Object.keys(h).sort(), ['acct', 'db', 'invite', 'maintenance', 'minClient', 'now', 'ok', 'online', 'v', 'version', 'ws'].sort());
+    assert.deepEqual(Object.keys(h).sort(), ['acct', 'db', 'gardien', 'invite', 'maintenance', 'minClient', 'now', 'ok', 'online', 'v', 'version', 'ws'].sort());
     assert.equal(h.ok, true);
     assert.equal(h.v, 1);
     assert.equal(h.minClient, 1);
@@ -744,7 +744,9 @@ test('restart.request plus récent que le démarrage : bye { restart } et sortie
   fs.writeFileSync(path.join(appDir, 'restart.request'), '');
   const past = new Date(Date.now() - 60000);
   fs.utimesSync(path.join(appDir, 'restart.request'), past, past);
-  const p = await spawnOnFreePort({ EARTHLIFE_APP_DIR: appDir });
+  // Le serveur lui-même, sans gardien (gardien.js, essayé à part et par la répétition du déploiement) : c'est sa sortie
+  // qui est vérifiée ici.
+  const p = await spawnOnFreePort({ EARTHLIFE_APP_DIR: appDir, EARTHLIFE_GARDIEN: '0' });
   try {
     const c = wsClient(p.url);
     assert.equal((await c.hello()).t, 'welcome');

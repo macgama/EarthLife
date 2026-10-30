@@ -230,6 +230,7 @@ export function loadConfig({ env = process.env, file = defaultEnvFile(env), root
   for (const k of KNOWN_KEYS) if (env[k] !== undefined && env[k] !== '') raw.set(k, env[k]);
   const cfg = buildConfig(raw, { root });
   cfg.envFile = { found: read.found, name: path.basename(file) };
+  cfg.guarded = env.EARTHLIFE_ENFANT === '1';           // lancé par le gardien (gardien.js)
   cfg.warnings.unshift(...read.warnings);
   return cfg;
 }
@@ -239,7 +240,7 @@ export function roomConfig(cfg) {
   const HOUR = 3600000;
   return {
     version: cfg.version, minClient: cfg.minClient, ws: cfg.ws, maintenance: cfg.maintenance, inviteCode: cfg.inviteCode,
-    maxConn: cfg.maxConn, createPerHour: cfg.createPerHour, accounts: !!cfg.accounts,
+    maxConn: cfg.maxConn, createPerHour: cfg.createPerHour, accounts: !!cfg.accounts, guarded: !!cfg.guarded,
     searchSharedMs: cfg.searchHours * HOUR, goneSharedMs: cfg.goneHours * HOUR,
   };
 }

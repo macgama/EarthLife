@@ -4,7 +4,8 @@
 // facultatifs (spécification des comptes) quand config.accounts est vrai : routes, e-mails, purge, mesures.
 // Protections du transport : trames de contrôle plafonnées et tampons d'envoi balayés chaque seconde (mémoire),
 // délais HTTP effectifs, limites par adresse sur le /64 en IPv6 ; sonde de la base toutes les 5 s (/v1/health).
-// Lancé tel quel par le gestionnaire d'Infomaniak : node --max-old-space-size=192 …/current/server/src/main.js
+// Lancé tel quel par le gestionnaire d'Infomaniak : node --max-old-space-size=192 …/current/server/src/main.js ; une
+// version déployée y devient le gardien (gardien.js), qui lance le serveur dans un processus enfant et le relance.
 import http from 'node:http';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -21,6 +22,7 @@ import { createMemoryStore } from './store-memory.js';
 import { createLog, errFields } from './log.js';
 import { createHttpHandler, clientIp, ipScope, originAllowed, pathOf } from './http.js';
 import { loadConfig, roomConfig } from './config.js';
+import { createGuardian, wantGuardian } from './gardien.js';
 import { RULES } from '../../prototype/src/net/protocol.js';
 
 const MB = 1048576;
@@ -211,6 +213,7 @@ export async function startServer({
     version: config.version, node: process.version, tasMaxMo: heapMo, magasin: config.store, ws: config.ws,
     maintenance: config.maintenance, origines: config.origins.length, trustProxy: config.trustProxy, maxConn: config.maxConn,
     fichier: config.envFile?.found ?? null, comptes: !!accounts, courrier: accounts ? mailer?.transport ?? null : null,
+    gardien: !!config.guarded,
   });
   for (const w of config.warnings ?? []) log('reglage', w);
   if (mailer) Promise.resolve().then(() => mailer.verify()).catch((err) => log('erreur', { type: 'courrier', ...errFields(err) }));
@@ -592,16 +595,40 @@ async function main() {
     if (recent.length > 20) { log('arret', { raison: 'erreurs', code: 1 }); process.exit(1); }
   });
   process.on('unhandledRejection', (e) => { log('erreur', { type: 'promesse', ...errFields(e) }); });
+  let srv;
   try {
-    await startServer({ config, log, signals: true });
+    srv = await startServer({ config, log, signals: true });
   } catch (err) {
     log('demarrage', { refus: 'ecoute', ...errFields(err) });
     await log.close();
     process.exit(1);
   }
+  // Lancé par le gardien : s'il disparaît (tué par le Manager), le serveur s'arrête aussi plutôt que de garder le port.
+  if (process.channel) {
+    process.channel.unref?.();
+    process.on('disconnect', () => { srv.stop('gardien'); });
+  }
+}
+
+// Gardien (gardien.js) : son journal va dans le même fichier que celui du serveur.
+function guard(config) {
+  const log = createLog({ dir: config.logDir });
+  const exit = (code) => {
+    Promise.race([Promise.resolve(log.close?.()).catch(() => {}), new Promise((r) => setTimeout(r, 1000))]).then(() => process.exit(code));
+  };
+  const g = createGuardian({ appDir: config.appDir, log, exit });
+  process.on('SIGTERM', () => g.stop('SIGTERM'));
+  process.on('SIGINT', () => g.stop('SIGINT'));
+  // Une erreur du gardien ne doit pas l'arrêter : plus personne ne relancerait le serveur.
+  process.on('uncaughtException', (e) => { if (e?.code !== 'EPIPE') log('gardien', { erreur: 'inattendue', ...errFields(e) }); });
+  g.start();
 }
 
 const direct = process.argv[1] && (() => {
   try { return pathToFileURL(fs.realpathSync(process.argv[1])).href === pathToFileURL(fs.realpathSync(fileURLToPath(import.meta.url))).href; } catch { return false; }
 })();
-if (direct) main();
+if (direct) {
+  const config = loadConfig();
+  // Réglages refusés : pas de gardien, main() les note et sort (code 1), comme avant.
+  if (!config.errors.length && wantGuardian(process.env, config.appDir)) guard(config); else main();
+}
