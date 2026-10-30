@@ -67,6 +67,9 @@ function recorder() {
 
 async function newContext(device) {
   const ctx = await browser.newContext(DEVICES[device]);
+  // Sur un exécuteur lent, un rechargement de la page dépasse parfois les 30 s par défaut (reprise : 40 s pour le premier,
+  // le second coupé à 30 s) ; le délai de lancement de la partie (`started`) reste la vraie limite.
+  ctx.setDefaultNavigationTimeout(120000);
   if (routes) await routes(ctx, root);
   await ctx.addInitScript(recorder);
   return ctx;
