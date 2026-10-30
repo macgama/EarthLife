@@ -295,9 +295,12 @@ export function createSeasonNet({
     enter: (key) => call('enter', { key }),
     tile: (body) => call('tile', body),
     home: (body) => call('home', body),
-    async progress() {
+    // near ({ lat, lon }, facultatif) : le serveur détaille aussi les villes les plus proches de ce point (`near`, par niveau).
+    async progress({ near = null } = {}) {
       if (!origin) return { ok: false, code: 'base' };
-      return parse(await raw(url('progress'), { method: 'GET', cache: 'no-store', credentials: 'omit' }));
+      const q = near && Number.isFinite(near.lat) && Number.isFinite(near.lon) && Math.abs(near.lat) <= 90 && Math.abs(near.lon) <= 180
+        ? `?near=${near.lat.toFixed(2)},${near.lon.toFixed(2)}` : '';
+      return parse(await raw(url(`progress${q}`), { method: 'GET', cache: 'no-store', credentials: 'omit' }));
     },
     adj, emit, flush, open, ready, close, claim, leave,
     get enabled() { return !!origin; },

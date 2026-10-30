@@ -41,9 +41,10 @@ const MARKER_SVG = '<svg viewBox="0 0 34 46" width="34" height="46" aria-hidden=
 const pinSvg = (fill, glyph) => `<svg viewBox="0 0 34 46" width="30" height="41" aria-hidden="true"><ellipse cx="17" cy="43.5" rx="7" ry="2.5" fill="#000" fill-opacity=".35"/><path d="M17 1.5C8.4 1.5 1.5 8.3 1.5 16.8 1.5 28.4 17 44.5 17 44.5s15.5-16.1 15.5-27.7C32.5 8.3 25.6 1.5 17 1.5z" fill="${fill}" stroke="#0a0d10" stroke-width="2.5"/>${glyph}</svg>`;
 // Repères des villes de la saison (salon), aux couleurs des badges : jaune en cours, rouge nuit du cœur, vert désinfectée ;
 // la lettre du niveau est au centre.
-const MAX_SEASON_PINS = 120;                      // 30 villes au plus par niveau (serveur), trois niveaux
+// Par niveau, le serveur détaille 60 villes et 30 autour du point demandé ; les autres viennent en repères regroupés (100 au plus).
+const MAX_SEASON_PINS = 400;
 const SEASON_TONES = { ok: '#3fd08f', warn: '#ffc23d', danger: '#ff5d5d', idle: '#86929c' };
-const seasonSvg = (tone, letter) => pinSvg(SEASON_TONES[tone] ?? SEASON_TONES.warn, `<text x="17" y="22.2" text-anchor="middle" font-family="Chakra Petch, system-ui, sans-serif" font-size="13" font-weight="700" fill="#0a0d10">${letter}</text>`);
+const seasonSvg = (tone, letter) => pinSvg(SEASON_TONES[tone] ?? SEASON_TONES.warn, `<text x="17" y="22.2" text-anchor="middle" font-family="Chakra Petch, system-ui, sans-serif" font-size="${letter.length > 2 ? 10 : 13}" font-weight="700" fill="#0a0d10">${letter}</text>`);
 // Repère d'ami (étape 2 des amis) : sarcelle, comme les autres survivants, avec un bonhomme.
 const MAX_FRIEND_PINS = 30;
 const FRIEND_SVG = pinSvg('#38c7c2', '<circle cx="17" cy="14" r="3.6" fill="#0a0d10"/><path d="M10.4 24.6c0-4.3 3-6.5 6.6-6.5s6.6 2.2 6.6 6.5z" fill="#0a0d10"/>');
@@ -1071,7 +1072,8 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
     setBag(bag) {
       setPin('bag', bag, 'Ton sac');
     },
-    // Villes de la saison (salon) : [{ level, key, lat, lon, tone, label, tag }], un repère par ville ouverte de chaque niveau ; [] les retire toutes.
+    // Villes de la saison (salon) : [{ level, key, lat, lon, tone, label, tag, zone? }], un repère par ville ouverte de chaque niveau, ou par groupe
+    // de villes (zone : leur nombre, écrit dans le repère) ; [] les retire toutes.
     setSeasonCities(list) {
       const keep = new Set();
       for (const c of Array.isArray(list) ? list.slice(0, MAX_SEASON_PINS) : []) {
@@ -1080,7 +1082,8 @@ export function createPicker({ root, cities = [], onChange, onMyPosition, onProt
         const kind = `saison-${c.level}-${c.key}`;
         keep.add(kind);
         let pin = pinOf(kind);
-        const svg = seasonSvg(c.tone, c.level[0].toUpperCase());
+        const n = Number.isInteger(c.zone) && c.zone > 0 ? c.zone : 0;
+        const svg = seasonSvg(c.tone, n ? (n > 99 ? '99+' : String(n)) : c.level[0].toUpperCase());
         const tag = clean(c.tag).slice(0, 60);
         if (!pin) { pin = { kind, level: c.level, key: c.key, svg, tag, spot: null, text: '', marker: null }; pins.push(pin); }
         else if (pin.svg !== svg || pin.tag !== tag) { pin.marker?.remove(); pin.marker = null; pin.svg = svg; pin.tag = tag; }

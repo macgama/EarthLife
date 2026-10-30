@@ -5,7 +5,7 @@
 import { LEVEL_TEXT } from './ville-jeu.js';
 import { groupDigits } from './commune.js';
 import { sceneCss } from './art.js';
-import { startedOf, lostOf, cityNote } from './villes-en-cours.js';
+import { startedOf, lostOf, cityNote, levelRows, levelMarks } from './villes-en-cours.js';
 
 export const FRONT_LEVELS = ['facile', 'moyen', 'difficile'];
 export const DEFAULT_FRONT = 'facile';        // le plus doux : proposé d'office à qui n'a pas encore de niveau
@@ -60,12 +60,9 @@ export function clockOf(season, now) {
   return { name: typeof season.name === 'string' ? season.name : 'Saison 1', elapsed, left, phase, text };
 }
 
-// Villes ouvertes d'un niveau, telles que /v1/season/progress les donne (`cities`) ; un serveur d'avant le choix libre ne donne que `city`.
+// Villes d'un niveau que /v1/season/progress détaille (`cities`, `near`) ; un serveur d'avant le choix libre ne donne que `city`.
 const validPoint = (lat, lon) => Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
-function cityRows(entry) {
-  const list = Array.isArray(entry?.cities) ? entry.cities : entry?.city ? [entry.city] : [];
-  return list.filter((c) => c && typeof c === 'object' && typeof c.key === 'string' && c.key);
-}
+const cityRows = levelRows;
 const pointOf = (c) => {
   const lat = Number(c?.lat ?? c?.place?.lat), lon = Number(c?.lon ?? c?.place?.lon);
   return validPoint(lat, lon) ? { lat, lon } : null;
@@ -107,13 +104,19 @@ export function frontModel(level, entry, ctx = {}) {
     started: startedOf(r), saved: int(r.saved), toSave: int(r.toSave), mode: r.mode === 'quartiers' ? 'quartiers' : 'entiere', done: int(r.done) }));
   if (ann && !annRow) list.push({ key: ann.key, name: ann.name, where: pointOf(ann), status: 'annoncee', online: 0, own: false, announced: true, started: false, saved: 0, toSave: 0 });
   if (own && pending) list.push({ key: own.key, name: typeof own.name === 'string' ? own.name : '', where: pointOf(own), status: 'en-cours', online: 0, own: true, announced: false, started: false, saved: 0, toSave: 0 });
+  // Toutes les villes ouvertes du niveau : le serveur les compte (`totals`, monde entier) ; un ancien serveur les listait toutes.
   const totals = { cities: 0, cleaned: 0, zombies: 0, saved: 0 };
-  for (const r of rows) {
-    totals.cities++;
-    if (r.status === 'nettoyee') totals.cleaned++;
-    totals.zombies += int(r.zombies);
-    totals.saved += int(r.saved);
+  if (entry?.totals && typeof entry.totals === 'object') {
+    for (const k of Object.keys(totals)) totals[k] = int(entry.totals[k]);
+  } else {
+    for (const r of rows) {
+      totals.cities++;
+      if (r.status === 'nettoyee') totals.cleaned++;
+      totals.zombies += int(r.zombies);
+      totals.saved += int(r.saved);
+    }
   }
+  const open = Math.max(rows.length, int(entry?.open), totals.cities);
   return {
     level, name: t.name, pct: t.pct, rule: t.rule, known,
     status, badge: STATUS[status].label, tone: STATUS[status].tone,
@@ -121,7 +124,7 @@ export function frontModel(level, entry, ctx = {}) {
     cleared, clearedText: `${Math.round(cleared * 100)} %`,
     zombies, zombies0, saved: int(c?.saved), toSave: int(c?.toSave), flags: int(c?.flags), mode: c?.mode === 'quartiers' ? 'quartiers' : 'entiere', done: int(c?.done),
     online: int(entry?.online), players: int(entry?.players), seats: int(entry?.seats) || 100,
-    cities: list, open: rows.length, others: Math.max(0, rows.length - (c ? 1 : 0)), proposal, totals,
+    cities: list, zones: levelMarks(entry), open, others: Math.max(0, open - (c ? 1 : 0)), proposal, totals,
     mine, locked, picked: !locked && (enrolled ? mine : ctx.pick === level),
     tag: mine ? 'Ton niveau' : !enrolled && level === DEFAULT_FRONT ? 'Pour débuter' : '',
   };
@@ -129,7 +132,7 @@ export function frontModel(level, entry, ctx = {}) {
 
 // Totaux de la saison, pour la bannière (toutes les villes ouvertes de tous les niveaux).
 export function summaryOf(fronts) {
-  const out = { online: 0, players: 0, cities: 0, cleaned: 0, zombies: 0, saved: 0 };
+  const out = { online: 0, players: 0, cities: 0, cleaned: 0, zombies: 0, saved: 0, world: '' };
   for (const f of fronts) {
     out.online += f.online;
     out.players += f.players;
@@ -138,6 +141,8 @@ export function summaryOf(fronts) {
     out.zombies += f.totals.zombies;
     out.saved += f.totals.saved;
   }
+  // La part du monde sauvée : le compteur est cumulé sur toute la saison, toutes villes et tous niveaux confondus.
+  if (out.cities) out.world = `Le monde : ${groupDigits(out.saved)} habitant${out.saved > 1 ? 's' : ''} sauvé${out.saved > 1 ? 's' : ''} sur 8,1 milliards · ${groupDigits(out.cities)} ville${out.cities > 1 ? 's' : ''} ouverte${out.cities > 1 ? 's' : ''}`;
   return out;
 }
 
@@ -189,7 +194,8 @@ export function ctaModel({ fronts, enrolled = null, own = null, sel = null, pick
   return { kind, level, label: `${verb} · ${f.name}`, sub: where.join(' · ') || (kind === 'resume' ? 'Ta ville de la saison' : ''), disabled: false, dest };
 }
 
-// Repères du niveau sur la carte du menu : une ville ouverte (ou annoncée) par repère, seulement celles dont le serveur donne la position.
+// Repères sur la carte du menu : une ville ouverte (ou annoncée) par repère, seulement celles dont le serveur donne la position ;
+// puis les repères regroupés (`zone-N` : les villes que le serveur ne détaille pas, comptées par case ; les touchant, le menu demande celles d'autour).
 export function pinsOf(fronts) {
   const out = [];
   for (const f of fronts) {
@@ -204,6 +210,13 @@ export function pinsOf(fronts) {
         label: `${f.name} · ${c.name}`, tag: `${c.own ? 'Ta ville · ' : ''}${c.name}${note ? ` · ${note}` : ''}`,
       });
     }
+  }
+  for (const f of fronts) {
+    (f.zones ?? []).forEach((z, i) => {
+      const n = `${z.n} ville${z.n > 1 ? 's' : ''}`;
+      out.push({ level: f.level, key: `zone-${i}`, lat: z.lat, lon: z.lon, tone: z.started ? 'warn' : 'idle', own: false, started: z.started > 0, zone: z.n,
+        label: `${f.name} · ${n} ouvertes par ici`, tag: `${n}${z.started ? ` · ${z.started} en cours` : ''}` });
+    });
   }
   return out;
 }
@@ -322,6 +335,8 @@ export function createSalon({ doc, storage = null, host = {} } = {}) {
       'stat-zombies': model.loaded ? groupDigits(s.zombies) : '–',
     };
     for (const [id, text] of Object.entries(stats)) setText($(id), text);
+    const world = $('salon-world');
+    if (world) { setText(world, model.loaded ? s.world ?? '' : ''); world.hidden = !(model.loaded && s.world); }
     const link = $('salon-link');
     if (link && model.link) { setText($('salon-link-text'), model.link.text); link.dataset.tone = model.link.tone; }
     const note = $('salon-note');

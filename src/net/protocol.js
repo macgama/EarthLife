@@ -3,7 +3,9 @@
 // Module pur, partagé tel quel par le jeu et par le serveur : il n'importe rien.
 
 export const PROTOCOL = 1;
-export const CLIENT_LEVEL = 4;                    // comparé à minClient (section 4.8) ; 2 : saisons (message `sv`) ; 3 : file d'attente de la saison ; 4 : grandes villes de la saison, par quartiers
+// Comparé à minClient (section 4.8) ; 2 : saisons (message `sv`) ; 3 : file d'attente de la saison ; 4 : grandes villes de la saison, par quartiers ;
+// 5 : communes de plus de 400 tuiles en saison (SEASON.vastTiles).
+export const CLIENT_LEVEL = 5;
 // crown : posé par le serveur seulement, dans les lignes de `near` d'un survivant en couronne anonyme (spec 3.1 et
 // 6.6 : jamais de flèche vers lui) ; un client ne l'envoie pas (allure de 0 à 15).
 export const FLAGS = { run: 1, inside: 2, carrying: 4, down: 8, crown: 16 };
@@ -24,12 +26,14 @@ export const RULES = {
 // Saisons (conception validée, lot 1) : un seul type de message, `sv`, dans les deux sens ; `o` dit l'opération.
 // Client : in (je joue dans cette commune ; q : je sais attendre dans la file), ev (gestes de la ville, 40 au plus), out, cancel (quitter la
 // file). Serveur : in, no, full, wait (rang et taille de la file), go (une place est gardée ms), rows, tile, cnt, ls (prêts de tous les
-// joueurs), un (un quartier commence), ud (un quartier est repris), deny, end. Un client sans `q` reçoit `full` quand le niveau est complet, comme avant la file.
+// joueurs), un (un quartier commence), ud (un quartier est repris), deny, end, night (la nuit a ramené des zombies : voir seasonNight). Un client sans `q` reçoit `full` quand le niveau est complet, comme avant la file.
 // Une rangée de pâté a 9 nombres (quartier.js, ROW) ; un message du serveur tient en 16 Ko. `cl` (niveau du client, `in` et corps HTTP) :
-// une ville en quartiers (mode « quartiers ») n'est ouverte qu'aux clients de niveau 4 au moins ; un ancien client reçoit le refus `mode`.
+// une ville en quartiers (mode « quartiers ») n'est ouverte qu'aux clients de niveau 4 au moins, une commune de plus de vastTiles tuiles qu'à
+// ceux de niveau 5 ; un ancien client reçoit le refus `mode`.
 // Dans une ville en quartiers, `tile` porte `qi` et `qk` : les lieux (clés de quartier) ajoutés à `ville.qk` depuis l'indice `qi`.
 export const SEASON = {
-  maxEvents: 40, maxRows: 400, maxUnits: 160, maxPlaces: 400, rowLength: 9, seats: 100, days: 60, quartiersLevel: 4,
+  // maxUnits, maxPlaces : ceux d'une commune de 2 000 tuiles (capsOf de quartier.js) ; une ville de 400 tuiles au plus en reste à 160 et 400.
+  maxEvents: 40, maxRows: 400, maxUnits: 800, maxPlaces: 2000, rowLength: 9, seats: 100, days: 60, quartiersLevel: 4, vastLevel: 5, vastTiles: 400,
   // Fenêtre (grande ville) : les tuiles dont ce jeu reçoit les rangées ; `win` en demande 32 de plus au plus par message, 400 en tout.
   winPerMsg: 32, winMax: 400,
   levels: ['facile', 'moyen', 'difficile'],
@@ -410,6 +414,18 @@ function list(o, k, max, each) {
   return v.map((e) => each(e) ?? bad(k));
 }
 
+// Retour de la nuit (état de la saison et message `night`) : clé de la nuit, zombies revenus dans des pâtés vidés ou entamés, les 3 pâtés
+// les plus touchés [clé, nombre], les fanions tombés (clés). Les mêmes champs courts dans les deux.
+export const SEASON_NIGHT_KEY = /^\d{4}-\d{2}-\d{2}$/;
+function seasonNight(o, out) {
+  const nk = get(o, 'k');
+  out.k = typeof nk === 'string' && SEASON_NIGHT_KEY.test(nk) ? nk : bad('k');
+  out.n = int(o, 'n', 0, 1e7);
+  const block = (e) => typeof e === 'string' && e[0] !== '@' && SEASON_KEY.test(e);      // un pâté, jamais la réserve d'un quartier
+  out.b = list(o, 'b', 3, (e) => (Array.isArray(e) && e.length === 2 && block(e[0]) && inRange(e[1], 1, 1e7) ? [e[0], e[1]] : null));
+  out.f = list(o, 'f', 3, (e) => (block(e) ? e : null));
+}
+
 // Saisons : rangées de pâtés { 'z/x/y': { clé: [9 nombres] } }, tuile sans ses rangées, compteurs de la ville.
 function seasonTileKey(k) { return typeof k === 'string' && SEASON_TILE.test(k) ? k : bad('k'); }
 function seasonRow(r) {
@@ -560,7 +576,7 @@ const SERVER = {
   },
   count(o, out) { out.n = int(o, 'n', 0, 1e7); },
   sv(o, out) {
-    out.o = oneOf(o, 'o', ['in', 'no', 'full', 'wait', 'go', 'rows', 'tile', 'cnt', 'ls', 'un', 'ud', 'deny', 'end']);
+    out.o = oneOf(o, 'o', ['in', 'no', 'full', 'wait', 'go', 'rows', 'tile', 'cnt', 'ls', 'un', 'ud', 'deny', 'end', 'night']);
     if (['in', 'rows', 'tile', 'cnt', 'ls', 'un', 'ud'].includes(out.o)) out.rv = int(o, 'rv', 0, 2 ** 40);
     if (out.o === 'no') out.why = oneOf(o, 'why', SEASON.noWhy);
     else if (out.o === 'full') { out.used = int(o, 'used', 0, 1e6); out.max = int(o, 'max', 0, 1e6); }
@@ -579,6 +595,7 @@ const SERVER = {
       out.d = list(o, 'd', 60, (e) => (Array.isArray(e) && e.length === 2 && typeof e[0] === 'string' && SEASON_KEY.test(e[0])
         && inRange(e[1], 1, 60) ? [e[0], e[1]] : null));
     } else if (out.o === 'end') out.why = oneOf(o, 'why', ['fin']);
+    else if (out.o === 'night') seasonNight(o, out);
   },
   err(o, out) { out.code = oneOf(o, 'code', ERR_CODES); },
   bye(o, out) {
