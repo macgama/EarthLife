@@ -7,7 +7,7 @@ import { createAccounts } from '../src/accounts.js';
 import { createMailer } from '../src/mail.js';
 import { createMemoryStore } from '../src/store-memory.js';
 import { createRoom } from '../src/room.js';
-import { checkVille, zombiesLeft, blockInfo, cityStatus, ROW, ETAT } from '../../prototype/src/quartier.js';
+import { checkVille, zombiesLeft, blockInfo, cityStatus, move, ROW, ETAT } from '../../prototype/src/quartier.js';
 import { parseServer, validateClient } from '../../prototype/src/net/protocol.js';
 
 // 6 octobre 2026, 12 h UTC : plein jour à Pérouges (45,9 N ; 5,2 E).
@@ -18,7 +18,7 @@ const TA = '14/8500/5800', TB = '14/8501/5800';
 const SEED = { key: 'c01283', name: 'Pérouges', place: { lat: 45.9, lon: 5.2, name: 'Pérouges' }, pop: 600, src: 'insee', zl: 8,
   tiles: { [TA]: 3000, [TB]: 1000 } };
 
-function rig({ t = T0, rules = {} } = {}) {
+function rig({ t = T0, rules = {}, rand } = {}) {
   const clock = { t };
   const now = () => clock.t;
   const logs = [];
@@ -27,7 +27,7 @@ function rig({ t = T0, rules = {} } = {}) {
   const room = createRoom({ store, now, log, cfg: { accounts: true, maxConn: 1000, connPerIp: 1000, createPerIpHour: 1000, createPerHour: 5000 } });
   const mailer = createMailer({ transport: 'boite', from: 'earthlife@exemple.test', now, log, perHour: 1000, perDay: 10000 });
   const accounts = createAccounts({ store, room, config: { dev: true }, mailer, log, now, hashParams: { logN: 10, r: 8, p: 1 } });
-  const seasons = createSeasons({ store, send: (s, m) => room.send(s, m), log, now, rules });
+  const seasons = createSeasons({ store, send: (s, m) => room.send(s, m), log, now, rules, rand });
   room.setSeason(seasons.hooks);
   const players = [];
   const w = { clock, logs, store, room, accounts, seasons, mailer };
@@ -808,6 +808,77 @@ test('nuit : volontaires et repousse jouées par le serveur, une fois par nuit, 
   assert.equal(v.vn, vn);
   assert.equal(zombiesLeft(v), after);
   assert.ok(checkVille(v).ok, checkVille(v).errors.join());
+});
+
+test('retour de la nuit : dit à celui qui est là, une seule fois à celui qui revient, relu après un redémarrage', async () => {
+  const w = rig({ rand: () => 0.9 });                             // les guetteurs (50 sauvés) ne protègent pas le fanion cette nuit
+  const a = await seeded(w);
+  const back = await w.player(2, { enter: SEED.key });            // revient le lendemain
+  const later = await w.player(3, { enter: SEED.key });           // idem, mais le serveur redémarre avant son retour
+  await a.send({ o: 'in', c: SEED.key });
+  const city = cityOf(w), v = city.ville;
+  const all = Object.assign({}, ...Object.values(v.tiles).map((t) => t.b));
+  // Trois pâtés libérés au début de la chaîne (comme la nuit des volontaires) ; le dernier garde un fanion d'une nuit.
+  for (const kk of [key(0), key(1), key(2)]) {
+    const row = all[kk];
+    while (row[ROW.S] > 0 && row[ROW.E] === ETAT.rouge) {
+      const free = row[ROW.S] - Math.ceil(row[ROW.S0] / 10);
+      if (free <= 0) break;
+      await a.ev(['l', kk, Math.min(free, 60)]); await a.ev(['k', kk, Math.min(free, 60)]);
+      w.clock.t += 500;
+    }
+    await a.ev(['n', kk]);
+    await a.ev(['l', kk, 60]);
+    await a.ev(['k', kk, row[ROW.S]]);
+    await a.ev(['L', kk]);
+    w.clock.t += 500;
+    assert.equal(row[ROW.E], ETAT.libere, `pâté ${kk}`);
+  }
+  // Le front (key 3) a du surplus, que son voisin libéré (key 2) sent : son fanion d'une nuit tombera.
+  all[key(2)][ROW.F] = 1;
+  assert.ok(move(v, key(5), key(3), 4) > 0);
+  // Un pâté entamé plus loin (key 4, entre deux pâtés rouges) : la nuit lui rend un quart de son départ.
+  const part = Math.min(3, all[key(4)][ROW.S] - Math.ceil(all[key(4)][ROW.S0] / 10));
+  assert.ok(part > 0);
+  await a.ev(['l', key(4), part]); await a.ev(['k', key(4), part]);
+  assert.equal(city.night, null, 'rien avant la nuit');
+  // La nuit tombe (23 h UTC) alors que a est là : il reçoit le message, pas besoin de l'état.
+  w.jump(T0 + 11 * 3600000);
+  w.jump(w.clock.t + 31000);
+  assert.ok(city.night, 'la nuit a ramené des zombies');
+  assert.ok(city.night.n > 0);
+  assert.deepEqual(city.night.f, [key(2)], 'le fanion du dernier pâté libéré est tombé');
+  const live = a.sv('night');
+  assert.equal(live.length, 1);
+  assert.deepEqual([live[0].k, live[0].n, live[0].b, live[0].f], [city.night.k, city.night.n, city.night.b, city.night.f]);
+  const seen = await a.call('/v1/season/state', {});
+  assert.equal(seen.body.night, undefined, 'a l\'a déjà reçu en direct');
+  // b revient le matin : l'état le lui dit, une fois.
+  w.jump(T0 + 20 * 3600000);
+  const first = await back.call('/v1/season/state', {});
+  assert.deepEqual(first.body.night, { k: city.night.k, n: city.night.n, b: city.night.b, f: city.night.f });
+  assert.equal((await back.call('/v1/season/state', {})).body.night, undefined, 'dit une seule fois');
+  // Rangée avec la ville (meta) : relue après un redémarrage, dite à c qui ne l'avait pas encore reçue.
+  await w.seasons.flush();
+  const again = createSeasons({ store: w.store, now: () => w.clock.t });
+  await again.init();
+  const p = await again.handle('/v1/season/state', JSON.stringify({ ses: later.ses }));
+  assert.equal(p.status, 200);
+  assert.deepEqual(JSON.parse(p.raw).night, { k: city.night.k, n: city.night.n, b: city.night.b, f: city.night.f });
+  assert.equal(JSON.parse((await again.handle('/v1/season/state', JSON.stringify({ ses: later.ses }))).raw).night, undefined);
+});
+
+test('retour de la nuit : une nuit sans repousse ne dit rien', async () => {
+  const w = rig();
+  const a = await seeded(w);
+  await a.send({ o: 'in', c: SEED.key });
+  await a.ev(['c', key(3)]);                                      // a joue (la ville bouge cette nuit) mais rien n'est entamé ni vidé
+  w.jump(T0 + 11 * 3600000);
+  w.jump(w.clock.t + 31000);
+  assert.ok(cityOf(w).ville.vn, 'nuit jouée');
+  assert.equal(cityOf(w).night, null);
+  assert.equal(a.sv('night').length, 0);
+  assert.equal((await a.call('/v1/season/state', {})).body.night, undefined);
 });
 
 test('rangement : écriture par pièces, relecture à l\'identique, voisinages compris', async () => {

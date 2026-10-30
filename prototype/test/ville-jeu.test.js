@@ -12,7 +12,7 @@ import {
 import { createBlocksClient } from '../src/blocks.js';
 import { findCommune, findNeighbours, createCommuneCache } from '../src/commune.js';
 import { createTerritoryStore, currentVille, parseTerritory } from '../src/territory-store.js';
-import { checkVille, counters, blockInfo, cityStatus, zombiesLeft, LEVEL_KEYS, NIVEAUX, heartWaves, ROW, hiddenByBuilding, startVille } from '../src/quartier.js';
+import { checkVille, counters, blockInfo, cityStatus, zombiesLeft, LEVEL_KEYS, NIVEAUX, heartWaves, ROW, ETAT, hiddenByBuilding, startVille } from '../src/quartier.js';
 import { createGrid } from '../src/collision.js';
 import { createZombieDirector, createPlayer } from '../src/game.js';
 import { gameplayModifiers, forcedWeather } from '../src/weather.js';
@@ -380,6 +380,28 @@ test('une vraie nuit : volontaires, repousse et usure des fanions (une seule foi
   // Pendant une absence, ils n'abattent rien.
   const away = rt.nightly('2026-10-05', { played: false });
   assert.equal(away.volunteers, 0);
+});
+
+test('la repousse de la nuit est dite au joueur : combien de zombies, dans quels pâtés (les plus touchés d\'abord)', async () => {
+  const g = await newGame({ level: 'facile' });
+  const { ville, rt } = g;
+  // Un pâté vidé sans fanion, voisin d'un pâté rouge qui a du stock : la nuit lui en ramène la moitié de son départ.
+  const stock = (k) => [...(rt.adj.get(k) ?? [])].some((o) => { const i = blockInfo(ville, o); return i.state === 'rouge' && i.zombies - i.lent > i.nest; });
+  const a = [...rt.pos.keys()].find((k) => { const i = blockInfo(ville, k); return i.state === 'rouge' && i.start >= 4 && i.lent === 0 && stock(k); });
+  assert.ok(a, 'un pâté vidable à côté d\'un pâté rouge');
+  const row = ville.tiles[rt.pos.get(a).tile].b[a];
+  ville.killed[0] += row[ROW.S];
+  row[ROW.S] = 0;
+  row[ROW.E] = ETAT.nettoye;
+  const rep = rt.nightly('2026-10-06', { played: false });
+  assert.ok(rep.regrown > 0, 'la nuit a ramené des zombies');
+  const back = blockInfo(ville, a).zombies;                 // ce que le pâté vidé a repris ; d'autres pâtés entamés ont pu en reprendre aussi
+  assert.ok(back > 0 && back <= rep.regrown);
+  const p = rt.pos.get(a);
+  assert.ok(rep.spots.some((x) => x.n === back && x.name === (p.name || p.place)), 'le pâté vidé est cité avec ce qu\'il a repris');
+  assert.deepEqual(rep.spots.map((x) => x.n), rep.spots.map((x) => x.n).sort((x, y) => y - x), 'les plus touchés d\'abord');
+  assert.ok(rep.spots.length <= 3);
+  assert.ok(checkVille(ville).ok, checkVille(ville).errors.join(' ; '));
 });
 
 // ---------- Nuit du cœur et fin ----------

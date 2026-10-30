@@ -3,7 +3,7 @@
 // maison de départ, compteurs et objectif à l'écran, nuits, fin de ville et commune voisine, rechargement, retour du réseau,
 // cas d'échec. Les règles sont dans ville-jeu.js (testé sous node) ; ici le DOM et les cartes du jeu, par l'objet `host` que
 // main.js passe (sa session, ses cartes, son HUD). Textes posés par textContent (les cartes échappent leur contenu).
-import { LEVEL_KEYS, NIVEAUX, NIVEAU_DEFAUT, counters, takeHome, canChangeLevel, changeLevel, keyPoint, blockInfo, supplyFor } from './quartier.js';
+import { LEVEL_KEYS, NIVEAUX, NIVEAU_DEFAUT, counters, takeHome, canChangeLevel, changeLevel, keyPoint, blockInfo, supplyFor, nightBackLine } from './quartier.js';
 import { currentVille, switchVille, abandonVille, tally, supplyDay, noteFirst, adoptSave, TERRITORY_MESSAGES } from './territory-store.js';
 import {
   prepareCity, beginCity, createCityRuntime, unitOfVille, rebuildGraph, homeCandidates, levelCard, queueCard, LEVEL_TEXT, LEVEL_INTRO, CITY_TEXT, CITY,
@@ -797,6 +797,8 @@ export function createCityGame(host) {
     rt.chooseHeart();
     rt.settleEmpty();
     refreshHud(s, true);
+    // Retour de la nuit : ce que la repousse a ramené depuis ta dernière visite (le serveur ne le dit qu'une fois ; rien à un nouvel arrivant).
+    if (plan.state.night && !plan.first) rt.applyServer({ o: 'night', ...plan.state.night });
   }
 
   // Maison de la saison : le pâté du refuge et sa position, gardés par le serveur (reprise au dernier refuge).
@@ -1052,9 +1054,18 @@ export function createCityGame(host) {
       case 'night': {
         const parts = [];
         if (e.volunteers) parts.push(`Cette nuit, tes volontaires ont abattu ${groupDigits(e.volunteers)} zombies${e.street ? ` ${e.street}` : ''}.`);
+        if (e.regrown) parts.push(nightBackLine({ n: e.regrown, spots: e.spots }));
         if (e.fallen.length) parts.push(`Un fanion est tombé : ${e.fallen[0]}.`);
-        if (parts.length) host.toast(parts.join(' '), 6, e.fallen.length ? 'danger' : 'success');
+        if (parts.length) host.toast(parts.join(' '), e.regrown ? 8 : 6, e.fallen.length || e.regrown ? 'danger' : 'success');
         supplyForDay(s);
+        break;
+      }
+      case 'night-back': {
+        // Saison : la nuit a été jouée par le serveur, pendant ton absence ou sous tes yeux.
+        const parts = [nightBackLine({ n: e.regrown, spots: e.spots })];
+        if (e.fallen.length) parts.push(`Un fanion est tombé : ${e.fallen[0]}.`);
+        const text = parts.filter(Boolean).join(' ');
+        if (text) host.toast(text, 8, 'danger');
         break;
       }
       case 'unit-start':
