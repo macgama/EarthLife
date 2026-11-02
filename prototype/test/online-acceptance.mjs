@@ -3680,6 +3680,11 @@ await scenario('O39', 'personnages : rangée du salon, changement de personnage,
   LIM.codesPerIpHour += 200;
   LIM.coldCodesPerIpHour += 200;
   LIM.ipPerMin = 1000;
+  // Le serveur ne crée que 20 identités par heure et par adresse (createPerIpHour) : les scénarios d'avant ont déjà comblé ce compte (liaison « complet »).
+  // Le compte de 127.0.0.1 est mis à zéro le temps du scénario, puis rendu (comme O38).
+  const ipEntries = [...srv.room.debug().perIp.values()];
+  const createsWas = ipEntries.map((e) => e.creates);
+  for (const e of ipEntries) e.creates = { add: () => 0, count: () => 0 };
   const P = { email: 'p.perso@exemple.test', pw: 'essai-perso-quai-70' };
   let B = null;
   try {
@@ -3807,6 +3812,7 @@ await scenario('O39', 'personnages : rangée du salon, changement de personnage,
     check(left.body.chars?.map((c) => c.slot).join() === '3', `serveur : il reste le personnage 3 (${left.body.chars?.map((c) => c.slot)})`);
   } finally {
     Object.assign(LIM, was);
+    ipEntries.forEach((e, i) => { e.creates = createsWas[i]; });
   }
 });
 
