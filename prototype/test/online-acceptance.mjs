@@ -3676,8 +3676,9 @@ await scenario('O39', 'personnages : rangée du salon, changement de personnage,
   };
   const { ACCOUNT_LIMITS: LIM } = await load('server/src/accounts.js');
   const was = { codesPerIpHour: LIM.codesPerIpHour, coldCodesPerIpHour: LIM.coldCodesPerIpHour, ipPerMin: LIM.ipPerMin };
-  LIM.codesPerIpHour += 10;
-  LIM.coldCodesPerIpHour += 10;
+  // Les scénarios d'avant ont déjà demandé beaucoup de codes depuis cette adresse (le plafond des adresses neuves refuse sans le dire : pas de code, 400).
+  LIM.codesPerIpHour += 200;
+  LIM.coldCodesPerIpHour += 200;
   LIM.ipPerMin = 1000;
   const P = { email: 'p.perso@exemple.test', pw: 'essai-perso-quai-70' };
   let B = null;
