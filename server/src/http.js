@@ -21,7 +21,7 @@ const ACCOUNT_ROUTES = new Map([
   ...['list', 'where', 'code', 'join', 'remove', 'block', 'give', 'box', 'take', 'recall'].map((r) => [`/v1/friends/${r}`, 'account']),
 ]);
 // Routes des saisons (season.js) : POST avec la session du compte ; GET /v1/season/progress est public (cache de 30 s).
-const SEASON_POST = new Map(['join', 'state', 'seed', 'enter', 'tile', 'adj', 'home'].map((r) => [`/v1/season/${r}`, r]));
+const SEASON_POST = new Map(['join', 'state', 'seed', 'enter', 'tile', 'adj', 'home', 'chars', 'leave'].map((r) => [`/v1/season/${r}`, r]));
 const GZIP_MIN = 8192;
 const BASE_HEADERS = {
   'X-Content-Type-Options': 'nosniff',

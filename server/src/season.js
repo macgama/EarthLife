@@ -83,9 +83,9 @@ export const SEASON_RULES = {
   progressCities: 60, nearCities: 30, markDeg: 1, marksMax: 100,
   queueMax: 500, holdMs: 120000, seatGraceMs: 60000, queueGraceMs: 60000, waitEveryMs: 2000,   // file d'attente par niveau
   // state : la fenêtre du jeu (400 tuiles au plus) ; seed : les poids d'une commune de QUARTIER.maxTiles tuiles.
-  body: { join: 1024, state: 8192, home: 1024, enter: 1024, seed: 98304, tile: 131072, adj: 32768 },
+  body: { join: 1024, state: 8192, home: 1024, enter: 1024, seed: 98304, tile: 131072, adj: 32768, chars: 1024, leave: 1024 },
   // [capacité, jetons par seconde] par compte et par route.
-  rate: { join: [12, 0.2], state: [6, 0.05], seed: [3, 0.02], enter: [6, 0.05], tile: [30, 0.5], adj: [30, 0.5], home: [6, 0.05] },
+  rate: { join: [12, 0.2], state: [6, 0.05], seed: [3, 0.02], enter: [6, 0.05], tile: [30, 0.5], adj: [30, 0.5], home: [6, 0.05], chars: [12, 0.2], leave: [3, 0.02] },
   // Par adresse, avant toute lecture du corps : [capacité, jetons par seconde] ; l'adresse illisible partage un seau dix fois plus large.
   ipRate: [40, 8],
   // Villes annoncées par niveau (season-cities.js) : proposées en premier au menu, sans être imposées ; vide : rien n'est proposé.
@@ -116,8 +116,9 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   const subs = new Map();              // session de la salle → abonné
   const limits = new Map();            // compte → { route: seau }
   const ipLimits = new Map();          // adresse → seau
-  const enrol = new Map();             // compte → { player, at }
-  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, moves: 0, errors: 0, integrity: 0, idleReleased: 0, queued: 0, promoted: 0, expired: 0, unitsStarted: 0, unitsDone: 0,
+  const enrol = new Map();             // 'compte:emplacement' → { player, at }
+  const ck = (acc, slot) => `${acc}:${slot}`;
+  const stats = { events: 0, denied: 0, tiles: 0, seeds: 0, joins: 0, leaves: 0, moves: 0, errors: 0, integrity: 0, idleReleased: 0, queued: 0, promoted: 0, expired: 0, unitsStarted: 0, unitsDone: 0,
     loads: 0, unloads: 0 };
   let lastFlush = now(), lastNight = now(), lastCheck = now(), lastWaits = now(), lastUnload = now(), lastProgress = { at: -Infinity, body: null, rows: null, near: null }, flushing = null;
 
@@ -452,16 +453,16 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!sub.dirtyKills) return;
     sub.dirtyKills = false;
     const total = sub.kills + sub.kills0;
-    const c = enrol.get(sub.accountId);
+    const c = enrol.get(ck(sub.accountId, sub.slot));
     if (c) c.player.kills = total;
-    killsToSave.set(sub.accountId, { total, seenMs: now() });
+    killsToSave.set(ck(sub.accountId, sub.slot), { acc: sub.accountId, slot: sub.slot, total, seenMs: now() });
   }
   function saveKills() {
     savingKills ??= (async () => {
-      for (const [acc, rec] of killsToSave) {
+      for (const [key, rec] of killsToSave) {
         try {
-          await store.seasonPlayerSet(acc, season.id, { kills: rec.total, seenMs: rec.seenMs });
-          if (killsToSave.get(acc) === rec) killsToSave.delete(acc);
+          await store.seasonPlayerSet(rec.acc, season.id, { kills: rec.total, seenMs: rec.seenMs }, rec.slot);
+          if (killsToSave.get(key) === rec) killsToSave.delete(key);
         } catch (err) {
           stats.errors++;
           log('erreur', { type: 'saison-abattus', err: err?.code ?? err?.name });
@@ -914,11 +915,11 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     log('saison', { nuit: key, monde: city.key });
   }
   // Le joueur a su ce que la nuit a ramené : sa dernière vue passe devant, la route state ne le lui redira plus.
-  function markSeen(acc) {
+  function markSeen(acc, slot) {
     const t = now();
-    const c = enrol.get(acc);
+    const c = enrol.get(ck(acc, slot));
     if (c) c.player.seenMs = t;
-    store.seasonPlayerSet(acc, season.id, { seenMs: t }).catch((err) => {
+    store.seasonPlayerSet(acc, season.id, { seenMs: t }, slot).catch((err) => {
       stats.errors++;
       log('erreur', { type: 'saison-vu', err: err?.code ?? err?.name });
     });
@@ -929,7 +930,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!night) return;
     for (const sub of w.subs) {
       send(sub.s, { t: 'sv', o: 'night', ...nightMsg(night) });
-      markSeen(sub.accountId);
+      markSeen(sub.accountId, sub.slot);
     }
   }
   function nights(t) {
@@ -974,11 +975,11 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const [cap, per] = R.rate[route];
     return !(e[route] ??= createBucket(cap, per, now)).take();
   }
-  async function playerOf(acc) {
-    const c = enrol.get(acc);
+  async function playerOf(acc, slot = 1) {
+    const c = enrol.get(ck(acc, slot));
     if (c && now() - c.at < R.enrolCacheMs) return c.player;
-    const player = await store.seasonPlayer(acc, season.id);
-    if (player) enrol.set(acc, { player, at: now() });
+    const player = await store.seasonPlayer(acc, season.id, slot);
+    if (player) enrol.set(ck(acc, slot), { player, at: now() });
     return player;
   }
 
@@ -988,6 +989,11 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   const cityView = (city) => (city ? { key: city.key, name: city.name, place: city.place, population: city.ville.population,
     level: city.ville.level, mode: city.ville.mode } : null);
 
+  // Plusieurs personnages par compte (006-personnages.sql) : toute route de saison porte `slot` (1 à SEASON.chars, 1 si absent : un ancien
+  // jeu n'en connaît qu'un) et parle du personnage de cet emplacement ; la liaison porte `sl` dans `sv in`. `join` crée l'emplacement
+  // (niveau au choix, pour lui seul), `chars` liste les personnages du compte, `leave` abandonne un emplacement. Deux personnages d'un
+  // compte ne jouent jamais dans la même commune (409 `deja-personnage`, `slot` : celui qui y est). La salle ne laisse qu'une connexion
+  // par compte : un seul personnage est assis à la fois.
   async function route(path, text, acc) {
     const name = path.slice('/v1/season/'.length);
     if (!R.rate[name]) return refuse(404, 'route');
@@ -996,8 +1002,13 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const body = parsed.obj;
     if (limited(acc, name)) return refuse(429, 'trop');
     const phase = phaseOf();
-    if (name === 'join') return join(acc, body, phase);
-    const p = await playerOf(acc);
+    // Emplacement du personnage (1 à SEASON.chars) ; absent, c'est le premier : un ancien jeu n'en connaît pas d'autre.
+    const slot = body.slot === undefined ? 1 : body.slot;
+    if (!Number.isInteger(slot) || slot < 1 || slot > SEASON.chars) return refuse(400, 'requete');
+    if (name === 'join') return join(acc, slot, body, phase);
+    if (name === 'chars') return { status: 200, body: { ok: true, now: now(), season: seasonView(), chars: await charsView(acc) } };
+    if (name === 'leave') return leave(acc, slot);
+    const p = await playerOf(acc, slot);
     if (!p) return refuse(403, 'inscription');
     if (name === 'seed') return seed(acc, p, body, phase);
     if (name === 'enter') return enter(acc, p, body, phase);
@@ -1016,41 +1027,78 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     return refuse(404, 'route');
   }
 
-  async function join(acc, body, phase) {
-    let p = await store.seasonPlayer(acc, season.id);
+  // Les personnages du compte, tels que le menu les montre : emplacement, niveau, ville (sa ligne de menu quand on la connaît) et maison.
+  async function charsView(acc) {
+    const list = await store.seasonPlayers(acc, season.id);
+    for (const level of new Set(list.filter((c) => c.commune).map((c) => c.level))) await loadLevel(level);
+    return list.map((c) => {
+      const w = c.commune ? worlds.get(`${c.level}/${c.commune}`) : null;
+      return { slot: c.slot, level: c.level, commune: c.commune, enrolledMs: c.enrolledMs, seenMs: c.seenMs, kills: c.kills,
+        home: homeView(c), city: w && (w.city || w.sum) ? cityRow(w) : null };
+    });
+  }
+
+  async function join(acc, slot, body, phase) {
+    let p = await store.seasonPlayer(acc, season.id, slot);
     if (!p) {
       if (phase === 'terminee') return refuse(409, 'fin');
       const level = body.level;
       // Sans niveau : « suis-je inscrit ? » (le menu du jeu le demande à chaque ouverture) ; la réponse n'est pas une erreur.
-      if (level === undefined) return { status: 200, body: { ok: true, enrolled: false, now: now(), season: seasonView() } };
+      if (level === undefined) return { status: 200, body: { ok: true, enrolled: false, now: now(), season: seasonView(), slot, chars: await charsView(acc) } };
       if (!LEVELS.includes(level)) return refuse(400, 'niveau');
-      const r = await store.seasonJoin({ accountId: acc, season: season.id, level, nowMs: now() });
+      const r = await store.seasonJoin({ accountId: acc, season: season.id, slot, level, nowMs: now() });
       if (!r.player) return refuse(403, 'compte');
       p = r.player;
       stats.joins++;
     } else if (typeof body.level === 'string' && body.level !== p.level) {
       return refuse(409, 'niveau', { level: p.level });
     }
-    enrol.set(acc, { player: p, at: now() });
+    enrol.set(ck(acc, slot), { player: p, at: now() });
     // Sa ville : celle qu'il a choisie (et qui existe encore), sinon rien, il choisit.
     const w = p.commune ? worldOf(p.level, p.commune) : null;
     if (w) await load(w);
     // Un ancien client ne sait pas jouer une grande ville : pour lui, le joueur n'en a pas encore, il en choisit une autre.
     const city = w?.city && playable(w.city.ville, body.cl) ? w.city : null;
-    return { status: 200, body: { ok: true, now: now(), season: seasonView(), level: p.level, world: `${season.id}.${p.level}`, city: cityView(city),
+    return { status: 200, body: { ok: true, now: now(), season: seasonView(), slot, level: p.level, world: `${season.id}.${p.level}`, city: cityView(city),
       ...(city ? {} : announcedOf(p.level)),
-      home: homeView(p), seats: { used: levelUsed(p.level), max: R.seats } } };
+      home: homeView(p), seats: { used: levelUsed(p.level), max: R.seats }, chars: await charsView(acc) } };
+  }
+
+  // Abandonner un personnage : l'emplacement est libre, ses sièges se ferment (`no` « inscription »). Son refuge reste dans la ville, perdu pour lui.
+  async function leave(acc, slot) {
+    const p = await store.seasonPlayer(acc, season.id, slot);
+    if (!p) return refuse(404, 'inscription');
+    for (const sub of [...subs.values()]) {
+      if (sub.accountId !== acc || sub.slot !== slot) continue;
+      detach(sub.s);
+      no(sub.s, 'inscription');
+    }
+    killsToSave.delete(ck(acc, slot));
+    enrol.delete(ck(acc, slot));
+    await store.seasonLeave(acc, season.id, slot);
+    stats.leaves++;
+    return { status: 200, body: { ok: true, chars: await charsView(acc) } };
   }
   const homeView = (p) => (p.homeKey ? { key: p.homeKey, a: p.homeLat, o: p.homeLon } : null);
 
   // Le joueur joue dans la ville de ce monde. Un autre choix que sa ville actuelle remet sa maison à zéro (une nouvelle lui est tirée
   // dans la nouvelle ville) et le sort de l'ancienne : ses sièges s'y ferment (`no` « commune »).
+  // Deux personnages d'un même compte ne jouent jamais dans la même commune (quel que soit leur niveau) : le personnage de cet
+  // emplacement, ou null.
+  async function clashOf(acc, p, key) {
+    for (const o of await store.seasonPlayers(acc, season.id)) if (o.slot !== p.slot && o.commune === key) return o;
+    return null;
+  }
+  const taken = (o) => refuse(409, 'deja-personnage', { slot: o.slot });
+
   async function moveTo(acc, p, w) {
     const key = w.city.key;
     const moved = p.commune !== key;
     if (moved) {
+      const o = await clashOf(acc, p, key);
+      if (o) return taken(o);
       for (const sub of [...subs.values()]) {
-        if (sub.accountId !== acc || sub.w === w) continue;
+        if (sub.accountId !== acc || sub.slot !== p.slot || sub.w === w) continue;
         const s = sub.s;
         detach(s, { ghost: true });
         no(s, 'commune');
@@ -1059,7 +1107,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       p.homeKey = null;
       p.homeLat = null;
       p.homeLon = null;
-      await store.seasonPlayerSet(acc, season.id, { commune: key, homeKey: null, homeLat: null, homeLon: null, seenMs: now() });
+      await store.seasonPlayerSet(acc, season.id, { commune: key, homeKey: null, homeLat: null, homeLon: null, seenMs: now() }, p.slot);
       stats.moves++;
     }
     return { status: 200, body: { ok: true, created: false, moved, city: cityView(w.city), home: homeView(p) } };
@@ -1069,6 +1117,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
   async function enter(acc, p, b, phase) {
     if (phase !== 'en-cours') return refuse(409, phase === 'terminee' ? 'fin' : 'avenir');
     if (typeof b.key !== 'string' || !SEASON_COMMUNE.test(b.key)) return refuse(400, 'requete');
+    const o = await clashOf(acc, p, b.key);
+    if (o) return taken(o);
     const w = worldOf(p.level, b.key);
     await load(w);
     if (!w.city) return refuse(409, 'inconnue');
@@ -1084,6 +1134,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!isObj(place) || !finite(place.lat, 90) || !finite(place.lon, 180) || typeof b.key !== 'string' || !SEASON_COMMUNE.test(b.key)) {
       return refuse(400, 'requete');
     }
+    const clash = await clashOf(acc, p, b.key);
+    if (clash) return taken(clash);
     const w = worldOf(p.level, b.key);
     // Grande ville (commune de plus de 2 000 habitants ou 150 pâtés, vue par le jeu à l'ouverture) : seulement pour un client qui sait la jouer.
     const mode = b.mode === undefined ? 'entiere' : b.mode;
@@ -1144,7 +1196,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (sub) sub.win = win ? new Set(win) : null;
     // night : ce que la nuit a ramené depuis la dernière fois que ce joueur a été vu (geste, ou retour déjà dit) ; une seule fois.
     const night = player && city.night && city.night.at > (player.seenMs ?? 0) ? city.night : null;
-    if (night) markSeen(acc);
+    if (night) markSeen(acc, player.slot);
     // hab : ce serveur connaît le geste `h` (habitant trouvé) ; un jeu ne l'envoie que si l'état le dit. win : il sait tenir une fenêtre.
     return { status: 200, raw: JSON.stringify({ ok: true, rv: city.rv, place: city.place, ville, lent: lentSnapshot(city, win), hab: 1, mort: R.infectMs / 1000, ...(night ? { night: nightMsg(night) } : {}), ...(win ? { win: 1 } : {}) }) };
   }
@@ -1227,7 +1279,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     p.homeKey = b.key;
     p.homeLat = b.a;
     p.homeLon = b.o;
-    await store.seasonPlayerSet(acc, season.id, { homeKey: b.key, homeLat: b.a, homeLon: b.o, seenMs: now() });
+    await store.seasonPlayerSet(acc, season.id, { homeKey: b.key, homeLat: b.a, homeLon: b.o, seenMs: now() }, p.slot);
     return { status: 200, body: { ok: true } };
   }
 
@@ -1427,7 +1479,8 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!s.accountId) return no(s, 'compte');
     const phase = phaseOf();
     if (phase !== 'en-cours') return no(s, phase === 'terminee' ? 'fin' : 'avenir');
-    const p = await playerOf(s.accountId);
+    const slot = msg.sl ?? 1;
+    const p = await playerOf(s.accountId, slot);
     if (s.state === 'closed') return undefined;
     if (!p) return no(s, 'inscription');
     // On s'assied dans la ville choisie par le joueur (sa commune), pas dans une autre du niveau.
@@ -1438,7 +1491,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     if (!w.city || w.city.key !== msg.c) return no(s, 'commune');
     if (!playable(w.city.ville, msg.cl)) return no(s, 'monde');       // ancien client : refus lisible (jamais une ville qu'il ne sait pas lire)
     const old = subs.get(s);
-    if (old && old.w === w) return send(s, { t: 'sv', o: 'in', rv: w.city.rv });
+    if (old && old.w === w && old.slot === slot) return send(s, { t: 'sv', o: 'in', rv: w.city.rv });
     detach(s, { ghost: true });
     sweep(now());
     // Une place gardée pour ce compte devient son siège ; sinon il faut une place libre et personne de connecté devant lui dans la file.
@@ -1447,7 +1500,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     else if (!canSeatNow(w.level, s.accountId)) return refuseSeat(s, w.level, s.accountId, msg.q === true);
     const entry = waiting.get(s) ?? queues.get(w.level)?.find((e) => e.accountId === s.accountId);
     if (entry) dropEntry(entry);
-    const sub = { s, w, accountId: s.accountId, leases: new Map(), holdAt: 0, kills: 0, kills0: p.kills ?? 0, dirtyKills: false, bucket: createBucket(20, 6, now),
+    const sub = { s, w, accountId: s.accountId, slot, leases: new Map(), holdAt: 0, kills: 0, kills0: p.kills ?? 0, dirtyKills: false, bucket: createBucket(20, 6, now),
       killBucket: createBucket(R.killBurst, R.killPerSec, now), rescueBucket: createBucket(R.rescueBurst, R.rescuePerSec, now),
       unitBucket: createBucket(R.unitAsk[0], R.unitAsk[1], now), win: null, winBucket: createBucket(R.winAsk[0], R.winAsk[1], now) };
     subs.set(s, sub);

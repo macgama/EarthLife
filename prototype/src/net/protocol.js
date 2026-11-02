@@ -36,6 +36,8 @@ export const SEASON = {
   maxEvents: 40, maxRows: 400, maxUnits: 800, maxPlaces: 2000, rowLength: 9, seats: 100, days: 60, quartiersLevel: 4, vastLevel: 5, vastTiles: 400,
   // Fenêtre (grande ville) : les tuiles dont ce jeu reçoit les rangées ; `win` en demande 32 de plus au plus par message, 400 en tout.
   winPerMsg: 32, winMax: 400,
+  // Personnages par compte et par saison : jusqu'à `chars`, un par emplacement 1 à `chars` (`sl`, `slot`). 1 par défaut : un ancien jeu n'en connaît qu'un.
+  chars: 5,
   levels: ['facile', 'moyen', 'difficile'],
   noWhy: ['compte', 'inscription', 'commune', 'monde', 'fin', 'avenir', 'base', 'attente'],
 };
@@ -344,6 +346,7 @@ const CLIENT = {
       out.c = typeof c === 'string' && SEASON_COMMUNE.test(c) ? c : bad('c');
       if (get(o, 'q') === true) out.q = true;
       if (get(o, 'cl') !== undefined) out.cl = int(o, 'cl', 1, 1000);
+      if (get(o, 'sl') !== undefined) out.sl = int(o, 'sl', 1, SEASON.chars);
     } else if (out.o === 'ev') {
       const e = get(o, 'e');
       if (!Array.isArray(e) || e.length < 1 || e.length > SEASON.maxEvents) bad('e');

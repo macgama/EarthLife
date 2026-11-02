@@ -1259,3 +1259,126 @@ test('monde entier : une ville rouverte joue la dernière nuit passée sans elle
   w.jump(w.clock.t + 31000);
   assert.equal(zombiesLeft(v), z, 'de jour, rien de plus');
 });
+
+// ---------- Plusieurs personnages par compte (006-personnages.sql) ----------
+
+// Une seconde connexion du même compte (un autre appareil), ouverte avec la même session.
+async function otherDevice(w, a, n = 90) {
+  const p = { ses: a.ses, inbox: [], closed: null };
+  p.s = w.room.open({
+    send(m) { const r = parseServer(JSON.stringify(m)); assert.ok(r.ok, `message invalide : ${JSON.stringify(m)}`); p.inbox.push(r.msg); },
+    close(code) { p.closed = code; },
+  }, { ip: `10.0.1.${n}` });
+  await w.room.receive(p.s, JSON.stringify({ t: 'hello', v: 1, cl: 2, tok: null, ses: p.ses }));
+  p.sv = (o) => p.inbox.filter((m) => m.t === 'sv' && m.o === o);
+  p.send = async (msg) => { await w.room.receive(p.s, JSON.stringify({ t: 'sv', ...msg })); };
+  return p;
+}
+
+test('personnages : un emplacement par personnage (1 par défaut), chacun son niveau, sa ville et sa maison', async () => {
+  const w = rig();
+  const a = await seeded(w);
+  assert.equal((await a.call('/v1/season/join', { level: 'facile' })).body.slot, 1, 'sans emplacement : le premier, comme un ancien jeu');
+  const j2 = await a.call('/v1/season/join', { level: 'difficile', slot: 2 });
+  assert.deepEqual([j2.status, j2.body.slot, j2.body.level, j2.body.world], [200, 2, 'difficile', '1.difficile']);
+  const keep = await a.call('/v1/season/join', { level: 'moyen', slot: 2 });
+  assert.deepEqual([keep.status, keep.body.code, keep.body.level], [409, 'niveau', 'difficile'], 'le niveau d\'un emplacement ne change pas');
+  assert.equal((await a.call('/v1/season/join', { slot: 1 })).body.level, 'facile');
+  for (const bad of [0, 6, 1.5, '2', null]) assert.equal((await a.call('/v1/season/join', { level: 'facile', slot: bad })).status, 400, `emplacement ${JSON.stringify(bad)}`);
+  // Une ville par personnage ; deux personnages ne jouent jamais dans la même commune, même à deux niveaux.
+  const other = await a.call('/v1/season/seed', { ...OTHER, slot: 2 });
+  assert.deepEqual([other.status, other.body.created, other.body.city.key], [200, true, 'c99999']);
+  const clash = await a.call('/v1/season/seed', { ...SEED, slot: 2 });
+  assert.deepEqual([clash.status, clash.body.code, clash.body.slot], [409, 'deja-personnage', 1]);
+  assert.equal(cityOf(w, 'difficile', SEED.key), null, 'rien n\'est ouvert pour un refus');
+  const clashEnter = await a.call('/v1/season/enter', { key: 'c99999', slot: 1 });
+  assert.deepEqual([clashEnter.status, clashEnter.body.code, clashEnter.body.slot], [409, 'deja-personnage', 2]);
+  // La maison est celle du personnage.
+  const [k] = redBlock(w);
+  assert.equal((await a.call('/v1/season/home', { key: k, a: 45900000, o: 5200000 })).status, 200);
+  const list = await a.call('/v1/season/chars', {});
+  assert.equal(list.status, 200);
+  assert.deepEqual(list.body.chars.map((c) => [c.slot, c.level, c.commune, c.city?.name, c.home?.key ?? null]),
+    [[1, 'facile', 'c01283', 'Pérouges', k], [2, 'difficile', 'c99999', 'Ailleurs', null]]);
+  assert.equal(list.body.season.name, 'Saison 1');
+  // Le menu voit la liste dès la question « suis-je inscrit ? ».
+  assert.equal((await a.call('/v1/season/join', { slot: 3 })).body.enrolled, false);
+  assert.equal((await a.call('/v1/season/join', { slot: 3 })).body.chars.length, 2);
+  // Les joueurs inscrits sont comptés par compte.
+  assert.deepEqual(await w.store.seasonCounts(1), { facile: 1, difficile: 1 });
+});
+
+test('personnages : un siège à la fois, par personnage ; en changer ferme l\'autre emplacement ; chacun ses abattus', async () => {
+  const w = rig();
+  const a = await seeded(w);
+  assert.equal((await a.call('/v1/season/join', { level: 'difficile', slot: 2 })).status, 200);
+  assert.equal((await a.call('/v1/season/seed', { ...OTHER, slot: 2 })).body.created, true);
+  // Sur une connexion : le personnage 1 s'assoit, puis le 2 (le siège du premier se ferme, il n'y a qu'un siège pour le compte).
+  await a.send({ o: 'in', c: SEED.key });
+  assert.equal(w.seasons.debug().worldOf('facile', SEED.key).subs.size, 1);
+  await a.send({ o: 'in', c: 'c99999', sl: 2 });
+  assert.equal(a.sv('in').length, 2);
+  assert.equal(w.seasons.debug().worldOf('facile', SEED.key).subs.size, 0);
+  assert.equal(w.seasons.debug().worldOf('difficile', 'c99999').subs.size, 1);
+  // Le personnage 2 n'a pas le droit de s'asseoir dans la ville du personnage 1, ni l'inverse.
+  await a.send({ o: 'in', c: SEED.key, sl: 2 });
+  assert.equal(a.sv('no').at(-1).why, 'commune');
+  await a.send({ o: 'in', c: 'c99999', sl: 1 });
+  assert.equal(a.sv('no').at(-1).why, 'commune');
+  // Un emplacement vide n'a pas de siège.
+  await a.send({ o: 'in', c: SEED.key, sl: 4 });
+  assert.equal(a.sv('no').at(-1).why, 'inscription');
+});
+
+test('personnages : un autre appareil qui joue un autre emplacement évince le premier (la salle ferme l\'ancienne connexion) : un seul siège par compte', async () => {
+  const w = rig();
+  const a = await seeded(w);
+  assert.equal((await a.call('/v1/season/join', { level: 'difficile', slot: 2 })).status, 200);
+  assert.equal((await a.call('/v1/season/seed', { ...OTHER, slot: 2 })).body.created, true);
+  await a.send({ o: 'in', c: SEED.key });
+  assert.equal(w.seasons.debug().worldOf('facile', SEED.key).subs.size, 1);
+  const b = await otherDevice(w, a);
+  assert.equal(a.closed, 1000, 'la salle ferme l\'ancienne connexion du compte (dup)');
+  await b.send({ o: 'in', c: 'c99999', sl: 2 });
+  assert.equal(b.sv('in').length, 1);
+  assert.equal(w.seasons.debug().worldOf('facile', SEED.key).subs.size, 0);
+  assert.equal(w.seasons.debug().worldOf('difficile', 'c99999').subs.size, 1);
+});
+
+test('personnages : abandonner libère l\'emplacement (siège fermé, ville gardée), le nombre de joueurs inscrits reste juste', async () => {
+  const w = rig();
+  const a = await seeded(w);
+  assert.equal((await a.call('/v1/season/join', { level: 'facile', slot: 2 })).status, 200);
+  assert.equal((await a.call('/v1/season/seed', { ...OTHER, slot: 2 })).body.created, true);
+  await a.send({ o: 'in', c: 'c99999', sl: 2 });
+  assert.equal(w.seasons.debug().worldOf('facile', 'c99999').subs.size, 1);
+  assert.equal((await a.call('/v1/season/leave', { slot: 7 })).status, 400);
+  assert.equal((await a.call('/v1/season/leave', { slot: 5 })).body.code, 'inscription', 'rien à abandonner');
+  const gone = await a.call('/v1/season/leave', { slot: 2 });
+  assert.equal(gone.status, 200);
+  assert.deepEqual(gone.body.chars.map((c) => c.slot), [1]);
+  assert.equal(a.sv('no').at(-1).why, 'inscription');
+  assert.equal(w.seasons.debug().worldOf('facile', 'c99999').subs.size, 0);
+  assert.ok(cityOf(w, 'facile', 'c99999'), 'la ville continue sans lui');
+  assert.equal((await a.call('/v1/season/state', { slot: 2 })).status, 403);
+  // L'emplacement se reprend : même ville permise de nouveau, niveau au choix.
+  const again = await a.call('/v1/season/join', { level: 'moyen', slot: 2 });
+  assert.deepEqual([again.body.level, again.body.city], ['moyen', null]);
+  // La ville du personnage 1 ne devient jamais celle du personnage 2.
+  assert.equal((await a.call('/v1/season/enter', { key: SEED.key, slot: 2 })).body.code, 'deja-personnage');
+});
+
+test('personnages : les abattus se comptent par personnage', async () => {
+  const w = rig();
+  const a = await seeded(w);
+  assert.equal((await a.call('/v1/season/join', { level: 'facile', slot: 2 })).status, 200);
+  assert.equal((await a.call('/v1/season/seed', { ...OTHER, slot: 2 })).body.created, true);
+  await a.send({ o: 'in', c: SEED.key });
+  await a.send({ o: 'out' });
+  await a.send({ o: 'in', c: 'c99999', sl: 2 });
+  await a.send({ o: 'out' });
+  await w.seasons.flush();
+  assert.equal((await w.store.seasonPlayer(a.s.accountId, 1, 2)).level, 'facile');
+  assert.equal((await w.store.seasonPlayer(a.s.accountId, 1, 1)).kills, 0);
+  assert.equal((await w.store.seasonPlayers(a.s.accountId, 1)).length, 2);
+});

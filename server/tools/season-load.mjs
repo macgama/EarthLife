@@ -776,7 +776,7 @@ async function run(name, opts) {
         left += Object.values(v.tiles).reduce((n, t) => n + Object.values(t.b ?? {}).reduce((m, r) => m + r[ROW.S], 0), 0);
       }
       // Les totaux des joueurs partis sont rangés un à un par le serveur : on attend qu'ils arrivent (10 s au plus) avant de comparer.
-      const sumKills = () => Number(execFileSync('mariadb', ['-uroot', '-N', '-e', `SELECT COALESCE(SUM(kills),0) FROM ${DB.name}.el_season_players WHERE level='${lv[0]}'`]).toString().trim());
+      const sumKills = () => Number(execFileSync('mariadb', ['-uroot', '-N', '-e', `SELECT COALESCE(SUM(kills),0) FROM ${DB.name}.el_season_chars WHERE level='${lv[0]}'`]).toString().trim());
       let sql = sumKills();
       for (let w = 0; w < 20 && sql < killed; w++) { await sleep(500); const n = sumKills(); if (n === sql && w > 3) break; sql = n; }
       coherence = { niveau: lv[0], villes: firsts.length, abattusVilles: killed, abattusComptes: Number(sql), abattusEnvoyes: A.count('jeu:abattus') + M.count('jeu:abattus'),

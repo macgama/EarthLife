@@ -483,4 +483,7 @@ test('saison : file d\'attente (`q`, `cancel`, `wait`, `go`, `no` « attente »)
   assert.deepEqual(validateClient({ t: 'sv', o: 'in', c: 'c01283', q: true }).msg, { t: 'sv', o: 'in', c: 'c01283', q: true });
   assert.deepEqual(validateClient({ t: 'sv', o: 'in', c: 'c01283', q: 1 }).msg, { t: 'sv', o: 'in', c: 'c01283' });
   assert.deepEqual(validateClient({ t: 'sv', o: 'cancel' }), { ok: true, msg: { t: 'sv', o: 'cancel' } });
+  // Emplacement du personnage (006-personnages.sql) : 1 à SEASON.chars ; absent, c'est le premier.
+  assert.deepEqual(validateClient({ t: 'sv', o: 'in', c: 'c01283', sl: 2 }).msg, { t: 'sv', o: 'in', c: 'c01283', sl: 2 });
+  for (const sl of [0, 6, 1.5, '2', null]) assert.equal(validateClient({ t: 'sv', o: 'in', c: 'c01283', sl }).ok, false, `sl ${JSON.stringify(sl)}`);
 });
