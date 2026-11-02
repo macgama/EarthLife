@@ -436,7 +436,10 @@ export function createCityRuntime(deps) {
     forceFind: false,   // essais (?debug=1) : un bâtiment qui cache quelqu'un le donne à coup sûr
     unitAsk: new Map(), // saison, grande ville : quartier -> instant de la dernière demande d'entrée
     fellAt: -Infinity,  // saison : dernière chute annoncée au serveur (une par joueur et par `mort` secondes)
+    fellTurned: null,   // saison : « devenus zombies » du serveur au moment où la chute est partie ; tant que ses compteurs ne le dépassent pas, la chute n'est pas lue
+    mine: { killed: 0, found: 0 }, // ce que CE joueur a abattu et trouvé depuis l'ouverture du jeu (la ville de saison, elle, compte tous les joueurs)
   };
+  let waitCounts = [];         // saison : résolveurs de `countsSettled`, appelés à l'arrivée des compteurs du serveur qui lisent la chute
   let disposed = false;
 
   const markDirty = (force = false) => {
@@ -779,6 +782,7 @@ export function createCityRuntime(deps) {
       if (zb.dead) {
         const k = ops.kill(key, 1, by);
         killed += k;
+        if (by === 'toi') state.mine.killed += k;
         const c = state.counter;
         if (k && c && zb.tags?.counter === c.id) c.killed++;
         lent.delete(zb);
@@ -827,6 +831,7 @@ export function createCityRuntime(deps) {
     if (!state.forceFind && rand() >= findChance(share, parts)) return 0;
     const n = ops.rescue(pate.key);
     if (n) {
+      state.mine.found += n;
       markDirty(true);
       onEvent({ type: 'rescued', key: pate.key, n });
     }
@@ -1012,8 +1017,20 @@ export function createCityRuntime(deps) {
     if (S && (!(S.mort > 0) || now() - state.fellAt < S.mort * 1000)) return null;
     const key = blockAt(x, z) ?? nearestBlock(x, z) ?? '';
     const out = ops.infect(key);
-    if (out && S) state.fellAt = now();
+    if (out && S) { state.fellAt = now(); state.fellTurned = ville.turned ?? 0; }
     return out ? { ...out, name: ville.name } : null;
+  }
+
+  // Saison : le serveur seul applique la chute (et lit les derniers abattages) ; ses compteurs reviennent dans la seconde qui suit. Rend une promesse
+  // résolue quand ils ont lu la chute, ou après `ms` (chute refusée par le serveur, coupure), ou null si rien n'est attendu (partie seule, pas de chute).
+  function countsSettled(ms = 3000) {
+    if (!S || state.fellTurned === null) return null;
+    return new Promise((resolve) => {
+      let timer = null;
+      const done = () => { if (timer !== null) clearTimeout(timer); waitCounts = waitCounts.filter((f) => f !== done); state.fellTurned = null; resolve(); };
+      waitCounts.push(done);
+      timer = setTimeout(done, ms);
+    });
   }
 
   // ----- Nuits (4) : volontaires, repousse, usure -----
@@ -1181,7 +1198,7 @@ export function createCityRuntime(deps) {
       // Saison : les pâtés sont ceux de la ville commune (mêmes rangées chez tous les joueurs), pas ceux que cet appareil a découpés.
       for (const t of Object.values(ville.tiles)) for (const row of Object.values(t.b ?? {})) { known++; if (row[ROW.E] === ETAT.libere) free++; }
     } else for (const key of pos.keys()) { known++; if (blockInfo(ville, key)?.state === 'libere') free++; }
-    return { ...c, known, free, line: lineOf(c) };
+    return { ...c, known, free, line: lineOf(c), mine: { ...state.mine } };
   }
 
   const lineOf = (c) => `${c.name} · Zombies restants ${groupDigits(c.zombies)} · Habitants sauvés ${groupDigits(c.saved)} / ${groupDigits(c.toSave)}${c.approx ? ' (environ)' : ''}${c.lost ? ' · Ville perdue' : c.turned > 0 ? ` · Devenus zombies ${groupDigits(c.turned)}` : ''}`;
@@ -1329,8 +1346,12 @@ export function createCityRuntime(deps) {
           onEvent({ type: 'unit-done', unit: msg.k, line: msg.l, season: true });
         }
         break;
-      case 'cnt': applyCounts(ville, msg.c); state.srv = { z: msg.c.z, pk: msg.c.pk, pf: msg.c.pf }; break;
-      case 'ls': applyLent(ville, msg.l); break;
+      case 'cnt':
+        applyCounts(ville, msg.c);
+        state.srv = { z: msg.c.z, pk: msg.c.pk, pf: msg.c.pf };
+        if (state.fellTurned !== null && (ville.turned ?? 0) > state.fellTurned) for (const f of [...waitCounts]) f();
+        break;
+      case 'ls': applyLent(ville, msg.l, ops.leases()); break;
       case 'deny': applyDeny(msg.d); break;
       case 'end': state.seasonOver = true; onEvent({ type: 'season-end' }); break;
       case 'night': {
@@ -1351,7 +1372,7 @@ export function createCityRuntime(deps) {
     resyncVille(ville, fresh.ville);
     if (S) S.hab = fresh.hab === 1;              // le serveur a pu changer de version pendant la coupure
     if (S) S.mort = fresh.mort > 0 ? fresh.mort : 0;
-    applyLent(ville, fresh.lent);
+    applyLent(ville, fresh.lent, ops.leases());
     state.srv = null;
     state.capAt = -Infinity;
     state.heartAt = -Infinity;
@@ -1362,6 +1383,7 @@ export function createCityRuntime(deps) {
 
   function dispose(director = null) {
     disposed = true;
+    for (const f of [...waitCounts]) f();
     for (const w of wanted.values()) w.done({ ok: false });
     wanted.clear();
     recall(director);
@@ -1380,7 +1402,7 @@ export function createCityRuntime(deps) {
     get season() { return !!S; },
     applyServer, resyncFrom, windowTiles, leases: () => ops.leases(),
     setMembership(next) { fn = next.fn ?? fn; member = next.member ?? member; },
-    ensureAround, place, blockAt, nearestBlock, reconcile, recall, tick, actions, openNestAt, plantFlagAt, endCounter, onDeath, infectAt,
+    ensureAround, place, blockAt, nearestBlock, reconcile, recall, tick, actions, openNestAt, plantFlagAt, endCounter, onDeath, infectAt, countsSettled,
     settleEmpty, nightly, refugeCtx, objective, stats, blockLine, finish, networkBack, chooseHeart, frontier, markDirty, dispose,
     rescueIn, hiddenIn,
     status: () => cityStatus(ville),
