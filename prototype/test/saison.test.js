@@ -90,6 +90,38 @@ test('requêtes : POST simple, session en tête, codes de réponse en clair', as
   assert.equal((await none.state()).code, 'base');
 });
 
+test('personnages : l\'emplacement part avec chaque requête et l\'abonnement (sauf le premier), abandon et emplacement invalide', async () => {
+  const t = makeNet({ responses: [reply(200, { ok: true, enrolled: false, chars: [] }), reply(200, { ok: true, slot: 3, level: 'moyen', chars: [{ slot: 3 }] }),
+    reply(200, { ok: true, chars: [] }), reply(409, { ok: false, code: 'deja-personnage', slot: 1 }), reply(200, { ok: true, rv: 4, ville: { key: 'c1' }, lent: {} })] });
+  assert.equal(t.net.slot, 1);
+  await t.net.join();
+  assert.deepEqual(Object.keys(t.calls[0].body), ['ses', 'cl'], 'le premier emplacement ne change rien à la requête');
+  for (const bad of [0, 6, 1.5, '2', null, undefined]) { t.net.slot = bad; assert.equal(t.net.slot, 1, `emplacement ${String(bad)} refusé`); }
+  t.net.slot = 3;
+  assert.equal(t.net.slot, 3);
+  await t.net.join('moyen');
+  assert.equal(t.calls[1].body.slot, 3);
+  assert.equal(t.calls[1].body.level, 'moyen');
+  const left = await t.net.abandon(3);
+  assert.equal(t.calls[2].url, 'https://srv.example/v1/season/leave');
+  assert.equal(t.calls[2].body.slot, 3);
+  assert.equal(left.ok, true);
+  const clash = await t.net.join('moyen');
+  assert.equal(clash.code, 'deja-personnage');
+  assert.match(SEASON_TEXT['deja-personnage'], /autre personnage/);
+  // L'abonnement dit son emplacement (`sl`) quand ce n'est pas le premier.
+  const p = t.net.open('c01283', {});
+  assert.deepEqual(t.online.sent[0], { o: 'in', c: 'c01283', q: true, cl: CLIENT_LEVEL, sl: 3 });
+  t.online.emit('sv', { t: 'sv', o: 'in', rv: 4 });
+  await p;
+  t.net.close();
+  t.net.slot = 1;
+  const q = t.net.open('c01283', {});
+  assert.equal('sl' in t.online.sent.at(-1), false);
+  t.net.close();
+  await q;
+});
+
 test('évolution de la saison : requête publique sans session', async () => {
   const t = makeNet({ session: () => null, responses: [reply(200, { ok: true, season: { name: 'Saison 1' } })] });
   const r = await t.net.progress();

@@ -11,7 +11,15 @@ test('partie libre : drapeau simple, relancée telle quelle', () => {
 });
 
 test('partie de saison : le niveau est retenu et relancé, sans lieu choisi au menu', () => {
-  for (const lv of LEVELS) assert.deepEqual(decodeResume(encodeResume(lv), LEVELS), { season: lv });
+  for (const lv of LEVELS) assert.deepEqual(decodeResume(encodeResume(lv), LEVELS), { season: lv, slot: 1 });
+});
+
+test('plusieurs personnages : l\'emplacement joué est retenu (le premier ne s\'écrit pas, comme avant)', () => {
+  assert.equal(encodeResume('facile', 1), '{"season":"facile"}');
+  assert.equal(encodeResume('moyen', 3), '{"season":"moyen","slot":3}');
+  assert.deepEqual(decodeResume(encodeResume('moyen', 3), LEVELS), { season: 'moyen', slot: 3 });
+  for (const bad of ['0', '6', '2.5', '"2"', 'null']) assert.deepEqual(decodeResume(`{"season":"facile","slot":${bad}}`, LEVELS), { season: 'facile', slot: 1 }, `slot ${bad}`);
+  assert.deepEqual(decodeResume('{"season":"facile"}', LEVELS), { season: 'facile', slot: 1 }, 'drapeau d\'avant les personnages');
 });
 
 test('drapeau absent, périmé ou illisible : retour au menu', () => {
