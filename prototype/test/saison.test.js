@@ -561,6 +561,40 @@ test('ville de saison : la chute du joueur n\'est annoncée que si le serveur co
   assert.equal(sent().length, 2);
 });
 
+test('ville de saison : la carte de mort attend les compteurs du serveur qui lisent la chute, 3 s au plus', async () => {
+  const g = await seasonGame({ mort: 600 });
+  await g.rt.ensureAround(0, 0, { wait: true });
+  const p = g.rt.pos.values().next().value;
+  assert.equal(g.rt.countsSettled(), null, 'rien n\'est attendu sans chute');
+  assert.ok(g.rt.infectAt(p.x, p.z));
+  assert.equal(g.net.events.filter((e) => e[0] === 'x').length, 1);
+  let resolved = false;
+  const wait = g.rt.countsSettled(5000).then(() => { resolved = true; });
+  // Des compteurs qui ne lisent pas encore la chute (« devenus zombies » inchangé) ne suffisent pas : ce sont ceux d'avant elle.
+  g.rt.applyServer({ o: 'cnt', rv: 1, c: { k: [2, 0, 0], sv: 1, fl: 0, z: 100, dn: 0, un: {}, tn: 0, lo: 0 } });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(resolved, false);
+  g.rt.applyServer({ o: 'cnt', rv: 2, c: { k: [2, 0, 0], sv: 1, fl: 0, z: 101, dn: 0, un: {}, tn: 1, lo: 0 } });
+  await wait;
+  assert.equal(resolved, true);
+  const st = g.rt.stats();
+  assert.deepEqual([st.turned, st.zombies, st.saved], [1, 101, 1], 'la carte lit la ville après ta chute');
+  assert.equal(g.rt.countsSettled(), null, 'plus rien n\'est attendu');
+  // Le serveur ne répond pas (chute refusée, coupure) : la carte vient quand même, après le délai.
+  g.advance(601000);
+  assert.ok(g.rt.infectAt(p.x, p.z));
+  const t0 = Date.now();
+  await g.rt.countsSettled(30);
+  assert.ok(Date.now() - t0 < 2000);
+  assert.equal(g.rt.countsSettled(), null);
+  // La partie qui se défait libère la carte qui attend.
+  g.advance(601000);
+  assert.ok(g.rt.infectAt(p.x, p.z));
+  const late = g.rt.countsSettled(60000);
+  g.rt.dispose(null);
+  await late;
+});
+
 test('ville de saison avec hab : l\'habitant trouvé est sauvé dans la copie et envoyé une fois', async () => {
   const g = await seasonGame({ hab: true });
   g.copy.me = null;
@@ -572,6 +606,7 @@ test('ville de saison avec hab : l\'habitant trouvé est sauvé dans la copie et
   assert.equal(g.rt.rescueIn(target.id), 1);
   assert.equal(blockInfo(g.copy, target.key).hidden, before - 1);
   assert.deepEqual(g.net.events.filter((e) => e[0] === 'h'), [['h', target.key]]);
+  assert.deepEqual(g.rt.stats().mine, { killed: 0, found: 1 }, 'un habitant trouvé par le joueur lui-même, pour la carte de mort');
   assert.ok(checkVille(g.copy).ok, checkVille(g.copy).errors.join(' ; '));
 });
 
@@ -674,6 +709,27 @@ test('ville de saison : prêts envoyés, refus retire les zombies, décompte du 
   assert.equal(g.rt.nightly({ isNight: true, night: '2026-10-06', zones: [] }), null);
   assert.equal(g.rt.ended, false);
   assert.equal(checkVille(g.copy).ok, true, checkVille(g.copy).errors?.join(' ; '));
+});
+
+test('ville de saison : un total prêté plus ancien que les prêts du joueur (messages croisés) ne lui fait pas perdre ses abattages', async () => {
+  const g = await playing();
+  for (let i = 0; i < 90; i++) frame(g.director, g.rt, g.player);
+  const held = g.rt.leases().reduce((s, [, n]) => s + n, 0);
+  assert.ok(held >= 2, 'des zombies prêtés');
+  // Le serveur diffuse son total avant d'avoir lu les derniers prêts du joueur : zéro pour chacun de ses pâtés.
+  g.rt.applyServer({ o: 'ls', l: Object.fromEntries(g.rt.leases().map(([key]) => [key, 0])) });
+  let killed = 0;
+  for (const z of g.director.zombies) if (!z.dead && g.rt.lent.has(z)) { z.health = 0; z.dead = 0.001; killed++; }
+  assert.equal(killed, held);
+  g.rt.reconcile(g.director);
+  assert.equal(g.net.events.filter((e) => e[0] === 'k').reduce((s, e) => s + e[2], 0), killed, 'chaque zombie abattu est envoyé au serveur');
+  assert.deepEqual(g.rt.leases(), [], 'et plus compté parmi les prêts');
+  assert.equal(g.copy.killed[0], killed);
+  assert.equal(g.rt.stats().mine.killed, killed, 'ce que le joueur a abattu lui-même, pour la carte de mort');
+  // Un total plus grand que les prêts du joueur (d'autres joueurs en tiennent) reste celui du serveur.
+  const key = [...g.rt.pos.keys()][0];
+  g.rt.applyServer({ o: 'ls', l: { [key]: 7 } });
+  assert.equal(blockInfo(g.copy, key).lent, 7);
 });
 
 test('ville de saison : prêts rendus au serveur en partant', async () => {
