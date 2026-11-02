@@ -29,4 +29,8 @@ INSERT IGNORE INTO el_season_chars (account_id, season, slot, level, commune, en
   SELECT account_id, season, 1, level, commune, enrolled_ms, home_key, home_lat, home_lon, seen_ms, kills FROM el_season_players
   WHERE (SELECT CAST(v AS UNSIGNED) FROM el_meta WHERE k = 'schema') < 6;
 
+-- L'instant de cette reprise, gardé une fois : les personnages inscrits avant lui sont ceux d'avant les personnages, dont le jeu reprend la
+-- partie (sac, refuge, voiture) au lieu d'en commencer une neuve.
+INSERT IGNORE INTO el_meta (k, v) VALUES ('chars_since', CAST(UNIX_TIMESTAMP() * 1000 AS CHAR));
+
 UPDATE el_meta SET v = '6' WHERE k = 'schema' AND CAST(v AS UNSIGNED) < 6;

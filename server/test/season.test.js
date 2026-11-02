@@ -1301,6 +1301,7 @@ test('personnages : un emplacement par personnage (1 par défaut), chacun son ni
   assert.deepEqual(list.body.chars.map((c) => [c.slot, c.level, c.commune, c.city?.name, c.home?.key ?? null]),
     [[1, 'facile', 'c01283', 'Pérouges', k], [2, 'difficile', 'c99999', 'Ailleurs', null]]);
   assert.equal(list.body.season.name, 'Saison 1');
+  assert.equal(list.body.since, 0, 'jeu en mémoire : aucun inscrit d\'avant les personnages');
   // Le menu voit la liste dès la question « suis-je inscrit ? ».
   assert.equal((await a.call('/v1/season/join', { slot: 3 })).body.enrolled, false);
   assert.equal((await a.call('/v1/season/join', { slot: 3 })).body.chars.length, 2);

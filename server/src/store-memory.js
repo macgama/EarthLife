@@ -115,6 +115,7 @@
 //   seasonJoin({ accountId, season, slot = 1, level, nowMs }) → { ok: true, player } | { ok: false, player }   (le premier niveau de l'emplacement gagne)
 //   seasonPlayerSet(accountId, season, patch, slot = 1)           patch : commune, homeKey, homeLat, homeLon, seenMs, kills
 //   seasonLeave(accountId, season, slot) → boolean               abandonne le personnage (faux s'il n'existe pas)
+//   charsSince() → ms                                            instant d'arrivée des personnages (006) : un inscrit d'avant joue la partie d'avant
 //   seasonCounts(season) → { [niveau]: joueurs inscrits (comptes, pas personnages) }
 //   seasonHomes(season) → { 'niveau|commune': personnages installés (une maison posée dans la commune où ils jouent) }
 //   seasonDocs(world, commune?) → [{ commune, part, rev, data }] (une seule commune si donnée), seasonDocPut({ world, commune, part, rev, data, nowMs }),
@@ -715,6 +716,11 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       const p = seasonPlayers.get(`${accountId}:${season}:${slot}`);
       if (!p) return;
       for (const k of ['commune', 'homeKey', 'homeLat', 'homeLon', 'seenMs', 'kills']) if (patch[k] !== undefined) p[k] = patch[k];
+    },
+    // Rien n'a précédé les personnages en mémoire (essais, développement) : aucun inscrit n'est d'avant.
+    async charsSince() {
+      guard();
+      return 0;
     },
     async seasonLeave(accountId, season, slot) {
       guard();
