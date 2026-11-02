@@ -3703,6 +3703,10 @@ await scenario('O39', 'personnages : rangée du salon, changement de personnage,
         if (slot) ctx.addInitScript((n) => { try { if (!localStorage.getItem('earthlife.slot')) localStorage.setItem('earthlife.slot', n); } catch { /* stockage refusé */ } }, String(slot));
       } });
       check((await accWait(t, (v) => v.menu, 60000)).ok, `${tag} : menu affiché`);
+      // La rangée ne se lit qu'une fois la liaison en ligne établie : attendue (lente sur la machine de la recette), son état noté si elle manque.
+      const live = await until(t, () => window.__earthlife.online?.live === true, null, 90000);
+      check(!!live, `${tag} : en ligne`);
+      if (!live) note(`${tag} : liaison ${await ev(t, () => `${window.__earthlife.online?.status} ; note du salon « ${document.getElementById('salon-note')?.textContent ?? ''} »`)}`);
       return t;
     };
     const chars = (t) => ev(t, () => {
@@ -3717,7 +3721,7 @@ await scenario('O39', 'personnages : rangée du salon, changement de personnage,
       };
     });
     // La rangée est affichée (six puces) et sa ligne correspond à l'expression (texte, sans évaluer de code dans la page).
-    const lineIs = (t, re, timeout = 20000) => until(t, (src) => {
+    const lineIs = (t, re, timeout = 45000) => until(t, (src) => {
       const row = document.getElementById('chars-row');
       return !document.getElementById('salon-chars')?.hidden && row?.children.length === 6 && new RegExp(src).test(document.getElementById('chars-line')?.textContent ?? '') ? 1 : null;
     }, re, timeout);
