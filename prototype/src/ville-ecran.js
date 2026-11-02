@@ -948,13 +948,15 @@ export function createCityGame(host) {
     chip.hidden = false;
   }
 
-  // Résumé de la ville pour la carte « Tu es tombé » : une section de compteurs ({ title, items }), ou null hors d'une ville à sauver.
+  // Résumé de la ville pour la carte « Tu es tombé » : des sections de compteurs ([{ title, items }]), ou null hors d'une ville à sauver.
+  // En saison la ville est commune : ses compteurs sont ceux de tous les joueurs (la section le dit), et une section « Toi » donne ce que ce
+  // joueur a abattu et trouvé depuis l'ouverture du jeu.
   function summary(s) {
     const rt = s.city;
     if (!rt) return null;
     const st = rt.stats();
-    return {
-      title: `${rt.ville.name} · ${levelName(rt.ville.level)}`,
+    const town = {
+      title: `${rt.ville.name} · ${levelName(rt.ville.level)}${rt.season ? ' · tous les joueurs' : ''}`,
       items: [
         { label: 'Habitants sauvés', value: `${groupDigits(st.saved)} / ${groupDigits(st.toSave)}` },
         { label: 'Zombies restants', value: groupDigits(st.zombies) },
@@ -963,6 +965,18 @@ export function createCityGame(host) {
         ...(st.lost ? [{ label: 'Ville', value: 'perdue' }] : st.turned > 0 ? [{ label: 'Devenus zombies', value: groupDigits(st.turned) }] : []),
       ],
     };
+    if (!rt.season) return [town];
+    return [town, {
+      title: 'Toi',
+      items: [{ label: 'Zombies abattus', value: groupDigits(st.mine.killed) }, { label: 'Habitants trouvés', value: groupDigits(st.mine.found) }],
+      note: 'Depuis l\'ouverture du jeu',
+    }];
+  }
+
+  // Saison : après la chute du joueur, une promesse résolue quand les compteurs du serveur l'ont lue (jamais plus de 3 s), ou null si rien
+  // n'est attendu. La carte « Tu es tombé » l'attend : sans elle, elle montrerait la ville d'avant ta chute et tes derniers abattages.
+  function settled(s) {
+    return s.city?.countsSettled() ?? null;
   }
 
   // Ligne et texte de la carte de mission quand aucune livraison n'est en cours.
@@ -1232,7 +1246,7 @@ export function createCityGame(host) {
 
   return {
     initMenu, syncMenu, playLabel, placeChosen, selectCity, cityOf, prepareLaunch, planTrip, landTrip, tripCities, otherCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws, rescueFrom,
-    questText, homeGoal, onRefugeAction, onDeath, summary, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
+    questText, homeGoal, onRefugeAction, onDeath, summary, settled, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
     get menuLevel() { return menuLevel; },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },
   };

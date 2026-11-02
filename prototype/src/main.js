@@ -3025,16 +3025,22 @@ function onDeath(s) {
   }
   save.profile.deaths += 1;
   saveStore.flush('mort');
-  // Dans une ville à sauver, l'état de la ville d'un coup d'œil : habitants sauvés, zombies restants, pâtés libérés.
-  const town = city.summary(s);
-  showCard({
-    title: 'Tu es tombé', tone: 'danger', art: 'mort', lines, stats: town ? [town] : undefined,
-    buttons: [{ id: 'wake', label: r.base && s.store.source === 'tiles' ? 'Se réveiller au refuge' : 'Repartir', primary: true }, { id: 'menu', label: 'Menu' }],
-  }, (id) => {
-    if (session !== s) return;
-    if (id === 'menu') toMenu();
-    else wakeUp(s);
-  }, { escape: 'wake' });
+  // Dans une ville à sauver, l'état de la ville d'un coup d'œil : habitants sauvés, zombies restants, pâtés libérés. En saison la ville est celle
+  // du serveur : la carte attend ses compteurs (ta chute, tes derniers abattages), jamais plus de 3 s, au lieu de montrer la ville d'avant.
+  const showDeath = () => {
+    const town = city.summary(s);
+    showCard({
+      title: 'Tu es tombé', tone: 'danger', art: 'mort', lines, stats: town ?? undefined,
+      buttons: [{ id: 'wake', label: r.base && s.store.source === 'tiles' ? 'Se réveiller au refuge' : 'Repartir', primary: true }, { id: 'menu', label: 'Menu' }],
+    }, (id) => {
+      if (session !== s) return;
+      if (id === 'menu') toMenu();
+      else wakeUp(s);
+    }, { escape: 'wake' });
+  };
+  const counts = city.settled(s);
+  if (counts) counts.then(() => { if (session === s && s.ended) showDeath(); });
+  else showDeath();
 }
 
 // Carte de jeu (#card). `onButton(id)` reçoit le bouton touché ; `escape` : le bouton que déclenche Échap.

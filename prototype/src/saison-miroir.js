@@ -103,6 +103,7 @@ export function seasonOps(ville, net) {
     infect(key) {
       if (!key) return null;
       net.emit(['x', key]);
+      net.flush?.();                                    // le joueur attend les compteurs qui lisent sa chute : le geste part sans attendre le groupe de 250 ms
       return { from: 'cache', key, lost: false };
     },
     setCoeur(ukey, key) {
@@ -211,9 +212,12 @@ export function applyUnitDone(ville, ukey, line) {
   return true;
 }
 
-// Zombies prêtés en tout, par pâté (tous les joueurs) : { clé: nombre }.
-export function applyLent(ville, lent) {
-  for (const [key, n] of Object.entries(lent ?? {})) setLent(ville, key, n);
+// Zombies prêtés en tout, par pâté (tous les joueurs) : { clé: nombre }. `own` : les prêts de CE joueur, [[clé, nombre]] (seasonOps.leases).
+// Le total du serveur peut être plus ancien que les derniers prêts du joueur (son message de prêt n'est pas encore arrivé) : en dessous de ce
+// que le joueur tient, son abattage ne rendrait rien (kill n'abat que des prêtés) et le serveur ne l'apprendrait jamais.
+export function applyLent(ville, lent, own = []) {
+  const mine = new Map(own);
+  for (const [key, n] of Object.entries(lent ?? {})) setLent(ville, key, Math.max(Number.isFinite(+n) ? +n : 0, mine.get(key) ?? 0));
 }
 
 // Compteurs { k: [3], sv, fl, z, dn, tn, lo, un: { quartier: [r, k0, k1, k2, sv, cœur] } } (tn, lo : devenus zombies, ville perdue).
