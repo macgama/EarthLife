@@ -1006,7 +1006,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const slot = body.slot === undefined ? 1 : body.slot;
     if (!Number.isInteger(slot) || slot < 1 || slot > SEASON.chars) return refuse(400, 'requete');
     if (name === 'join') return join(acc, slot, body, phase);
-    if (name === 'chars') return { status: 200, body: { ok: true, now: now(), season: seasonView(), chars: await charsView(acc) } };
+    if (name === 'chars') return { status: 200, body: { ok: true, now: now(), season: seasonView(), chars: await charsView(acc), since: await store.charsSince() } };
     if (name === 'leave') return leave(acc, slot);
     const p = await playerOf(acc, slot);
     if (!p) return refuse(403, 'inscription');
@@ -1044,7 +1044,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
       if (phase === 'terminee') return refuse(409, 'fin');
       const level = body.level;
       // Sans niveau : « suis-je inscrit ? » (le menu du jeu le demande à chaque ouverture) ; la réponse n'est pas une erreur.
-      if (level === undefined) return { status: 200, body: { ok: true, enrolled: false, now: now(), season: seasonView(), slot, chars: await charsView(acc) } };
+      if (level === undefined) return { status: 200, body: { ok: true, enrolled: false, now: now(), season: seasonView(), slot, chars: await charsView(acc), since: await store.charsSince() } };
       if (!LEVELS.includes(level)) return refuse(400, 'niveau');
       const r = await store.seasonJoin({ accountId: acc, season: season.id, slot, level, nowMs: now() });
       if (!r.player) return refuse(403, 'compte');
@@ -1061,7 +1061,7 @@ export function createSeasons({ store, send = () => {}, log = () => {}, now = Da
     const city = w?.city && playable(w.city.ville, body.cl) ? w.city : null;
     return { status: 200, body: { ok: true, now: now(), season: seasonView(), slot, level: p.level, world: `${season.id}.${p.level}`, city: cityView(city),
       ...(city ? {} : announcedOf(p.level)),
-      home: homeView(p), seats: { used: levelUsed(p.level), max: R.seats }, chars: await charsView(acc) } };
+      home: homeView(p), seats: { used: levelUsed(p.level), max: R.seats }, chars: await charsView(acc), since: await store.charsSince() } };
   }
 
   // Abandonner un personnage : l'emplacement est libre, ses sièges se ferment (`no` « inscription »). Son refuge reste dans la ville, perdu pour lui.

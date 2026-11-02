@@ -817,14 +817,15 @@ test('schéma 005 : boîte de dépôt (les dépôts d\'un compte partent avec lu
 
 test('schéma 006 : personnages de saison (effacés avec le compte), reprise des inscriptions une seule fois, puis la version 6', () => {
   const st = splitSql(fs.readFileSync(SCHEMA_FILES[5], 'utf8'));
-  assert.equal(st.length, 3);
+  assert.equal(st.length, 4);
   assert.match(st[0], /^CREATE TABLE IF NOT EXISTS el_season_chars/);
   assert.match(st[0], /PRIMARY KEY \(account_id, season, slot\)/);
   assert.match(st[0], /FOREIGN KEY \(account_id\) REFERENCES el_accounts\(id\) ON DELETE CASCADE/);
   assert.match(st[0], /ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$/);
   assert.match(st[1], /^INSERT IGNORE INTO el_season_chars .* FROM el_season_players\s+WHERE \(SELECT CAST\(v AS UNSIGNED\) FROM el_meta WHERE k = 'schema'\) < 6$/s);
   for (const s of st) assert.ok(!s.includes('--') && !s.includes('«'), s.slice(0, 60));
-  assert.equal(st[2], "UPDATE el_meta SET v = '6' WHERE k = 'schema' AND CAST(v AS UNSIGNED) < 6");
+  assert.match(st[2], /^INSERT IGNORE INTO el_meta \(k, v\) VALUES \('chars_since', /);
+  assert.equal(st[3], "UPDATE el_meta SET v = '6' WHERE k = 'schema' AND CAST(v AS UNSIGNED) < 6");
 });
 
 test('migration 006 (MariaDB) : l\'inscription d\'un compte devient son personnage 1, une seule fois (un personnage abandonné ne revient pas)',
@@ -845,10 +846,13 @@ test('migration 006 (MariaDB) : l\'inscription d\'un compte devient son personna
       assert.deepEqual(await s.seasonPlayer(id(81), 1), { accountId: id(81), season: 1, slot: 1, level: 'moyen', commune: 'c01283', enrolledMs: 100,
         homeKey: 'b45.1_5.1', homeLat: 45100000, homeLon: 5100000, seenMs: 200, kills: 4 });
       assert.deepEqual(await s.seasonCounts(1), { moyen: 1 });
+      const since = await s.charsSince();
+      assert.ok(since > Date.UTC(2026, 0, 1) && since <= Date.now(), `instant d'arrivée des personnages : ${since}`);
       assert.equal(await s.seasonLeave(id(81), 1, 1), true);
       await s.close();
       const again = createMysqlStore(db);
       await again.init();
+      assert.equal(await again.charsSince(), since, 'gardé une fois, pas réécrit au redémarrage');
       assert.equal(await again.seasonPlayer(id(81), 1), null, 'redémarrage : le personnage abandonné ne revient pas');
       await again.close();
     } finally {

@@ -800,6 +800,11 @@ export function createMysqlStore({
       if (!sets.length) return;
       await one(`UPDATE el_season_chars SET ${sets.join(', ')} WHERE account_id = ? AND season = ? AND slot = ?`, [...values, bin(accountId), season, slot], fast);
     },
+    // Instant (ms) où les personnages sont arrivés (006) : les inscrits d'avant sont ceux d'avant les personnages.
+    async charsSince() {
+      const r = await one("SELECT v FROM el_meta WHERE k = 'chars_since'", [], fast);
+      return r.length ? Number(r[0].v) || 0 : 0;
+    },
     async seasonLeave(accountId, season, slot) {
       const [r] = await run((c) => c.execute('DELETE FROM el_season_chars WHERE account_id = ? AND season = ? AND slot = ?', [bin(accountId), season, slot]),
         { retry: false, ms: fastOpMs });
