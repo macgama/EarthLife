@@ -17,6 +17,7 @@ import { addHabitant, clearHabitants } from './habitants.js';
 import { SEASON_TEXT } from './net/season.js';
 import { insideTiles, resumeHome } from './saison-miroir.js';
 import { createMenuSheet } from './menu-sheet.js';
+import { createChars, charsModel, pickSlot, legacyOf, clashOf, isSlotNo, SLOT_KEY, LOCKED_TEXT, LEVEL_LABEL } from './mes-personnages.js';
 import { liveCities, cityNote, levelRows } from './villes-en-cours.js';
 import { createSalon, createTabs, frontModel, summaryOf, ctaModel, destinationOf, clockOf, pinsOf, pinsOfLevel, shownLevel, framingOf, FRONT_LEVELS, DEFAULT_FRONT, LINK, BLOCKED } from './salon.js';
 
@@ -43,9 +44,10 @@ export function createCityGame(host) {
   let pendingFirst = null;   // { name, zombies, hidden } de la ville qui commence
   // Menu : inscription, état des lieux (relu au plus toutes les 30 s), niveau voulu avant de se connecter, message passager, et ce que le joueur
   // a touché pour choisir sa ville (`sel` : un repère de ville ou un point de la carte, sinon rien : il reprend sa ville ou prend la proposition).
-  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, liveAt: 0, busy: false, after: null, note: '', noteAt: 0, pins: [], framed: false, sel: null, near: null };
+  const seasonUi = { enrolled: null, progress: null, failed: false, at: 0, liveAt: 0, busy: false, after: null, note: '', noteAt: 0, pins: [], framed: false, sel: null, near: null,
+    chars: null, since: 0, slotSet: false, gen: 0, who: undefined };   // personnages du compte (join), instant où le serveur les a introduits, emplacement ouvert d'office déjà choisi, version des relectures
   const ls = (() => { try { return window.localStorage; } catch { return null; } })();
-  let salon = null, tabs = null, sheet = null;
+  let salon = null, tabs = null, sheet = null, charsUi = null;
   const seasonRef = { rt: null };                                            // runtime de la saison en cours (messages du serveur)
 
   function readLevel() {
@@ -87,6 +89,12 @@ export function createCityGame(host) {
       },
       onLocked: () => { seasonUi.note = 'Ton niveau est choisi pour la saison : il ne change plus.'; seasonUi.noteAt = Date.now(); syncSeason(); },
       onLaunch: (level, dest) => { seasonUi.sel = null; host.startGame(picker.getPlace() ?? null, { season: level, dest }); },
+    } });
+    // Mes personnages : cinq emplacements, un par ville ; le sixième est verrouillé (l'abonnement n'est pas encore en vente).
+    charsUi = createChars({ doc, host: {
+      onPick: (slot) => selectSlot(slot),
+      onLocked: () => { seasonUi.note = LOCKED_TEXT; seasonUi.noteAt = Date.now(); syncSeason(); },
+      onLeave: () => abandonSlot(net()?.slot ?? 1),
     } });
     // Un repère de ville se touche pour choisir cette ville (et son niveau).
     picker.setSeasonPinHandler?.((level, key) => selectCity(level, key));
@@ -205,6 +213,7 @@ export function createCityGame(host) {
       loaded: !!progress, failed: seasonUi.failed, fronts, clock: clockOf(progress?.season, Date.now()), summary: summaryOf(fronts), link, note,
       cta: ctaModel({ fronts, enrolled, own, sel: seasonUi.sel, pick: ctx.pick, signedIn: signedIn(), status, place: picker.getPlace(), loaded: !!progress }),
     });
+    charsUi?.render(signedIn() && !blocked ? charsModel({ chars: seasonUi.chars, slot: n.slot }) : null);
     seasonUi.pins = progress ? pinsOf(fronts) : [];
     const shown = shownLevel({ enrolled, pick: ctx.pick });
     picker.setSeasonCities?.(pinsOfLevel(seasonUi.pins, shown));
@@ -282,8 +291,16 @@ export function createCityGame(host) {
   // Connexion ou déconnexion du compte : l'inscription et l'état des lieux sont relus tout de suite. Un joueur venu pour
   // rejoindre la saison (carte « Un compte pour la saison ») y est mis dès qu'il est connecté.
   function seasonChanged() {
+    // L'état du compte change aussi à chaque synchronisation de la partie (changer de personnage en écrit une) : seul un autre compte, ou
+    // aucun, change ce que le salon sait de l'inscription et des personnages.
+    const who = signedIn() ? host.account.session : null;
+    if (who === seasonUi.who) return;
+    seasonUi.who = who;
     seasonUi.at = 0;
     seasonUi.enrolled = null;
+    seasonUi.chars = null;
+    seasonUi.slotSet = false;
+    seasonUi.gen++;
     syncSeason();
     const after = seasonUi.after;
     if (after && signedIn() && Date.now() - after.at < 10 * 60_000 && !$('menu')?.classList.contains('hidden')) {
@@ -296,14 +313,78 @@ export function createCityGame(host) {
     if (!n?.enabled) return;
     seasonUi.busy = true;
     seasonUi.at = Date.now();
+    const gen = seasonUi.gen;
+    let stale = false;
+    // Le dernier emplacement touché sur cet appareil est demandé d'emblée (une seule lecture de l'inscription au lieu de deux).
+    if (!seasonUi.slotSet) { const w = Number(readSlot()); if (isSlotNo(w)) { n.slot = w; seasonUi.slotSet = true; } }
     try {
-      const [p, j] = await Promise.all([n.progress({ near: nearPoint() }), signedIn() ? n.join() : Promise.resolve(null)]);
-      seasonUi.failed = !p.ok;
-      if (p.ok) seasonUi.progress = p;
-      seasonUi.enrolled = j?.ok && j.enrolled !== false ? j : null;
+      const [p, j0] = await Promise.all([n.progress({ near: nearPoint() }), signedIn() ? n.join() : Promise.resolve(null)]);
+      let j = j0;
+      // Premier relevé de ce compte : l'emplacement ouvert d'office (le dernier touché, l'actif de la partie ou le plus récent).
+      if (gen === seasonUi.gen && j?.ok && Array.isArray(j.chars) && !seasonUi.slotSet) {
+        seasonUi.slotSet = true;
+        const want = pickSlot({ chars: j.chars, saved: readSlot(), active: host.activeSlot?.() ?? 0 });
+        if (want !== n.slot) { n.slot = want; j = await n.join(); }
+      }
+      // Un autre emplacement a été touché (ou un autre compte connecté) pendant la lecture : cette réponse est périmée, la prochaine relit.
+      if (gen !== seasonUi.gen) stale = true;
+      else {
+        seasonUi.failed = !p.ok;
+        if (p.ok) seasonUi.progress = p;
+        seasonUi.enrolled = j?.ok && j.enrolled !== false ? j : null;
+        if (j?.ok && Array.isArray(j.chars)) { seasonUi.chars = j.chars; seasonUi.since = Number.isFinite(j.since) ? j.since : 0; }
+      }
     } finally {
       seasonUi.busy = false;
     }
+    if (stale) seasonUi.at = 0;
+    syncSeason();
+  }
+
+  // ---------- Mes personnages ----------
+
+  function readSlot() { try { return ls?.getItem(SLOT_KEY) ?? null; } catch { return null; } }
+  // Un autre emplacement est touché : son personnage (niveau, ville, maison) remplace celui du menu ; un emplacement libre laisse le niveau
+  // et la ville à choisir. Le contexte de la partie (sac, refuge) change tout de suite pour un personnage qui existe.
+  function selectSlot(slot) {
+    const n = net();
+    if (!n?.enabled || n.slot === slot) return;
+    n.slot = slot;
+    try { ls?.setItem(SLOT_KEY, String(slot)); } catch { /* stockage indisponible */ }
+    seasonUi.slotSet = true;
+    seasonUi.sel = null;
+    seasonUi.near = null;
+    seasonUi.enrolled = null;
+    seasonUi.gen++;
+    const c = seasonUi.chars?.find((x) => x.slot === slot);
+    if (c) host.enterSlot?.(slot, { legacy: legacyOf(seasonUi.chars, seasonUi.since, slot) });
+    seasonUi.at = 0;
+    syncSeason();                                           // relit l'inscription de cet emplacement (une seule lecture)
+  }
+  // Abandonner le personnage de l'emplacement : une carte dit ce qui est perdu, le serveur libère l'emplacement, puis la partie en jette le contexte.
+  async function abandonSlot(slot) {
+    const n = net();
+    const c = seasonUi.chars?.find((x) => x.slot === slot);
+    if (!n?.enabled || !c) return;
+    const where = c.city?.name || 'sa ville';
+    const id = await askCard({
+      title: `Abandonner le personnage ${slot} ?`, tone: 'danger',
+      lines: [`Son sac, son refuge, sa voiture et ses compétences de saison sont perdus (${LEVEL_LABEL[c.level] ?? ''} · ${where}). L'emplacement redevient libre : tu y commences un autre personnage, dans une autre ville ou à un autre niveau.`,
+        'Les habitants sauvés et les zombies abattus restent à la ville.'],
+      buttons: [{ id: 'leave', label: 'Abandonner', primary: true }, { id: 'cancel', label: 'Le garder' }],
+    }, 'cancel');
+    if (id !== 'leave') return;
+    host.setLoading('Abandon du personnage…');
+    const r = await n.abandon(slot);
+    host.setLoading(null);
+    if (!r.ok) { await askCard(infoCard('Personnage', seasonText(r.code)), 'ok'); return; }
+    host.dropSlot?.(slot);
+    seasonUi.chars = Array.isArray(r.chars) ? r.chars : (seasonUi.chars ?? []).filter((x) => x.slot !== slot);
+    if (n.slot === slot) { seasonUi.enrolled = null; seasonUi.sel = null; }
+    seasonUi.gen++;
+    seasonUi.at = 0;
+    seasonUi.note = `Personnage ${slot} abandonné : l'emplacement est libre.`;
+    seasonUi.noteAt = Date.now();
     syncSeason();
   }
 
@@ -486,6 +567,7 @@ export function createCityGame(host) {
     if (announced && prep.unit.key !== announced.key) { await askCard(infoCard('Ville impossible', seasonText('annoncee')), 'ok'); return null; }
     // La commune du lieu touché est celle où tu joues déjà : rien à changer.
     if (own && prep.unit.key === own.key) return { city: own, prep: null, same: true };
+    if (clashOf(seasonUi.chars, net().slot, prep.unit.key)) { await askCard(infoCard('Ville déjà prise', seasonText('deja-personnage')), 'ok'); return null; }
     if (prep.offline) { await askCard(infoCard('Pas de chiffres officiels', 'La ville de la saison est la même pour ceux qui la choisissent : elle a besoin des vrais chiffres de la commune. Réessaie avec du réseau.'), 'ok'); return null; }
     const sum = prep.summary[level];
     const name = announced?.name ?? prep.unit.name;
@@ -525,6 +607,7 @@ export function createCityGame(host) {
   async function enterCity(level, target, own) {
     const n = net();
     const row = rowOf(level, target.key);
+    if (clashOf(seasonUi.chars, n.slot, target.key)) return { ok: false, code: 'deja-personnage' };
     if (own) {
       const name = row?.name || target.name || 'cette ville';
       const stats = row ? [`${groupDigits(row.zombies)} zombies restants, ${groupDigits(row.saved)} / ${groupDigits(row.toSave)} habitants sauvés${row.online ? `, ${plural(row.online, 'survivant', 'survivants')} en ligne` : ''}.`] : [];
@@ -560,6 +643,7 @@ export function createCityGame(host) {
     if (!(await ensureOnline())) { host.setLoading(null); await askCard(infoCard('Pas de connexion', 'Le jeu à plusieurs ne répond pas : la saison en a besoin. Réessaie dans un instant.'), 'ok'); return null; }
     let join = await n.join();
     host.setLoading(null);
+    let created = false;
     if (join.ok && join.enrolled === false) {
       // Pas encore inscrit : le niveau se choisit une fois pour la saison.
       const id = await askCard({
@@ -571,9 +655,16 @@ export function createCityGame(host) {
       host.setLoading('Inscription…');
       join = await n.join(wanted);
       host.setLoading(null);
+      created = join.ok;
     }
     if (!join.ok) { await askCard(infoCard('Saison', seasonText(join.code)), 'ok'); return null; }
     seasonUi.enrolled = join;
+    // Plusieurs personnages : la partie prend le sac, le refuge et la voiture de CE personnage avant de choisir où aller (la maison s'y compare).
+    if (Array.isArray(join.chars)) {
+      seasonUi.chars = join.chars;
+      seasonUi.since = Number.isFinite(join.since) ? join.since : 0;
+      host.enterSlot?.(join.slot ?? n.slot, { legacy: !created && legacyOf(join.chars, seasonUi.since, join.slot ?? n.slot), fresh: created });
+    }
     const level = join.level;
     if (level !== wanted) notice = `Tu joues la saison en ${levelName(level)} : ce niveau ne change pas.`;
     const own = join.city ?? null;                                   // ta ville actuelle (vue du serveur : clé, nom, point), ou rien
@@ -1234,6 +1325,8 @@ export function createCityGame(host) {
     initMenu, syncMenu, playLabel, placeChosen, selectCity, cityOf, prepareLaunch, planTrip, landTrip, tripCities, otherCities, canReuse, attach, afterLaunch, detach, step, action, runAction, refugeCtx, lootDraws, rescueFrom,
     questText, homeGoal, onRefugeAction, onDeath, summary, refreshHud, zoneAt, onClaim, onMenu, onHidden, seasonChanged, syncSeason,
     get menuLevel() { return menuLevel; },
+    // Reprise après un rechargement (« Reprendre ici ») : l'emplacement de la partie quittée, sans repasser par l'ouverture d'office.
+    useSlot(slot) { const n = net(); if (n?.enabled && Number.isInteger(slot)) { n.slot = slot; seasonUi.slotSet = true; } },
     setLevel(lv) { menuLevel = LEVEL_KEYS.includes(lv) ? lv : null; writeLevel(menuLevel); syncMenu(); },
   };
 }
