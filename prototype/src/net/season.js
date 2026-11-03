@@ -31,6 +31,7 @@ export const SEASON_TEXT = {
   mode: 'Le serveur de la saison ne sait pas encore jouer les grandes villes : choisis une commune plus petite, ou réessaie après sa prochaine mise à jour.',
   delai: 'Le serveur de la saison ne répond pas : réessaie dans un instant.',
   monde: 'Ce monde n\'est pas joignable pour l\'instant.',
+  'deja-personnage': 'Tu as déjà un autre personnage dans cette ville : choisis une autre commune.',
   commune: 'La ville de la saison a changé : relance la partie.',
   complet: 'Ce niveau est complet : 100 joueurs en même temps. Réessaie plus tard.',
   attente: 'Ta place gardée a expiré : touche « Rejoindre » pour te remettre dans la file.',
@@ -55,6 +56,9 @@ export function createSeasonNet({
   } catch { origin = null; }
   const url = (path) => `${origin}/v1/season/${path}`;
   const R = SEASON_NET;
+  // Personnage joué (emplacement 1 à SEASON.chars) : porté par chaque requête (`slot`) et par l'abonnement (`sl`). Le premier est celui d'un
+  // ancien jeu : rien n'est ajouté pour lui, un ancien serveur ne verra jamais d'autre emplacement.
+  let slot = 1;
 
   // ---------- HTTP ----------
 
@@ -96,7 +100,7 @@ export function createSeasonNet({
     const ses = session();
     if (!ses) return { ok: false, code: 'session' };
     return parse(await raw(url(route), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-      body: JSON.stringify({ ses, cl: CLIENT_LEVEL, ...body }), cache: 'no-store', credentials: 'omit' }));
+      body: JSON.stringify({ ses, cl: CLIENT_LEVEL, ...(slot !== 1 ? { slot } : {}), ...body }), cache: 'no-store', credentials: 'omit' }));
   }
 
   // ---------- Gestes et voisinages groupés ----------
@@ -193,7 +197,7 @@ export function createSeasonNet({
   function send(w) {
     if (w.h !== null) clearT(w.h);
     w.h = setT(() => { if (sub?.wait === w) { sub.wait = null; w.resolve({ ok: false, why: 'delai' }); } }, R.subscribeMs);
-    if (!online?.season?.({ o: 'in', c: sub.commune, q: true, cl: CLIENT_LEVEL })) {
+    if (!online?.season?.({ o: 'in', c: sub.commune, q: true, cl: CLIENT_LEVEL, ...(sub.slot !== 1 ? { sl: sub.slot } : {}) })) {
       sub.wait = null;
       clearT(w.h);
       w.resolve({ ok: false, why: 'reseau' });
@@ -265,7 +269,7 @@ export function createSeasonNet({
   function open(commune, handlers = {}) {
     close();
     windowed = false;
-    sub = { commune, h: handlers, buffer: [], ready: false, wait: null, down: false };
+    sub = { commune, slot, h: handlers, buffer: [], ready: false, wait: null, down: false };
     if (online?.on) {
       offs.push(online.on('sv', onSv));
       offs.push(online.on('link', onLink));
@@ -288,6 +292,11 @@ export function createSeasonNet({
 
   return {
     join: (level) => call('join', level ? { level } : {}),
+    // Personnages du compte (006-personnages.sql) : la liste, et l'abandon d'un emplacement. Un ancien serveur répond sans `chars`.
+    chars: () => call('chars'),
+    abandon: (which) => call('leave', { slot: which }),
+    get slot() { return slot; },
+    set slot(n) { if (Number.isInteger(n) && n >= 1 && n <= SEASON.chars) slot = n; },
     state: () => call('state'),
     want,
     get windowed() { return windowed; },

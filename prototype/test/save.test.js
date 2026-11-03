@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SAVE_KEY, PREV_KEY, CORRUPT_KEY, PRESENCE_KEY, PRESENCE, SAVE_VERSION, LIMITS, ITEM_KEYS, SAVE_MESSAGES,
+  SAVE_KEY, PREV_KEY, CORRUPT_KEY, PRESENCE_KEY, PRESENCE, SAVE_VERSION, SAVE_VERSION_CHARS, LIMITS, ITEM_KEYS, SAVE_MESSAGES,
   emptySave, validateSave, parseSave, purgeOld, createSaveStore, memoryStorage, exportFileName, isBlankSave,
   searchStamp, searchRooms, searchedWhole, markRoom, SAVE_GIFTS,
 } from '../src/save.js';
@@ -172,7 +172,7 @@ test('racine illisible : JSON invalide, tableau, v absent ou non numérique', ()
   assert.equal(parseSave('[1,2]', NOW).status, 'corrupt');
   assert.equal(parseSave('42', NOW).status, 'corrupt');
   assert.equal(parseSave('{"rev":3}', NOW).status, 'corrupt');
-  assert.equal(parseSave(JSON.stringify({ ...EXAMPLE, v: 2 }), NOW).status, 'newer');
+  assert.equal(parseSave(JSON.stringify({ ...EXAMPLE, v: 3 }), NOW).status, 'newer');
   // Une racine v1 presque vide est complétée par les valeurs par défaut.
   const r = parseSave('{"v":1}', NOW);
   assert.equal(r.status, 'ok');
@@ -494,8 +494,8 @@ test('texte illisible : copie dans « corrupt » puis reprise sur « .prev »', 
   assert.equal(fresh.readOnly, false);
 });
 
-test('version plus récente (v: 2) : lecture seule, rien n\'est écrit', () => {
-  const text = JSON.stringify({ ...EXAMPLE, v: 2 });
+test('version plus récente (v: 3) : lecture seule, rien n\'est écrit', () => {
+  const text = JSON.stringify({ ...EXAMPLE, v: 3 });
   const storage = fakeStorage({ initial: { [SAVE_KEY]: text } });
   const store = createSaveStore({ storage, now: () => NOW });
   assert.equal(store.status, 'newer');
@@ -1174,7 +1174,7 @@ test('refresh : sans effet pour une page qui a écrit, et une sauvegarde illisib
   const m = createSaveStore({ storage: s2, now: () => NOW, rand: seeded(42) });
   s2.setItem(SAVE_KEY, '{pas du json');
   assert.equal(m.refresh(), false);
-  s2.setItem(SAVE_KEY, JSON.stringify({ ...EXAMPLE, v: SAVE_VERSION + 1 }));
+  s2.setItem(SAVE_KEY, JSON.stringify({ ...EXAMPLE, v: SAVE_VERSION_CHARS + 1 }));
   assert.equal(m.refresh(), false);
   assert.equal(m.save.profile.kills, EXAMPLE.profile.kills);
 });
@@ -1568,7 +1568,7 @@ test('onWrite : texte exact rangé, à chaque écriture réussie (tous les motif
   full.flush('menu');
   assert.equal(seen.some((w) => w.startsWith('plein')), false);
   // Version plus récente : lecture seule dès le départ.
-  const newer = createSaveStore({ storage: fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify({ ...EXAMPLE, v: 2 }) } }), now: () => NOW, onWrite: (e) => seen.push(`v2:${e.why}`) });
+  const newer = createSaveStore({ storage: fakeStorage({ initial: { [SAVE_KEY]: JSON.stringify({ ...EXAMPLE, v: 3 }) } }), now: () => NOW, onWrite: (e) => seen.push(`v2:${e.why}`) });
   newer.flush('menu');
   assert.equal(seen.some((w) => w.startsWith('v2')), false);
 });

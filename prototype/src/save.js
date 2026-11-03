@@ -4,6 +4,7 @@
 import { maxHp, CHEST } from './base.js';
 import { SKILL_KEYS, XP_MAX, emptyProfileSkills } from './skills.js';
 import { GIFT_KEYS } from './net/amis.js';
+import { SEASON } from './net/protocol.js';
 
 export const SAVE_KEY = 'earthlife.save.v1';
 export const PREV_KEY = 'earthlife.save.v1.prev';
@@ -18,6 +19,10 @@ export const PRESENCE_KEY = 'earthlife.presence.v1';
 // compte tant que sa dernière écriture date de moins de 12 s (une page à l'écran écrit au plus 2 s après chaque changement).
 export const PRESENCE = { freshMs: 90000, beatMs: 3000, holdMs: 120000, unknownMs: 12000 };
 export const SAVE_VERSION = 1;
+// Plusieurs personnages (emplacements.js) : une partie qui en porte (`slot` autre que 0, ou `ctx` non vide) s'écrit en version 2, si bien qu'une
+// version du jeu d'avant la refuse (« version plus récente », rien n'est réécrit) au lieu d'effacer les personnages mis de côté. Une partie
+// sans personnage reste en version 1, octet pour octet comme avant.
+export const SAVE_VERSION_CHARS = 2;
 export const LIMITS = { searchedMs: 86400000, dismantledMs: 259200000, maxEntries: 1500, journal: 30, journalChars: 160 };
 
 // Clés d'objets valides (survival.ITEMS) ; validateSave en accepte une autre liste par `itemKeys`.
@@ -83,7 +88,7 @@ const WEATHER_KEY = /^[a-z_]{1,20}$/;
 // Écart toléré sur la norme d'une normale avant de la renormaliser (arrondis à 3 décimales de createBase).
 const NORM_TOLERANCE = 0.02;
 
-const TOP_KEYS = ['v', 'writer', 'rev', 'savedAt', 'lastSiegeCheck', 'profile', 'survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'car', 'searched', 'dismantled', 'gifts'];
+const TOP_KEYS = ['v', 'writer', 'rev', 'savedAt', 'lastSiegeCheck', 'profile', 'survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'car', 'searched', 'dismantled', 'gifts', 'slot', 'ctx'];
 const PROFILE_KEYS = ['createdAt', 'nightsHeld', 'wavesRepelled', 'wavesLost', 'kills', 'deliveries', 'deaths', 'weathers', 'plans', 'sinceLastPlan', 'firstWaveDone', 'kitGiven', 'journal', 'distanceM', 'playSec', 'skills'];
 const SURVIVOR_KEYS = ['health', 'food', 'water', 'bodyTemp', 'wet', 'fatigue', 'bag', 'weapon', 'clothing', 'head', 'legs', 'offhand', 'wear', 'pack'];
 const BASE_KEYS = ['id', 'lat', 'lon', 'area', 'height', 'kind', 'name', 'place', 'claimedAt', 'density', 'utcOffset', 'perk', 'openings', 'chest', 'upgrades', 'sirenAt', 'lastReserve', 'habitants'];
@@ -164,6 +169,7 @@ export function emptySave(now = Date.now()) {
 export function isBlankSave(save) {
   if (!isObj(save)) return true;
   if (save.base || save.orphanChest || save.dropBag || save.car) return false;
+  if (hasChars(save)) return false;
   if (isObj(save.gifts) && ((Array.isArray(save.gifts.out) && save.gifts.out.length) || (Array.isArray(save.gifts.held) && save.gifts.held.length))) return false;
   const p = isObj(save.profile) ? save.profile : {};
   if (COUNTERS.some((k) => finite(p[k]) && p[k] !== 0)) return false;
@@ -699,7 +705,7 @@ export function validateSave(raw, now = Date.now(), { itemKeys = ITEM_KEYS } = {
   if (!isObj(raw) || !finite(raw.v)) return { ok: false, save: null, fixes: ['racine illisible'] };
   const c = checker(now, itemKeys, fixes);
   c.unknown(raw, TOP_KEYS, '');
-  if (raw.v !== SAVE_VERSION) c.fix('v', `${raw.v} → ${SAVE_VERSION}`);
+  if (raw.v !== SAVE_VERSION && raw.v !== SAVE_VERSION_CHARS) c.fix('v', `${raw.v} → ${SAVE_VERSION}`);
   let writer = null;
   if (typeof raw.writer === 'string' && WRITER.test(raw.writer)) writer = raw.writer;
   else if (raw.writer !== null && raw.writer !== undefined) c.fix('writer', `${JSON.stringify(raw.writer)} → null`);
@@ -761,8 +767,55 @@ export function validateSave(raw, now = Date.now(), { itemKeys = ITEM_KEYS } = {
     dismantled: c.stamps(raw.dismantled, 'dismantled'),
     gifts: checkGifts(raw.gifts, c, now),
   };
+  const chars = checkChars(raw, c, now, itemKeys, fixes);
+  if (chars) { save.v = SAVE_VERSION_CHARS; save.slot = chars.slot; save.ctx = chars.ctx; }
   return { ok: true, save, fixes };
 }
+
+// ---------- Personnages (emplacements.js) ----------
+
+// Ce qui change d'un personnage à l'autre : tout sauf le compte (compteurs du profil, amis, écriture). Le contexte du personnage actif est
+// à la racine de la partie (`slot` : son emplacement, 0 pour le jeu seul) ; ceux des autres sont mis de côté dans `ctx[emplacement]`.
+export const CTX_FIELDS = ['survivor', 'where', 'base', 'orphanChest', 'horde', 'dropBag', 'car', 'searched', 'dismantled'];
+
+// Vrai si la partie porte des personnages (emplacement actif autre que 0, ou personnages mis de côté).
+export function hasChars(save) {
+  return isObj(save) && ((Number.isInteger(save.slot) && save.slot > 0) || (isObj(save.ctx) && Object.keys(save.ctx).length > 0));
+}
+
+// `slot` et `ctx` d'une partie lue → { slot, ctx } validés, ou null quand il n'y a pas de personnage. Un contexte mis de côté est validé par
+// la validation de partie elle-même (mêmes bornes que le contexte actif), sur une partie réduite à ses champs ; ses compétences de saison
+// sont `skills` ({ id, points… }).
+const ownFix = (f) => {
+  const path = f.split(' : ')[0];
+  return path.startsWith('profile.skills') || CTX_FIELDS.some((k) => path === k || path.startsWith(`${k}.`) || path.startsWith(`${k}[`));
+};
+function checkChars(raw, c, now, itemKeys, fixes) {
+  let slot = 0;
+  if (raw.slot !== undefined) {
+    if (Number.isInteger(raw.slot) && raw.slot >= 0 && raw.slot <= SEASON.chars) slot = raw.slot;
+    else c.fix('slot', `${JSON.stringify(raw.slot)} → 0`);
+  }
+  const ctx = {};
+  if (raw.ctx !== undefined) {
+    if (!isObj(raw.ctx)) c.fix('ctx', 'illisible, retiré');
+    else {
+      for (const [k, v] of Object.entries(raw.ctx)) {
+        if (!/^[0-5]$/.test(k) || Number(k) > SEASON.chars || Number(k) === slot || !isObj(v)) { c.fix(`ctx.${k}`, 'illisible ou emplacement actif : retiré'); continue; }
+        const r = validateSave({ v: SAVE_VERSION, survivor: v.survivor, where: v.where, base: v.base, orphanChest: v.orphanChest, horde: v.horde,
+          dropBag: v.dropBag, car: v.car, searched: v.searched, dismantled: v.dismantled, profile: { skills: { season: v.skills } } }, now, { itemKeys });
+        // Les champs de la partie réduite qui n'étaient pas là (rev, profil…) ne sont pas des corrections du personnage.
+        for (const f of r.fixes) if (ownFix(f)) fixes.push(`ctx.${k}.${f}`);
+        const out = {};
+        for (const f of CTX_FIELDS) out[f] = r.save[f];
+        out.skills = r.save.profile.skills.season;
+        ctx[k] = out;
+      }
+    }
+  }
+  return slot === 0 && !Object.keys(ctx).length ? null : { slot, ctx };
+}
+
 
 // Texte du stockage → sauvegarde validée. 'empty' : rien d'enregistré ; 'newer' : version plus récente.
 export function parseSave(text, now = Date.now(), opts = {}) {
@@ -774,7 +827,7 @@ export function parseSave(text, now = Date.now(), opts = {}) {
     return { status: 'corrupt', save: null, fixes: ['JSON invalide'] };
   }
   if (!isObj(raw) || !finite(raw.v)) return { status: 'corrupt', save: null, fixes: ['racine illisible'] };
-  if (raw.v > SAVE_VERSION) return { status: 'newer', save: null, fixes: [] };
+  if (raw.v > SAVE_VERSION_CHARS) return { status: 'newer', save: null, fixes: [] };
   const r = validateSave(migrate(raw), now, opts);
   return r.ok ? { status: 'ok', save: r.save, fixes: r.fixes } : { status: 'corrupt', save: null, fixes: r.fixes };
 }
@@ -1198,12 +1251,13 @@ export function createSaveStore({
       }
     }
     const before = { writer: save.writer, rev: save.rev, savedAt: save.savedAt };
-    save.v = SAVE_VERSION;
+    save.v = hasChars(save) ? SAVE_VERSION_CHARS : SAVE_VERSION;
     save.writer = writer;
     save.rev = (finite(save.rev) ? save.rev : 0) + 1;
     if (save.rev > MAX_REV) save.rev = 1;
     save.savedAt = now();
     purgeOld(save, save.savedAt);
+    if (isObj(save.ctx)) for (const parked of Object.values(save.ctx)) purgeOld(parked, save.savedAt);
     const keepPrev = stored !== null && stored !== badText;
     let out = JSON.stringify(save);
     let ok = (!keepPrev || tryWrite(PREV_KEY, stored)) && tryWrite(SAVE_KEY, out);

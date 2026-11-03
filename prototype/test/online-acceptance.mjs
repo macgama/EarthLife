@@ -3663,6 +3663,160 @@ await scenario('O38', 'grande ville de la saison, par quartiers', async () => {
 });
 
 // =====================================================================================================
+// O39 : « Mes personnages » (cahier personnages, étape 3) : un compte, deux personnages créés côté serveur (Facile en 1, Moyen en 3).
+// Le salon montre cinq emplacements et un verrou « abonnement bientôt » ; le plus récent est ouvert, son niveau fait foi ; toucher un autre
+// emplacement échange le contexte de la partie (santé du survivant mise de côté puis retrouvée) ; un emplacement libre se commence ;
+// le choix survit au rechargement ; abandonner libère l'emplacement et jette le contexte (le jeu seul reprend la racine).
+// =====================================================================================================
+await scenario('O39', 'personnages : rangée du salon, changement de personnage, abandon', async () => {
+  const SERVER = `http://127.0.0.1:${srv.port}`;
+  const post = async (route, body) => {
+    const r = await fetch(`${SERVER}${route}`, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=UTF-8' }, body: JSON.stringify(body) });
+    return { status: r.status, body: await r.json() };
+  };
+  const { ACCOUNT_LIMITS: LIM } = await load('server/src/accounts.js');
+  const was = { codesPerIpHour: LIM.codesPerIpHour, coldCodesPerIpHour: LIM.coldCodesPerIpHour, ipPerMin: LIM.ipPerMin };
+  // Les scénarios d'avant ont déjà demandé beaucoup de codes depuis cette adresse (le plafond des adresses neuves refuse sans le dire : pas de code, 400).
+  LIM.codesPerIpHour += 200;
+  LIM.coldCodesPerIpHour += 200;
+  LIM.ipPerMin = 1000;
+  // Le serveur ne crée que 20 identités par heure et par adresse (createPerIpHour) : les scénarios d'avant ont déjà comblé ce compte (liaison « complet »).
+  // Le compte de 127.0.0.1 est mis à zéro le temps du scénario, puis rendu (comme O38).
+  const ipEntries = [...srv.room.debug().perIp.values()];
+  const createsWas = ipEntries.map((e) => e.creates);
+  for (const e of ipEntries) e.creates = { add: () => 0, count: () => 0 };
+  const P = { email: 'p.perso@exemple.test', pw: 'essai-perso-quai-70' };
+  let B = null;
+  try {
+    await post('/v1/account/code', { v: 1, email: P.email, why: 'signup' });
+    const ver = await post('/v1/account/verify', { v: 1, email: P.email, code: srv.mailbox.lastCode(P.email), password: P.pw, tok: null, age: true });
+    P.ses = ver.body.ses;
+    check(ver.status === 200 && !!P.ses, `compte créé (${ver.status})`);
+    const season = (route, body = {}) => post(`/v1/season/${route}`, { v: 1, ses: P.ses, cl: 5, ...body });
+    check((await season('join', { level: 'facile' })).body.ok === true, 'serveur : personnage 1 en Facile');
+    await wait(60);
+    const j3 = await season('join', { level: 'moyen', slot: 3 });
+    check(j3.body.ok === true && j3.body.chars?.length === 2, `serveur : personnage 3 en Moyen (${j3.body.chars?.length} personnages)`);
+
+    const K = friendsKit({ p: P });
+    const seasonUrl = accUrl().replace('menu=libre', 'menu=saison');
+    // Les plafonds du serveur (12 lectures de l'inscription, puis une toutes les 5 s) sont ceux du vrai jeu : l'ordinateur reprend d'emblée l'emplacement 1.
+    const openSalon = async (tag, device, slot = null) => {
+      const t = await open(tag, device, seasonUrl, { waitGame: false, before: (ctx) => {
+        ctx.addInitScript(acctProbe);
+        ctx.addInitScript(([k, s]) => { try { if (!localStorage.getItem(k)) localStorage.setItem(k, s); } catch { /* stockage refusé */ } }, [accKey(), K.stateOf(P)]);
+        if (slot) ctx.addInitScript((n) => { try { if (!localStorage.getItem('earthlife.slot')) localStorage.setItem('earthlife.slot', n); } catch { /* stockage refusé */ } }, String(slot));
+      } });
+      check((await accWait(t, (v) => v.menu, 60000)).ok, `${tag} : menu affiché`);
+      // La rangée ne se lit qu'une fois la liaison en ligne établie : attendue (lente sur la machine de la recette), son état noté si elle manque.
+      const live = await until(t, () => window.__earthlife.online?.live === true, null, 90000);
+      check(!!live, `${tag} : en ligne`);
+      if (!live) note(`${tag} : liaison ${await ev(t, () => `${window.__earthlife.online?.status} ; note du salon « ${document.getElementById('salon-note')?.textContent ?? ''} »`)}`);
+      return t;
+    };
+    const chars = (t) => ev(t, () => {
+      const row = document.getElementById('chars-row');
+      return {
+        shown: !document.getElementById('salon-chars')?.hidden,
+        chips: [...(row?.children ?? [])].map((b) => ({ n: b.querySelector('b')?.textContent, name: b.querySelector('span')?.textContent, empty: b.dataset.empty ?? null, on: b.getAttribute('aria-checked'), locked: b.getAttribute('aria-disabled') === 'true' })),
+        line: document.getElementById('chars-line')?.textContent ?? '', leave: !document.getElementById('chars-leave')?.hidden,
+        lockedFronts: [...document.querySelectorAll('#fronts .front.locked')].map((f) => f.dataset.level), mine: document.querySelector('#fronts .front.mine')?.dataset.level ?? null,
+        slot: window.__earthlife.save.slot ?? 0, ctx: Object.keys(window.__earthlife.save.ctx ?? {}).sort(), health: window.__earthlife.save.survivor?.health ?? null,
+        stored: (() => { try { return localStorage.getItem('earthlife.slot'); } catch { return null; } })(),
+      };
+    });
+    // La rangée est affichée (six puces) et sa ligne correspond à l'expression (texte, sans évaluer de code dans la page).
+    const lineIs = (t, re, timeout = 45000) => until(t, (src) => {
+      const row = document.getElementById('chars-row');
+      return !document.getElementById('salon-chars')?.hidden && row?.children.length === 6 && new RegExp(src).test(document.getElementById('chars-line')?.textContent ?? '') ? 1 : null;
+    }, re, timeout);
+
+    // ---- Téléphone : la rangée, le plus récent ouvert d'office, son niveau seul possible ----
+    B = await openSalon('P (téléphone, personnages)', mobile);
+    check(!!(await lineIs(B, '^Personnage 3 ')), 'P : la rangée est là, le personnage 3 (le plus récent) est ouvert d\'office');
+    let v = await chars(B);
+    check(v.chips.length === 6 && v.chips.slice(0, 5).map((c) => c.empty).join('') === '01011', `P : emplacements pris/libres ${v.chips.map((c) => `${c.n}:${c.empty ?? 'verrou'}`).join(' ')}`);
+    check(v.chips[2].on === 'true' && v.chips.filter((c) => c.on === 'true').length === 1, 'P : un seul emplacement ouvert (le 3)');
+    check(v.chips[5].locked && /Bient/.test(v.chips[5].name ?? ''), 'P : le sixième est verrouillé (« Bientôt »)');
+    check(/Personnage 3 · Moyen/.test(v.line) && v.leave, `P : ligne « ${v.line} », abandon possible`);
+    check(v.lockedFronts.join() === 'facile,difficile' && v.mine === 'moyen', `P : niveau fixé à Moyen (verrouillés : ${v.lockedFronts.join(',')})`);
+    await wait(1200);
+    await shot(B, 'o39-tel-personnages');
+    // Le verrou dit pourquoi, sans rien changer.
+    await ev(B, () => document.getElementById('chars-row').lastElementChild.click());
+    const lock = await until(B, () => (/abonnement/.test(document.getElementById('salon-note')?.textContent ?? '') ? 1 : null), null, 8000);
+    check(!!lock, 'P : le verrou dit que l\'abonnement arrive bientôt');
+
+    // ---- Changer de personnage : le contexte de la partie suit ----
+    await ev(B, () => document.querySelector('#chars-row [data-slot="1"]').click());
+    check(!!(await lineIs(B, '^Personnage 1 · Facile')), 'P : le personnage 1 est ouvert (Facile)');
+    await until(B, () => (document.querySelector('#fronts .front.mine')?.dataset.level === 'facile' ? 1 : null), null, 15000);
+    v = await chars(B);
+    check(v.lockedFronts.join() === 'moyen,difficile' && v.mine === 'facile', `P : niveau Facile seul (verrouillés : ${v.lockedFronts.join(',')})`);
+    check(v.slot === 1 && v.ctx.join() === '0', `P : la partie tient le personnage 1, le jeu seul est mis de côté (emplacement ${v.slot}, contextes ${v.ctx})`);
+    check(v.health === 100, `P : le personnage 1 repart d'un survivant neuf (santé ${v.health})`);
+    check(v.stored === '1', 'P : l\'emplacement touché est retenu sur l\'appareil');
+    await ev(B, () => { const el = window.__earthlife; el.save.survivor.health = 42; el.saveStore.markDirty(); });
+    await ev(B, () => document.querySelector('#chars-row [data-slot="3"]').click());
+    check(!!(await lineIs(B, '^Personnage 3 · Moyen')), 'P : le personnage 3 est ouvert (Moyen)');
+    v = await chars(B);
+    check(v.slot === 3 && v.health === 100 && v.ctx.join() === '0,1', `P : le personnage 3 repart d'un survivant neuf, le 1 est de côté (santé ${v.health}, emplacement ${v.slot}, contextes ${v.ctx})`);
+    await ev(B, () => document.querySelector('#chars-row [data-slot="1"]').click());
+    await lineIs(B, '^Personnage 1 · Facile');
+    v = await chars(B);
+    check(v.slot === 1 && v.health === 42 && v.ctx.join() === '0,3', `P : le personnage 1 retrouve son survivant (santé ${v.health}, emplacement ${v.slot}, contextes ${v.ctx})`);
+
+    // ---- Un emplacement libre : rien à abandonner, niveau libre, la partie ne change pas ----
+    await ev(B, () => document.querySelector('#chars-row [data-slot="2"]').click());
+    check(!!(await lineIs(B, 'emplacement libre')), 'P : l\'emplacement 2 est libre');
+    v = await chars(B);
+    check(!v.leave && v.lockedFronts.length === 0 && v.slot === 1, `P : ni abandon ni niveau verrouillé, la partie reste au personnage 1 (verrouillés : ${v.lockedFronts.join(',')}, emplacement ${v.slot})`);
+
+    // ---- Rechargement : l'emplacement touché reste ouvert ----
+    await ev(B, () => document.querySelector('#chars-row [data-slot="1"]').click());
+    await lineIs(B, '^Personnage 1 ');
+    await wait(500);
+    await B.page.reload();
+    check((await accWait(B, (x) => x.menu, 60000)).ok, 'P : menu rechargé');
+    check(!!(await lineIs(B, '^Personnage 1 · Facile')), 'P : après rechargement, le personnage 1 est toujours ouvert');
+    v = await chars(B);
+    check(v.slot === 1 && v.health === 42 && v.ctx.join() === '0,3', `P : la partie reprend au personnage 1 (santé ${v.health}, emplacement ${v.slot}, contextes ${v.ctx})`);
+
+    // ---- Ordinateur : même rangée (la page garde la liaison en ligne du compte : un second appareil la prendrait, la rangée se masquerait) ----
+    const phoneSize = B.page.viewportSize();
+    await B.page.setViewportSize({ width: 1280, height: 800 });
+    check(!!(await lineIs(B, '^Personnage 1 ')), 'P (ordinateur) : la rangée est là');
+    await wait(1200);
+    await shot(B, 'o39-pc-personnages');
+    await B.page.setViewportSize(phoneSize);
+    await wait(500);
+
+    // ---- Abandonner le personnage 1 : carte, serveur, emplacement libre, le jeu seul reprend la racine ----
+    await ev(B, () => document.getElementById('chars-leave').click());
+    const card = await K.cardWait(B, 'Abandonner le personnage 1 ?');
+    check(!!card, 'P : la carte d\'abandon s\'ouvre');
+    const cv = await K.cardView(B);
+    check(cv?.fits === true && cv.btns.includes('leave') && cv.btns.includes('cancel'), `P : la carte tient à l'écran (${cv?.btns})`);
+    await K.cardBtn(B, 'cancel');
+    await wait(400);
+    check((await chars(B)).chips[0].empty === '0', 'P : « Le garder » ne change rien');
+    await ev(B, () => document.getElementById('chars-leave').click());
+    await K.cardWait(B, 'Abandonner le personnage 1 ?');
+    await K.cardBtn(B, 'leave');
+    const freed = await lineIs(B, '^Personnage 1 : emplacement libre');
+    check(!!freed, 'P : l\'emplacement 1 est libre');
+    if (!freed) note(`P : état après l'abandon ${JSON.stringify(await chars(B))} ; carte : ${await ev(B, () => document.querySelector('#card:not(.hidden)')?.innerText.replace(/\s+/g, ' ').slice(0, 200) ?? null)} ; compte : ${await ev(B, () => JSON.stringify({ st: window.__earthlife.account.state, d: window.__earthlife.account.debug() }).slice(0, 300))} ; menu : ${await ev(B, () => `${document.getElementById('menu').className} ${document.getElementById('menu').dataset.tab} ${document.getElementById('salon-note')?.textContent}`)}`);
+    v = await chars(B);
+    check(v.slot === 0 && v.ctx.join() === '3' && !v.leave, `P : le jeu seul reprend la racine, le personnage 3 reste de côté (emplacement ${v.slot}, contextes ${v.ctx})`);
+    const left = await season('chars');
+    check(left.body.chars?.map((c) => c.slot).join() === '3', `serveur : il reste le personnage 3 (${left.body.chars?.map((c) => c.slot)})`);
+  } finally {
+    Object.assign(LIM, was);
+    ipEntries.forEach((e, i) => { e.creates = createsWas[i]; });
+  }
+});
+
+// =====================================================================================================
 // O19 : toute la séance : aucune erreur de console, aucune exception, aucune violation de la politique de
 // sécurité (hors fenêtre de O12), aucune requête vers earthlife.needhelpapp.com (sauf F, voulue) ; K, L et M compris
 // (refus voulus des scénarios du compte tolérés dans leur fenêtre : netExpected)
