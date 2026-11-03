@@ -69,9 +69,10 @@ const accountOf = (r) => ({
 });
 const metaOf = (r) => ({ rev: Number(r.rev), savedMs: Number(r.saved_ms), bytes: Number(r.bytes),
   stamp: [r.stamp_w ?? null, Number(r.stamp_r), Number(r.stamp_t)] });
-const SEASON_COLS = 'account_id, season, level, commune, enrolled_ms, home_key, home_lat, home_lon, seen_ms, kills';
+// Personnages de saison (006-personnages.sql) : un par emplacement `slot`, jusqu'à 5 par compte.
+const SEASON_COLS = 'account_id, season, slot, level, commune, enrolled_ms, home_key, home_lat, home_lon, seen_ms, kills';
 const seasonPlayerOf = (r) => ({
-  accountId: hex(r.account_id), season: Number(r.season), level: r.level, commune: r.commune ?? null, enrolledMs: Number(r.enrolled_ms),
+  accountId: hex(r.account_id), season: Number(r.season), slot: Number(r.slot), level: r.level, commune: r.commune ?? null, enrolledMs: Number(r.enrolled_ms),
   homeKey: r.home_key ?? null, homeLat: r.home_lat ?? null, homeLon: r.home_lon ?? null, seenMs: Number(r.seen_ms), kills: Number(r.kills),
 });
 // LIMIT écrit dans la requête (entier borné, jamais une valeur reçue) : mysql2 lie mal un LIMIT préparé.
@@ -772,35 +773,50 @@ export function createMysqlStore({
         [id, name, startMs, endMs]), { retry: false, ms: fastOpMs });
       return r.affectedRows > 0;
     },
-    async seasonPlayer(accountId, season) {
-      const r = await one(`SELECT ${SEASON_COLS} FROM el_season_players WHERE account_id = ? AND season = ?`, [bin(accountId), season], fast);
+    async seasonPlayer(accountId, season, slot = 1) {
+      const r = await one(`SELECT ${SEASON_COLS} FROM el_season_chars WHERE account_id = ? AND season = ? AND slot = ?`, [bin(accountId), season, slot], fast);
       return r.length ? seasonPlayerOf(r[0]) : null;
     },
-    async seasonJoin({ accountId, season, level, nowMs }) {
+    async seasonPlayers(accountId, season) {
+      const r = await one(`SELECT ${SEASON_COLS} FROM el_season_chars WHERE account_id = ? AND season = ? ORDER BY slot`, [bin(accountId), season], fast);
+      return r.map(seasonPlayerOf);
+    },
+    async seasonJoin({ accountId, season, slot = 1, level, nowMs }) {
       return tx(async (c) => {
         const acc = await rows(c, 'SELECT id FROM el_accounts WHERE id = ? FOR UPDATE', [bin(accountId)]);
         if (!acc.length) return { ok: false, player: null };
-        const cur = await rows(c, `SELECT ${SEASON_COLS} FROM el_season_players WHERE account_id = ? AND season = ?`, [bin(accountId), season]);
+        const cur = await rows(c, `SELECT ${SEASON_COLS} FROM el_season_chars WHERE account_id = ? AND season = ? AND slot = ?`, [bin(accountId), season, slot]);
         if (cur.length) return { ok: false, player: seasonPlayerOf(cur[0]) };
-        await c.execute('INSERT INTO el_season_players (account_id, season, level, enrolled_ms, seen_ms) VALUES (?, ?, ?, ?, ?)',
-          [bin(accountId), season, level, nowMs, nowMs]);
-        return { ok: true, player: { accountId, season, level, commune: null, enrolledMs: nowMs, homeKey: null, homeLat: null, homeLon: null,
+        await c.execute('INSERT INTO el_season_chars (account_id, season, slot, level, enrolled_ms, seen_ms) VALUES (?, ?, ?, ?, ?, ?)',
+          [bin(accountId), season, slot, level, nowMs, nowMs]);
+        return { ok: true, player: { accountId, season, slot, level, commune: null, enrolledMs: nowMs, homeKey: null, homeLat: null, homeLon: null,
           seenMs: nowMs, kills: 0 } };
       });
     },
-    async seasonPlayerSet(accountId, season, patch) {
+    async seasonPlayerSet(accountId, season, patch, slot = 1) {
       const cols = { commune: 'commune', homeKey: 'home_key', homeLat: 'home_lat', homeLon: 'home_lon', seenMs: 'seen_ms', kills: 'kills' };
       const sets = [], values = [];
       for (const [k, col] of Object.entries(cols)) if (patch[k] !== undefined) { sets.push(`${col} = ?`); values.push(patch[k]); }
       if (!sets.length) return;
-      await one(`UPDATE el_season_players SET ${sets.join(', ')} WHERE account_id = ? AND season = ?`, [...values, bin(accountId), season], fast);
+      await one(`UPDATE el_season_chars SET ${sets.join(', ')} WHERE account_id = ? AND season = ? AND slot = ?`, [...values, bin(accountId), season, slot], fast);
     },
+    // Instant (ms) où les personnages sont arrivés (006) : les inscrits d'avant sont ceux d'avant les personnages.
+    async charsSince() {
+      const r = await one("SELECT v FROM el_meta WHERE k = 'chars_since'", [], fast);
+      return r.length ? Number(r[0].v) || 0 : 0;
+    },
+    async seasonLeave(accountId, season, slot) {
+      const [r] = await run((c) => c.execute('DELETE FROM el_season_chars WHERE account_id = ? AND season = ? AND slot = ?', [bin(accountId), season, slot]),
+        { retry: false, ms: fastOpMs });
+      return r.affectedRows > 0;
+    },
+    // Joueurs inscrits par niveau : des comptes, pas des personnages (un compte qui joue deux fois au même niveau compte une fois).
     async seasonCounts(season) {
-      const r = await one('SELECT level, COUNT(*) AS n FROM el_season_players WHERE season = ? GROUP BY level', [season], fast);
+      const r = await one('SELECT level, COUNT(DISTINCT account_id) AS n FROM el_season_chars WHERE season = ? GROUP BY level', [season], fast);
       return Object.fromEntries(r.map((x) => [x.level, Number(x.n)]));
     },
     async seasonHomes(season) {
-      const r = await one('SELECT level, commune, COUNT(*) AS n FROM el_season_players WHERE season = ? AND commune IS NOT NULL AND home_key IS NOT NULL GROUP BY level, commune', [season], fast);
+      const r = await one('SELECT level, commune, COUNT(*) AS n FROM el_season_chars WHERE season = ? AND commune IS NOT NULL AND home_key IS NOT NULL GROUP BY level, commune', [season], fast);
       return Object.fromEntries(r.map((x) => [`${x.level}|${x.commune}`, Number(x.n)]));
     },
     async seasonDocs(world, commune = null) {

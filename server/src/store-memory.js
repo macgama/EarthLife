@@ -108,11 +108,16 @@
 //   putSave({ accountId, base, force, blob, bytes, stamp, nowMs }) → { ok: true, rev } | { ok: false, meta: SaveMeta | null }
 // Saisons (lot 1, 003-saisons.sql) :
 //   seasonGet(id) → { id, name, startMs, endMs } | null, seasonCreate({ id, name, startMs, endMs }) → boolean (faux s'il existe)
-//   seasonPlayer(accountId, season) → { accountId, season, level, commune, enrolledMs, homeKey, homeLat, homeLon, seenMs, kills } | null
-//   seasonJoin({ accountId, season, level, nowMs }) → { ok: true, player } | { ok: false, player }   (le premier niveau gagne)
-//   seasonPlayerSet(accountId, season, patch)                    patch : commune, homeKey, homeLat, homeLon, seenMs, kills
-//   seasonCounts(season) → { [niveau]: inscrits }
-//   seasonHomes(season) → { 'niveau|commune': joueurs installés (une maison posée dans la commune où ils jouent) }
+//   Personnages (006-personnages.sql) : un compte a jusqu'à 5 personnages de saison, un par emplacement `slot` (1 à 5, 1 par défaut :
+//   un ancien client ne connaît que le premier).
+//   seasonPlayer(accountId, season, slot = 1) → { accountId, season, slot, level, commune, enrolledMs, homeKey, homeLat, homeLon, seenMs, kills } | null
+//   seasonPlayers(accountId, season) → les personnages du compte, par emplacement croissant
+//   seasonJoin({ accountId, season, slot = 1, level, nowMs }) → { ok: true, player } | { ok: false, player }   (le premier niveau de l'emplacement gagne)
+//   seasonPlayerSet(accountId, season, patch, slot = 1)           patch : commune, homeKey, homeLat, homeLon, seenMs, kills
+//   seasonLeave(accountId, season, slot) → boolean               abandonne le personnage (faux s'il n'existe pas)
+//   charsSince() → ms                                            instant d'arrivée des personnages (006) : un inscrit d'avant joue la partie d'avant
+//   seasonCounts(season) → { [niveau]: joueurs inscrits (comptes, pas personnages) }
+//   seasonHomes(season) → { 'niveau|commune': personnages installés (une maison posée dans la commune où ils jouent) }
 //   seasonDocs(world, commune?) → [{ commune, part, rev, data }] (une seule commune si donnée), seasonDocPut({ world, commune, part, rev, data, nowMs }),
 //   seasonDocsPut({ world, commune, parts: [{ part, rev, data }], nowMs }) : plusieurs pièces d'une commune en une transaction
 //   seasonParts(world, part) → [{ commune, rev, data }] : une même pièce de toutes les communes (le résumé de chaque ville, `sum`),
@@ -157,7 +162,7 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
   const gifts = new Map();        // id → { id, donor, gid, recipient, fid, items, n, madeMs, madeDay, state, doneMs }
   // Saisons.
   const seasons = new Map();      // id → { id, name, startMs, endMs }
-  const seasonPlayers = new Map(); // 'compte:saison' → joueur de saison
+  const seasonPlayers = new Map(); // 'compte:saison:emplacement' → personnage de saison
   const seasonDocs = new Map();   // 'monde|commune|pièce' → { world, commune, part, rev, data }
   let sessionSeq = 0;
   let failing = false;
@@ -687,31 +692,49 @@ export function createMemoryStore({ refugeDays = 30, playerDays = 180, reportDay
       seasons.set(id, { id, name, startMs, endMs });
       return true;
     },
-    async seasonPlayer(accountId, season) {
+    async seasonPlayer(accountId, season, slot = 1) {
       guard();
-      return copyPlayer(seasonPlayers.get(`${accountId}:${season}`));
+      return copyPlayer(seasonPlayers.get(`${accountId}:${season}:${slot}`));
     },
-    async seasonJoin({ accountId, season, level, nowMs }) {
+    async seasonPlayers(accountId, season) {
       guard();
-      const k = `${accountId}:${season}`;
+      return [...seasonPlayers.values()].filter((p) => p.accountId === accountId && p.season === season).sort((a, b) => a.slot - b.slot).map(copyPlayer);
+    },
+    async seasonJoin({ accountId, season, slot = 1, level, nowMs }) {
+      guard();
+      const k = `${accountId}:${season}:${slot}`;
       const cur = seasonPlayers.get(k);
       if (cur) return { ok: false, player: copyPlayer(cur) };
       if (!accounts.has(accountId)) return { ok: false, player: null };
-      const player = { accountId, season, level, commune: null, enrolledMs: nowMs, homeKey: null, homeLat: null, homeLon: null,
+      const player = { accountId, season, slot, level, commune: null, enrolledMs: nowMs, homeKey: null, homeLat: null, homeLon: null,
         seenMs: nowMs, kills: 0 };
       seasonPlayers.set(k, player);
       return { ok: true, player: copyPlayer(player) };
     },
-    async seasonPlayerSet(accountId, season, patch) {
+    async seasonPlayerSet(accountId, season, patch, slot = 1) {
       guard();
-      const p = seasonPlayers.get(`${accountId}:${season}`);
+      const p = seasonPlayers.get(`${accountId}:${season}:${slot}`);
       if (!p) return;
       for (const k of ['commune', 'homeKey', 'homeLat', 'homeLon', 'seenMs', 'kills']) if (patch[k] !== undefined) p[k] = patch[k];
     },
+    // Rien n'a précédé les personnages en mémoire (essais, développement) : aucun inscrit n'est d'avant.
+    async charsSince() {
+      guard();
+      return 0;
+    },
+    async seasonLeave(accountId, season, slot) {
+      guard();
+      return seasonPlayers.delete(`${accountId}:${season}:${slot}`);
+    },
     async seasonCounts(season) {
       guard();
-      const out = {};
-      for (const p of seasonPlayers.values()) if (p.season === season) out[p.level] = (out[p.level] ?? 0) + 1;
+      const seen = new Set(), out = {};
+      for (const p of seasonPlayers.values()) {
+        const k = `${p.level}|${p.accountId}`;
+        if (p.season !== season || seen.has(k)) continue;
+        seen.add(k);
+        out[p.level] = (out[p.level] ?? 0) + 1;
+      }
       return out;
     },
     async seasonHomes(season) {

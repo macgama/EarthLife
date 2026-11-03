@@ -24,7 +24,7 @@ const th = (n) => (n + 1000).toString(16).padStart(64, 'a');
 const ipHash = (n) => n.toString(16).padStart(64, 'c');
 const day = (ms) => dayOf(ms);
 const TEST_DB = process.env.EARTHLIFE_TEST_DB || '';
-const TABLES = ['el_gifts', 'el_friends', 'el_friend_codes', 'el_season_players', 'el_season_docs', 'el_seasons', 'el_codes', 'el_saves', 'el_sessions', 'el_accounts', 'el_reports', 'el_blocks', 'el_refuges', 'el_ip_bans', 'el_marks',
+const TABLES = ['el_gifts', 'el_friends', 'el_friend_codes', 'el_season_chars', 'el_season_players', 'el_season_docs', 'el_seasons', 'el_codes', 'el_saves', 'el_sessions', 'el_accounts', 'el_reports', 'el_blocks', 'el_refuges', 'el_ip_bans', 'el_marks',
   'el_players', 'el_meta'];
 const eh = (n) => n.toString(16).padStart(64, 'e');            // empreinte d'adresse
 const sh = (n) => n.toString(16).padStart(64, '5');            // empreinte de session
@@ -545,9 +545,25 @@ for (const B of BACKENDS) {
       await s.seasonJoin({ accountId: id(62), season: 1, level: 'moyen', nowMs: T0 });
       assert.deepEqual(await s.seasonCounts(1), { facile: 1, moyen: 1 });
       await s.seasonPlayerSet(id(61), 1, { commune: 'c01283', homeKey: 'b45.90000_5.20000', homeLat: 45900000, homeLon: -5200000, seenMs: T0 + 9, kills: 7 });
-      assert.deepEqual(await s.seasonPlayer(id(61), 1), { accountId: id(61), season: 1, level: 'facile', commune: 'c01283', enrolledMs: T0,
+      assert.deepEqual(await s.seasonPlayer(id(61), 1), { accountId: id(61), season: 1, slot: 1, level: 'facile', commune: 'c01283', enrolledMs: T0,
         homeKey: 'b45.90000_5.20000', homeLat: 45900000, homeLon: -5200000, seenMs: T0 + 9, kills: 7 });
       assert.equal(await s.seasonPlayer(id(61), 2), null);
+      // Plusieurs personnages (006) : un par emplacement, chacun son niveau, sa ville, sa maison ; l'emplacement 1 par défaut.
+      assert.equal((await s.seasonJoin({ accountId: id(61), season: 1, slot: 3, level: 'difficile', nowMs: T0 + 6 })).ok, true);
+      const dup = await s.seasonJoin({ accountId: id(61), season: 1, slot: 3, level: 'moyen', nowMs: T0 + 7 });
+      assert.deepEqual([dup.ok, dup.player.slot, dup.player.level], [false, 3, 'difficile'], 'le premier niveau de l\'emplacement gagne');
+      assert.equal((await s.seasonJoin({ accountId: id(61), season: 1, slot: 2, level: 'facile', nowMs: T0 + 8 })).ok, true);
+      assert.deepEqual((await s.seasonPlayers(id(61), 1)).map((p) => [p.slot, p.level, p.commune]), [[1, 'facile', 'c01283'], [2, 'facile', null], [3, 'difficile', null]]);
+      assert.deepEqual(await s.seasonPlayers(id(61), 2), []);
+      await s.seasonPlayerSet(id(61), 1, { commune: 'c77777', homeKey: 'b45.80000_5.10000', homeLat: 45800000, homeLon: -5100000, kills: 2 }, 3);
+      assert.deepEqual((await s.seasonPlayer(id(61), 1, 3)).commune, 'c77777');
+      assert.equal((await s.seasonPlayer(id(61), 1)).commune, 'c01283', 'le personnage 1 n\'est pas touché');
+      assert.deepEqual(await s.seasonCounts(1), { facile: 1, moyen: 1, difficile: 1 }, 'des comptes, pas des personnages (id 61 : deux personnages au niveau facile, un seul compté)');
+      assert.deepEqual(await s.seasonHomes(1), { 'facile|c01283': 1, 'difficile|c77777': 1 });
+      assert.equal(await s.seasonLeave(id(61), 1, 3), true);
+      assert.equal(await s.seasonLeave(id(61), 1, 3), false, 'déjà abandonné');
+      assert.equal(await s.seasonPlayer(id(61), 1, 3), null);
+      assert.equal(await s.seasonLeave(id(61), 1, 2), true);
       assert.deepEqual(await s.seasonHomes(1), { 'facile|c01283': 1 }, 'une maison posée dans la commune : un joueur installé (id 62 n\'a ni commune ni maison)');
       assert.deepEqual(await s.seasonHomes(2), {});
       await s.seasonDocPut({ world: '1.facile', commune: 'c01283', part: 'meta', rev: 1, data: '{"nom":"Pérouges – lieu-dit « Le Bourg » ☀"}', nowMs: T0 });
@@ -583,6 +599,7 @@ for (const B of BACKENDS) {
       assert.deepEqual(await s.seasonHomes(1), {}, 'changer de ville remet la maison à zéro : plus installé');
       await s.eraseAccount(id(61));
       assert.equal(await s.seasonPlayer(id(61), 1), null);
+      assert.deepEqual(await s.seasonPlayers(id(61), 1), []);
       assert.deepEqual(await s.seasonCounts(1), { moyen: 1 });
     });
 
@@ -754,7 +771,7 @@ for (const B of BACKENDS) {
 // ---------- Hors suite (sans MariaDB) ----------
 
 test('schéma 002 : appliqué après 001, quatre tables utf8mb4 puis la version 2', () => {
-  assert.deepEqual(SCHEMA_FILES.map((f) => f.split(/[\\/]/).pop()), ['001-init.sql', '002-comptes.sql', '003-saisons.sql', '004-amis.sql', '005-boite.sql']);
+  assert.deepEqual(SCHEMA_FILES.map((f) => f.split(/[\\/]/).pop()), ['001-init.sql', '002-comptes.sql', '003-saisons.sql', '004-amis.sql', '005-boite.sql', '006-personnages.sql']);
   const st = splitSql(fs.readFileSync(SCHEMA_FILES[1], 'utf8'));
   assert.equal(st.length, 5);
   assert.deepEqual(st.slice(0, 4).map((s) => /^CREATE TABLE IF NOT EXISTS (el_\w+)/.exec(s)?.[1]), ['el_accounts', 'el_sessions', 'el_saves', 'el_codes']);
@@ -798,7 +815,52 @@ test('schéma 005 : boîte de dépôt (les dépôts d\'un compte partent avec lu
   assert.equal((st[0].match(/FOREIGN KEY/g) ?? []).length, 1, 'pas de clé étrangère sur le destinataire ni sur l\'amitié : leur fin rend les dépôts');
 });
 
-test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001 à 005 (tables, schéma 5, données gardées)',
+test('schéma 006 : personnages de saison (effacés avec le compte), reprise des inscriptions une seule fois, puis la version 6', () => {
+  const st = splitSql(fs.readFileSync(SCHEMA_FILES[5], 'utf8'));
+  assert.equal(st.length, 4);
+  assert.match(st[0], /^CREATE TABLE IF NOT EXISTS el_season_chars/);
+  assert.match(st[0], /PRIMARY KEY \(account_id, season, slot\)/);
+  assert.match(st[0], /FOREIGN KEY \(account_id\) REFERENCES el_accounts\(id\) ON DELETE CASCADE/);
+  assert.match(st[0], /ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci$/);
+  assert.match(st[1], /^INSERT IGNORE INTO el_season_chars .* FROM el_season_players\s+WHERE \(SELECT CAST\(v AS UNSIGNED\) FROM el_meta WHERE k = 'schema'\) < 6$/s);
+  for (const s of st) assert.ok(!s.includes('--') && !s.includes('«'), s.slice(0, 60));
+  assert.match(st[2], /^INSERT IGNORE INTO el_meta \(k, v\) VALUES \('chars_since', /);
+  assert.equal(st[3], "UPDATE el_meta SET v = '6' WHERE k = 'schema' AND CAST(v AS UNSIGNED) < 6");
+});
+
+test('migration 006 (MariaDB) : l\'inscription d\'un compte devient son personnage 1, une seule fois (un personnage abandonné ne revient pas)',
+  { skip: TEST_DB ? false : 'EARTHLIFE_TEST_DB absente' }, async () => {
+    await dropAll();
+    const db = dbFromUrl(TEST_DB);
+    const old = createMysqlStore({ ...db, schemaFiles: SCHEMA_FILES.slice(0, 5) });
+    await old.init();
+    await old.createAccount({ id: id(81), emailHash: eh(81), emailBox: box(81), pwHash: 'x', today: day(T0) });
+    await old.close();
+    const admin = await mysql.createConnection(db);
+    try {
+      assert.equal((await admin.query("SELECT v FROM el_meta WHERE k = 'schema'"))[0][0].v, '5');
+      await admin.query('INSERT INTO el_season_players (account_id, season, level, commune, enrolled_ms, home_key, home_lat, home_lon, seen_ms, kills) '
+        + 'VALUES (UNHEX(?), 1, \'moyen\', \'c01283\', 100, \'b45.1_5.1\', 45100000, 5100000, 200, 4)', [id(81)]);
+      const s = createMysqlStore(db);
+      await s.init();
+      assert.deepEqual(await s.seasonPlayer(id(81), 1), { accountId: id(81), season: 1, slot: 1, level: 'moyen', commune: 'c01283', enrolledMs: 100,
+        homeKey: 'b45.1_5.1', homeLat: 45100000, homeLon: 5100000, seenMs: 200, kills: 4 });
+      assert.deepEqual(await s.seasonCounts(1), { moyen: 1 });
+      const since = await s.charsSince();
+      assert.ok(since > Date.UTC(2026, 0, 1) && since <= Date.now(), `instant d'arrivée des personnages : ${since}`);
+      assert.equal(await s.seasonLeave(id(81), 1, 1), true);
+      await s.close();
+      const again = createMysqlStore(db);
+      await again.init();
+      assert.equal(await again.charsSince(), since, 'gardé une fois, pas réécrit au redémarrage');
+      assert.equal(await again.seasonPlayer(id(81), 1), null, 'redémarrage : le personnage abandonné ne revient pas');
+      await again.close();
+    } finally {
+      await admin.end();
+    }
+  });
+
+test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001 à 006 (tables, schéma 6, données gardées)',
   { skip: TEST_DB ? false : 'EARTHLIFE_TEST_DB absente' }, async () => {
     await dropAll();
     const db = dbFromUrl(TEST_DB);
@@ -818,7 +880,7 @@ test('migration (MariaDB) : base créée par 001 seul, puis démarrages avec 001
         assert.ok(await s.playerByTokenHash(th(1)), 'identité gardée');
         await s.close();
       }
-      assert.equal(await meta(), '5');
+      assert.equal(await meta(), '6');
       assert.deepEqual(await tables(), [...TABLES].sort());
     } finally {
       await admin.end();
@@ -934,7 +996,8 @@ test('magasin MariaDB (faux pilote) : valeurs toujours liées, autant de ? que d
   const inserts = d.calls.filter((c) => c.sql.startsWith('INSERT INTO el_marks'));
   assert.deepEqual(inserts.map((c) => c.values.length), [604, 604, 184], '100 traces par instruction');
   for (const c of d.calls) {
-    if (c.sql.startsWith('CREATE') || c.sql.startsWith('INSERT IGNORE INTO el_meta') || c.sql.startsWith('UPDATE el_meta SET v')) continue;
+    if (c.sql.startsWith('CREATE') || c.sql.startsWith('INSERT IGNORE INTO el_meta') || c.sql.startsWith('UPDATE el_meta SET v')
+      || c.sql.startsWith('INSERT IGNORE INTO el_season_chars')) continue;
     assert.ok(!/'[^']*'|\b\d{5,}\b/.test(c.sql.replace(/LIMIT \d+/, '').replace(/'@'/, '')), `valeur dans le texte : ${c.sql}`);
   }
 });
