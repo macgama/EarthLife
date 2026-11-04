@@ -87,6 +87,7 @@ import { createCityGame } from './ville-ecran.js';
 import { createSeasonNet } from './net/season.js';
 import { LEVEL_KEYS } from './quartier.js';
 import { encodeResume, decodeResume } from './reprise.js';
+import { switchSlot, adoptLegacy, slotOf, isSlot } from './emplacements.js';
 import { RELAUNCH_KEY, encodeRelaunch, decodeRelaunch, relaunchLines, callerOf } from './relance.js';
 // Icônes (HUD, chargement, fin) sous un espace de noms : pas de conflit avec d'autres imports nommés.
 import * as icons from './icons.js';
@@ -214,6 +215,8 @@ city = createCityGame({
   // Saison : lus au moment du besoin (ils n'existent pas encore ici).
   get seasonNet() { return seasonNet; }, get account() { return account; }, get online() { return online; },
   openAccount: () => accountUi?.open('login'),
+  // Plusieurs personnages : l'emplacement dont la partie tient la racine, et le changement de personnage (hors partie).
+  activeSlot: () => slotOf(save), enterSlot: (slot, opts) => enterSlot(slot, opts), dropSlot: (slot) => dropSlot(slot),
   // Les villes de la saison viennent d'être relues : les repères d'amis qui s'y posent prennent leur place.
   seasonCitiesChanged: () => refreshFriendPins(),
 });
@@ -809,7 +812,7 @@ const relaunchCause = (() => {
 })();
 const saidRelaunch = () => sayRelaunch(relaunchCause);
 if (params.get('autostart') === '1') startGame(picker.getPlace() ?? placeFromCity(CITIES[0])).then(saidRelaunch);
-else if (resumeAfterTakeOver?.season) startGame(picker.getPlace() ?? null, { season: resumeAfterTakeOver.season }).then(saidRelaunch);
+else if (resumeAfterTakeOver?.season) { city.useSlot(resumeAfterTakeOver.slot); startGame(picker.getPlace() ?? null, { season: resumeAfterTakeOver.season }).then(saidRelaunch); }
 else if (resumeAfterTakeOver && picker.getPlace()) startGame(picker.getPlace()).then(saidRelaunch);
 else picker.show();
 
@@ -987,6 +990,8 @@ async function startGame(place, { spawn = 'place', confirmed = false, season = n
     // Page restée au menu pendant qu'une autre écrivait : on relit la partie avant de jouer (sinon cette page jouerait en
     // lecture seule, sans sauvegarde).
     if (saveStore.refresh()) syncMenu();
+    // Le jeu seul a sa propre partie : un personnage de saison qui tenait la racine est mis de côté.
+    if (!season) enterSlot(0);
     // Quelle partie ? Libre (comme avant), ta ville en cours, ou une ville à commencer (commune, recensement, niveau) ;
     // null : le joueur annule, on reste où l'on est (menu ou partie).
     const plan = await city.prepareLaunch(place, { spawn, confirmed, season, dest });
@@ -1339,6 +1344,37 @@ async function wakeUp(s, { quiet = false } = {}) {
 
 function onTile(key, info) {
   if (info.state === 'failed') console.warn('Tuile indisponible', key, info.error);
+}
+
+// Plusieurs personnages (emplacements.js) : le personnage `slot` (0 : le jeu seul) prend la racine de la partie, l'actif est mis de côté.
+// La partie vivante est d'abord écrite dans l'ancien contexte, puis la session est jetée : sa copie vivante reviendrait sinon écraser le
+// contexte entrant à la prochaine écriture. `legacy` : le personnage d'avant les personnages reprend la partie d'alors ; `fresh` : il vient
+// d'être créé, aucun contexte resté là n'est repris.
+function enterSlot(slot, { legacy = false, fresh = false } = {}) {
+  if (!isSlot(slot)) return false;
+  const same = slotOf(save) === slot;
+  if (same && !legacy && !fresh) return true;
+  saveStore.flush('personnage');
+  disposeSession();
+  if (fresh && slot > 0) {
+    if (same) switchSlot(save, 0);
+    if (save.ctx) delete save.ctx[slot];
+  }
+  if (legacy) adoptLegacy(save, slot);
+  switchSlot(save, slot);
+  saveStore.markDirty();
+  saveStore.flush('personnage');
+  syncMenu();
+  return true;
+}
+// Un personnage abandonné (le serveur a libéré l'emplacement) : son contexte est jeté ; si c'était l'actif, le jeu seul reprend la racine.
+function dropSlot(slot) {
+  if (!isSlot(slot) || slot === 0) return;
+  if (slotOf(save) === slot) enterSlot(0);
+  if (save.ctx) delete save.ctx[slot];
+  saveStore.markDirty();
+  saveStore.flush('personnage');
+  syncMenu();
 }
 
 function disposeSession() {
@@ -3592,7 +3628,7 @@ function takeOver({ resume = false, keepLive = false, relaunch = null } = {}) {
   const res = saveStore.takeOver({ keepLive });
   if (res.ok) {
     if (resume) {
-      try { sessionStorage.setItem(RESUME_KEY, encodeResume(session?.seasonLevel ?? null)); } catch { /* sans stockage de session : retour au menu */ }
+      try { sessionStorage.setItem(RESUME_KEY, encodeResume(session?.seasonLevel ?? null, seasonNet?.slot ?? 1)); } catch { /* sans stockage de session : retour au menu */ }
       if (relaunch) { try { sessionStorage.setItem(RELAUNCH_KEY, encodeRelaunch(relaunch.why, relaunch.detail)); } catch { /* cause perdue, la console l'a */ } }
     }
     reloadClean();

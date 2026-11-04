@@ -17,7 +17,7 @@ export const ACCOUNT_KEYS = {
 };
 
 // Écritures qui méritent un envoi 5 s plus tard (section 1.2) ; les autres attendent la cadence de 2 min.
-const MARKING = new Set(['menu', 'refuge', 'mort', 'mission', 'reveil', 'absence', 'sac', 'fabrication', 'import', 'reprise']);
+const MARKING = new Set(['menu', 'refuge', 'mort', 'mission', 'reveil', 'absence', 'sac', 'fabrication', 'import', 'reprise', 'personnage']);
 // Dernière requête de compte restée sans réponse : « Compte indisponible » pendant 30 s.
 const UNREACHABLE_MS = 30000;
 const MAX_U32 = 2 ** 32 - 1;
